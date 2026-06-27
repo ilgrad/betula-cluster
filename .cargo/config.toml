@@ -1,0 +1,18 @@
+# Build tuning for betula-cluster.
+#
+# `inline-threshold` is portable — purely an inlining *hint*, no CPU-feature dependency — so the
+# tiny hot-path distance kernels (`sq_euclidean` / `manhattan` / `dot`) inline across crate
+# boundaries into the CF-tree insert loop. Worth a couple of percent on the build, safe everywhere,
+# and applied to the published wheels.
+[build]
+rustflags = ["-C", "llvm-args=--inline-threshold=1000"]
+
+# For a build pinned to *this machine's* CPU, add `target-cpu=native` for a further ~8 % from
+# AVX2 / AVX-512 auto-vectorization of those same kernels (this is what closes the gap to — and at
+# d≈10 matches — the reference `betulars`, whose wheels ship with it):
+#
+#   RUSTFLAGS="-C target-cpu=native -C llvm-args=--inline-threshold=1000" maturin build --release
+#
+# It is deliberately NOT active here: a `target-cpu=native` wheel raises SIGILL on any CPU older
+# than the build host, so it must never reach PyPI. The published wheels stay portable
+# (baseline x86-64-v1); pin to the host only for a private/local build.

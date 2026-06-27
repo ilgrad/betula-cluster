@@ -1,0 +1,109 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust:
+    name: rust (fmt · clippy · test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy, llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit,cargo-llvm-cov
+      - name: fmt
+        run: cargo fmt --all --check
+      - name: clippy (default = parallel)
+        run: cargo clippy --all-targets -- -D warnings
+      - name: clippy (no-default-features = serial)
+        run: cargo clippy --no-default-features --all-targets -- -D warnings
+      - name: clippy (persistence)
+        run: cargo clippy --no-default-features --features persistence --all-targets -- -D warnings
+      - name: clippy (cli)
+        run: cargo clippy --features cli --bin betula -- -D warnings
+      - name: test (default)
+        run: cargo test
+      - name: test (serial)
+        run: cargo test --no-default-features
+      - name: test (parallel + persistence)
+        run: cargo test --features persistence
+      - name: test (cli)
+        run: cargo test --features cli --bin betula
+      - name: cargo audit (security / unmaintained advisories)
+        run: cargo audit
+      - name: coverage (llvm-cov, floor 95% lines)
+        run: cargo llvm-cov --summary-only --fail-under-lines 95
+
+  python-build:
+    name: python (build · clippy)
+    runs-on: ubuntu-latest
+    env:
+      PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - uses: astral-sh/setup-uv@v5
+      - name: ruff check
+        run: uvx ruff check python/ tests/ bench/
+      - name: ruff format --check
+        run: uvx ruff format --check python/ tests/ bench/
+      - name: ty check
+        run: uv run --with ty --with numpy ty check python/betula_cluster
+      - name: clippy (python bindings)
+        run: cargo clippy --features python -- -D warnings
+      - name: build abi3 wheel
+        run: uv run --with maturin maturin build --release --out dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel
+          path: dist/*.whl
+
+  python-test:
+    name: python (pytest · py${{ matrix.python-version }})
+    needs: python-build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - uses: actions/download-artifact@v4
+        with:
+          name: wheel
+          path: dist
+      # Install-only: the single abi3 wheel must import and pass on every supported interpreter.
+      - name: pytest (+ wrapper coverage, floor 100%)
+        run: |
+          wheel=$(ls dist/*.whl | head -1)
+          uv run --python ${{ matrix.python-version }} \
+            --with numpy --with "scikit-learn>=1.3" --with scipy --with networkx \
+            --with pytest --with pytest-cov --with "$wheel" \
+            pytest tests/test_python.py -q \
+            --cov=betula_cluster --cov-report=term-missing --cov-fail-under=100
+      - name: stubtest
+        run: |
+          wheel=$(ls dist/*.whl | head -1)
+          uv run --python ${{ matrix.python-version }} --with mypy --with numpy --with "$wheel" \
+            python -m mypy.stubtest betula_cluster

@@ -1,0 +1,64 @@
+[build-system]
+requires = ["maturin>=1.7,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "betula-cluster"
+version = "0.1.0"
+description = "Fast, numerically stable BETULA clustering with a Rust core"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE-MIT"]
+authors = [{ name = "Ilia Gradina", email = "ilia.gradina@gmail.com" }]
+keywords = [
+    "clustering",
+    "birch",
+    "betula",
+    "cf-tree",
+    "microclustering",
+    "embeddings",
+    "gmm",
+    "hdbscan",
+    "unsupervised-learning",
+    "machine-learning",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Operating System :: OS Independent",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Scientific/Engineering :: Information Analysis",
+    "Typing :: Typed",
+]
+dependencies = ["numpy>=1.22"]
+
+[project.urls]
+Homepage = "https://github.com/ilgrad/betula-cluster"
+Repository = "https://github.com/ilgrad/betula-cluster"
+Issues = "https://github.com/ilgrad/betula-cluster/issues"
+
+[tool.maturin]
+features = ["python"]
+module-name = "betula_cluster._core"
+python-source = "python"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM", "RUF"]
+# μ / Σ / × / → etc. are intentional math notation in docstrings and comments.
+ignore = ["RUF001", "RUF002", "RUF003"]
+
+[tool.ruff.lint.per-file-ignores]
+# Benchmark/spike harnesses set up the environment before importing, and print wide tables.
+"bench/*" = ["E402", "E501"]

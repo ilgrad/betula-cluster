@@ -1,0 +1,19 @@
+/target
+**/*.rs.bk
+Cargo.lock
+# python build / artifacts
+*.so
+*.pyd
+__pycache__/
+.venv/
+*.npy
+/dist/
+*.whl
+.coverage
+.coverage.*
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+# editor
+.idea/
+.vscode/
