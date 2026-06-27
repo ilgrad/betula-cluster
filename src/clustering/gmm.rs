@@ -63,7 +63,16 @@ fn gmm_diagonal_once<R: Real, C: ClusterFeature<R>>(
     // warm start from k-means
     let km = kmeans(features, k, 50, 1, seed);
     let mut means = km.centers;
-    let mut vars = vec![gvar.clone(); k];
+    // Floor the warm-start variances. Real data often has constant dimensions (e.g. always-zero
+    // border pixels in images) where `gvar` is 0; without flooring, the first E-step divides by that
+    // zero and every responsibility becomes NaN, collapsing the model to a single cluster. The M-step
+    // already floors each variance — the initial value must too.
+    let var0: Vec<R> = gvar
+        .iter()
+        .zip(&floor)
+        .map(|(&g, &f)| if g > f { g } else { f })
+        .collect();
+    let mut vars = vec![var0; k];
     let mut weights = vec![R::one() / R::from_usize(k).unwrap(); k];
 
     let mut resp = vec![vec![R::zero(); k]; m];
@@ -633,5 +642,26 @@ mod tests {
         assert_eq!(g.means.len(), 3);
         let ga = gmm_full_auto(&micros, 1, 5, 100, 7);
         assert!(!ga.means.is_empty() && ga.means.len() <= 5);
+    }
+
+    #[test]
+    fn gmm_diagonal_survives_constant_dimension() {
+        // Real data routinely has constant columns (e.g. always-zero image-border pixels) where the
+        // global variance is 0. Without flooring the warm-start variance, the first E-step divides by
+        // that zero, every responsibility becomes NaN, and the model collapses to a single cluster.
+        use crate::feature::{ClusterFeature, Diagonal};
+        let mut rng = SplitMix64::new(2);
+        let (pts, truth) = blobs(&mut rng, 200, &[[0.0, 0.0], [8.0, 0.0], [0.0, 8.0]], 0.5);
+        let feats: Vec<Diagonal<f64>> = pts
+            .iter()
+            .map(|p| {
+                let mut f = <Diagonal<f64> as ClusterFeature<f64>>::new(3);
+                f.push(&[p[0], p[1], 0.0], 1.0); // 3rd dimension is constant 0 → gvar = 0
+                f
+            })
+            .collect();
+        let g = gmm_diagonal(&feats, 3, 200, 1);
+        let score = ari(&g.labels, &truth);
+        assert!(score > 0.9, "constant-dim collapse: ARI = {score}");
     }
 }
