@@ -28,6 +28,8 @@ Applied walk-throughs that compose the features above into a real task, each sco
 | [`usecase_01_embedding_dedup`](usecases/usecase_01_embedding_dedup.ipynb) | deduplicating a repost-heavy embedding corpus — `normalize=True` + `find_near_duplicates`, scored for precision/recall, collapsed to one representative per group |
 | [`usecase_02_log_anomaly_detection`](usecases/usecase_02_log_anomaly_detection.ipynb) | anomaly detection on log events — batch `outlier_scores` (ROC-AUC, precision@k) **and** streaming `DbStream` real-time noise flags |
 | [`usecase_03_customer_segmentation`](usecases/usecase_03_customer_segmentation.ipynb) | mixed RFM + categorical segmentation with `KPrototypes` — a persona + action table, and why mixed beats numeric-only |
+| [`usecase_04_rag_corpus_curation`](usecases/usecase_04_rag_corpus_curation.ipynb) | prepping an embedding store for RAG — junk removal (`outlier_scores`), topic coherence (`mapper_stability`, β₀ = #topics), and topic-leakage detection (Mapper) |
+| [`usecase_05_real_data_clustering`](usecases/usecase_05_real_data_clustering.ipynb) | clustering a **real** dataset (handwritten `digits`) — ARI parity with scikit-learn, average-digit centroids, medoid exemplars, a refit-anything coreset |
 
 ## Run / re-render
 
