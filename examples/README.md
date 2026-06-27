@@ -19,6 +19,16 @@ source (the diff-friendly form); the `.ipynb` is the rendered, executed output y
 | [`11_soft_assignment_coreset_diagnostics`](11_soft_assignment_coreset_diagnostics.ipynb) | `predict_proba` / `assignment_confidence`; `export_coreset` (refit anything); `diagnostics`, `cluster_profile`, `representatives` |
 | [`12_drift_robust_memory`](12_drift_robust_memory.ipynb) | `snapshot` + `compare_snapshots` drift; `active_learning_batch`; robust `huber_k`; `memory_budget_mb` |
 
+## Use cases (concrete, end-to-end scenarios)
+
+Applied walk-throughs that compose the features above into a real task, each scored against ground truth:
+
+| use case | what it shows |
+|----------|----------------|
+| [`usecase_01_embedding_dedup`](usecases/usecase_01_embedding_dedup.ipynb) | deduplicating a repost-heavy embedding corpus — `normalize=True` + `find_near_duplicates`, scored for precision/recall, collapsed to one representative per group |
+| [`usecase_02_log_anomaly_detection`](usecases/usecase_02_log_anomaly_detection.ipynb) | anomaly detection on log events — batch `outlier_scores` (ROC-AUC, precision@k) **and** streaming `DbStream` real-time noise flags |
+| [`usecase_03_customer_segmentation`](usecases/usecase_03_customer_segmentation.ipynb) | mixed RFM + categorical segmentation with `KPrototypes` — a persona + action table, and why mixed beats numeric-only |
+
 ## Run / re-render
 
 ```bash
