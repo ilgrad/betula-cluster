@@ -23,6 +23,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 import betula_cluster
+import seaborn as sns
+
+sns.set_theme(style="whitegrid", context="notebook", palette="deep")
 
 
 def direction_clusters(n=12_000, k=6, sigma=0.06, seed=0):

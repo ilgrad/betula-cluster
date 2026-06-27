@@ -26,6 +26,9 @@ from sklearn.datasets import make_blobs
 from sklearn.metrics import adjusted_rand_score as ari
 
 import betula_cluster
+import seaborn as sns
+
+sns.set_theme(style="whitegrid", context="notebook", palette="deep")
 
 X, y = make_blobs(n_samples=60_000, centers=5, cluster_std=0.7, random_state=0)
 X = X.astype(np.float64)

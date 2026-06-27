@@ -394,11 +394,23 @@ labels = fit_predict_sparse(X, n_clusters=20, threshold=0.5)   # kmeans by defau
 
 ## Examples (notebooks)
 
-Executed, plotted Jupyter notebooks live in [`examples/`](examples/README.md):
-[quickstart](examples/01_quickstart.ipynb) (every head + auto-`k`),
-[embeddings & inspection](examples/02_embeddings_and_inspection.ipynb) (`normalize=True`, outlier
-scores, near-duplicates, representatives), and
-[streaming & persistence](examples/03_streaming_and_persistence.ipynb).
+**Twelve** executed, plotted notebooks — one per capability — live in
+[`examples/`](examples/README.md) (seaborn plots, pandas tables, networkx graphs; render on GitHub):
+
+- **Core** — [quickstart](examples/01_quickstart.ipynb) (every head + auto-`k`),
+  [embeddings & inspection](examples/02_embeddings_and_inspection.ipynb),
+  [streaming & persistence](examples/03_streaming_and_persistence.ipynb),
+  [method comparison](examples/04_method_comparison.ipynb),
+  [Mapper topology](examples/05_topology_mapper.ipynb).
+- **Streaming density** — [`DenStream` & `DbStream`](examples/06_streaming_density.ipynb).
+- **Mixed data** — [`KPrototypes`](examples/07_mixed_data_kprototypes.ipynb) (numeric + categorical).
+- **Sketches** — [`KllSketch` & `DdSketch`](examples/08_quantile_sketches.ipynb) quantiles.
+- **Semi-supervised** — [must-link / cannot-link](examples/09_semisupervised_constraints.ipynb).
+- **Sparse / high-dim** — [`scipy.sparse` + `fit_predict_sparse`](examples/10_sparse_highdim.ipynb).
+- **Soft assignment & coresets** —
+  [`predict_proba`, coresets, diagnostics](examples/11_soft_assignment_coreset_diagnostics.ipynb).
+- **Production ops** —
+  [drift, active learning, robust, memory budgets](examples/12_drift_robust_memory.ipynb).
 
 ## Quick start — Rust
 

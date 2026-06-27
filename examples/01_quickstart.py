@@ -27,6 +27,9 @@ import numpy as np
 from sklearn.datasets import make_blobs
 
 import betula_cluster
+import seaborn as sns
+
+sns.set_theme(style="whitegrid", context="notebook", palette="deep")
 
 print("betula-cluster", "ready")
 

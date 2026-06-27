@@ -31,6 +31,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 import betula_cluster
+import seaborn as sns
+
+sns.set_theme(style="whitegrid", context="notebook", palette="deep")
 
 
 def ring(center, radius, n, thickness, rng):

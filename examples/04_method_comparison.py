@@ -29,6 +29,9 @@ from sklearn.datasets import make_blobs, make_circles, make_moons
 from sklearn.preprocessing import StandardScaler
 
 import betula_cluster
+import seaborn as sns
+
+sns.set_theme(style="whitegrid", context="notebook", palette="deep")
 
 warnings.filterwarnings("ignore")
 plt.rcParams.update({"figure.dpi": 110, "font.size": 9})
