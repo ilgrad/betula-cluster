@@ -172,6 +172,40 @@ fn gmm_diagonal_once<R: Real, C: ClusterFeature<R>>(
 /// still fully deterministic for a given `seed`.
 const GMM_N_INIT: u64 = 4;
 
+/// Best of [`GMM_N_INIT`] EM restarts (seeds `seed, seed+1, …`) by data log-likelihood. The restarts
+/// are independent, so they run in parallel when the `parallel` feature is on; ties are broken by the
+/// lowest seed offset, so the result is deterministic for a given `seed` on either path.
+fn best_of_restarts<R, T>(
+    seed: u64,
+    loglik: impl Fn(&T) -> R + Sync,
+    run: impl Fn(u64) -> T + Sync,
+) -> T
+where
+    R: Real,
+    T: Send,
+{
+    #[cfg(feature = "parallel")]
+    let cands: Vec<(u64, T)> = {
+        use rayon::prelude::*;
+        (0..GMM_N_INIT)
+            .into_par_iter()
+            .map(|r| (r, run(seed.wrapping_add(r))))
+            .collect()
+    };
+    #[cfg(not(feature = "parallel"))]
+    let cands: Vec<(u64, T)> = (0..GMM_N_INIT).map(|r| (r, run(seed.wrapping_add(r)))).collect();
+    cands
+        .into_iter()
+        .max_by(|(ri, a), (rj, b)| {
+            loglik(a)
+                .partial_cmp(&loglik(b))
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(rj.cmp(ri)) // tie → lower seed offset wins (deterministic)
+        })
+        .map(|(_, t)| t)
+        .expect("GMM_N_INIT >= 1")
+}
+
 /// Fit a `k`-component diagonal GMM, keeping the best of [`GMM_N_INIT`] EM restarts by log-likelihood.
 pub fn gmm_diagonal<R: Real, C: ClusterFeature<R>>(
     features: &[C],
@@ -179,14 +213,7 @@ pub fn gmm_diagonal<R: Real, C: ClusterFeature<R>>(
     max_iter: usize,
     seed: u64,
 ) -> Gmm<R> {
-    let mut best = gmm_diagonal_once(features, k, max_iter, seed);
-    for r in 1..GMM_N_INIT {
-        let cand = gmm_diagonal_once(features, k, max_iter, seed.wrapping_add(r));
-        if cand.loglik > best.loglik {
-            best = cand;
-        }
-    }
-    best
+    best_of_restarts(seed, |g: &Gmm<R>| g.loglik, |s| gmm_diagonal_once(features, k, max_iter, s))
 }
 
 /// Total per-dimension variance of the underlying points (between-feature + within-feature),
@@ -390,14 +417,7 @@ pub fn gmm_full<R: Real, C: ClusterFeature<R>>(
     max_iter: usize,
     seed: u64,
 ) -> GmmFull<R> {
-    let mut best = gmm_full_once(features, k, max_iter, seed);
-    for r in 1..GMM_N_INIT {
-        let cand = gmm_full_once(features, k, max_iter, seed.wrapping_add(r));
-        if cand.loglik > best.loglik {
-            best = cand;
-        }
-    }
-    best
+    best_of_restarts(seed, |g: &GmmFull<R>| g.loglik, |s| gmm_full_once(features, k, max_iter, s))
 }
 
 /// Total per-pair covariance of the underlying points (between-feature + within-feature).
