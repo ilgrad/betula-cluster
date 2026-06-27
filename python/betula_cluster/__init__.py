@@ -566,8 +566,8 @@ class Betula:
         self._require_fit()
         if "resolution" in mapper_kwargs:
             raise ValueError(
-                "`resolution` is the swept axis of mapper_stability; pass `resolutions=` (a sequence) "
-                "instead, and put the other Mapper options in the remaining keyword arguments."
+                "`resolution` is the swept axis of mapper_stability; pass `resolutions=` (a "
+                "sequence) instead, with the other Mapper options as keyword arguments."
             )
         if resolutions is None:
             resolutions = range(4, 30, 2)
