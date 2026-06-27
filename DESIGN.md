@@ -18,9 +18,9 @@ mpmath/Julia ground truth) in `../../math_improove/` and `research/`. Key empiri
 3. **Best formula, tested.** Where a formula choice affects quality we pick by measured ARI, not
    by tradition (e.g. GMM E-step: expected-log beats the paper's convolution — see below).
 4. **Functional core, imperative shell.** Pure CF math + clustering kernels in the core; effects
-   (I/O, Python, GPU) at the edges.
-5. **Speed via the right algorithm first, then SIMD/parallel/GPU.** Accelerated *exact* k-means
-   (Hamerly) before micro-optimizing; SIMD distance kernels; rayon; optional GPU.
+   (I/O, Python) at the edges.
+5. **Speed via the right algorithm first, then SIMD/parallel.** Accelerated *exact* k-means
+   (Hamerly) before micro-optimizing; SIMD distance kernels; rayon.
 
 ## Mathematical foundation (locked, verified)
 
@@ -87,7 +87,6 @@ src/
   topology.rs    Mapper / persistence (exploration)
   bin/betula.rs  command-line interface (feature = "cli", std-only)
   python.rs      PyO3 bindings (feature = "python")
-  gpu/           optional cudarc / wgpu kernels (feature = "cuda"/"gpu")
 ```
 Core abstractions: `Real` (numeric), `ClusterFeature<R>` (Spherical/Diagonal/Full),
 `CFDistance<R, C>`, `CFTree<R, C, D, A>`, `GlobalClustering<R, C>`. Generics monomorphize →
@@ -103,8 +102,6 @@ zero dispatch cost; Python/CLI pick variants via enums.
   (CF is a commutative monoid → exact reduction).
 - **Linalg**: hand-rolled tiny Cholesky in `linalg.rs` for per-CF d×d; `faer` (pure-Rust SIMD,
   no LAPACK) for any larger/batched ops.
-- **GPU** (later, optional): `cudarc` (NVIDIA) and `wgpu` (cross-vendor incl. OpenCL-class) for
-  distance/E-step kernels.
 - **Python**: PyO3 0.29 `abi3-py311` wheels via maturin; `rust-numpy` zero-copy; `Python::detach`
   around compute (release GIL); sklearn-compatible `fit/partial_fit/predict`.
 
@@ -116,10 +113,11 @@ zero dispatch cost; Python/CLI pick variants via enums.
 
 ## Status
 
-**Done & verified** — 78 Rust unit + 4 integration tests + an 85-test `pytest` suite (Python wrapper
-at 100 % line coverage, Rust ~99 %); `clippy -D warnings` + `fmt` clean
-(across `parallel`, serial, `persistence`, and `python` feature sets); GitHub Actions CI (Rust gate
-+ Python build/pytest) and a multi-platform wheel-release workflow (`.github/workflows/`);
+**Done & verified** — 122 Rust unit + 4 integration tests (`--features python,persistence`; more
+behind `cli`) + a 121-case `pytest` suite (Python wrapper at 100 % line coverage, Rust ≥95 %
+CI-enforced via `cargo llvm-cov`); `clippy -D warnings` + `fmt` clean (across `parallel`, serial,
+`persistence`, `cli`, and `python` feature sets); GitHub Actions CI (Rust gate
++ Python build/pytest on 3.11–3.14) and a multi-platform wheel-release workflow (`.github/workflows/`);
 Python end-to-end + scikit-learn benchmark (`README.md`, `bench/RESULTS.md`):
 - `types`, `linalg` (+ Jacobi symmetric eigensolver), `feature` — Spherical/Diagonal/Full/FdSketch.
   `FdSketch` is a Frequent-Directions scatter sketch (Liberty 2013; ℓ×d, `M ≈ BᵀB`) for very high `d`
@@ -218,7 +216,8 @@ high-d head is correct but slow (eigendecomposition per shrink) — use it only 
 tree will not fit.
 
 **Planned / not yet done:**
-- Performance: GPU kernels (`cudarc`/`wgpu`), Yinyang k-means, rayon over the GMM E-step.
+- Performance: Yinyang k-means, rayon over the GMM E-step. (GPU kernels are **out of scope** — the
+  CF compression makes Phase-3 cheap enough on CPU that a GPU path is not worth its complexity.)
 - API/eng: a hierarchical sparse CF-tree (`O(log L · nnz)` routing) refining the flat sparse-native
   pass; workspace split into `betula-{sketch,stream,index}` crates. See the deferred-index note below.
 
