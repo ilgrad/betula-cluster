@@ -103,43 +103,52 @@ probe
 # %%
 a = rng.normal([0.0, 0.0], 0.25, (1500, 2))
 b = rng.normal([2.6, 0.0], 0.25, (1500, 2))
-Xg = np.vstack([a, b])
-db = DbStream(r=1.5, decay=0.0005, alpha=0.1, min_weight=3.0)
-db.partial_fit(Xg)
-gl = np.asarray(db.predict(Xg))
+Xg = np.vstack([a, b])  # centres 2.6 apart < 2·r = 3.0, but an empty gap between
 
-fig, ax = plt.subplots(figsize=(7, 4))
-scatter(ax, Xg, gl, f"DbStream — {db.n_clusters_} clusters (centres only 2.6 apart, 2·r = 3.0)")
+den_g = DenStream(eps=1.5, decay=0.0005, beta=0.5, mu=6.0).fit(Xg)
+db_g = DbStream(r=1.5, decay=0.0005, alpha=0.1, min_weight=3.0).fit(Xg)
+
+fig, axes = plt.subplots(1, 2, figsize=(13, 4.5), sharex=True, sharey=True)
+scatter(axes[0], Xg, np.asarray(den_g.predict(Xg)), f"DenStream (distance) → {den_g.n_clusters_} cluster, merged")
+scatter(axes[1], Xg, np.asarray(db_g.predict(Xg)), f"DbStream (shared density) → {db_g.n_clusters_} clusters, kept apart")
+plt.tight_layout()
 plt.show()
 
 # %% [markdown]
 # ### The micro-cluster graph
 #
-# Each node is a `DbStream` micro-cluster, placed at its centre and coloured by the cluster it landed
-# in; edges link micro-clusters whose centres are within `2·r`. The two colours are two connected
-# components — the empty gap leaves no edge across it.
+# With a smaller radius on three separated blobs, `DbStream` keeps **many** micro-clusters. Each node
+# below is one micro-cluster, placed at its centre and coloured by the cluster it joined; an edge links
+# two micro-clusters that overlap (centres within `2·r`) **and** share a cluster — so each coloured
+# blob of nodes is one recovered cluster.
 
 # %%
 import networkx as nx
+from sklearn.datasets import make_blobs as _make_blobs
 
-centers = db.microcluster_centers_
-mlabels = np.asarray(db.predict(centers))
+X3, _ = _make_blobs(n_samples=3000, centers=[[0, 0], [6, 0], [3, 5]], cluster_std=0.5, random_state=0)
+dbg = DbStream(r=0.8, decay=0.0005, alpha=0.1, min_weight=3.0).fit(X3.astype(np.float64))
+mc = dbg.microcluster_centers_
+ml = np.asarray(dbg.predict(mc))
+keep = np.flatnonzero(ml >= 0)  # drop any weak (noise) micro-clusters
+
 g = nx.Graph()
-for i, c in enumerate(centers):
-    g.add_node(i, pos=(float(c[0]), float(c[1])), label=int(mlabels[i]))
-two_r = 3.0
-for i in range(len(centers)):
-    for j in range(i + 1, len(centers)):
-        if np.linalg.norm(centers[i] - centers[j]) <= two_r:
-            g.add_edge(i, j)
+for i in keep:
+    g.add_node(int(i), pos=(float(mc[i, 0]), float(mc[i, 1])), label=int(ml[i]))
+two_r = 2 * 0.8
+for a_i in keep:
+    for b_i in keep:
+        if a_i < b_i and ml[a_i] == ml[b_i] and np.linalg.norm(mc[a_i] - mc[b_i]) <= two_r:
+            g.add_edge(int(a_i), int(b_i))
 
 pos = nx.get_node_attributes(g, "pos")
 node_col = [sns.color_palette("tab10")[g.nodes[i]["label"] % 10] for i in g.nodes]
-fig, ax = plt.subplots(figsize=(7, 4))
-nx.draw_networkx_edges(g, pos, alpha=0.3, ax=ax)
-nx.draw_networkx_nodes(g, pos, node_color=node_col, node_size=120, ax=ax)
-ax.set_title(f"DbStream micro-cluster graph — {nx.number_connected_components(g)} components")
+fig, ax = plt.subplots(figsize=(7, 6))
+nx.draw_networkx_edges(g, pos, alpha=0.25, ax=ax)
+nx.draw_networkx_nodes(g, pos, node_color=node_col, node_size=70, edgecolors="white", linewidths=0.4, ax=ax)
+ax.set_title(f"{len(keep)} micro-clusters across {dbg.n_clusters_} clusters")
 ax.set_aspect("equal")
+ax.set_axis_off()
 plt.show()
 
 # %% [markdown]

@@ -66,8 +66,10 @@ class MapperGraph:
     def to_networkx(self):
         """Build a ``networkx.Graph`` (requires ``networkx``); nodes carry mass/bin/lens/centroid,
         edges carry ``weight`` and a boolean ``bridge`` flag."""
+        import importlib
+
         try:
-            import networkx as nx  # ty: ignore[unresolved-import]
+            nx = importlib.import_module("networkx")  # optional dependency, resolved at call time
         except ImportError as exc:  # pragma: no cover - optional visualization dependency
             raise ImportError(
                 "MapperGraph.to_networkx() requires networkx (`pip install networkx`)"
