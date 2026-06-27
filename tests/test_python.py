@@ -964,6 +964,12 @@ def test_mapper_stability_before_fit_raises():
         betula_cluster.Betula().mapper_stability()
 
 
+def test_mapper_stability_rejects_resolution_kwarg(blobs):
+    est, _, _ = _fitted(blobs)
+    with pytest.raises(ValueError):
+        est.mapper_stability(resolution=5)  # `resolution` is swept; must use `resolutions=`
+
+
 # ── coreset / soft assignment / diagnostics / representatives ─────────────────────────────────
 
 

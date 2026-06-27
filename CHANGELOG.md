@@ -36,7 +36,8 @@ First public release.
   (`density` / `radius` / `l2norm` / `coordinate` / `eccentricity`) over the microclusters, an
   overlapping cover, per-bin single-linkage at a data-adaptive (median-NN) scale, and a nerve graph with branch
   points and bridges (Tarjan); optional `to_networkx()`. Exploration of structure / RAG leakage /
-  dedup, not a partition.
+  dedup, not a partition. `mapper_stability()` sweeps the resolution and reports the topology's
+  persistence across scale (β₀ components, β₁ loops, branch points, bridges per resolution).
 - **Soft assignment & confidence**: `predict_proba` (true posterior for the GMM heads via the
   per-leaf responsibility matrix `microcluster_proba_`; a documented centroid-distance softmax
   *heuristic* for k-means / Ward / HDBSCAN) and `assignment_confidence`.
