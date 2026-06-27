@@ -25,10 +25,13 @@ with peak RSS sampled from `/proc/self/statm`. Full methodology, every metric, a
 - 🎯 **Quality at parity.** betula's k-means / GMM / Ward land within **≈0.01 ARI** of their
   scikit-learn counterparts; full-covariance GMM recovers anisotropic clusters just as well
   (0.90 vs 0.90); HDBSCAN-on-CF nails non-convex moons & circles (**ARI 1.00**).
-- ⚡ **13–39× faster at N = 1 000 000.** betula-kmeans labels a million points in **0.20 s** vs
-  scikit-learn KMeans 2.7 s (13×), Birch 7.9 s (39×), GaussianMixture 4.9 s (25×).
+- ⚡ **15–40× faster at N = 1 000 000.** betula-kmeans labels a million points in **0.21 s** vs
+  scikit-learn KMeans 3.3 s (16×), Birch 8.0 s (39×), GaussianMixture 5.4 s (26×).
 - 🪶 **Bounded memory.** Streaming 10 M points peaks at **~57 MB — flat in N** — while an in-core
   KMeans must hold the array and peaks at **~5 GB** (**≈88× less**, and the gap grows without limit).
+- 🌍 **Real data, not just blobs.** Matches scikit-learn on `digits` (k-means 0.53 vs 0.47) and
+  clusters **full covtype (581 k rows) ~7× faster** at better ARI; in *very* high dimensions
+  (MNIST, 784-D) give the CF-tree more leaves — the honest losses are in `bench/RESULTS.md` too.
 
 | ![Fit time vs N](https://raw.githubusercontent.com/ilgrad/betula-cluster/main/bench/plots/scaling_time.png) | ![Peak memory vs N](https://raw.githubusercontent.com/ilgrad/betula-cluster/main/bench/plots/memory_streaming.png) |
 |:--:|:--:|
@@ -117,6 +120,8 @@ And three **end-to-end use cases** (each scored against ground truth):
 - 🧹 [**Embedding dedup**](examples/usecases/usecase_01_embedding_dedup.ipynb) — collapse a repost-heavy corpus to representatives.
 - 🚨 [**Log anomaly detection**](examples/usecases/usecase_02_log_anomaly_detection.ipynb) — batch outlier scoring + streaming `DbStream` flags.
 - 👥 [**Customer segmentation**](examples/usecases/usecase_03_customer_segmentation.ipynb) — mixed RFM + categorical personas with `KPrototypes`.
+- 🧠 [**RAG corpus curation**](examples/usecases/usecase_04_rag_corpus_curation.ipynb) — junk removal, topic coherence, and topic-leakage detection via Mapper.
+- 🔢 [**Real-data clustering**](examples/usecases/usecase_05_real_data_clustering.ipynb) — handwritten digits, ARI parity + centroid/exemplar inspection.
 
 ## Documentation
 
@@ -126,7 +131,7 @@ And three **end-to-end use cases** (each scored against ground truth):
 - [**Benchmarks**](bench/RESULTS.md) — methodology, every metric, all tables, honest wins & losses.
 - [**Design**](DESIGN.md) — internal design, invariants, and testing strategy.
 
-Verified: **128** Rust unit/integration tests + a **121-case** Python suite at **100%** wrapper
+Verified: **129** Rust unit/integration tests + a **123-case** Python suite at **100%** wrapper
 coverage (Rust ≥95%, CI-enforced), `clippy -D warnings` + `fmt` clean across all feature sets, on
 Python 3.11–3.14 (single abi3 wheel).
 

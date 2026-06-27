@@ -85,6 +85,26 @@ def gen(dataset: str, n: int, seed: int = 0):
     return X.astype(np.float64), k
 
 
+def load_real_worker(dataset: str):
+    """Load a full real dataset (standardized) inside the worker, for the real-scale headline."""
+    from sklearn.preprocessing import StandardScaler
+
+    if dataset == "covtype":
+        from sklearn.datasets import fetch_covtype
+
+        d = fetch_covtype()
+        x, y, k = d.data, d.target.astype(int) - 1, 7
+    elif dataset == "mnist":
+        from sklearn.datasets import fetch_openml
+
+        d = fetch_openml("mnist_784", version=1, as_frame=False)
+        x, y, k = d.data, d.target.astype(int), 10
+    else:
+        raise ValueError(dataset)
+    x = StandardScaler().fit_transform(np.asarray(x, dtype=np.float64)).astype(np.float64)
+    return x, np.asarray(y), k
+
+
 def fit_method(method: str, X, k: int, n: int):
     bkw = dict(threshold=0.0, max_leaves=2000, seed=0, n_jobs=1)
     mcs = max(20, n // 400)
@@ -173,6 +193,20 @@ def main() -> dict:
         t0 = time.perf_counter()
         KMeans(8, n_init=1, random_state=0).fit(X)
         return {"time_s": time.perf_counter() - t0, "rss_mb": peak.mb()}
+    if kind == "real_fit":
+        method, dataset = sys.argv[2], sys.argv[3]
+        X, y, k = load_real_worker(dataset)
+        t0 = time.perf_counter()
+        labels = np.asarray(fit_method(method, X, k, len(X)))
+        dt = time.perf_counter() - t0
+        from sklearn.metrics import adjusted_rand_score
+
+        return {
+            "time_s": dt,
+            "rss_mb": peak.mb(),
+            "n_clusters": len({int(v) for v in labels if v >= 0}),
+            "ari": round(float(adjusted_rand_score(y, labels)), 3),
+        }
     raise ValueError(kind)
 
 

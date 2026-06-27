@@ -69,6 +69,45 @@ def gen_dataset(name: str, n: int, seed: int = 0):
     return StandardScaler().fit_transform(X).astype(np.float64), y, k
 
 
+# ── real datasets (download-guarded; fixed N → quality-phase only) ──────────────────────────────────
+REAL_CAP = 20_000  # subsample big real sets so the O(N^2) baselines stay feasible and comparable
+
+
+def load_real(name: str, seed: int = 0):
+    """Return (X float64 standardized, y, k) for a real dataset, or ``None`` if its download is
+    unavailable (offline run). Large sets are subsampled to ``REAL_CAP`` for the all-methods table."""
+    from sklearn.preprocessing import StandardScaler
+
+    try:
+        if name == "digits":
+            from sklearn.datasets import load_digits
+
+            X, y, k = (*load_digits(return_X_y=True), 10)
+        elif name == "mnist":
+            from sklearn.datasets import fetch_openml
+
+            d = fetch_openml("mnist_784", version=1, as_frame=False)
+            X, y, k = d.data, d.target.astype(int), 10
+        elif name == "covtype":
+            from sklearn.datasets import fetch_covtype
+
+            d = fetch_covtype()
+            X, y, k = d.data, d.target.astype(int) - 1, 7
+        else:
+            raise ValueError(f"unknown real dataset: {name}")
+    except ValueError:
+        raise  # programmer error (unknown name), not a download failure
+    except Exception as e:  # offline / download failure → skip this dataset, keep the run alive
+        print(f"  [real] {name}: skipped ({type(e).__name__}: {str(e)[:60]})")
+        return None
+
+    X, y = np.asarray(X, dtype=np.float64), np.asarray(y)
+    if len(X) > REAL_CAP:
+        idx = np.random.default_rng(seed).choice(len(X), REAL_CAP, replace=False)
+        X, y = X[idx], y[idx]
+    return StandardScaler().fit_transform(X).astype(np.float64), y, k
+
+
 # ── methods ─────────────────────────────────────────────────────────────────────────────────────
 BETULA_KW = dict(threshold=0.0, max_leaves=2000, seed=0, n_jobs=1)
 
@@ -174,6 +213,43 @@ def run_quality(n: int, datasets: list[str]) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def run_real(datasets: list[str]) -> pd.DataFrame:
+    """Quality phase on real datasets (fixed/subsampled N). Same methods + metrics as `run_quality`."""
+    rows = []
+    for ds in datasets:
+        loaded = load_real(ds)
+        if loaded is None:  # download unavailable → already logged
+            continue
+        X, y, k = loaded
+        print(f"[real] {ds}: N={len(X):,} d={X.shape[1]} k={k}")
+        # Full d×d covariance GMMs are O(d^3) per component — infeasible past ~100 dims (e.g. MNIST).
+        skip_full_cov = X.shape[1] > 100
+        for name, (fn, big) in methods(k, len(X)).items():
+            rec = {"dataset": ds, "n": len(X), "method": name}
+            if (
+                not big and len(X) > 5000
+            ):  # O(N^2) baselines: too slow/heavy on the larger real sets
+                rec["error"] = "skipped (O(N^2))"
+                rows.append(rec)
+                continue
+            if skip_full_cov and name in ("betula-gmm-full", "sklearn-gmm"):
+                rec["error"] = "skipped (full cov, high-d)"
+                rows.append(rec)
+                continue
+            try:
+                t0 = time.perf_counter()
+                labels = np.asarray(fn(X))
+                rec["time_s"] = time.perf_counter() - t0
+                rec.update(score(X, y, labels))
+            except Exception as e:
+                rec["error"] = type(e).__name__
+            rows.append(rec)
+            print(
+                f"  real {ds:8s} {name:18s} ARI={rec.get('ARI', float('nan')):.3f} t={rec.get('time_s', float('nan')):.2f}s"
+            )
+    return pd.DataFrame(rows)
+
+
 # ── isolated runner: each task is a fresh `subprocess` (clean address space → honest peak RSS) ──────
 WORKER = str(HERE / "_worker.py")
 
@@ -238,30 +314,50 @@ def run_memory(sizes: list[int], d: int = 20, chunk: int = 50_000) -> pd.DataFra
     return pd.DataFrame(rows)
 
 
+def run_real_scale(dataset: str = "covtype") -> pd.DataFrame:
+    """Headline: betula vs sklearn on the FULL real dataset (no subsample) — time, peak RSS and ARI,
+    each isolated in a subprocess. Skipped (empty) if the dataset can't be downloaded."""
+    rows = []
+    for name in ["betula-kmeans", "sklearn-kmeans", "sklearn-birch"]:
+        res = _run_worker(["real_fit", name, dataset], TIMEOUT * 6)
+        if res.get("error"):
+            print(f"  real-scale {dataset}: skipped ({res['error']})")
+            break
+        rows.append({"dataset": dataset, "method": name, **res})
+        print(f"  real-scale {name:18s} {res}")
+    return pd.DataFrame(rows)
+
+
 # ── plots ─────────────────────────────────────────────────────────────────────────────────────────
-def make_plots(q: pd.DataFrame, s: pd.DataFrame, m: pd.DataFrame):
+def _ari_heatmap(df, title, path):
     import matplotlib.pyplot as plt
+    import seaborn as sns
+
+    if "ARI" not in df or df.empty:
+        return
+    piv = df.pivot_table(index="method", columns="dataset", values="ARI")
+    fig, ax = plt.subplots(figsize=(10, 7))
+    sns.heatmap(
+        piv, annot=True, fmt=".2f", cmap="viridis", vmin=0, vmax=1, ax=ax, cbar_kws={"label": "ARI"}
+    )
+    ax.set_title(title)
+    fig.tight_layout()
+    fig.savefig(path, dpi=110)
+    plt.close(fig)
+
+
+def make_plots(q: pd.DataFrame, s: pd.DataFrame, m: pd.DataFrame, qr: pd.DataFrame | None = None):
     import seaborn as sns
 
     sns.set_theme(style="whitegrid", context="talk", palette="deep")
 
-    if "ARI" in q:
-        piv = q.pivot_table(index="method", columns="dataset", values="ARI")
-        fig, ax = plt.subplots(figsize=(10, 7))
-        sns.heatmap(
-            piv,
-            annot=True,
-            fmt=".2f",
-            cmap="viridis",
-            vmin=0,
-            vmax=1,
-            ax=ax,
-            cbar_kws={"label": "ARI"},
-        )
-        ax.set_title("Clustering quality (ARI vs ground truth)")
-        fig.tight_layout()
-        fig.savefig(PLOTS / "quality_ari.png", dpi=110)
-        plt.close(fig)
+    _ari_heatmap(
+        q, "Clustering quality (ARI vs ground truth) — synthetic", PLOTS / "quality_ari.png"
+    )
+    if qr is not None:
+        _ari_heatmap(qr, "Clustering quality (ARI) — real datasets", PLOTS / "quality_real_ari.png")
+
+    import matplotlib.pyplot as plt
 
     sc = s[s["time_s"].notna()] if "time_s" in s else s.iloc[0:0]
     if len(sc):
@@ -311,18 +407,25 @@ def main():
         else [500_000, 1_000_000, 2_000_000, 5_000_000, 10_000_000]
     )
     datasets = ["blobs", "aniso", "varied", "moons", "circles", "highdim"]
+    real_datasets = ["digits"] if args.quick else ["digits", "mnist", "covtype"]
 
     print(f"[quality] N={qn:,}")
     q = run_quality(qn, datasets)
     q.to_csv(HERE / "results_quality.csv", index=False)
+    print(f"[real] quality on real datasets {real_datasets}")
+    qr = run_real(real_datasets)
+    qr.to_csv(HERE / "results_real.csv", index=False)
     print(f"[scaling] sizes={sizes}")
     s = run_scaling(sizes)
     s.to_csv(HERE / "results_scaling.csv", index=False)
     print(f"[memory] streaming vs one-shot, sizes={mem_sizes}")
     m = run_memory(mem_sizes)
     m.to_csv(HERE / "results_memory.csv", index=False)
-    make_plots(q, s, m)
-    print("wrote results_{quality,scaling,memory}.csv, plots/*.png")
+    if not args.quick:
+        print("[real-scale] full covtype: betula vs sklearn (time · RSS · ARI)")
+        run_real_scale("covtype").to_csv(HERE / "results_real_scale.csv", index=False)
+    make_plots(q, s, m, qr)
+    print("wrote results_*.csv, plots/*.png")
     return q, s, m
 
 
