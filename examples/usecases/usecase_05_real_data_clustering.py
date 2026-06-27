@@ -64,8 +64,8 @@ plt.show()
 # **betula matches scikit-learn** — the CF-tree compression costs nothing in quality — at every head.
 
 # %%
-labels = np.asarray(betula_cluster.fit_predict(X, 10, feature="spherical", method="kmeans", threshold=0.0, max_leaves=1000, seed=0))
-labels_full = np.asarray(betula_cluster.fit_predict(X, 10, feature="full", method="gmm-full", threshold=0.0, max_leaves=1000, seed=0))
+labels = np.asarray(betula_cluster.fit_predict(X, 10, feature="spherical", method="kmeans", threshold=0.0, max_leaves=2000, seed=0))
+labels_full = np.asarray(betula_cluster.fit_predict(X, 10, feature="full", method="gmm-full", threshold=0.0, max_leaves=2000, seed=0))
 sk = KMeans(10, n_init=10, random_state=0).fit_predict(X)
 pd.DataFrame(
     {
@@ -101,7 +101,7 @@ plt.show()
 # human-readable summary of each cluster without scanning thousands of images.
 
 # %%
-est = betula_cluster.Betula(n_clusters=10, feature="spherical", method="kmeans", threshold=0.0, max_leaves=1000, seed=0).fit(X)
+est = betula_cluster.Betula(n_clusters=10, feature="spherical", method="kmeans", threshold=0.0, max_leaves=2000, seed=0).fit(X)
 fig, axes = plt.subplots(2, 5, figsize=(10, 4.2))
 for c, ax in enumerate(axes.ravel()):
     reps = np.asarray(est.representatives(X, cluster_id=c, method="medoid", k=1))
@@ -115,17 +115,20 @@ plt.show()
 # %% [markdown]
 # ## A coreset reproduces the result at a fraction of the size
 #
-# `export_coreset()` returns the CF-tree leaves as weighted points. Fitting scikit-learn k-means on
-# the coreset (a few hundred weighted rows) gives essentially the same labels as fitting on all 1797
-# images — the compression is lossless for this task.
+# `export_coreset()` returns the CF-tree leaves as weighted points. A deliberately **coarse** tree
+# (256 leaves) summarizes the 1797 images; refitting scikit-learn k-means on those 256 weighted leaves
+# gives a clustering that closely agrees with fitting on all 1797 images — at a fraction of the rows.
 
 # %%
-core = est.export_coreset()
+coarse = betula_cluster.Betula(
+    n_clusters=10, feature="spherical", method="kmeans", threshold=0.0, max_leaves=256, seed=0
+).fit(X)
+core = coarse.export_coreset()
 km_full = KMeans(10, n_init=10, random_state=0).fit(X)
 km_core = KMeans(10, n_init=10, random_state=0).fit(core.centers, sample_weight=core.weights)
 pd.DataFrame(
     {
-        "metric": ["rows fit on (coreset vs full)", "ARI: coreset labels vs full-data labels"],
+        "metric": ["coreset size", "ARI: coreset labels vs full-data labels"],
         "value": [
             f"{len(core.centers)} weighted leaves vs {len(X)} images",
             round(adjusted_rand_score(km_full.predict(X), km_core.predict(X)), 3),
