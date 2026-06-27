@@ -10,8 +10,8 @@ losses** are reported below.
   within **≈0.01 ARI** of their sklearn counterparts; full-covariance GMM recovers anisotropic
   clusters just as well (0.90 vs 0.90); HDBSCAN-on-CF nails non-convex shapes (moons/circles ARI
   1.00). The CF compression is essentially **free** for quality on these tasks.
-- **Speed: 15–40× faster at N = 1 M.** betula-kmeans labels 1 M points in **0.21 s** vs sklearn
-  KMeans 3.3 s (16×), Birch 8.0 s (39×), GaussianMixture 5.4 s (26×). Agglomerative is O(N²) and
+- **Speed: 15–40× faster at N = 1 M.** betula-kmeans labels 1 M points in **0.20 s** vs sklearn
+  KMeans 3.3 s (17×), Birch 8.0 s (40×), GaussianMixture 5.5 s (27×). Agglomerative is O(N²) and
   averages **26 s** even at N = 30 k.
 - **Memory is bounded.** Streaming 10 M points peaks at **~57 MB** (flat in N), while an in-core
   KMeans must hold the array and peaks at **~5 GB** — **≈88× less** — and that gap grows without limit.
@@ -80,20 +80,20 @@ for blobs and HDBSCAN-on-CF for density/noise/non-convex.
 
 | method | time @ 1 M | vs betula-kmeans |
 |---|---|---|
-| **betula-kmeans** | **0.21 s** | 1× |
-| betula-ward | 0.24 s | 1.1× |
-| betula-hdbscan | 0.28 s | 1.3× |
-| betula-gmm | 0.29 s | 1.4× |
-| betula-gmm-full | 0.42 s | 2.0× |
+| **betula-kmeans** | **0.20 s** | 1× |
+| betula-ward | 0.24 s | 1.2× |
+| betula-gmm | 0.25 s | 1.3× |
+| betula-hdbscan | 0.27 s | 1.4× |
+| betula-gmm-full | 0.33 s | 1.6× |
 | sklearn-minibatch | 3.05 s | 15× |
-| sklearn-kmeans | 3.34 s | 16× |
-| sklearn-gmm | 5.38 s | 26× |
-| sklearn-birch | 8.04 s | **39×** |
+| sklearn-kmeans | 3.34 s | 17× |
+| sklearn-gmm | 5.46 s | 27× |
+| sklearn-birch | 7.99 s | **40×** |
 | sklearn-ward, sklearn-hdbscan | (O(N²) — capped at N ≤ 30 k) | — |
 
-Four of the five betula heads finish a million points in **under 0.3 s**; full-covariance GMM runs
-**4 EM restarts** (for robustness against local optima) and still finishes in **0.42 s** — ~13× faster
-than scikit-learn's GMM. Phase-3 clusters only the ~2000 leaf microclusters, not the raw points.
+All five betula heads finish a million points in **≤ ⅓ s**; full-covariance GMM runs **4 EM restarts**
+(for robustness against local optima) **in parallel**, finishing in **0.33 s** — ~17× faster than
+scikit-learn's GMM. Phase-3 clusters only the ~2000 leaf microclusters, not the raw points.
 Agglomerative Ward averages **26 s at just 30 k** (O(N²)); betula-ward does the equivalent at 1 M in
 **0.23 s**.
 
@@ -141,9 +141,11 @@ Reading it **honestly**:
 - **covtype (54-D):** a genuinely hard dataset (every method scores low); betula ≈ scikit-learn
   (betula-kmeans 0.064 vs 0.054; betula-gmm 0.117 is the best of the lot).
 - **MNIST (784-D) — an honest loss.** At the default **2000-leaf** budget betula-kmeans scores only
-  **0.041** vs scikit-learn's 0.324: in 784 dimensions, 2000 leaves over-compress (one leaf swallows
-  most points). This is the *curse of dimensionality* meeting CF compression — and it is fixable with
-  resolution:
+  **0.041** vs scikit-learn's 0.324. Root cause (diagnosed): in 784 dimensions the rebuild over-grows
+  its absorption threshold, so the tree *collapses below its own budget* — it ends with ~769 leaves,
+  one of which swallows ~13 k of the 20 k points. The CF-tree is leaving capacity on the table exactly
+  where it is needed (a budget-aware rebuild that uses the full leaf allowance in high `d` is future
+  work). For now it is fixable with resolution:
 
   | max_leaves | 2000 | 5000 | 10000 | 20000 |
   |---|---|---|---|---|

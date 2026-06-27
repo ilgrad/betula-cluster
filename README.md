@@ -25,8 +25,8 @@ with peak RSS sampled from `/proc/self/statm`. Full methodology, every metric, a
 - 🎯 **Quality at parity.** betula's k-means / GMM / Ward land within **≈0.01 ARI** of their
   scikit-learn counterparts; full-covariance GMM recovers anisotropic clusters just as well
   (0.90 vs 0.90); HDBSCAN-on-CF nails non-convex moons & circles (**ARI 1.00**).
-- ⚡ **15–40× faster at N = 1 000 000.** betula-kmeans labels a million points in **0.21 s** vs
-  scikit-learn KMeans 3.3 s (16×), Birch 8.0 s (39×), GaussianMixture 5.4 s (26×).
+- ⚡ **15–40× faster at N = 1 000 000.** betula-kmeans labels a million points in **0.20 s** vs
+  scikit-learn KMeans 3.3 s (17×), Birch 8.0 s (40×), GaussianMixture 5.5 s (27×).
 - 🪶 **Bounded memory.** Streaming 10 M points peaks at **~57 MB — flat in N** — while an in-core
   KMeans must hold the array and peaks at **~5 GB** (**≈88× less**, and the gap grows without limit).
 - 🌍 **Real data, not just blobs.** Matches scikit-learn on `digits` (k-means 0.53 vs 0.47) and
