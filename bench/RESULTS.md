@@ -56,7 +56,7 @@ Absolute times vary by machine; the *ratios* far less.
 | sklearn-kmeans | 0.861 | 0.545 | 0.539 | 1.00 | 0.485 | 0.00 |
 | sklearn-minibatch | 0.861 | 0.547 | 0.539 | 1.00 | 0.482 | 0.00 |
 | **betula-gmm** (diag) | 0.860 | 0.544 | 0.753 | 1.00 | 0.518 | 0.00 |
-| **betula-gmm-full** | 0.738 | **0.899** | 0.753 | 1.00 | 0.504 | 0.00 |
+| **betula-gmm-full** | 0.860 | **0.899** | 0.753 | 1.00 | 0.508 | 0.00 |
 | sklearn-gmm (full) | 0.864 | 0.902 | 0.752 | 1.00 | 0.507 | 0.00 |
 | **betula-ward** | 0.807 | 0.551 | 0.611 | 1.00 | 0.706 | 0.00 |
 | sklearn-ward | 0.820 | 0.532 | 0.459 | 1.00 | 0.507 | 0.00 |
@@ -81,19 +81,21 @@ for blobs and HDBSCAN-on-CF for density/noise/non-convex.
 | method | time @ 1 M | vs betula-kmeans |
 |---|---|---|
 | **betula-kmeans** | **0.20 s** | 1× |
-| betula-gmm | 0.23 s | 1.2× |
-| betula-ward | 0.23 s | 1.2× |
+| betula-ward | 0.23 s | 1.1× |
 | betula-hdbscan | 0.26 s | 1.3× |
-| betula-gmm-full | 0.30 s | 1.5× |
-| sklearn-minibatch | 2.80 s | 14× |
-| sklearn-kmeans | 2.80 s | 14× |
+| betula-gmm | 0.28 s | 1.4× |
+| betula-gmm-full | 0.43 s | 2.1× |
+| sklearn-kmeans | 2.68 s | 13× |
+| sklearn-minibatch | 2.79 s | 14× |
 | sklearn-gmm | 4.94 s | 25× |
-| sklearn-birch | 7.86 s | **39×** |
+| sklearn-birch | 7.88 s | **39×** |
 | sklearn-ward, sklearn-hdbscan | (O(N²) — capped at N ≤ 30 k) | — |
 
-All five betula heads finish a million points in **under a third of a second**, because Phase-3
-clusters only the ~2000 leaf microclusters, not the raw points. Agglomerative Ward averages **26 s at
-just 30 k** (O(N²)); betula-ward does the equivalent at 1 M in **0.23 s**.
+Four of the five betula heads finish a million points in **under 0.3 s**; full-covariance GMM runs
+**4 EM restarts** (for robustness against local optima) and still finishes in **0.43 s** — ~11× faster
+than scikit-learn's GMM. Phase-3 clusters only the ~2000 leaf microclusters, not the raw points.
+Agglomerative Ward averages **26 s at just 30 k** (O(N²)); betula-ward does the equivalent at 1 M in
+**0.23 s**.
 
 ## Memory — streaming stays bounded
 

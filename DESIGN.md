@@ -113,7 +113,7 @@ zero dispatch cost; Python/CLI pick variants via enums.
 
 ## Status
 
-**Done & verified** — 123 Rust unit + 4 integration tests (`--features python,persistence`; more
+**Done & verified** — 124 Rust unit + 4 integration tests (`--features python,persistence`; more
 behind `cli`) + a 121-case `pytest` suite (Python wrapper at 100 % line coverage, Rust ≥95 %
 CI-enforced via `cargo llvm-cov`); `clippy -D warnings` + `fmt` clean (across `parallel`, serial,
 `persistence`, `cli`, and `python` feature sets); GitHub Actions CI (Rust gate

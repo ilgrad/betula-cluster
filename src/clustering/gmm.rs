@@ -33,7 +33,7 @@ pub struct Gmm<R: Real> {
 }
 
 /// Fit a `k`-component diagonal GMM to `features`, warm-started from k-means.
-pub fn gmm_diagonal<R: Real, C: ClusterFeature<R>>(
+fn gmm_diagonal_once<R: Real, C: ClusterFeature<R>>(
     features: &[C],
     k: usize,
     max_iter: usize,
@@ -157,6 +157,29 @@ pub fn gmm_diagonal<R: Real, C: ClusterFeature<R>>(
     }
 }
 
+/// Number of k-means-seeded EM restarts for the fixed-`k` GMM heads; the fit with the highest data
+/// log-likelihood is kept. EM is non-convex, so a single init occasionally lands in a poor local
+/// optimum (most visible for full covariance); a few seed-derived restarts make the result robust and
+/// still fully deterministic for a given `seed`.
+const GMM_N_INIT: u64 = 4;
+
+/// Fit a `k`-component diagonal GMM, keeping the best of [`GMM_N_INIT`] EM restarts by log-likelihood.
+pub fn gmm_diagonal<R: Real, C: ClusterFeature<R>>(
+    features: &[C],
+    k: usize,
+    max_iter: usize,
+    seed: u64,
+) -> Gmm<R> {
+    let mut best = gmm_diagonal_once(features, k, max_iter, seed);
+    for r in 1..GMM_N_INIT {
+        let cand = gmm_diagonal_once(features, k, max_iter, seed.wrapping_add(r));
+        if cand.loglik > best.loglik {
+            best = cand;
+        }
+    }
+    best
+}
+
 /// Total per-dimension variance of the underlying points (between-feature + within-feature),
 /// used as a prior scale and variance floor.
 fn global_variance<R: Real>(mu: &[Vec<R>], n: &[R], dim: usize) -> Vec<R> {
@@ -216,7 +239,7 @@ pub struct GmmFull<R: Real> {
 /// correlated clusters that the diagonal model cannot. Same expected-log E-step with the full
 /// within-feature correction `−½ tr(Σ_k⁻¹ Σ_i)`; component covariances are factored (Cholesky)
 /// for a stable log-determinant, quadratic form and inverse.
-pub fn gmm_full<R: Real, C: ClusterFeature<R>>(
+fn gmm_full_once<R: Real, C: ClusterFeature<R>>(
     features: &[C],
     k: usize,
     max_iter: usize,
@@ -350,6 +373,24 @@ pub fn gmm_full<R: Real, C: ClusterFeature<R>>(
     }
 }
 
+/// Fit a `k`-component full-covariance GMM, keeping the best of [`GMM_N_INIT`] EM restarts by
+/// log-likelihood. Full covariance has the most local optima, so the restarts matter most here.
+pub fn gmm_full<R: Real, C: ClusterFeature<R>>(
+    features: &[C],
+    k: usize,
+    max_iter: usize,
+    seed: u64,
+) -> GmmFull<R> {
+    let mut best = gmm_full_once(features, k, max_iter, seed);
+    for r in 1..GMM_N_INIT {
+        let cand = gmm_full_once(features, k, max_iter, seed.wrapping_add(r));
+        if cand.loglik > best.loglik {
+            best = cand;
+        }
+    }
+    best
+}
+
 /// Total per-pair covariance of the underlying points (between-feature + within-feature).
 fn global_cov<R: Real>(mu: &[Vec<R>], n: &[R], sig: &[SecondMoment<R>], dim: usize) -> Vec<Vec<R>> {
     let wtot: R = n.iter().copied().sum();
@@ -440,7 +481,7 @@ pub fn gmm_diagonal_auto<R: Real, C: ClusterFeature<R>>(
     let mut best_score = R::infinity();
     let mut best: Option<Gmm<R>> = None;
     for k in k_lo..=k_hi {
-        let g = gmm_diagonal(features, k, max_iter, seed);
+        let g = gmm_diagonal_once(features, k, max_iter, seed);
         let p = 2 * k * d + (k - 1); // means + diagonal vars + mixing weights
         let score = bic(g.loglik, p, ntot);
         if score < best_score {
@@ -468,7 +509,7 @@ pub fn gmm_full_auto<R: Real, C: ClusterFeature<R>>(
     let mut best_score = R::infinity();
     let mut best: Option<GmmFull<R>> = None;
     for k in k_lo..=k_hi {
-        let g = gmm_full(features, k, max_iter, seed);
+        let g = gmm_full_once(features, k, max_iter, seed);
         let p = k * d + k * d * (d + 1) / 2 + (k - 1); // means + lower-tri cov + mixing
         let score = bic(g.loglik, p, ntot);
         if score < best_score {
@@ -495,6 +536,27 @@ mod tests {
         let labels: Vec<usize> = point_to_micro.iter().map(|&m| g.labels[m]).collect();
         let score = ari(&labels, &truth);
         assert!(score > 0.95, "ARI = {score}");
+    }
+
+    #[test]
+    fn gmm_full_restarts_keep_highest_loglik() {
+        // EM is non-convex; the fixed-k wrapper must return the best of its GMM_N_INIT restarts,
+        // never a worse one (guards the local-optimum "dip" fix).
+        let mut rng = SplitMix64::new(5);
+        let centers = [[0.0, 0.0], [6.0, 0.0], [0.0, 6.0], [6.0, 6.0]];
+        let (pts, _) = blobs(&mut rng, 300, &centers, 1.4); // overlap → multiple local optima
+        let (micros, _) = grid_micros(&pts, 0.4);
+        let multi = gmm_full(&micros, 4, 200, 0);
+        for r in 0..GMM_N_INIT {
+            let once = gmm_full_once(&micros, 4, 200, r);
+            assert!(
+                multi.loglik + 1e-6 >= once.loglik,
+                "wrapper loglik {} < single-init seed {} loglik {}",
+                multi.loglik,
+                r,
+                once.loglik
+            );
+        }
     }
 
     #[test]
