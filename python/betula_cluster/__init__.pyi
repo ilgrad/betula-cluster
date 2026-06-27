@@ -171,6 +171,9 @@ class Betula:
         density_k: int = ...,
         coordinate: int = ...,
     ) -> MapperGraph: ...
+    def mapper_stability(
+        self, resolutions: Sequence[int] | None = ..., **mapper_kwargs: Any
+    ) -> list[dict[str, int]]: ...
     # ── coreset / soft assignment / diagnostics ──────────────────────────────────────────────────
     @property
     def microcluster_proba_(self) -> NDArray[np.float64]: ...

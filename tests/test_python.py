@@ -928,6 +928,42 @@ def test_mapper_coordinate_out_of_range_raises(blobs):
         est.mapper(lens="coordinate", coordinate=99)
 
 
+def test_mapper_stability_persistence_curve():
+    rng = np.random.default_rng(0)
+    t = rng.uniform(0, 2 * np.pi, 5000)
+    x = (np.c_[3.0 * np.cos(t), 3.0 * np.sin(t)] + 0.18 * rng.standard_normal((5000, 2))).astype(
+        np.float64
+    )
+    est = betula_cluster.Betula(
+        feature="spherical", method="hdbscan", threshold=0.0, max_leaves=220
+    ).fit(x)
+    keys = {
+        "resolution",
+        "n_nodes",
+        "n_edges",
+        "n_branch_points",
+        "n_bridges",
+        "n_components",
+        "n_loops",
+    }
+
+    kw = dict(lens="coordinate", coordinate=0, gain=0.4, link_scale=2.5, min_node_mass=20)
+    rows = est.mapper_stability(resolutions=[8, 12, 16], **kw)
+    assert len(rows) == 3
+    assert all(set(r) == keys for r in rows)
+    assert all(r["n_components"] >= 1 and r["n_loops"] >= 0 for r in rows)
+    # a ring carries a persistent loop (β₁ == 1) — its closing edge exercises the cycle branch
+    assert max(r["n_loops"] for r in rows) >= 1
+
+    # default resolution sweep runs and returns one row per resolution
+    assert len(est.mapper_stability(**kw)) == len(range(4, 30, 2))
+
+
+def test_mapper_stability_before_fit_raises():
+    with pytest.raises(AttributeError):
+        betula_cluster.Betula().mapper_stability()
+
+
 # ── coreset / soft assignment / diagnostics / representatives ─────────────────────────────────
 
 

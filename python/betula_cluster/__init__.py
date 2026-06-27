@@ -551,6 +551,50 @@ class Betula:
             bridges=d["bridges"],
         )
 
+    def mapper_stability(self, resolutions=None, **mapper_kwargs):
+        """Sweep Mapper ``resolution`` and report how the topology persists across scale.
+
+        Returns a list of dicts (one per resolution) with ``resolution``, ``n_nodes``, ``n_edges``,
+        ``n_branch_points``, ``n_bridges``, ``n_components`` (β₀, connected components) and
+        ``n_loops`` (β₁ = edges − nodes + components, the number of independent cycles). Features
+        constant across many resolutions are real structure; ones that flicker are binning
+        artefacts — the Mapper analogue of a persistence diagram, without cross-scale node matching.
+
+        ``resolutions`` defaults to ``range(4, 30, 2)``; ``mapper_kwargs`` (``lens``, ``gain``,
+        ``link_scale`` …) pass straight through to :meth:`mapper`. Build the model first.
+        """
+        self._require_fit()
+        if resolutions is None:
+            resolutions = range(4, 30, 2)
+        rows = []
+        for r in resolutions:
+            g = self.mapper(resolution=int(r), **mapper_kwargs)
+            parent = list(range(g.n_nodes))
+
+            def find(x, parent=parent):
+                while parent[x] != x:
+                    parent[x] = parent[parent[x]]
+                    x = parent[x]
+                return x
+
+            for a, b, _w in g.edges:
+                ra, rb = find(int(a)), find(int(b))
+                if ra != rb:
+                    parent[ra] = rb
+            components = len({find(i) for i in range(g.n_nodes)})
+            rows.append(
+                {
+                    "resolution": int(r),
+                    "n_nodes": g.n_nodes,
+                    "n_edges": g.n_edges,
+                    "n_branch_points": int(g.branch_points.shape[0]),
+                    "n_bridges": int(g.bridges.shape[0]),
+                    "n_components": components,
+                    "n_loops": max(0, g.n_edges - g.n_nodes + components),
+                }
+            )
+        return rows
+
     # ── coreset / soft assignment / diagnostics ──────────────────────────────────────────────────
     def export_coreset(self):
         """The CF-tree leaves as a weighted-point :class:`Coreset` (centers, weights, radii) — a

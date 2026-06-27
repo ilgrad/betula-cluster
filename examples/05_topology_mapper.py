@@ -145,6 +145,39 @@ print(f"bridge edges (the neck): {bridge_edges}")
 print(f"heaviest node mass: {max(d['mass'] for _, d in G.nodes(data=True)):.0f} points")
 
 # %% [markdown]
+# ## 4. Persistence across scale — `mapper_stability`
+#
+# A single Mapper graph depends on `resolution`. `mapper_stability` sweeps it and reports the
+# topological summary at each scale: connected components (**β₀**) and independent loops (**β₁ = edges
+# − nodes + components**). A feature that **persists** across many resolutions is real structure; one
+# that flickers is a binning artefact. Three well-separated blobs give a flat **β₀ = 3** at every
+# scale — even as the node count grows with a finer cover — so the persistent component count *is* the
+# cluster count.
+
+# %%
+import pandas as pd
+
+cen = [[0, 0], [12, 0], [6, 10]]
+Xb = np.vstack([rng.normal(c, 0.6, (1500, 2)) for c in cen]).astype(np.float64)
+blob_model = betula_cluster.Betula(
+    feature="spherical", method="hdbscan", threshold=0.0, max_leaves=240
+).fit(Xb)
+stab = pd.DataFrame(
+    blob_model.mapper_stability(
+        resolutions=range(6, 22, 2), lens="l2norm", gain=0.3, link_scale=2.0, min_node_mass=10
+    )
+)
+
+fig, ax = plt.subplots(figsize=(7, 4))
+ax.plot(stab["resolution"], stab["n_components"], marker="o", label="components β₀ (persistent = 3)")
+ax.plot(stab["resolution"], stab["n_nodes"], marker="s", alpha=0.6, label="nodes (grow with cover)")
+ax.set(xlabel="resolution", ylabel="count", title="Topological persistence across scale")
+ax.legend()
+plt.tight_layout()
+plt.show()
+stab[["resolution", "n_nodes", "n_components", "n_loops"]]
+
+# %% [markdown]
 # ### When to reach for it
 #
 # Mapper is an **exploration** tool, not a partition (use `method="hdbscan"` / `gmm` for labels). It
