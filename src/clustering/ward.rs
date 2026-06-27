@@ -4,8 +4,9 @@
 //! space — then cuts it. It is *exact* because the CF merge is exact (no Lance-Williams update
 //! approximation): the Ward linkage between two clusters is the D4 variance-increase distance
 //! `(n_a n_b / (n_a + n_b))·‖μ_a − μ_b‖²` ([`crate::distance::VarianceIncrease`]), and merging two
-//! clusters is the exact CF merge. For a reducible linkage like Ward the chain yields merges in
-//! non-decreasing height, so cutting at a fixed `k` or at the largest height jump is well defined.
+//! clusters is the exact CF merge. The chain emits reciprocal-NN merges in discovery order (a valid
+//! topological order, but *not* globally height-sorted); [`dendrogram`] sorts them by height so the
+//! fixed-`k` cut and the auto-`k` height-jump scan both operate on a proper horizontal cut.
 
 use crate::distance::{CFDistance, VarianceIncrease};
 use crate::feature::ClusterFeature;
@@ -69,6 +70,17 @@ fn dendrogram<R: Real, C: ClusterFeature<R>>(features: &[C]) -> Vec<Merge<R>> {
             chain.push(b);
         }
     }
+    // The NN-chain emits reciprocal-NN merges in *discovery* order, which is a valid topological
+    // order (a cluster's sub-merges precede it) but is NOT globally sorted by height. Cutting the
+    // dendrogram at a fixed `k` (or scanning height jumps for auto-`k`) needs the merges in
+    // non-decreasing height. Ward is monotonic (no inversions), so the height-sorted prefix is
+    // downward-closed and the union-find replay in `labels_at` reconstructs the correct horizontal
+    // cut regardless of the original discovery order.
+    merges.sort_by(|x, y| {
+        x.height
+            .partial_cmp(&y.height)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     merges
 }
 
@@ -213,5 +225,69 @@ mod tests {
         let empty: Vec<crate::feature::Spherical<f64>> = Vec::new();
         assert!(ward_hac(&empty, 3).labels.is_empty());
         assert!(ward_hac_auto(&empty, 2, 5).labels.is_empty());
+    }
+
+    /// Exact greedy weighted Ward (always merge the globally-minimum variance-increase pair).
+    /// O(m^3) — for small `m` it is the ground truth the NN-chain must match.
+    fn brute_ward<R: Real, C: ClusterFeature<R>>(features: &[C], k: usize) -> Vec<usize> {
+        let m = features.len();
+        let mut cf: Vec<C> = features.to_vec();
+        let mut alive: Vec<usize> = (0..m).collect();
+        let mut group: Vec<Vec<usize>> = (0..m).map(|i| vec![i]).collect();
+        while alive.len() > k {
+            let (mut bi, mut bj, mut bd) = (0usize, 0usize, R::infinity());
+            for x in 0..alive.len() {
+                for y in (x + 1)..alive.len() {
+                    let (i, j) = (alive[x], alive[y]);
+                    let d = VarianceIncrease.between(&cf[i], &cf[j]);
+                    if d < bd {
+                        bd = d;
+                        bi = i;
+                        bj = j;
+                    }
+                }
+            }
+            let other = cf[bj].clone();
+            cf[bi].merge(&other);
+            let gj = group[bj].clone();
+            group[bi].extend(gj);
+            alive.retain(|&z| z != bj);
+        }
+        let mut labels = vec![0usize; m];
+        for (lab, &root) in alive.iter().enumerate() {
+            for &p in &group[root] {
+                labels[p] = lab;
+            }
+        }
+        labels
+    }
+
+    #[test]
+    fn ward_matches_bruteforce_on_singletons() {
+        use crate::feature::Spherical;
+        let mut rng = SplitMix64::new(3);
+        let centers = [[0.0, 0.0], [4.0, 0.0], [0.0, 4.0], [4.0, 4.0]];
+        let (pts, _) = blobs(&mut rng, 16, &centers, 1.2); // overlapping → stresses merge order
+        let feats: Vec<Spherical<f64>> = pts
+            .iter()
+            .map(|p| {
+                let mut f = <Spherical<f64> as ClusterFeature<f64>>::new(2);
+                f.push(p, 1.0);
+                f
+            })
+            .collect();
+        // Dendrogram heights must be non-decreasing after the fix (Ward has no inversions).
+        let merges = dendrogram(&feats);
+        assert!(
+            merges.windows(2).all(|w| w[1].height + 1e-9 >= w[0].height),
+            "dendrogram heights are not sorted"
+        );
+        // The NN-chain cut must equal exact greedy Ward at every k.
+        for k in [2usize, 4, 7, 12] {
+            let nn = ward_hac(&feats, k).labels;
+            let bf = brute_ward(&feats, k);
+            let score = ari(&nn, &bf);
+            assert!(score > 0.999, "k={k}: NN-chain vs brute ARI = {score}");
+        }
     }
 }

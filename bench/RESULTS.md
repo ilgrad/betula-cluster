@@ -58,7 +58,7 @@ Absolute times vary by machine; the *ratios* far less.
 | **betula-gmm** (diag) | 0.860 | 0.544 | 0.753 | 1.00 | 0.518 | 0.00 |
 | **betula-gmm-full** | 0.738 | **0.899** | 0.753 | 1.00 | 0.504 | 0.00 |
 | sklearn-gmm (full) | 0.864 | 0.902 | 0.752 | 1.00 | 0.507 | 0.00 |
-| **betula-ward** | 0.627 | 0.416 | 0.611 | 1.00 | 0.706 | 0.00 |
+| **betula-ward** | 0.807 | 0.551 | 0.611 | 1.00 | 0.706 | 0.00 |
 | sklearn-ward | 0.820 | 0.532 | 0.459 | 1.00 | 0.507 | 0.00 |
 | sklearn-birch | 0.860 | 0.554 | 0.460 | 1.00 | 0.616 | 0.01 |
 | **betula-hdbscan** | 0.077 | 0.153 | 0.051 | 1.00 | **1.00** | **1.00** |
@@ -66,8 +66,10 @@ Absolute times vary by machine; the *ratios* far less.
 
 Reading it honestly: **betula-kmeans ≡ sklearn-kmeans** (to ~0.01) — the CF-tree compression does not
 cost quality. **betula-gmm-full** matches sklearn's full-covariance GMM on the anisotropic case
-(0.90), the one centroid k-means can't (0.54). On **non-convex** moons/circles, only the HDBSCAN heads
-score — and **betula-hdbscan = sklearn-hdbscan = 1.00**. The honest weak spot: **HDBSCAN-on-CF on
+(0.90), the one centroid k-means can't (0.54). **betula-ward** matches or beats raw Ward (blobs 0.81 vs
+0.82; aniso 0.55 vs 0.53; varied 0.61 vs 0.46; moons 0.71 vs 0.51) at a fraction of the cost. On
+**non-convex** moons/circles, only the HDBSCAN heads score — and **betula-hdbscan = sklearn-hdbscan =
+1.00**. The honest weak spot: **HDBSCAN-on-CF on
 overlapping blobs** (0.08–0.15) trails raw HDBSCAN (0.27–0.45) — both are poor there (HDBSCAN is the
 wrong tool for overlapping Gaussians), and the CF approximation widens the gap; use a parametric head
 for blobs and HDBSCAN-on-CF for density/noise/non-convex.
@@ -78,20 +80,20 @@ for blobs and HDBSCAN-on-CF for density/noise/non-convex.
 
 | method | time @ 1 M | vs betula-kmeans |
 |---|---|---|
-| **betula-kmeans** | **0.21 s** | 1× |
-| betula-gmm | 0.24 s | 1.2× |
-| betula-ward | 0.25 s | 1.2× |
-| betula-hdbscan | 0.27 s | 1.3× |
-| betula-gmm-full | 0.31 s | 1.5× |
-| sklearn-minibatch | 2.99 s | 14× |
-| sklearn-kmeans | 3.03 s | 15× |
-| sklearn-gmm | 5.26 s | 25× |
-| sklearn-birch | 8.06 s | **38×** |
+| **betula-kmeans** | **0.20 s** | 1× |
+| betula-gmm | 0.23 s | 1.2× |
+| betula-ward | 0.23 s | 1.2× |
+| betula-hdbscan | 0.26 s | 1.3× |
+| betula-gmm-full | 0.30 s | 1.5× |
+| sklearn-minibatch | 2.80 s | 14× |
+| sklearn-kmeans | 2.80 s | 14× |
+| sklearn-gmm | 4.94 s | 25× |
+| sklearn-birch | 7.86 s | **39×** |
 | sklearn-ward, sklearn-hdbscan | (O(N²) — capped at N ≤ 30 k) | — |
 
 All five betula heads finish a million points in **under a third of a second**, because Phase-3
 clusters only the ~2000 leaf microclusters, not the raw points. Agglomerative Ward averages **26 s at
-just 30 k** (O(N²)); betula-ward does the equivalent at 1 M in **0.25 s**.
+just 30 k** (O(N²)); betula-ward does the equivalent at 1 M in **0.23 s**.
 
 ## Memory — streaming stays bounded
 
