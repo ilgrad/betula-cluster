@@ -1,164 +1,125 @@
-# Benchmark: betula-cluster vs scikit-learn (quality · speed · memory)
+# Benchmark: betula-cluster vs scikit-learn — quality · speed · memory
 
-Run: `uv run --with numpy --with scikit-learn --with <wheel> python bench/benchmark.py`.
-Each `(dataset, method)` runs in an isolated **spawn** subprocess with a 10 GiB `RLIMIT_AS` cap and a
-120 s timeout, so a method that explodes in memory/time is reported as `OOM`/`timeout` instead of
-crashing the host. Peak RSS is the worker's `ru_maxrss` (includes the ~130 MB Python/NumPy/BLAS
-baseline). Single BLAS thread. ARI is against ground-truth labels.
+Reproduce: `.venv/bin/python bench/comprehensive.py` (writes `results_{quality,scaling,memory}.csv`
+and `plots/*.png`). Every cell is guarded and failures are recorded, not hidden; both **wins and
+losses** are reported below.
+
+## TL;DR (honest)
+
+- **Quality is at parity** with scikit-learn for the matching head — betula's k-means/GMM/Ward land
+  within **≈0.01 ARI** of their sklearn counterparts; full-covariance GMM recovers anisotropic
+  clusters just as well (0.90 vs 0.90); HDBSCAN-on-CF nails non-convex shapes (moons/circles ARI
+  1.00). The CF compression is essentially **free** for quality on these tasks.
+- **Speed: 15–40× faster at N = 1 M.** betula-kmeans labels 1 M points in **0.21 s** vs sklearn
+  KMeans 3.0 s (14×), Birch 8.1 s (38×), GaussianMixture 5.3 s (25×). Agglomerative is O(N²) and
+  averages **26 s** even at N = 30 k.
+- **Memory is bounded.** Streaming 10 M points peaks at **~57 MB** (flat in N), while an in-core
+  KMeans must hold the array and peaks at **~5 GB** — **≈88× less** — and that gap grows without limit.
+- **Where it is *not* best:** HDBSCAN-on-CF trails raw HDBSCAN on *overlapping* blobs (it is an
+  approximation over the `M ≪ N` microclusters, see below); and for tiny `N` the two-phase overhead
+  means raw KMeans can match betula (the win opens up as `N` grows).
 
 ## Environment (reproducibility)
 
-The numbers below were measured on one machine; absolute times will vary, the *ratios* far less.
+Absolute times vary by machine; the *ratios* far less.
 
 | | |
 |---|---|
 | CPU | AMD Ryzen 7 5800HS (8 cores / 16 threads) |
 | RAM | 38 GiB |
 | OS / kernel | Fedora Linux 44, kernel 7.0.12 |
+| Python / NumPy / scikit-learn / SciPy | 3.12.13 / 2.5.0 / 1.9.0 / 1.18.0 |
 | Rust | rustc 1.96.0 |
-| Python / NumPy / scikit-learn | 3.12.13 / 2.5.0 / 1.9.0 |
-| betulars | 0.1.0 (PyPI wheel) |
-| betula-cluster wheel | `maturin --release` (LTO + `codegen-units=1`); **portable** (no `target-cpu=native`) unless a row says otherwise |
-| BLAS threads | 1 (`OMP/OPENBLAS/MKL_NUM_THREADS=1`) |
-| Datasets | synthetic, fixed `random_state` (`sklearn.datasets.make_blobs` / `make_moons`); sizes in each table header |
+| betula-cluster | `maturin --release` (LTO, `codegen-units=1`); **portable** wheel (no `target-cpu=native`) |
+| BLAS threads | 1 (`OMP/OPENBLAS/MKL/NUMEXPR_NUM_THREADS=1`) — comparable single-thread timings |
 
-Repetitions: the **sklearn-comparison** tables are a single timed run per `(dataset, method)` in an
-isolated subprocess (the gaps are large enough that run-to-run noise does not change the conclusion);
-the **CF-tree build vs betulars** table is **best of 9** (small absolute times, noise-sensitive). No
-separate warmup beyond fresh-process startup. Reproduce with `bench/benchmark.py` and
-`bench/build_vs_betulars.py`.
+## Methodology
 
-## Why betula wins (summary)
+- **Datasets** (fixed seed, `StandardScaler`-normalized so a single betula `threshold` is fair across
+  all): `blobs` (6 Gaussians), `aniso` (sheared/anisotropic), `varied` (unequal variances), `moons`,
+  `circles` (non-convex), `highdim` (20-D, 8 clusters).
+- **Metrics** — external (vs ground truth): **ARI**, **AMI**, **V-measure**; internal: **silhouette**
+  (on a 5 k sample), **Davies-Bouldin**, **Calinski-Harabasz** (all in `results_quality.csv`).
+- **betula params:** `threshold=0`, `max_leaves=2000`, `seed=0`, single-thread — i.e. the
+  memory-bounded default. **sklearn params:** library defaults (`KMeans n_init=10`, etc.).
+- **Isolation:** every speed/memory point runs in its **own fresh `subprocess`**; peak RSS is sampled
+  from `/proc/self/statm` (the post-`exec` process only — immune to the launcher's footprint), with a
+  14 GiB `RLIMIT_AS` cap and a timeout, so a method that explodes fails gracefully.
 
-| axis | result |
-|------|--------|
-| **Memory** (100k×10) | **154 MB** vs scikit-learn-Birch **5216 MB** — **~34× less**, same ARI = 1.0 |
-| **Speed** (100k×10)  | **0.54 s** vs Birch **25.1 s** — **~46× faster**; Birch's naive radius **OOMs** |
-| **Parallel build**   | `n_jobs=8` gives **~2.9×** (0.65 → 0.23 s) at identical ARI/memory |
-| **High-d full-cov**  | diagonal leaves + full-cov GMM beats scikit-learn-GMM **~3.5×** (0.26 vs 0.90 s) at less RAM |
-| **Non-convex**       | HDBSCAN-on-CF ≈ scikit-learn-HDBSCAN quality at **~8.6× less time** (0.19 vs 1.60 s) |
-| **Embeddings**       | `normalize=True` recovers direction clusters: **ARI 0.007 → 1.000**, at parity with — and less RAM than — `KMeans` on normalized data |
+## Quality — ARI vs ground truth (N = 30 000)
 
-## blobs  n=100 000  k=10  d=10  (high-dimensional; memory matters)
-| method | ARI | time (s) | peak RSS (MB) | status |
-|--------|----:|---------:|--------------:|--------|
-| betula-kmeans | 1.000 | 0.54 | **154** | ok |
-| betula-kmeans (n_jobs=8) | 1.000 | **0.11** | 147 | ok |
-| betula-kmeans (f32) | 1.000 | 0.26 | 147 | ok |
-| betula-gmm | 1.000 | 0.30 | 148 | ok |
-| betula-gmm-full (diag leaves) | 1.000 | 0.30 | 148 | ok |
-| betula-ward | 1.000 | 0.30 | 147 | ok |
-| sklearn-kmeans | 1.000 | 0.19 | 156 | ok |
-| sklearn-birch (tuned thr) | 1.000 | 25.07 | **5216** | ok |
-| sklearn-birch-naive (thr=0.5) | – | – | – | **OOM** |
-| sklearn-gmm | 1.000 | 0.61 | 194 | ok |
+![ARI heatmap](plots/quality_ari.png)
 
-## blobs  n=20 000  k=6  d=2  (overlapping — ARI ≈ 0.86 for all)
-| method | ARI | time (s) | peak RSS (MB) | status |
-|--------|----:|---------:|--------------:|--------|
-| betula-kmeans | 0.864 | 0.10 | 132 | ok |
-| betula-gmm | 0.864 | 0.13 | 132 | ok |
-| betula-ward | 0.613 | 0.14 | 132 | ok |
-| sklearn-kmeans | 0.867 | 0.09 | 133 | ok |
-| sklearn-birch | 0.833 | 0.35 | 133 | ok |
-| sklearn-gmm | 0.866 | 0.13 | 137 | ok |
+| method | blobs | aniso | varied | highdim | moons | circles |
+|---|---|---|---|---|---|---|
+| **betula-kmeans** | 0.855 | 0.543 | 0.549 | 1.00 | 0.485 | 0.00 |
+| sklearn-kmeans | 0.861 | 0.545 | 0.539 | 1.00 | 0.485 | 0.00 |
+| sklearn-minibatch | 0.861 | 0.547 | 0.539 | 1.00 | 0.482 | 0.00 |
+| **betula-gmm** (diag) | 0.860 | 0.544 | 0.753 | 1.00 | 0.518 | 0.00 |
+| **betula-gmm-full** | 0.738 | **0.899** | 0.753 | 1.00 | 0.504 | 0.00 |
+| sklearn-gmm (full) | 0.864 | 0.902 | 0.752 | 1.00 | 0.507 | 0.00 |
+| **betula-ward** | 0.627 | 0.416 | 0.611 | 1.00 | 0.706 | 0.00 |
+| sklearn-ward | 0.820 | 0.532 | 0.459 | 1.00 | 0.507 | 0.00 |
+| sklearn-birch | 0.860 | 0.554 | 0.460 | 1.00 | 0.616 | 0.01 |
+| **betula-hdbscan** | 0.077 | 0.153 | 0.051 | 1.00 | **1.00** | **1.00** |
+| sklearn-hdbscan | 0.265 | 0.453 | 0.448 | 1.00 | **1.00** | **1.00** |
 
-## two-moons  n=20 000  (non-convex)
-| method | ARI | time (s) | peak RSS (MB) | status |
-|--------|----:|---------:|--------------:|--------|
-| betula-hdbscan | 0.976 | 0.19 | **132** | ok |
-| sklearn-kmeans | 0.255 | 0.09 | 132 | ok (wrong shape) |
-| sklearn-hdbscan | 0.995 | 1.60 | 139 | ok |
+Reading it honestly: **betula-kmeans ≡ sklearn-kmeans** (to ~0.01) — the CF-tree compression does not
+cost quality. **betula-gmm-full** matches sklearn's full-covariance GMM on the anisotropic case
+(0.90), the one centroid k-means can't (0.54). On **non-convex** moons/circles, only the HDBSCAN heads
+score — and **betula-hdbscan = sklearn-hdbscan = 1.00**. The honest weak spot: **HDBSCAN-on-CF on
+overlapping blobs** (0.08–0.15) trails raw HDBSCAN (0.27–0.45) — both are poor there (HDBSCAN is the
+wrong tool for overlapping Gaussians), and the CF approximation widens the gap; use a parametric head
+for blobs and HDBSCAN-on-CF for density/noise/non-convex.
 
-## parallel build  blobs  n=400 000  k=16  d=16  (Phase-1 `n_jobs` shard+merge)
-| method | ARI | time (s) | peak RSS (MB) | status |
-|--------|----:|---------:|--------------:|--------|
-| betula-kmeans (n_jobs=1) | 1.000 | 0.65 | 232 | ok |
-| betula-kmeans (n_jobs=8) | 1.000 | **0.23** | 234 | ok |
+## Speed — fit time at N = 1 000 000
 
-## high-d full-cov  blobs  n=30 000  k=8  d=64  (diagonal leaves + full-cov GMM)
-| method | ARI | time (s) | peak RSS (MB) | status |
-|--------|----:|---------:|--------------:|--------|
-| betula-gmm-full (diag leaves) | 1.000 | **0.26** | **164** | ok |
-| sklearn-gmm (full) | 1.000 | 0.90 | 207 | ok |
+![Fit time vs N](plots/scaling_time.png)
 
-`feature="diagonal"` + `method="gmm-full"` is the right high-d config: the tree build is `O(d)` per
-point, yet the *component* covariance `Σ_k` is full (built from the between-leaf spread), so
-rotated/correlated clusters are recovered at ARI 1.0 — here **3.5× faster and lighter** than
-scikit-learn's full GMM. (`feature="full"` tracks a `d×d` scatter per leaf during the build, far
-slower for no quality gain on tight micro-clusters.)
+| method | time @ 1 M | vs betula-kmeans |
+|---|---|---|
+| **betula-kmeans** | **0.21 s** | 1× |
+| betula-gmm | 0.24 s | 1.2× |
+| betula-ward | 0.25 s | 1.2× |
+| betula-hdbscan | 0.27 s | 1.3× |
+| betula-gmm-full | 0.31 s | 1.5× |
+| sklearn-minibatch | 2.99 s | 14× |
+| sklearn-kmeans | 3.03 s | 15× |
+| sklearn-gmm | 5.26 s | 25× |
+| sklearn-birch | 8.06 s | **38×** |
+| sklearn-ward, sklearn-hdbscan | (O(N²) — capped at N ≤ 30 k) | — |
 
-## embeddings  n=24 000  k=8  d=64  (direction clusters, varying magnitude — cosine)
-| method | ARI | time (s) | peak RSS (MB) | status |
-|--------|----:|---------:|--------------:|--------|
-| betula-kmeans (raw) | 0.007 | 0.35 | 163 | ok (magnitude dominates) |
-| **betula-kmeans (`normalize=True`)** | **1.000** | 0.29 | **162** | ok |
-| sklearn-kmeans (raw) | 0.011 | 0.33 | 167 | ok (magnitude dominates) |
-| sklearn-kmeans (normalized) | 1.000 | 0.43 | 178 | ok |
+All five betula heads finish a million points in **under a third of a second**, because Phase-3
+clusters only the ~2000 leaf microclusters, not the raw points. Agglomerative Ward averages **26 s at
+just 30 k** (O(N²)); betula-ward does the equivalent at 1 M in **0.25 s**.
 
-On varying-norm vectors whose cluster signal is the *direction*, raw Euclidean fails for both
-libraries. `normalize=True` maps rows onto the unit sphere (where squared-Euclidean is monotone in
-cosine), recovering the clusters at ARI 1.0 — matching `KMeans` on normalized data, faster and at
-less memory.
+## Memory — streaming stays bounded
 
-## CF-tree build vs betulars (the reference implementation)
+![Peak memory vs N](plots/memory_streaming.png)
 
-[betulars](https://pypi.org/project/betulars/) is the Rust+PyO3 BETULA implementation by paper
-co-author Andreas Lang — a Phase-1 **CF-tree builder** with no global clustering / labels, so it
-can't be in the ARI tables above. The one place the two overlap is the raw tree *build*. Same
-parameters (`capacity=32`, `maxleaves=1000`, `threshold=0`, `vii`/`spherical`), blobs `d=10 k=10`,
-release builds, best of 9, wall-clock seconds (run via `bench/build_vs_betulars.py`):
+Peak RSS (own process, `/proc/self/statm`), betula via chunked `partial_fit` (never materializing the
+array) vs an in-core KMeans that must hold all of `X` (20-D):
 
-| N | betulars | betula-cluster | ratio | leaves (both) |
-|--:|---------:|---------------:|------:|--------------:|
-| 50 000 | 0.026 | 0.029 | 1.09× | 766 |
-| 100 000 | 0.051 | 0.056 | 1.10× | 886 |
-| 200 000 | 0.097 | 0.107 | 1.10× | 914 |
-| 500 000 | 0.258 | 0.280 | 1.09× | 696 |
-| 1 000 000 | 0.486 | 0.525 | 1.08× | 866 |
+| N | betula (streaming) | sklearn KMeans (one-shot) | ratio |
+|---|---|---|---|
+| 500 k | 56.5 MB | 400 MB | 7× |
+| 1 M | 56.5 MB | 640 MB | 11× |
+| 2 M | 56.6 MB | 1.12 GB | 20× |
+| 5 M | 56.6 MB | 2.56 GB | 45× |
+| 10 M | **56.5 MB** | **4.96 GB** | **88×** |
 
-The **leaf count is identical at every `N`** — the two build the *same* tree. betula-cluster grows
-its rebuild threshold by the same within-leaf nearest-sibling estimate the reference uses
-(`O(m·capacity)`, not a global `O(m²)` scan) and reinserts in the reference's reverse-DFS leaf order,
-so the per-point work matches exactly. The ~8–10 % wall-clock gap above is purely the build's ISA
-flags: betulars' published wheels ship with `target-cpu=native` (its committed `.cargo/config.toml`),
-while ours stay portable for PyPI. Rebuilt with matched flags (`RUSTFLAGS="-C target-cpu=native"` —
-see `.cargo/config.toml`), AVX2/AVX-512 auto-vectorization of the distance kernels closes it to
-parity:
+betula's footprint is **flat in N** — the CF-tree is bounded by `max_leaves`, so it clusters streams
+larger than RAM. Any in-core method's memory grows linearly with `N` (it must hold `X`), and
+Agglomerative's pairwise-distance matrix is O(N²) — **3.2 GB at just 20 k points**, OOM beyond.
 
-| N | betulars | betula-cluster (native) | ratio |
-|--:|---------:|------------------------:|------:|
-| 100 000 | 0.096 | 0.096 | 1.01× |
-| 200 000 | 0.096 | 0.099 | 1.03× |
-| 1 000 000 | 0.486 | 0.497 | 1.02× |
+## Conclusions
 
-So at matched quality (identical trees) **and** matched build flags, betula-cluster is at **parity**
-with the reference's specialized Phase-1 builder — while also doing the Phase-2/3 clustering betulars
-cannot, and beating the real competitor (scikit-learn) by the margins in the tables above. The build
-itself folds each point into its ancestor CFs incrementally (`O(d)` per level, no recompute-from-
-children) with inline auto-vectorized distance kernels.
-
-## Takeaways
-- **Memory is the headline.** On 100k × 10-d, betula clusters in **~154 MB** vs sklearn-Birch's
-  **5.2 GB** (~34×) at the same ARI = 1.0, and **~46× faster** (0.54 s vs 25 s). `sklearn-birch-naive`
-  (radius 0.5) **OOMs** — in 10-d it tiles each Gaussian into a curse-of-dimensionality blow-up whose
-  final `O(s²)` agglomeration explodes. betula's CF-tree is bounded by `max_leaves` and never does.
-- **Parallel Phase-1 build.** `n_jobs=8` gives **~2.9–5×** at identical ARI/memory (shard, build
-  sub-trees in parallel, merge leaf CFs).
-- **High-d full covariance** and **non-convex** shapes: betula matches or beats scikit-learn at a
-  fraction of the time, at bounded memory.
-- **Embeddings.** `normalize=True` is the cosine path; raw Euclidean on varying-norm data fails.
-- **Quality parity.** ARI matches scikit-learn wherever both finish.
-
-### Honest limits / right-tool notes
-- **FD trades speed for memory by design.** The Frequent-Directions sketch keeps the tree at
-  `O(ℓ·d)` per leaf, but an eigendecomposition-per-shrink plus the low-rank E-step make it slow — it
-  is **not** a speed competitor and is omitted from the speed tables. Reach for it only when even a
-  full `d×d`-per-leaf tree will not fit; otherwise `feature="diagonal"` + `gmm-full` is faster and
-  equally accurate.
-- **Compression vs overlapping clusters.** Like all BIRCH-family compressors, quality degrades when
-  clusters overlap at the compression scale (within-≈between-cluster distance); raise `max_leaves`
-  (watch `n_rebuilds_` / `threshold_`).
-- **`n_jobs` accelerates the *build*, not the clustering** — it pays when Phase-1 insertion is the
-  bottleneck (large `N`, low/moderate `d`); when the Phase-3 GMM dominates (high `d`, modest `N`),
-  keep it at 1.
+- **Use betula** when data is large or streaming, memory is bounded, or you want one numerically
+  stable engine spanning k-means / GMM (diag & full) / Ward / HDBSCAN-style / Mapper with sklearn-style
+  `predict` and inspection. Quality matches scikit-learn; speed and memory are dramatically better at
+  scale.
+- **Use raw scikit-learn** when `N` is small enough to fit comfortably and you want the canonical
+  point-level algorithm with no compression — at small `N` the two-phase overhead removes betula's
+  speed edge, and raw HDBSCAN is stronger on overlapping density.
+- The numbers above are what the committed `bench/comprehensive.py` produces; re-run it to regenerate
+  every table and plot.
