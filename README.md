@@ -31,7 +31,8 @@ with peak RSS sampled from `/proc/self/statm`. Full methodology, every metric, a
   KMeans must hold the array and peaks at **~5 GB** (**≈88× less**, and the gap grows without limit).
 - 🌍 **Real data, not just blobs.** Matches scikit-learn on `digits` (k-means 0.53 vs 0.47) and
   clusters **full covtype (581 k rows) ~7× faster** at better ARI; in *very* high dimensions
-  (MNIST, 784-D) give the CF-tree more leaves — the honest losses are in `bench/RESULTS.md` too.
+  (MNIST, 784-D) `normalize=True` **beats** scikit-learn (k-means **0.44 vs 0.32**) — full table, and
+  the honest trade-offs, in `bench/RESULTS.md`.
 
 | ![Fit time vs N](https://raw.githubusercontent.com/ilgrad/betula-cluster/main/bench/plots/scaling_time.png) | ![Peak memory vs N](https://raw.githubusercontent.com/ilgrad/betula-cluster/main/bench/plots/memory_streaming.png) |
 |:--:|:--:|

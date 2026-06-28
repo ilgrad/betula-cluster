@@ -250,6 +250,43 @@ def run_real(datasets: list[str]) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def run_real_normalize(datasets: list[str]) -> pd.DataFrame:
+    """Effect of ``normalize=True`` (L2 row-normalization → cluster by *direction*) on real data.
+
+    This is the high-dimensional fix: on raw pixels / embeddings the discriminative signal is in a
+    point's direction, not its magnitude, so projecting onto the unit sphere sidesteps the
+    concentration-of-measure leaf collapse that sinks the default path at d≫100 (MNIST). It is **off by
+    default** because magnitude *is* signal on ordinary tabular data, where discarding it destroys the
+    clustering (covtype). Reports each betula head with normalize off vs on so the trade-off is explicit.
+    """
+    import betula_cluster as bc
+    from sklearn.metrics import adjusted_rand_score
+
+    heads = [
+        ("betula-kmeans", "spherical", "kmeans"),
+        ("betula-gmm", "diagonal", "gmm"),
+        ("betula-ward", "diagonal", "ward"),
+    ]
+    rows = []
+    for ds in datasets:
+        loaded = load_real(ds)
+        if loaded is None:  # download unavailable → already logged
+            continue
+        X, y, k = loaded
+        for name, feat, meth in heads:
+            rec = {"dataset": ds, "n": len(X), "d": int(X.shape[1]), "method": name}
+            for nz in (False, True):
+                labels = np.asarray(
+                    bc.fit_predict(X, k, feature=feat, method=meth, normalize=nz, **BETULA_KW)
+                )
+                rec[f"ARI_norm_{'on' if nz else 'off'}"] = adjusted_rand_score(y, labels)
+            rows.append(rec)
+            print(
+                f"  norm {ds:8s} {name:14s} off={rec['ARI_norm_off']:.3f} on={rec['ARI_norm_on']:.3f}"
+            )
+    return pd.DataFrame(rows)
+
+
 # ── isolated runner: each task is a fresh `subprocess` (clean address space → honest peak RSS) ──────
 WORKER = str(HERE / "_worker.py")
 
@@ -415,6 +452,8 @@ def main():
     print(f"[real] quality on real datasets {real_datasets}")
     qr = run_real(real_datasets)
     qr.to_csv(HERE / "results_real.csv", index=False)
+    print("[real-normalize] normalize=True effect (high-d fix vs tabular harm)")
+    run_real_normalize(real_datasets).to_csv(HERE / "results_real_normalize.csv", index=False)
     print(f"[scaling] sizes={sizes}")
     s = run_scaling(sizes)
     s.to_csv(HERE / "results_scaling.csv", index=False)

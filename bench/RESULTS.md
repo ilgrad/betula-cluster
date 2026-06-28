@@ -140,19 +140,26 @@ Reading it **honestly**:
   sklearn-ward 0.66. CF compression costs nothing here.
 - **covtype (54-D):** a genuinely hard dataset (every method scores low); betula ≈ scikit-learn
   (betula-kmeans 0.064 vs 0.054; betula-gmm 0.117 is the best of the lot).
-- **MNIST (784-D) — an honest loss.** At the default **2000-leaf** budget betula-kmeans scores only
-  **0.041** vs scikit-learn's 0.324. Root cause (diagnosed): in 784 dimensions the rebuild over-grows
-  its absorption threshold, so the tree *collapses below its own budget* — it ends with ~769 leaves,
-  one of which swallows ~13 k of the 20 k points. The CF-tree is leaving capacity on the table exactly
-  where it is needed (a budget-aware rebuild that uses the full leaf allowance in high `d` is future
-  work). For now it is fixable with resolution:
+- **MNIST (784-D) — the `normalize=True` story.** On the *default* (Euclidean) path betula-kmeans scores
+  only **0.041**: in 784 dimensions distances concentrate (concentration of measure), so no single
+  absorption radius separates leaves — one leaf swallows ~13 k of the 20 k points and the tree even
+  settles *below* its own budget (~769 leaves). This is intrinsic to Euclidean CF absorption in high
+  `d`, not a tunable bug — and the library already ships the fix: **`normalize=True`** (L2-normalize
+  rows → cluster by *direction*, which is where the signal lives in raw pixels / embeddings). It uses
+  the full budget (1739 leaves, largest 1881) and **beats scikit-learn**:
 
-  | max_leaves | 2000 | 5000 | 10000 | 20000 |
-  |---|---|---|---|---|
-  | betula-kmeans ARI | 0.041 | 0.167 | 0.297 | 0.296 |
+  | `normalize` off → **on** | betula-kmeans | betula-gmm (diag) | betula-ward |
+  |---|---|---|---|
+  | digits (64-D) | 0.527 → **0.572** | 0.318 → 0.254 | 0.643 → **0.699** |
+  | **mnist (784-D)** | 0.041 → **0.436** | 0.110 → **0.292** | 0.100 → **0.368** |
+  | covtype (54-D) | 0.064 → **−0.009** | 0.117 → 0.055 | 0.086 → **−0.002** |
 
-  By ~10 k leaves betula-kmeans reaches **0.30 ≈ sklearn's 0.32**. In very high dimensions give the
-  tree more leaves (or reduce dimensionality first); the 2000-leaf default is tuned for low/moderate `d`.
+  Normalized betula-kmeans reaches **0.436 > scikit-learn's 0.324** on MNIST. It is **off by default on
+  purpose**: magnitude *is* signal on ordinary tabular data, where unit-normalizing destroys the
+  clustering (covtype 0.064 → −0.009). Reach for it on high-`d` images / embeddings, not on
+  magnitude-meaningful tabular. (When normalization is inappropriate, the other lever is resolution —
+  betula-kmeans on raw MNIST climbs 0.041 → 0.167 → 0.297 at 2 k → 5 k → 10 k leaves.) Reproduce with
+  `results_real_normalize.csv`.
 
 ### Real data at scale — full covtype (581 012 × 54)
 

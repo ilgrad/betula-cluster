@@ -19,7 +19,10 @@ First public release.
   cluster count at `n_clusters=0` (BIC / X-means / dendrogram cut).
 - χ² / Mahalanobis mass-invariant absorption gate (`absorb="chi2"`).
 - `normalize=True` for cosine/direction clustering of embeddings (L2-normalized rows on the unit
-  sphere; squared-Euclidean is monotone in cosine).
+  sphere; squared-Euclidean is monotone in cosine). Doubles as the **high-dimensional fix**: at d≫100
+  raw Euclidean distances concentrate and the CF-tree collapses, but direction stays discriminative —
+  on MNIST-784 it lifts ARI 0.04 → 0.44, beating scikit-learn (benchmarked in
+  `bench/results_real_normalize.csv`). Off by default (magnitude is signal on tabular data).
 - Inline auto-vectorized distance kernels (the compiler vectorizes the tight reductions per call
   site; `target-cpu=native` opts into AVX2 / AVX-512 — see `.cargo/config.toml`); rayon-parallel
   labeling.
