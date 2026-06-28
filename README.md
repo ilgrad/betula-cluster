@@ -1,7 +1,7 @@
 # betula-cluster
 
-[![PyPI](https://img.shields.io/pypi/v/betula-cluster.svg)](https://pypi.org/project/betula-cluster/)
-[![Python](https://img.shields.io/pypi/pyversions/betula-cluster.svg)](https://pypi.org/project/betula-cluster/)
+[![PyPI](https://img.shields.io/pypi/v/betula-cluster)](https://pypi.org/project/betula-cluster/)
+[![Python](https://img.shields.io/pypi/pyversions/betula-cluster)](https://pypi.org/project/betula-cluster/)
 [![CI](https://github.com/ilgrad/betula-cluster/actions/workflows/ci.yml/badge.svg)](https://github.com/ilgrad/betula-cluster/actions/workflows/ci.yml)
 [![Python coverage 100%](https://img.shields.io/badge/python%20coverage-100%25-brightgreen.svg)](https://github.com/ilgrad/betula-cluster/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/ilgrad/betula-cluster/blob/main/LICENSE-MIT)
