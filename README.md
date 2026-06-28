@@ -4,7 +4,7 @@
 [![Python](https://img.shields.io/pypi/pyversions/betula-cluster.svg)](https://pypi.org/project/betula-cluster/)
 [![CI](https://github.com/ilgrad/betula-cluster/actions/workflows/ci.yml/badge.svg)](https://github.com/ilgrad/betula-cluster/actions/workflows/ci.yml)
 [![Python coverage 100%](https://img.shields.io/badge/python%20coverage-100%25-brightgreen.svg)](https://github.com/ilgrad/betula-cluster/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE-MIT)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/ilgrad/betula-cluster/blob/main/LICENSE-MIT)
 [![Rust core · PyO3](https://img.shields.io/badge/Rust%20core-PyO3-orange.svg)](https://github.com/ilgrad/betula-cluster)
 
 > **Fast, memory-bounded clustering for large tabular & embedding data.** A numerically stable
@@ -20,7 +20,7 @@ pip install betula-cluster
 
 Measured against scikit-learn on `StandardScaler`-normalized data, each method in its own subprocess
 with peak RSS sampled from `/proc/self/statm`. Full methodology, every metric, and all tables (wins
-**and** losses) live in [**`bench/RESULTS.md`**](bench/RESULTS.md).
+**and** losses) live in [**`bench/RESULTS.md`**](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md).
 
 - 🎯 **Quality at parity.** betula's k-means / GMM / Ward land within **≈0.01 ARI** of their
   scikit-learn counterparts; full-covariance GMM recovers anisotropic clusters just as well
@@ -53,7 +53,7 @@ addresses all three:
   Mapper, with streaming `partial_fit`, a scikit-learn API, and dataset-structure inspection.
 
 The math (stable CF, the expected-log GMM E-step, distance derivations, relation to BIRCH/BETULA) is
-written up — verified symbolically and numerically — in [**`docs/MATH.md`**](docs/MATH.md).
+written up — verified symbolically and numerically — in [**`docs/MATH.md`**](https://github.com/ilgrad/betula-cluster/blob/main/docs/MATH.md).
 
 ## Quick start
 
@@ -80,7 +80,7 @@ labels = est.predict(X_query)
 
 Constraints (COP-KMeans), mixed numeric+categorical (`KPrototypes`), streaming density (`DenStream` /
 `DbStream`), quantile sketches, `scipy.sparse` input, soft assignment / coresets / diagnostics, the
-Rust API, and the CLI — all in the [**usage guide**](docs/USAGE.md).
+Rust API, and the CLI — all in the [**usage guide**](https://github.com/ilgrad/betula-cluster/blob/main/docs/USAGE.md).
 
 ## Capabilities
 
@@ -95,42 +95,42 @@ Rust API, and the CLI — all in the [**usage guide**](docs/USAGE.md).
 - **Engineering** — scikit-learn API (`Pipeline` / `clone` / `GridSearchCV`), typed abi3 wheel,
   `save` / `load` + pickle, a dependency-free CLI, and a reusable Rust core.
 
-Full reference: [**`docs/FEATURES.md`**](docs/FEATURES.md).
+Full reference: [**`docs/FEATURES.md`**](https://github.com/ilgrad/betula-cluster/blob/main/docs/FEATURES.md).
 
 ## Examples
 
 **Twelve** executed, plotted notebooks — one per capability — live in
-[`examples/`](examples/README.md) (render on GitHub):
+[`examples/`](https://github.com/ilgrad/betula-cluster/blob/main/examples/README.md) (render on GitHub):
 
-- **Core** — [quickstart](examples/01_quickstart.ipynb),
-  [embeddings & inspection](examples/02_embeddings_and_inspection.ipynb),
-  [streaming & persistence](examples/03_streaming_and_persistence.ipynb),
-  [method comparison](examples/04_method_comparison.ipynb),
-  [Mapper topology](examples/05_topology_mapper.ipynb).
-- **Streaming density** — [`DenStream` & `DbStream`](examples/06_streaming_density.ipynb).
-- **Mixed data** — [`KPrototypes`](examples/07_mixed_data_kprototypes.ipynb).
-- **Sketches** — [`KllSketch` & `DdSketch`](examples/08_quantile_sketches.ipynb).
-- **Semi-supervised** — [must-link / cannot-link](examples/09_semisupervised_constraints.ipynb).
-- **Sparse / high-dim** — [`scipy.sparse` + `fit_predict_sparse`](examples/10_sparse_highdim.ipynb).
+- **Core** — [quickstart](https://github.com/ilgrad/betula-cluster/blob/main/examples/01_quickstart.ipynb),
+  [embeddings & inspection](https://github.com/ilgrad/betula-cluster/blob/main/examples/02_embeddings_and_inspection.ipynb),
+  [streaming & persistence](https://github.com/ilgrad/betula-cluster/blob/main/examples/03_streaming_and_persistence.ipynb),
+  [method comparison](https://github.com/ilgrad/betula-cluster/blob/main/examples/04_method_comparison.ipynb),
+  [Mapper topology](https://github.com/ilgrad/betula-cluster/blob/main/examples/05_topology_mapper.ipynb).
+- **Streaming density** — [`DenStream` & `DbStream`](https://github.com/ilgrad/betula-cluster/blob/main/examples/06_streaming_density.ipynb).
+- **Mixed data** — [`KPrototypes`](https://github.com/ilgrad/betula-cluster/blob/main/examples/07_mixed_data_kprototypes.ipynb).
+- **Sketches** — [`KllSketch` & `DdSketch`](https://github.com/ilgrad/betula-cluster/blob/main/examples/08_quantile_sketches.ipynb).
+- **Semi-supervised** — [must-link / cannot-link](https://github.com/ilgrad/betula-cluster/blob/main/examples/09_semisupervised_constraints.ipynb).
+- **Sparse / high-dim** — [`scipy.sparse` + `fit_predict_sparse`](https://github.com/ilgrad/betula-cluster/blob/main/examples/10_sparse_highdim.ipynb).
 - **Soft assignment & coresets** —
-  [`predict_proba`, coresets, diagnostics](examples/11_soft_assignment_coreset_diagnostics.ipynb).
-- **Production ops** — [drift, active learning, robust, memory budgets](examples/12_drift_robust_memory.ipynb).
+  [`predict_proba`, coresets, diagnostics](https://github.com/ilgrad/betula-cluster/blob/main/examples/11_soft_assignment_coreset_diagnostics.ipynb).
+- **Production ops** — [drift, active learning, robust, memory budgets](https://github.com/ilgrad/betula-cluster/blob/main/examples/12_drift_robust_memory.ipynb).
 
 And three **end-to-end use cases** (each scored against ground truth):
 
-- 🧹 [**Embedding dedup**](examples/usecases/usecase_01_embedding_dedup.ipynb) — collapse a repost-heavy corpus to representatives.
-- 🚨 [**Log anomaly detection**](examples/usecases/usecase_02_log_anomaly_detection.ipynb) — batch outlier scoring + streaming `DbStream` flags.
-- 👥 [**Customer segmentation**](examples/usecases/usecase_03_customer_segmentation.ipynb) — mixed RFM + categorical personas with `KPrototypes`.
-- 🧠 [**RAG corpus curation**](examples/usecases/usecase_04_rag_corpus_curation.ipynb) — junk removal, topic coherence, and topic-leakage detection via Mapper.
-- 🔢 [**Real-data clustering**](examples/usecases/usecase_05_real_data_clustering.ipynb) — handwritten digits, ARI parity + centroid/exemplar inspection.
+- 🧹 [**Embedding dedup**](https://github.com/ilgrad/betula-cluster/blob/main/examples/usecases/usecase_01_embedding_dedup.ipynb) — collapse a repost-heavy corpus to representatives.
+- 🚨 [**Log anomaly detection**](https://github.com/ilgrad/betula-cluster/blob/main/examples/usecases/usecase_02_log_anomaly_detection.ipynb) — batch outlier scoring + streaming `DbStream` flags.
+- 👥 [**Customer segmentation**](https://github.com/ilgrad/betula-cluster/blob/main/examples/usecases/usecase_03_customer_segmentation.ipynb) — mixed RFM + categorical personas with `KPrototypes`.
+- 🧠 [**RAG corpus curation**](https://github.com/ilgrad/betula-cluster/blob/main/examples/usecases/usecase_04_rag_corpus_curation.ipynb) — junk removal, topic coherence, and topic-leakage detection via Mapper.
+- 🔢 [**Real-data clustering**](https://github.com/ilgrad/betula-cluster/blob/main/examples/usecases/usecase_05_real_data_clustering.ipynb) — handwritten digits, ARI parity + centroid/exemplar inspection.
 
 ## Documentation
 
-- [**Usage guide**](docs/USAGE.md) — runnable snippets for every interface.
-- [**Features**](docs/FEATURES.md) — full capability reference + crate architecture.
-- [**Math**](docs/MATH.md) — stable CF, GMM E-step, distance derivations, relation to BIRCH/BETULA.
-- [**Benchmarks**](bench/RESULTS.md) — methodology, every metric, all tables, honest wins & losses.
-- [**Design**](DESIGN.md) — internal design, invariants, and testing strategy.
+- [**Usage guide**](https://github.com/ilgrad/betula-cluster/blob/main/docs/USAGE.md) — runnable snippets for every interface.
+- [**Features**](https://github.com/ilgrad/betula-cluster/blob/main/docs/FEATURES.md) — full capability reference + crate architecture.
+- [**Math**](https://github.com/ilgrad/betula-cluster/blob/main/docs/MATH.md) — stable CF, GMM E-step, distance derivations, relation to BIRCH/BETULA.
+- [**Benchmarks**](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md) — methodology, every metric, all tables, honest wins & losses.
+- [**Design**](https://github.com/ilgrad/betula-cluster/blob/main/DESIGN.md) — internal design, invariants, and testing strategy.
 
 Verified: **129** Rust unit/integration tests + a **123-case** Python suite at **100%** wrapper
 coverage (Rust ≥95%, CI-enforced), `clippy -D warnings` + `fmt` clean across all feature sets, on
