@@ -193,7 +193,9 @@ where
             .collect()
     };
     #[cfg(not(feature = "parallel"))]
-    let cands: Vec<(u64, T)> = (0..GMM_N_INIT).map(|r| (r, run(seed.wrapping_add(r)))).collect();
+    let cands: Vec<(u64, T)> = (0..GMM_N_INIT)
+        .map(|r| (r, run(seed.wrapping_add(r))))
+        .collect();
     cands
         .into_iter()
         .max_by(|(ri, a), (rj, b)| {
@@ -213,7 +215,11 @@ pub fn gmm_diagonal<R: Real, C: ClusterFeature<R>>(
     max_iter: usize,
     seed: u64,
 ) -> Gmm<R> {
-    best_of_restarts(seed, |g: &Gmm<R>| g.loglik, |s| gmm_diagonal_once(features, k, max_iter, s))
+    best_of_restarts(
+        seed,
+        |g: &Gmm<R>| g.loglik,
+        |s| gmm_diagonal_once(features, k, max_iter, s),
+    )
 }
 
 /// Total per-dimension variance of the underlying points (between-feature + within-feature),
@@ -417,7 +423,11 @@ pub fn gmm_full<R: Real, C: ClusterFeature<R>>(
     max_iter: usize,
     seed: u64,
 ) -> GmmFull<R> {
-    best_of_restarts(seed, |g: &GmmFull<R>| g.loglik, |s| gmm_full_once(features, k, max_iter, s))
+    best_of_restarts(
+        seed,
+        |g: &GmmFull<R>| g.loglik,
+        |s| gmm_full_once(features, k, max_iter, s),
+    )
 }
 
 /// Total per-pair covariance of the underlying points (between-feature + within-feature).
