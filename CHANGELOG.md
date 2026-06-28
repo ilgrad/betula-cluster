@@ -4,6 +4,20 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.2] — 2026-06-28
+
+### Added
+- `betula_cluster.__version__`, resolved from the installed package metadata.
+
+### Changed
+- README repositioned: compress-then-cluster framing, the test/coverage story surfaced at the top, a
+  "When to use it" section, and a **stable-core / experimental** capability split. HDBSCAN is labelled
+  **HDBSCAN-CF** consistently in prose (the `method="hdbscan"` API string is unchanged).
+
+### Fixed
+- Stale docs: the Python suite is **153** cases (was written as 123); `betula-index` references now
+  point to `lexindex` (the indexing companion's published name).
+
 ## [0.1.1] — 2026-06-28
 
 ### Fixed

@@ -10,6 +10,7 @@ constructor was handed, which a compiled getter (returning freshly built Python 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from importlib.metadata import PackageNotFoundError, version
 
 import numpy as np
 
@@ -22,6 +23,11 @@ from ._core import DenStream as _CoreDenStream  # type: ignore
 from ._core import KPrototypes as _CoreKPrototypes  # type: ignore
 from ._core import fit_predict_sparse as _core_fit_predict_sparse  # type: ignore
 
+try:
+    __version__ = version("betula-cluster")
+except PackageNotFoundError:  # pragma: no cover - source tree without install metadata
+    __version__ = "0.0.0+unknown"
+
 __all__ = [
     "Betula",
     "Coreset",
@@ -31,6 +37,7 @@ __all__ = [
     "KPrototypes",
     "KllSketch",
     "MapperGraph",
+    "__version__",
     "fit_predict",
     "fit_predict_sparse",
 ]

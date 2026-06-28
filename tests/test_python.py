@@ -31,6 +31,12 @@ def n_labels(labels):
     return len({int(v) for v in labels if v >= 0})
 
 
+def test_version_is_exposed():
+    v = betula_cluster.__version__
+    assert isinstance(v, str) and v  # non-empty string
+    assert v[0].isdigit() and "." in v  # looks like a real version (installed metadata)
+
+
 @pytest.fixture(scope="module")
 def blobs():
     """Four well-separated 2-D Gaussian blobs; returns (X float64, y)."""

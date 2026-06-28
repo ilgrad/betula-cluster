@@ -261,14 +261,14 @@ Honest scope — inherent to CF-compression + streaming, not bugs:
    objective choice).
 6. **FD is an approximate low-rank covariance** (exact only up to rank `ℓ`).
 
-## Non-goals / Deferred: string indexing (`betula-index`)
+## Non-goals: string indexing (lives in `lexindex`)
 String/key/path indexing is **intentionally out of the numeric core**. The core is numeric — `float`
 vectors, arena-addressed CF-tree (integer node ids), numeric microcluster/label arrays — so a trie
 does not improve the math or the algorithm. It would only help a *layer on top of results*: huge
 catalogs / semantic-hierarchy browsing (e.g. `movies/action/sci-fi/...`), external string IDs →
-cluster ids, prefix/autocomplete navigation. That belongs in a future optional crate `betula-index`,
-**pure-Rust first** — `ptr_hash` (minimal perfect hash) for exact `string → id`, `fst` for
-prefix/ordered/automaton lookup; a custom succinct trie only if benchmarks show those insufficient.
+cluster ids, prefix/autocomplete navigation. That lives in the separate companion crate
+[`lexindex`](https://github.com/ilgrad/lexindex), **pure-Rust** — `ptr_hash` (minimal perfect hash)
+for exact `string → id`, `fst` for prefix/ordered/automaton lookup.
 We deliberately do **not** add `marisa-trie` or any C++ trie dependency (it would break the portable
 abi3 wheel). Add a dependency only when a concrete string-indexing API exists to support.
 

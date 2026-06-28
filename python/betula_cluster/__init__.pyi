@@ -16,9 +16,12 @@ __all__ = [
     "KPrototypes",
     "KllSketch",
     "MapperGraph",
+    "__version__",
     "fit_predict",
     "fit_predict_sparse",
 ]
+
+__version__: str
 
 _FloatArray = NDArray[np.float64] | NDArray[np.float32]
 _Feature = Literal["spherical", "diagonal", "full", "fd"]

@@ -7,14 +7,18 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/ilgrad/betula-cluster/blob/main/LICENSE-MIT)
 [![Rust core · PyO3](https://img.shields.io/badge/Rust%20core-PyO3-orange.svg)](https://github.com/ilgrad/betula-cluster)
 
-> **Fast, memory-bounded clustering for large tabular & embedding data.** A numerically stable
-> **BETULA** CF-tree with a full set of clustering heads — k-means · GMM (diagonal & full) · Ward ·
-> HDBSCAN · Mapper — plus streaming `partial_fit` and a scikit-learn API. From-scratch **Rust** core,
-> **PyO3** bindings, no LAPACK, no SciPy at runtime.
+> **Rust-powered, memory-bounded clustering for large embeddings & tabular streams.** It compresses raw
+> data into numerically stable **BETULA** microclusters, then runs the clustering head on the
+> *compressed* representation — k-means · GMM (diagonal & full) · Ward · HDBSCAN-CF · Mapper — so cost
+> scales with the microcluster count, not `N`. Streaming `partial_fit`, a scikit-learn API, from-scratch
+> **Rust** core + **PyO3**, no LAPACK or SciPy at runtime.
 
 ```bash
 pip install betula-cluster
 ```
+
+**Verified:** a **153-case** Python suite at **100% wrapper coverage** + **129** Rust tests,
+`clippy -D warnings` + `fmt` clean across all feature sets, CI on CPython 3.11–3.14 (one abi3 wheel).
 
 ## At a glance — honest benchmarks
 
@@ -55,6 +59,18 @@ addresses all three:
 The math (stable CF, the expected-log GMM E-step, distance derivations, relation to BIRCH/BETULA) is
 written up — verified symbolically and numerically — in [**`docs/MATH.md`**](https://github.com/ilgrad/betula-cluster/blob/main/docs/MATH.md).
 
+## When to use it
+
+**Reach for betula-cluster when** the data is large or streaming, memory must stay bounded, you want
+fast `predict` on new points, or you want one numerically stable engine spanning k-means / GMM / Ward /
+density / topology plus dedup / outliers / representatives — especially on **embeddings and tabular
+streams**.
+
+**Use raw scikit-learn instead when** `N` fits comfortably in RAM and you want the exact point-level
+algorithm with no compression: at small `N` the two-phase overhead removes the speed edge, and raw
+HDBSCAN is stronger on overlapping density. betula-cluster trades a CF-compression approximation for
+scale and bounded memory — if you need neither, a plain in-core clusterer is simpler.
+
 ## Quick start
 
 ```python
@@ -65,7 +81,7 @@ X = np.random.default_rng(0).normal(size=(100_000, 10))
 
 labels = betula_cluster.fit_predict(X, n_clusters=10, method="kmeans")
 labels = betula_cluster.fit_predict(X, n_clusters=0, feature="full", method="gmm-full")  # auto-k via BIC
-labels = betula_cluster.fit_predict(X, method="hdbscan", min_cluster_size=25)             # -1 == noise
+labels = betula_cluster.fit_predict(X, method="hdbscan", min_cluster_size=25)   # HDBSCAN-CF; -1 = noise
 ```
 
 Streaming / out-of-core — feed chunks, finalize, predict; memory stays bounded by `max_leaves`:
@@ -84,16 +100,23 @@ Rust API, and the CLI — all in the [**usage guide**](https://github.com/ilgrad
 
 ## Capabilities
 
-- **Clustering heads** — weighted k-means, GMM (diagonal & full covariance, BIC auto-`k`), exact Ward
-  HAC, HDBSCAN-style density over CF microclusters, and a Mapper topological skeleton.
-- **Streaming** — `partial_fit` at bounded memory; `DenStream` & `DbStream` for evolving streams;
-  mergeable `KllSketch` / `DdSketch` quantiles.
-- **Data types** — dense `f32`/`f64`, `scipy.sparse` (never densified), `O(nnz)` sparse-native, and
-  mixed numeric+categorical (k-prototypes).
-- **Beyond labels** — `predict_proba`, coresets, diagnostics, outliers / near-duplicates /
-  representatives, drift snapshots, COP-KMeans constraints, and robust (Huber) insertion.
-- **Engineering** — scikit-learn API (`Pipeline` / `clone` / `GridSearchCV`), typed abi3 wheel,
-  `save` / `load` + pickle, a dependency-free CLI, and a reusable Rust core.
+**Stable core** — production-ready:
+
+- **Clustering heads** — weighted k-means (Hamerly), GMM (diagonal & full covariance, BIC auto-`k`),
+  exact Ward HAC, all over the numerically stable BETULA CF-tree.
+- **Streaming** — `partial_fit` at bounded memory (`max_leaves` / `memory_budget_mb`), EWMA `decay`.
+- **scikit-learn API** — `fit` / `predict` / `fit_predict`, `get_params` / `set_params` (works with
+  `Pipeline` / `clone` / `GridSearchCV`); typed abi3 wheel, `save` / `load` + pickle, reusable Rust core.
+- **Inspection** — `predict_proba`, coresets, microcluster/cluster geometry, outliers, near-duplicates,
+  representatives, diagnostics.
+
+**Experimental / evolving** — useful today, API may still move:
+
+- **Density & topology** — HDBSCAN-CF (density over microclusters) and a Mapper topological skeleton
+  (`mapper` / `mapper_stability`).
+- **More heads & data** — `DenStream` / `DbStream` evolving-stream density, mergeable `KllSketch` /
+  `DdSketch` quantiles, `scipy.sparse` (`O(nnz)`, never densified), mixed numeric+categorical
+  (`KPrototypes`), COP-KMeans constraints, robust (Huber) insertion, drift snapshots, dependency-free CLI.
 
 Full reference: [**`docs/FEATURES.md`**](https://github.com/ilgrad/betula-cluster/blob/main/docs/FEATURES.md).
 
@@ -132,7 +155,7 @@ And three **end-to-end use cases** (each scored against ground truth):
 - [**Benchmarks**](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md) — methodology, every metric, all tables, honest wins & losses.
 - [**Design**](https://github.com/ilgrad/betula-cluster/blob/main/DESIGN.md) — internal design, invariants, and testing strategy.
 
-Verified: **129** Rust unit/integration tests + a **123-case** Python suite at **100%** wrapper
+Verified: **129** Rust unit/integration tests + a **153-case** Python suite at **100%** wrapper
 coverage (Rust ≥95%, CI-enforced), `clippy -D warnings` + `fmt` clean across all feature sets, on
 Python 3.11–3.14 (single abi3 wheel).
 
