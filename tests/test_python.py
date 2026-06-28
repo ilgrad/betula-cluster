@@ -417,7 +417,13 @@ def test_find_outliers_returns_injected(blobs):
     est, x, _ = _fitted(blobs)
     xo = np.vstack([x, [[100.0, 100.0]]])
     out = est.find_outliers(xo, top_k=5)
+    assert len(out) == 5
     assert len(xo) - 1 in set(out.tolist())
+    # scores must come back in descending order (the injected outlier is the most extreme → first)
+    scores = np.asarray(est.outlier_scores(xo))
+    assert list(scores[out]) == sorted(scores[out], reverse=True)
+    assert out[0] == len(xo) - 1
+    assert est.find_outliers(xo, top_k=0).size == 0  # empty top-k → empty result
 
 
 def test_sample_representatives(blobs):
@@ -438,6 +444,30 @@ def test_find_near_duplicates(blobs):
     groups = est.find_near_duplicates(xd, radius=0.1)
     dup_idx = set(range(len(x), len(xd)))
     assert any(dup_idx.issubset(set(g.tolist())) for g in groups)
+
+
+def test_near_duplicate_pairs(blobs):
+    from itertools import combinations
+
+    x, _ = blobs
+    dup = np.repeat([[50.0, 50.0]], 4, axis=0)  # 4 identical points, isolated → one microcluster
+    xd = np.vstack([x, dup]).astype(np.float64)
+    est = betula_cluster.Betula(
+        n_clusters=4, feature="diagonal", method="gmm", threshold=0.05, max_leaves=400, seed=1
+    ).fit(xd)
+
+    pairs = est.near_duplicate_pairs(xd, threshold=0.999)
+    assert pairs.shape[1] == 3
+    found = {(int(i), int(j)) for _, i, j in pairs}
+    planted = set(combinations(range(len(x), len(xd)), 2))  # all 6 pairs among the 4 duplicates
+    assert planted.issubset(found)
+    assert pairs[:, 0].max() <= 1.0 + 1e-9  # cosine is bounded
+    assert pairs[:, 0].min() >= 0.999  # everything returned clears the threshold
+    assert (pairs[:, 1] < pairs[:, 2]).all()  # canonical i < j
+    # ordered by similarity descending
+    assert list(pairs[:, 0]) == sorted(pairs[:, 0], reverse=True)
+    # an unreachable threshold yields an empty (0, 3) result
+    assert est.near_duplicate_pairs(xd, threshold=1.01).shape == (0, 3)
 
 
 def test_inspection_before_fit_raises():

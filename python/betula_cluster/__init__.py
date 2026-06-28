@@ -484,8 +484,13 @@ class Betula:
 
     def find_outliers(self, X, top_k=100):
         """Row indices of the ``top_k`` most outlying points (highest score first)."""
-        scores = self.outlier_scores(X)
-        return np.argsort(scores)[::-1][:top_k]
+        scores = np.asarray(self.outlier_scores(X))
+        k = min(top_k, scores.size)
+        if k <= 0:
+            return np.empty(0, dtype=np.intp)
+        # O(N) partition for the top-k, then sort only those k — vs a full O(N log N) sort of all N.
+        idx = np.argpartition(scores, scores.size - k)[scores.size - k :]
+        return idx[np.argsort(scores[idx])[::-1]]
 
     def sample_representatives(self, X, k=5):
         """For each cluster, the row indices of the ``k`` points nearest its centroid."""
@@ -511,6 +516,45 @@ class Betula:
             if members.size >= 2:
                 groups.append(members)
         return groups
+
+    def near_duplicate_pairs(self, X, threshold=0.9):
+        """Scored near-duplicate row pairs by exact cosine similarity within each microcluster.
+
+        The CF-tree blocks rows into leaves in ``O(N)``; within each (small) leaf, exact pairwise
+        cosine is computed and pairs scoring ``>= threshold`` are kept. The cost is
+        ``~O(N * leaf_size)`` -- the scalable counterpart to an ``O(N^2)`` all-pairs scan, and the
+        scored complement to :meth:`find_near_duplicates` (which returns unscored groups). Recall
+        is bounded by the blocking: a pair split across two leaves is missed; use a coarser tree
+        (smaller ``max_leaves``) to widen blocks and trade speed for recall. Returns an
+        ``(m, 3)`` ``float64`` array of ``[cos_sim, i, j]`` with ``i < j``, sorted by similarity
+        descending.
+        """
+        leaf = np.asarray(self.assign_microclusters(X))
+        rows = np.asarray(X, dtype=np.float64)
+        norms = np.linalg.norm(rows, axis=1, keepdims=True)
+        unit = rows / np.where(norms > 0.0, norms, 1.0)  # guard zero-norm rows (no NaN)
+        scores: list = []
+        lo: list = []
+        hi: list = []
+        for lf in np.unique(leaf):
+            members = np.flatnonzero(leaf == lf)
+            if members.size < 2:
+                continue
+            sim = unit[members] @ unit[members].T
+            iu, ju = np.triu_indices(members.size, k=1)
+            s = sim[iu, ju]
+            keep = s >= threshold
+            if keep.any():
+                scores.append(s[keep])
+                lo.append(members[iu[keep]])
+                hi.append(members[ju[keep]])
+        if not scores:
+            return np.empty((0, 3), dtype=np.float64)
+        s = np.concatenate(scores)
+        i = np.concatenate(lo)
+        j = np.concatenate(hi)
+        order = np.argsort(s)[::-1]
+        return np.column_stack([s[order], i[order], j[order]]).astype(np.float64)
 
     def mapper(
         self,

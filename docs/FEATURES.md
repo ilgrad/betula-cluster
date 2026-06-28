@@ -73,9 +73,11 @@ A capability-by-capability reference. For runnable code see [`USAGE.md`](USAGE.m
 - Dataset-structure inspection (not just labels) — the estimator exposes its microcluster and
   cluster geometry (`microcluster_centers_` / `_weights_` / `_radii_`, `cluster_centers_` /
   `_radii_` / `_sizes_`) and, on top of it, `summary()`, `outlier_scores(X)` (distance to the
-  assigned centroid ÷ cluster radius), `find_outliers`, `find_near_duplicates`,
-  `sample_representatives`, and `assign_microclusters` — for embedding dataset cleaning,
-  deduplication, and outlier discovery, reusing the CF-tree already built (no extra passes).
+  assigned centroid ÷ cluster radius), `find_outliers`, `find_near_duplicates` (unscored groups),
+  `near_duplicate_pairs(X, threshold)` (scored cosine pairs, exact within each leaf-block — the
+  scalable counterpart to an O(N²) all-pairs scan), `sample_representatives`, and
+  `assign_microclusters` — for embedding dataset cleaning, deduplication, and outlier discovery,
+  reusing the CF-tree already built (no extra passes).
 - **Mapper topological skeleton** (`mapper()` → `MapperGraph`) — TDA Mapper specialised to the
   microclusters: a lens (`density` / `radius` / `l2norm` / `coordinate` / `eccentricity`) is covered
   by overlapping bins, microclusters in each bin are single-linked at a data-adaptive scale, and the

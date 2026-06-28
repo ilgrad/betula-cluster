@@ -33,8 +33,9 @@ First public release.
   `Pipeline`, and `GridSearchCV`. PEP 561 typed (`py.typed` + stubs).
 - Dataset-structure inspection: `microcluster_centers_`/`_weights_`/`_radii_`,
   `cluster_centers_`/`_radii_`/`_sizes_`, `outlier_scores`, `find_outliers`, `find_near_duplicates`,
-  `sample_representatives`, `assign_microclusters`, `summary`, and `n_rebuilds_` / `threshold_`
-  diagnostics.
+  `near_duplicate_pairs` (scored cosine pairs, exact within each leaf-block — the scalable
+  counterpart to an O(N²) all-pairs scan), `sample_representatives`, `assign_microclusters`,
+  `summary`, and `n_rebuilds_` / `threshold_` diagnostics.
 - **Mapper topological skeleton** (`topology::mapper` → `Betula.mapper()` → `MapperGraph`): a lens
   (`density` / `radius` / `l2norm` / `coordinate` / `eccentricity`) over the microclusters, an
   overlapping cover, per-bin single-linkage at a data-adaptive (median-NN) scale, and a nerve graph with branch
