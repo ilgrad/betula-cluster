@@ -22,7 +22,10 @@ jobs:
         platform:
           - { runner: ubuntu-latest, target: x86_64 }
           - { runner: ubuntu-latest, target: aarch64 }
-          - { runner: macos-13, target: x86_64 }
+          # macOS x86_64 is cross-built on the arm64 macos-14 runner: dedicated Intel (macos-13)
+          # runners are scarce/deprecated and queue for tens of minutes. abi3 needs no interpreter at
+          # build time, so cross-compiling x86_64-apple-darwin here is sound.
+          - { runner: macos-14, target: x86_64 }
           - { runner: macos-14, target: aarch64 }
           - { runner: windows-latest, target: x64 }
     steps:
