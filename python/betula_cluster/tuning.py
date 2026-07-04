@@ -102,9 +102,88 @@ def adjusted_rand(labels_true: np.ndarray, labels_pred: np.ndarray) -> float:
     return (sum_ij - expected) / (maximum - expected)
 
 
-_METRICS = {"calinski_harabasz": calinski_harabasz, "davies_bouldin": davies_bouldin}
-_MAXIMIZE = {"calinski_harabasz": True, "davies_bouldin": False, "ari": True}
-_WORST = {"calinski_harabasz": float("-inf"), "davies_bouldin": float("inf"), "ari": float("-inf")}
+def _mst_prim(w: np.ndarray) -> tuple[list[tuple[int, int, float]], np.ndarray]:
+    """Minimum spanning tree of a dense symmetric weight matrix by Prim, `O(m²)`. Returns the edges
+    `(i, j, weight)` and each node's MST degree."""
+    m = w.shape[0]
+    in_tree = np.zeros(m, dtype=bool)
+    in_tree[0] = True
+    best = w[0].copy()
+    parent = np.zeros(m, dtype=int)
+    edges: list[tuple[int, int, float]] = []
+    deg = np.zeros(m)
+    for _ in range(m - 1):
+        j = int(np.argmin(np.where(in_tree, np.inf, best)))
+        i = int(parent[j])
+        edges.append((i, j, float(w[i, j])))
+        deg[i] += 1
+        deg[j] += 1
+        in_tree[j] = True
+        upd = (~in_tree) & (w[j] < best)
+        best[upd] = w[j][upd]
+        parent[upd] = j
+    return edges, deg
+
+
+def dbcv(x: np.ndarray, labels: np.ndarray, *, sample_cap: int = 1500, seed: int = 0) -> float:
+    """Density-Based Clustering Validation (Moulavi et al. 2014) in ``[-1, 1]``, higher is better.
+
+    Unlike Calinski-Harabasz / Davies-Bouldin (convex, centroid-scatter metrics that *penalise*
+    correct non-convex partitions), DBCV validates variable-density non-convex clusters — the right
+    internal metric for the HDBSCAN-CF and DbStream heads. Computed over a random subsample to bound
+    the ``O(m²)`` all-points-core-distance; noise points (label ``-1``) lower the score.
+    """
+    x = np.asarray(x, dtype=np.float64)
+    labels = np.asarray(labels)
+    if x.shape[0] > sample_cap:
+        keep = np.random.default_rng(seed).choice(x.shape[0], sample_cap, replace=False)
+        x, labels = x[keep], labels[keep]
+    n, d = x.shape
+    clusters = [int(c) for c in np.unique(labels) if c >= 0]
+    if len(clusters) < 2:
+        return -1.0
+    dist = np.sqrt(np.maximum(((x[:, None] - x[None]) ** 2).sum(-1), 0.0))
+    members = {c: np.where(labels == c)[0] for c in clusters}
+    # All-points-core-distance in log space: d_core = (mean_{y≠x} (1/dist)^d)^(-1/d).
+    core = np.zeros(n)
+    for ids in members.values():
+        if len(ids) < 2:
+            continue
+        sub = dist[np.ix_(ids, ids)].copy()
+        np.fill_diagonal(sub, np.inf)  # self → inf distance → 0 contribution to the mean
+        with np.errstate(divide="ignore"):
+            log_terms = -d * np.log(sub)  # diagonal → −∞ (excluded from the log-sum-exp)
+        mx = log_terms.max(axis=1, keepdims=True)
+        lse = mx[:, 0] + np.log(np.exp(log_terms - mx).sum(axis=1))
+        core[ids] = np.exp(-(lse - np.log(len(ids) - 1)) / d)
+    mreach = np.maximum(dist, np.maximum(core[:, None], core[None]))
+    score = 0.0
+    for c, ids in members.items():
+        if len(ids) < 2:
+            continue  # a singleton cluster contributes 0 validity (weight · 0)
+        edges, deg = _mst_prim(mreach[np.ix_(ids, ids)])
+        internal = [wt for (i, j, wt) in edges if deg[i] > 1 and deg[j] > 1]
+        dsc = max(internal) if internal else max(wt for _, _, wt in edges)
+        other = np.concatenate([members[o] for o in clusters if o != c])
+        dspc = float(mreach[np.ix_(ids, other)].min())
+        denom = max(dspc, dsc, 1e-300)  # positive by construction for distinct points
+        validity = (dspc - dsc) / denom
+        score += (len(ids) / n) * validity  # weight by |Ci| / |all objects| (noise penalises)
+    return float(score)
+
+
+_METRICS = {
+    "calinski_harabasz": calinski_harabasz,
+    "davies_bouldin": davies_bouldin,
+    "dbcv": dbcv,
+}
+_MAXIMIZE = {"calinski_harabasz": True, "davies_bouldin": False, "dbcv": True, "ari": True}
+_WORST = {
+    "calinski_harabasz": float("-inf"),
+    "davies_bouldin": float("inf"),
+    "dbcv": -1.0,
+    "ari": float("-inf"),
+}
 
 
 # ── results ──────────────────────────────────────────────────────────────────────────────────────
@@ -243,8 +322,9 @@ def tune(
     y
         Ground-truth labels; required only for ``objective="ari"``.
     objective
-        ``"calinski_harabasz"`` (default, higher better), ``"davies_bouldin"`` (lower better), or
-        ``"ari"`` (needs ``y``).
+        ``"calinski_harabasz"`` (default, higher better), ``"davies_bouldin"`` (lower better),
+        ``"dbcv"`` (density-based, higher better — use for the HDBSCAN-CF / DbStream density heads,
+        where the convex metrics mislead), or ``"ari"`` (needs ``y``).
     n_trials, seed
         Search budget and RNG seed.
     sampler

@@ -14,6 +14,11 @@ All notable changes to this project are documented here. The format follows
   connected-component classes carry `inf` death.
 - Greedy weighted k-means++ init (scikit-learn's default): lower-inertia, lower-variance seeds at
   ~`ln k`× the negligible init cost over the leaves.
+- `objective="dbcv"` for `tune` — Density-Based Clustering Validation (Moulavi et al. 2014, in
+  `[-1, 1]`). Unlike the convex Calinski-Harabasz / Davies-Bouldin metrics (which *penalise* correct
+  non-convex partitions), DBCV validates variable-density / non-convex clusters, so it is the right
+  selection metric for the HDBSCAN-CF and DbStream density heads. NumPy-only, computed over a
+  subsample.
 
 ### Changed
 - `fit_predict_sparse` / the `_core` CSR entry points now cap `n_features` (`MAX_SPARSE_FEATURES`) and

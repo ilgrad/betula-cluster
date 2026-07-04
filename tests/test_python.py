@@ -1460,6 +1460,60 @@ def test_tune_metrics_match_reference_values():
     assert abs(adjusted_rand(np.array([0, 0, 1, 1]), np.array([0, 1, 0, 1]))) < 0.5
 
 
+def test_dbcv_validates_density_partitions():
+    from betula_cluster.tuning import dbcv
+    from sklearn.datasets import make_blobs, make_moons
+
+    x, y = make_blobs(n_samples=600, centers=3, cluster_std=0.4, random_state=0)
+    # a correct dense partition scores well above a random one; both stay in [-1, 1].
+    good = dbcv(x, y)
+    bad = dbcv(x, np.random.default_rng(1).integers(0, 3, size=len(y)))
+    assert -1.0 <= bad < good <= 1.0
+    assert good > 0.3
+    # non-convex moons: DBCV validates the correct shape (positive), unlike the convex metrics.
+    xm, ym = make_moons(n_samples=400, noise=0.05, random_state=0)
+    assert dbcv(xm, ym) > 0.0
+
+
+def test_dbcv_edge_cases():
+    from betula_cluster.tuning import dbcv
+
+    x = np.array(
+        [
+            [0.0, 0.0],
+            [0.1, 0.0],
+            [0.0, 0.1],
+            [0.1, 0.1],
+            [0.05, 0.05],
+            [0.2, 0.1],  # cluster 0
+            [10.0, 10.0],
+            [10.1, 10.0],  # cluster 1 (2 → MST-leaf fallback for DSC)
+            [20.0, 20.0],  # cluster 2 (singleton → skipped)
+            [30.0, 30.0],  # noise
+        ]
+    )
+    labels = np.array([0, 0, 0, 0, 0, 0, 1, 1, 2, -1])
+    assert -1.0 <= dbcv(x, labels) <= 1.0
+    # fewer than two clusters → the worst score
+    assert dbcv(x, np.zeros(len(x), dtype=int)) == -1.0
+    assert dbcv(x, -np.ones(len(x), dtype=int)) == -1.0
+    # subsampling path (n > sample_cap) is deterministic under a fixed seed
+    big, by = _blobs_xl()
+    assert dbcv(big, by, sample_cap=1500, seed=0) == dbcv(big, by, sample_cap=1500, seed=0)
+
+
+def _blobs_xl():
+    from sklearn.datasets import make_blobs
+
+    return make_blobs(n_samples=2000, centers=4, cluster_std=0.5, random_state=0)
+
+
+def test_tune_dbcv_objective(blobs):
+    x, _ = blobs
+    result = betula_cluster.tune(x, n_clusters=4, objective="dbcv", n_trials=6, seed=0)
+    assert result.best_score == max(t.score for t in result.trials)  # dbcv maximizes
+
+
 def test_tune_random_returns_best(blobs):
     x, _ = blobs
     result = betula_cluster.tune(x, n_clusters=4, n_trials=6, seed=0)
