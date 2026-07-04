@@ -68,11 +68,30 @@ Reading it honestly: **betula-kmeans ≡ sklearn-kmeans** (to ~0.01) — the CF-
 cost quality. **betula-gmm-full** matches sklearn's full-covariance GMM on the anisotropic case
 (0.90), the one centroid k-means can't (0.54). **betula-ward** matches or beats raw Ward (blobs 0.81 vs
 0.82; aniso 0.55 vs 0.53; varied 0.61 vs 0.46; moons 0.71 vs 0.51) at a fraction of the cost. On
-**non-convex** moons/circles, only the HDBSCAN heads score — and **betula-hdbscan = sklearn-hdbscan =
-1.00**. The honest weak spot: **HDBSCAN-on-CF on
+**non-convex** moons/circles, the density (HDBSCAN) and graph (spectral) heads score — **betula-hdbscan
+= sklearn-hdbscan = 1.00**, and betula-spectral matches sklearn's own SpectralClustering (see below).
+The honest weak spot: **HDBSCAN-on-CF on
 overlapping blobs** (0.08–0.15) trails raw HDBSCAN (0.27–0.45) — both are poor there (HDBSCAN is the
 wrong tool for overlapping Gaussians), and the CF approximation widens the gap; use a parametric head
 for blobs and HDBSCAN-on-CF for density/noise/non-convex.
+
+### Non-convex: spectral clustering that scales (N = 30 000)
+
+`method="spectral"` runs the Ng-Jordan-Weiss spectral pipeline on the ≤ `max_leaves` CF microclusters,
+not on all `N`, so it matches scikit-learn's `SpectralClustering` **quality at 3–4× the speed** — and
+unlike sklearn (whose graph + eigensolve are `O(N)`+ in memory and effectively cap out around 30 k) its
+cost is bounded by the microcluster count, so the same call scales to `N = 1 M`.
+
+| method | moons ARI | circles ARI | time (moons / circles) |
+|---|---|---|---|
+| **betula-spectral** | **1.00** | **1.00** | **0.40 s / 0.25 s** |
+| sklearn-SpectralClustering (k-NN affinity) | 1.00 | 1.00 | 1.31 s / 1.01 s |
+| betula-louvain | 0.14 | 0.12 | 0.09 s / 0.12 s |
+
+`method="louvain"` (graph community detection) is included as an honest negative: it is built for
+community / blob structure, not elongated manifolds — modularity chops each arc into ~16–19 segments
+(ARI ~0.13), exactly the resolution-limit behaviour the docs warn about. Use spectral for manifolds,
+Louvain for communities.
 
 ## Speed — fit time at N = 1 000 000
 
