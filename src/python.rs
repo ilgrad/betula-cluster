@@ -1785,6 +1785,29 @@ impl Betula {
         d.set_item("branch_points", branch_points.into_pyarray(py))?;
         d.set_item("bridges", bridges.into_pyarray(py))?;
         d.set_item("edge_overlap", g.edge_overlap.clone().into_pyarray(py))?;
+        // 0-D persistence diagrams of the nerve, both filtrations: (k, 2) births/deaths with `inf` in
+        // the death column for essential (connected-component) classes. Cheap (O(E log E)) over the graph.
+        for (key, filt) in [
+            (
+                "persistence_overlap",
+                crate::topology::Filtration::EdgeOverlap,
+            ),
+            ("persistence_lens", crate::topology::Filtration::Lens),
+        ] {
+            let diag = g.persistence_diagram(filt);
+            let k = diag.points.len();
+            let mut flat = vec![0.0f64; k * 2];
+            for (r, &(b, dth)) in diag.points.iter().enumerate() {
+                flat[r * 2] = b;
+                flat[r * 2 + 1] = dth;
+            }
+            d.set_item(
+                key,
+                Array2::from_shape_vec((k, 2), flat)
+                    .expect("persistence points length is k*2")
+                    .into_pyarray(py),
+            )?;
+        }
         Ok(d)
     }
 

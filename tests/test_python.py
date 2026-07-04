@@ -919,6 +919,26 @@ def test_mapper_coordinate_lens_finds_bridge(dumbbell):
     assert g.edge_overlap[g.bridges].min() < g.edge_overlap.max()
 
 
+def test_mapper_persistence_diagram(dumbbell):
+    _est, g = _mapped(dumbbell)
+    # both filtrations: one (birth, death) per node, finite classes on/above the diagonal
+    for filt in ("overlap", "lens"):
+        d = g.persistence(filt)
+        assert d.shape == (g.n_nodes, 2)
+        fin = d[np.isfinite(d[:, 1])]
+        assert np.all(fin[:, 1] >= fin[:, 0] - 1e-9)
+    # essentials (= connected components) carry inf; finite_only drops them.
+    overlap = g.persistence("overlap")
+    assert np.isinf(overlap[:, 1]).sum() >= 1
+    finite = g.persistence("overlap", finite_only=True)
+    assert finite.shape[0] >= 1
+    assert np.all(np.isfinite(finite[:, 1]))
+    # the dominant finite bar ranks the neck: its death is the sparsest bridge's Bhattacharyya gap.
+    assert abs(finite[:, 1].max() - (1.0 - g.edge_overlap[g.bridges].min())) < 1e-9
+    with pytest.raises(ValueError):
+        g.persistence("nonsense")
+
+
 @pytest.mark.parametrize("lens", ["density", "radius", "l2norm", "coordinate", "eccentricity"])
 def test_mapper_lenses_run_and_conserve_mass(blobs, lens):
     est, x, _ = _fitted(blobs)

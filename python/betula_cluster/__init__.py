@@ -68,6 +68,8 @@ class MapperGraph:
     edge_overlap: np.ndarray  # (n_edges,) Bhattacharyya overlap ∈ (0, 1] per edge
     branch_points: np.ndarray  # node indices with degree ≥ 3
     bridges: np.ndarray  # indices into `edges` that are bridges
+    persistence_overlap: np.ndarray  # (k, 2) 0-D diagram over 1-Bhattacharyya (inf = essential)
+    persistence_lens: np.ndarray  # (k, 2) 0-D diagram over the lens sublevel (inf = essential)
 
     @property
     def n_nodes(self) -> int:
@@ -76,6 +78,22 @@ class MapperGraph:
     @property
     def n_edges(self) -> int:
         return int(self.edges.shape[0])
+
+    def persistence(self, filtration: str = "overlap", finite_only: bool = False) -> np.ndarray:
+        """The nerve's 0-D persistence diagram as ``(k, 2)`` births/deaths, sorted by persistence.
+
+        ``filtration="overlap"`` (default) filters by the ``1 − edge_overlap`` gap — a finite bar's
+        death is the Bhattacharyya depth of a bottleneck, a ranked upgrade of the boolean bridges;
+        ``"lens"`` is the lens sublevel diagram (flares of the shape). Essential (component) classes
+        carry ``np.inf`` in the death column; ``finite_only=True`` drops them.
+        """
+        if filtration == "overlap":
+            diag = self.persistence_overlap
+        elif filtration == "lens":
+            diag = self.persistence_lens
+        else:
+            raise ValueError(f"filtration must be 'overlap' or 'lens', got {filtration!r}")
+        return diag[np.isfinite(diag[:, 1])] if finite_only else diag
 
     def to_networkx(self):
         """Build a ``networkx.Graph`` (requires ``networkx``); nodes carry mass/bin/lens/centroid,
@@ -625,6 +643,8 @@ class Betula:
             edge_overlap=d["edge_overlap"],
             branch_points=d["branch_points"],
             bridges=d["bridges"],
+            persistence_overlap=d["persistence_overlap"],
+            persistence_lens=d["persistence_lens"],
         )
 
     def mapper_stability(self, resolutions=None, **mapper_kwargs):

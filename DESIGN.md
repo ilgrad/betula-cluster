@@ -69,7 +69,9 @@ median-NN scale `link_scale × median nn-gap`, nerve graph with branch points an
 Exposed as `Betula.mapper() -> MapperGraph` (+ `to_networkx()`). Exploration of structure / RAG
 leakage / dedup, $O(M^2)$ over the $M \ll N$ microclusters — a tool, not a partition. Complementary to
 parametric Phase-3a. Edges now carry a **CF-aware Bhattacharyya overlap** (`edge_overlap` $\in (0, 1]$)
-from the two nodes' pooled diagonal-Gaussian summaries. Roadmap: persistence diagrams.
+from the two nodes' pooled diagonal-Gaussian summaries. `persistence_diagram()` gives the nerve's 0-D
+barcode (single-linkage union-find over the `1 − overlap` connectivity filtration or the lens sublevel;
+elder rule, `O(E log E)`, Cohen–Steiner-stable on a fixed nerve) — ranking the boolean bridges.
 
 ## Architecture (crate layout)
 ```

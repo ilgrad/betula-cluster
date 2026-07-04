@@ -4,6 +4,27 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- `MapperGraph.persistence_diagram` / `MapperGraph.persistence(filtration=…)` — 0-D persistent homology
+  of the Mapper nerve by single-linkage union-find (elder rule, `O(E log E)`, pure Rust). Two
+  filtrations: `"overlap"` (the `1 − edge_overlap` Bhattacharyya gap — a finite bar's death is the depth
+  of a bottleneck, ranking the boolean `bridges`) and `"lens"` (the lens sublevel diagram). Essential
+  connected-component classes carry `inf` death.
+- Greedy weighted k-means++ init (scikit-learn's default): lower-inertia, lower-variance seeds at
+  ~`ln k`× the negligible init cost over the leaves.
+
+### Changed
+- `fit_predict_sparse` / the `_core` CSR entry points now cap `n_features` (`MAX_SPARSE_FEATURES`) and
+  validate CSR arrays through the pure-Rust `sparse::validate_csr`, closing an unbounded-allocation DoS
+  where a hostile caller could force an ~8 EB allocation with a single-nonzero row.
+
+### Tests
+- Mutation-testing infrastructure (`cargo-mutants` scoped to the CF math core, `mutmut` for the Python
+  wrapper, a weekly non-blocking workflow) plus a CSR-fuzzing proptest and the two coverage gaps it
+  surfaced (the CF-tree absorption boundary, exact tune-metric values).
+
 ## [0.1.3] — 2026-07-04
 
 ### Added

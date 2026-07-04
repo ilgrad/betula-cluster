@@ -127,6 +127,101 @@ impl UnionFind {
     }
 }
 
+/// Which function on the nerve to filter by for 0-dimensional persistence.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Filtration {
+    /// Connectivity filtration on the edge gap `1 − edge_overlap`: high-overlap (dense) links appear
+    /// first and merge components; a real Bhattacharyya gap merges late. Each finite bar's death is
+    /// the depth of a bottleneck — this ranks the boolean `bridges` quantitatively.
+    EdgeOverlap,
+    /// Sublevel filtration on the lens value (the canonical Mapper/Reeb persistence — flares/branches
+    /// of the shape). Degenerate for a monotone coordinate lens; informative for density/eccentricity.
+    Lens,
+}
+
+/// A 0-dimensional persistence diagram of the Mapper nerve (single-linkage by union-find).
+pub struct PersistenceDiagram {
+    /// `(birth, death)` per class, sorted by persistence (`death − birth`) descending. Essential
+    /// classes — the nerve's connected components — carry `death = f64::INFINITY`.
+    pub points: Vec<(f64, f64)>,
+    /// Number of essential classes = connected components of the nerve (β₀).
+    pub n_components: usize,
+    /// Filtration values at which independent cycles close (β₁ births; a bare graph has no 2-cells, so
+    /// these carry no finite death). `len() == edges − nodes + n_components`.
+    pub loop_births: Vec<f64>,
+}
+
+impl MapperGraph {
+    /// 0-dimensional persistent homology of the nerve under `filt`, by union-find over the sorted
+    /// filtration with the elder rule: `O(E log E)`, pure (no matrix reduction, no deps). On a fixed
+    /// nerve both filtrations are function filtrations, so the diagram is bottleneck-stable
+    /// (Cohen–Steiner–Edelsbrunner–Harer 2007) under perturbations of the filter values.
+    pub fn persistence_diagram(&self, filt: Filtration) -> PersistenceDiagram {
+        let n = self.nodes.len();
+        // Vertex birth values (monotone: an edge never precedes its endpoints).
+        let bv: Vec<f64> = match filt {
+            Filtration::EdgeOverlap => vec![0.0; n],
+            Filtration::Lens => self.nodes.iter().map(|nd| nd.lens_value).collect(),
+        };
+        let mut fe: Vec<(f64, usize, usize)> = self
+            .edges
+            .iter()
+            .enumerate()
+            .map(|(i, &(a, b, _))| {
+                let val = match filt {
+                    Filtration::EdgeOverlap => 1.0 - self.edge_overlap[i],
+                    Filtration::Lens => bv[a].max(bv[b]),
+                };
+                (val, a, b)
+            })
+            .collect();
+        fe.sort_by(|x, y| x.0.partial_cmp(&y.0).unwrap_or(std::cmp::Ordering::Equal));
+
+        let mut uf = UnionFind::new(n);
+        let mut cmin = bv.clone(); // min birth per component, valid at the current root
+        let mut points: Vec<(f64, f64)> = Vec::new();
+        let mut loop_births: Vec<f64> = Vec::new();
+        for (val, a, b) in fe {
+            let (ra, rb) = (uf.find(a), uf.find(b));
+            if ra == rb {
+                loop_births.push(val); // closes a cycle → a β₁ birth, no 0-D event
+                continue;
+            }
+            // Elder rule: the younger class (larger birth) dies at this edge's filtration value.
+            let (young, elder) = if cmin[ra] > cmin[rb] || (cmin[ra] == cmin[rb] && ra > rb) {
+                (ra, rb)
+            } else {
+                (rb, ra)
+            };
+            points.push((cmin[young], val)); // death = val ≥ cmin[young] = birth (monotone)
+            uf.union(ra, rb);
+            let root = uf.find(a);
+            cmin[root] = cmin[elder].min(cmin[young]);
+        }
+        // Essential classes: one (min birth, +∞) per surviving component root (incl. isolated nodes).
+        let mut roots: HashMap<usize, f64> = HashMap::new();
+        for (v, &birth) in bv.iter().enumerate() {
+            let r = uf.find(v);
+            let e = roots.entry(r).or_insert(f64::INFINITY);
+            *e = e.min(birth);
+        }
+        let n_components = roots.len();
+        for (_, birth) in roots {
+            points.push((birth, f64::INFINITY));
+        }
+        points.sort_by(|p, q| {
+            (q.1 - q.0)
+                .partial_cmp(&(p.1 - p.0))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        PersistenceDiagram {
+            points,
+            n_components,
+            loop_births,
+        }
+    }
+}
+
 /// RMS radius `√(S/n)` of a microcluster (`0` for an empty / single-point feature).
 fn rms_radius<R: Real, C: ClusterFeature<R>>(f: &C) -> f64 {
     let n = f.weight().to_f64().unwrap();
@@ -677,5 +772,74 @@ mod tests {
             filtered.nodes.is_empty(),
             "a huge mass floor drops every node"
         );
+    }
+
+    #[test]
+    fn persistence_overlap_dumbbell_ranks_the_bridge() {
+        let g = mapper(
+            &dumbbell(),
+            &MapperParams {
+                lens: Lens::Coordinate(0),
+                resolution: 8,
+                gain: 0.4,
+                link_scale: 3.0,
+                min_node_mass: 0.0,
+            },
+        );
+        let d = g.persistence_diagram(Filtration::EdgeOverlap);
+        // one class per node; essentials (∞ death) = connected components (the A–neck–B chain plus
+        // any isolated cover specks).
+        assert_eq!(d.points.len(), g.nodes.len());
+        assert!(d.n_components >= 1);
+        assert_eq!(
+            d.points.iter().filter(|p| p.1.is_infinite()).count(),
+            d.n_components
+        );
+        // every class sits on or above the diagonal.
+        assert!(d.points.iter().all(|&(b, dth)| dth >= b));
+        // the dominant finite bar's death is the neck's Bhattacharyya gap (1 − min bridge overlap):
+        // the last single-linkage merge crosses the sparsest link, which is the neck bridge.
+        let min_bridge_overlap = g
+            .bridges
+            .iter()
+            .map(|&e| g.edge_overlap[e])
+            .fold(f64::INFINITY, f64::min);
+        let max_finite_death = d
+            .points
+            .iter()
+            .map(|p| p.1)
+            .filter(|x| x.is_finite())
+            .fold(0.0_f64, f64::max);
+        assert!(
+            (max_finite_death - (1.0 - min_bridge_overlap)).abs() < 1e-9,
+            "dominant death {max_finite_death} should equal the bridge gap {}",
+            1.0 - min_bridge_overlap
+        );
+    }
+
+    #[test]
+    fn persistence_diagram_invariants_hold() {
+        // Two blobs under the default density lens: both filtrations give a valid diagram, and the
+        // number of cycle-births equals the graph's first Betti number E − V + β₀.
+        let pts: Vec<Vec<f64>> = {
+            let mut v = Vec::new();
+            for i in 0..50 {
+                let t = i as f64 * 0.1;
+                v.push(vec![t.sin() * 0.2, t.cos() * 0.2]);
+                v.push(vec![5.0 + t.sin() * 0.2, t.cos() * 0.2]);
+            }
+            v
+        };
+        let g = mapper(&grid_micros(&pts, 0.2).0, &MapperParams::default());
+        for filt in [Filtration::EdgeOverlap, Filtration::Lens] {
+            let d = g.persistence_diagram(filt);
+            assert_eq!(d.points.len(), g.nodes.len());
+            assert!(d.points.iter().all(|&(b, dth)| dth >= b - 1e-12));
+            // loop_births = E − V + β₀ (avoid usize underflow by moving V to the other side).
+            assert_eq!(
+                d.loop_births.len() + g.nodes.len(),
+                g.edges.len() + d.n_components
+            );
+        }
     }
 }
