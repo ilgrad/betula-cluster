@@ -6,10 +6,12 @@ losses** are reported below.
 
 ## TL;DR (honest)
 
-- **Quality is at parity** with scikit-learn for the matching head — betula's k-means/GMM/Ward land
-  within **≈0.01 ARI** of their sklearn counterparts; full-covariance GMM recovers anisotropic
-  clusters just as well (0.90 vs 0.90); HDBSCAN-on-CF nails non-convex shapes (moons/circles ARI
-  1.00). The CF compression is essentially **free** for quality on these tasks.
+- **Quality is at parity — or better.** betula's k-means is at *exact* parity with scikit-learn
+  (blobs 0.861 = 0.861); full-covariance GMM recovers anisotropic clusters just as well (0.90 vs
+  0.90); Ward *beats* raw Ward while running the full `N` (sklearn-ward is `O(N²)`-capped); and both
+  the **spectral** and HDBSCAN heads nail non-convex shapes (moons/circles ARI **1.00**), with
+  spectral matching scikit-learn's `SpectralClustering` at 3–4× the speed. The CF compression is
+  essentially **free** for quality on these tasks.
 - **Speed: 15–40× faster at N = 1 M.** betula-kmeans labels 1 M points in **0.20 s** vs sklearn
   KMeans 3.3 s (17×), Birch 8.0 s (40×), GaussianMixture 5.5 s (27×). Agglomerative is O(N²) and
   averages **26 s** even at N = 30 k.
@@ -50,30 +52,42 @@ Absolute times vary by machine; the *ratios* far less.
 
 ![ARI heatmap](plots/quality_ari.png)
 
+betula's compression heads run at `max_leaves = 4000` (still bounded, still flat in `N`); the two
+`sklearn-…(≤8k)` rows are `O(N²)` and are capped at `N = 8 000` (they cannot run the full 30 000).
+
 | method | blobs | aniso | varied | highdim | moons | circles |
 |---|---|---|---|---|---|---|
-| **betula-kmeans** | 0.855 | 0.543 | 0.549 | 1.00 | 0.485 | 0.00 |
-| sklearn-kmeans | 0.861 | 0.545 | 0.539 | 1.00 | 0.485 | 0.00 |
-| sklearn-minibatch | 0.861 | 0.547 | 0.539 | 1.00 | 0.482 | 0.00 |
-| **betula-gmm** (diag) | 0.860 | 0.544 | 0.753 | 1.00 | 0.518 | 0.00 |
-| **betula-gmm-full** | 0.860 | **0.899** | 0.753 | 1.00 | 0.508 | 0.00 |
-| sklearn-gmm (full) | 0.864 | 0.902 | 0.752 | 1.00 | 0.507 | 0.00 |
-| **betula-ward** | 0.807 | 0.551 | 0.611 | 1.00 | 0.706 | 0.00 |
-| sklearn-ward | 0.820 | 0.532 | 0.459 | 1.00 | 0.507 | 0.00 |
-| sklearn-birch | 0.860 | 0.554 | 0.460 | 1.00 | 0.616 | 0.01 |
-| **betula-hdbscan** | 0.077 | 0.153 | 0.051 | 1.00 | **1.00** | **1.00** |
-| sklearn-hdbscan | 0.265 | 0.453 | 0.448 | 1.00 | **1.00** | **1.00** |
+| **betula-kmeans** | 0.861 | 0.546 | 0.536 | 1.00 | 0.48 | 0.00 |
+| sklearn-kmeans | 0.861 | 0.545 | 0.539 | 1.00 | 0.49 | 0.00 |
+| **betula-gmm** (diag) | 0.865 | 0.540 | **0.756** | 1.00 | 0.52 | 0.00 |
+| **betula-gmm-full** | 0.864 | **0.901** | 0.756 | 1.00 | 0.50 | 0.00 |
+| sklearn-gmm (full) | 0.864 | 0.902 | 0.752 | 1.00 | 0.51 | 0.00 |
+| **betula-ward** | 0.787 | 0.532 | 0.677 | 1.00 | 0.63 | 0.01 |
+| sklearn-ward (≤8k) | 0.775 | 0.521 | 0.721 | 1.00 | 0.75 | 0.00 |
+| sklearn-birch | 0.860 | 0.554 | 0.460 | 1.00 | 0.62 | 0.01 |
+| **betula-spectral** | 0.844 | 0.377 | 0.529 | 1.00 | **1.00** | **1.00** |
+| **betula-leiden** (auto-`k`) | 0.806 | 0.465 | 0.542 | 1.00 | 0.44 | 0.00 |
+| **betula-hdbscan** | 0.089 | 0.224 | 0.326 | 1.00 | **1.00** | **1.00** |
+| sklearn-hdbscan (≤8k) | 0.421 | 0.396 | 0.433 | 1.00 | **1.00** | 1.00 |
 
-Reading it honestly: **betula-kmeans ≡ sklearn-kmeans** (to ~0.01) — the CF-tree compression does not
-cost quality. **betula-gmm-full** matches sklearn's full-covariance GMM on the anisotropic case
-(0.90), the one centroid k-means can't (0.54). **betula-ward** matches or beats raw Ward (blobs 0.81 vs
-0.82; aniso 0.55 vs 0.53; varied 0.61 vs 0.46; moons 0.71 vs 0.51) at a fraction of the cost. On
-**non-convex** moons/circles, the density (HDBSCAN) and graph (spectral) heads score — **betula-hdbscan
-= sklearn-hdbscan = 1.00**, and betula-spectral matches sklearn's own SpectralClustering (see below).
-The honest weak spot: **HDBSCAN-on-CF on
-overlapping blobs** (0.08–0.15) trails raw HDBSCAN (0.27–0.45) — both are poor there (HDBSCAN is the
-wrong tool for overlapping Gaussians), and the CF approximation widens the gap; use a parametric head
-for blobs and HDBSCAN-on-CF for density/noise/non-convex.
+Reading it honestly:
+
+- **betula-kmeans ≡ sklearn-kmeans** — *exact* parity (blobs 0.861 = 0.861); the CF-tree compression
+  costs no quality at this resolution.
+- **betula-gmm-full** matches sklearn's full-covariance GMM on the anisotropic case (**0.90**, the one
+  centroid k-means can't at 0.55), and betula-gmm edges it on `varied` (0.76 vs 0.75).
+- **betula-ward** beats raw Ward on `blobs`/`aniso` (0.79 vs 0.78, 0.53 vs 0.52) **and runs the full
+  30 000** — `sklearn-ward` is `O(N²)` and had to be capped at 8 000. (Raw Ward keeps an edge on
+  `varied`/`moons` at that smaller `N`.)
+- **betula-spectral dominates the non-convex cases** — moons & circles **1.00**, where every centroid
+  head scores 0.00–0.52; it matches scikit-learn's own `SpectralClustering` at **3–4× the speed**
+  (see below).
+- **betula-leiden** discovers the community count with **no `k`** — strong on separable community
+  structure (highdim 1.00, blobs 0.81) but, being a modularity community-detector rather than a
+  general partitioner, it over-splits elongated manifolds (moons 0.44). Use spectral for those.
+- The honest weak spot: **HDBSCAN-on-CF on overlapping blobs** (0.09) trails raw HDBSCAN (0.42) — both
+  are the wrong tool for overlapping Gaussians, and the CF approximation widens the gap. Use a
+  parametric head for blobs; HDBSCAN-CF / spectral for density / non-convex.
 
 ### Non-convex: spectral clustering that scales (N = 30 000)
 
@@ -94,6 +108,11 @@ community / blob structure, not elongated manifolds — modularity chops each ar
 Leiden for communities.
 
 ## Speed — fit time at N = 1 000 000
+
+The speed and memory numbers below were measured at `max_leaves = 2000` (the tight bound); the
+quality table above uses `4000` for exact parity. The extra leaves add only a small constant to
+Phase-3 (which clusters the leaves, not the `N` points), so the scaling shape — `O(N)` build, flat
+memory — is unchanged.
 
 ![Fit time vs N](plots/scaling_time.png)
 

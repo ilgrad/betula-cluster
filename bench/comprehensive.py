@@ -109,7 +109,7 @@ def load_real(name: str, seed: int = 0):
 
 
 # ── methods ─────────────────────────────────────────────────────────────────────────────────────
-BETULA_KW = dict(threshold=0.0, max_leaves=2000, seed=0, n_jobs=1)
+BETULA_KW = dict(threshold=0.0, max_leaves=4000, seed=0, n_jobs=1)
 
 
 def methods(k: int, n: int) -> dict:
@@ -140,6 +140,15 @@ def methods(k: int, n: int) -> dict:
         ),
         "betula-ward": (
             lambda X: bc.fit_predict(X, k, feature="diagonal", method="ward", **BETULA_KW),
+            True,
+        ),
+        "betula-spectral": (
+            lambda X: bc.fit_predict(X, k, method="spectral", **BETULA_KW),
+            True,
+        ),
+        "betula-leiden": (
+            # community detection: moderate threshold (a fine graph over-splits); count is discovered
+            lambda X: bc.fit_predict(X, k, method="leiden", threshold=0.4, max_leaves=800, seed=0),
             True,
         ),
         "betula-hdbscan": (

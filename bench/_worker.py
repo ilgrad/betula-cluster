@@ -142,7 +142,7 @@ def reduce_dims(X, reducer: str, n_components: int):
 
 
 def fit_method(method: str, X, k: int, n: int):
-    bkw = dict(threshold=0.0, max_leaves=2000, seed=0, n_jobs=1)
+    bkw = dict(threshold=0.0, max_leaves=4000, seed=0, n_jobs=1)
     mcs = max(20, n // 400)
     if method.startswith("betula"):
         import betula_cluster as bc
@@ -156,6 +156,11 @@ def fit_method(method: str, X, k: int, n: int):
             return bc.fit_predict(X, k, feature="full", method="gmm-full", **bkw)
         if kind == "ward":
             return bc.fit_predict(X, k, feature="diagonal", method="ward", **bkw)
+        if kind == "spectral":
+            return bc.fit_predict(X, k, method="spectral", **bkw)
+        if kind == "leiden":
+            # community detection: moderate threshold (a very fine graph over-splits); ignores k
+            return bc.fit_predict(X, k, method="leiden", threshold=0.4, max_leaves=800, seed=0)
         if kind == "hdbscan":
             return bc.fit_predict(X, method="hdbscan", min_cluster_size=mcs, min_samples=10, **bkw)
     if method == "sklearn-kmeans":
