@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.1.4] — 2026-07-04
 
 ### Added
 - `MapperGraph.persistence_diagram` / `MapperGraph.persistence(filtration=…)` — 0-D persistent homology
@@ -24,6 +24,8 @@ All notable changes to this project are documented here. The format follows
 - `fit_predict_sparse` / the `_core` CSR entry points now cap `n_features` (`MAX_SPARSE_FEATURES`) and
   validate CSR arrays through the pure-Rust `sparse::validate_csr`, closing an unbounded-allocation DoS
   where a hostile caller could force an ~8 EB allocation with a single-nonzero row.
+- Docs reconciled to the current suite: **172**-case Python suite, **147** Rust tests (143 unit + 4
+  integration under default features; the `python` / `persistence` / `cli` surfaces add more, 155 total).
 
 ### Tests
 - Mutation-testing infrastructure (`cargo-mutants` scoped to the CF math core, `mutmut` for the Python
@@ -189,7 +191,8 @@ First public release.
   far below `max_leaves`), and rebuilds reinsert in reverse-DFS leaf order. The CF-tree build is now
   byte-for-byte the reference (`betulars`) tree shape and at speed parity with matched build flags.
 
-[Unreleased]: https://github.com/ilgrad/betula-cluster/compare/v0.1.3...HEAD
+[Unreleased]: https://github.com/ilgrad/betula-cluster/compare/v0.1.4...HEAD
+[0.1.4]: https://github.com/ilgrad/betula-cluster/releases/tag/v0.1.4
 [0.1.3]: https://github.com/ilgrad/betula-cluster/releases/tag/v0.1.3
 [0.1.2]: https://github.com/ilgrad/betula-cluster/releases/tag/v0.1.2
 [0.1.1]: https://github.com/ilgrad/betula-cluster/releases/tag/v0.1.1
