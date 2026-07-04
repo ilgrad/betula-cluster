@@ -65,6 +65,7 @@ def consensus(
     *,
     n_runs: int = ...,
     seed: int = ...,
+    n_jobs: int = ...,
     **fit_kwargs: object,
 ) -> ConsensusResult: ...
 

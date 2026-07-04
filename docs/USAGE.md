@@ -235,7 +235,7 @@ and votes, so you get a robust labelling **and** a per-point stability score —
 on an unstable boundary, high where every insertion order groups it the same way.
 
 ```python
-res = betula_cluster.consensus(X, n_clusters=8, n_runs=5, method="kmeans")
+res = betula_cluster.consensus(X, n_clusters=8, n_runs=5, method="kmeans", n_jobs=-1)  # -1 = all cores
 res.labels          # (n,) consensus label per point
 res.confidence      # (n,) in [0, 1] — per-point agreement across runs
 res.mean_confidence # scalar robustness summary

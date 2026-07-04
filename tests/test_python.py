@@ -1763,3 +1763,14 @@ def test_consensus_rejects_density_method(blobs):
     outliers = np.array([[50.0, 50.0], [60.0, -60.0], [-70.0, 70.0]])  # guarantee HDBSCAN noise
     with pytest.raises(ValueError, match="partitional"):
         betula_cluster.consensus(np.vstack([x, outliers]), 4, method="hdbscan", threshold=0.05)
+
+
+def test_consensus_parallel_matches_serial(blobs):
+    x, _ = blobs
+    kw = dict(n_runs=4, method="kmeans", threshold=0.1, max_leaves=300, seed=0)
+    serial = betula_cluster.consensus(x, 4, n_jobs=1, **kw)
+    for n_jobs in (2, -1):  # positive worker count, then all-cores (max_workers=None)
+        par = betula_cluster.consensus(x, 4, n_jobs=n_jobs, **kw)
+        # each run is seeded independently, so threading changes nothing but wall-clock
+        np.testing.assert_array_equal(serial.labels, par.labels)
+        np.testing.assert_array_equal(serial.confidence, par.confidence)

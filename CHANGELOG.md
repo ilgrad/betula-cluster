@@ -18,7 +18,8 @@ All notable changes to this project are documented here. The format follows
   insertion-order permutations and votes, turning the CF-tree's **insertion-order sensitivity**
   (Known Limitation #1) into a measurable quantity: a consensus labelling plus a **per-point
   stability score** in `[0, 1]` (`ConsensusResult.confidence` — low on unstable boundaries, high
-  where every order agrees). NumPy-only; for the partitional heads at a fixed `n_clusters`.
+  where every order agrees). NumPy-only; for the partitional heads at a fixed `n_clusters`. The
+  independent runs parallelize across threads with `n_jobs` (the Rust core releases the GIL).
 - `method="spectral"` — spectral clustering over the CF-tree leaf microclusters for **non-convex /
   manifold** clusters (moons, rings, spirals) that the centroid heads cannot separate. Self-tuning
   symmetric k-NN affinity (Zelnik-Manor & Perona local scaling), the normalized Laplacian embedding

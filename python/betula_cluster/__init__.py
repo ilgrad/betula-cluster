@@ -185,7 +185,7 @@ def _align_labels(labels: np.ndarray, reference: np.ndarray) -> np.ndarray:
 
 
 def consensus(
-    X, n_clusters: int, *, n_runs: int = 5, seed: int = 0, **fit_kwargs
+    X, n_clusters: int, *, n_runs: int = 5, seed: int = 0, n_jobs: int = 1, **fit_kwargs
 ) -> ConsensusResult:
     """Cluster ``X`` under ``n_runs`` random insertion-order permutations; return the consensus
     labelling and a per-point stability score (see :class:`ConsensusResult`).
@@ -193,22 +193,31 @@ def consensus(
     Extra keyword arguments are forwarded to :func:`fit_predict` (``feature`` / ``method`` /
     ``threshold`` / …). Intended for the partitional heads (``kmeans`` / ``gmm`` / ``ward`` /
     ``spectral``) at a fixed ``n_clusters``; density heads (``hdbscan``) emit noise / variable
-    counts the vote cannot align, and are rejected.
+    counts the vote cannot align, and are rejected. ``n_jobs`` runs the (independent) permutations
+    in parallel threads — the Rust core releases the GIL, so this scales — with `<0` meaning all
+    cores; each run is seeded independently, so the result is identical regardless of ``n_jobs``.
     """
     if n_runs < 1:
         raise ValueError("n_runs must be >= 1")
     x = np.asarray(X)
     n = x.shape[0]
-    rng = np.random.default_rng(seed)
-    runs = []
-    for r in range(n_runs):
-        perm = rng.permutation(n)
+
+    def run(r: int) -> np.ndarray:
+        perm = np.random.default_rng([seed, r]).permutation(n)  # independent per run, order-free
         labels_perm = np.asarray(fit_predict(x[perm], n_clusters, seed=seed + r, **fit_kwargs))
         if labels_perm.min() < 0:
             raise ValueError("consensus requires a partitional method (got noise labels < 0)")
         original = np.empty(n, dtype=np.int64)
         original[perm] = labels_perm  # undo the permutation → labels back in the input's order
-        runs.append(original)
+        return original
+
+    if n_jobs == 1:
+        runs = [run(r) for r in range(n_runs)]
+    else:
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(max_workers=None if n_jobs < 0 else n_jobs) as pool:
+            runs = list(pool.map(run, range(n_runs)))
     reference = runs[0]
     aligned = np.array([reference] + [_align_labels(r, reference) for r in runs[1:]])
     counts = np.zeros((n, int(aligned.max()) + 1), dtype=np.int64)
