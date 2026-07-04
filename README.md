@@ -108,12 +108,14 @@ Rust API, and the CLI — all in the [**usage guide**](https://github.com/ilgrad
 **Stable core** — production-ready:
 
 - **Clustering heads** — weighted k-means (Hamerly), GMM (diagonal & full covariance, BIC auto-`k`),
-  exact Ward HAC, all over the numerically stable BETULA CF-tree.
+  exact Ward HAC, **spectral** (non-convex / manifold), and **Leiden** graph community detection
+  (auto community count, `resolution` / CPM), all over the numerically stable BETULA CF-tree.
 - **Streaming** — `partial_fit` at bounded memory (`max_leaves` / `memory_budget_mb`), EWMA `decay`.
 - **scikit-learn API** — `fit` / `predict` / `fit_predict`, `get_params` / `set_params` (works with
   `Pipeline` / `clone` / `GridSearchCV`); typed abi3 wheel, `save` / `load` + pickle, reusable Rust core.
-- **Inspection** — `predict_proba`, coresets, microcluster/cluster geometry, outliers, near-duplicates,
-  representatives, diagnostics.
+- **Inspection & robustness** — `predict_proba`, coresets, microcluster/cluster geometry, outliers,
+  near-duplicates, representatives, diagnostics, and `consensus` (per-point stability across
+  insertion-order permutations).
 - **Tuning** — `tune`: memory-aware hyperparameter search with a **quality / memory / speed** Pareto
   mode; NumPy-only, optional Optuna backend (`pip install 'betula-cluster[tune]'`).
 

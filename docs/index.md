@@ -34,8 +34,9 @@ labels = betula_cluster.fit_predict(X, n_clusters=10, method="kmeans")
   $(n, \mu, S)$ moments never form the cancelling difference (positive-semidefinite by construction).
 - **Bounded memory.** `max_leaves` / `memory_budget_mb` cap the tree, so `partial_fit` streams data
   larger than RAM.
-- **One engine.** k-means · GMM (diagonal & full) · Ward · HDBSCAN-CF · Mapper topology — plus dedup,
-  outliers, representatives, coresets and memory-aware `tune`, over the same stable CF-tree.
+- **One engine.** k-means · GMM (diagonal & full) · Ward · spectral · Leiden community detection ·
+  HDBSCAN-CF · Mapper topology — plus dedup, outliers, representatives, coresets, `consensus`
+  stability and memory-aware `tune`, over the same stable CF-tree.
 - **Lean.** A single typed abi3 wheel, zero LAPACK / SciPy at runtime; the only dependency is NumPy.
 
 Benchmarks (speed, memory, quality — wins *and* losses) are reproducible from `bench/comprehensive.py`
