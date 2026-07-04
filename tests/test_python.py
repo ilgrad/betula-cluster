@@ -912,6 +912,11 @@ def test_mapper_coordinate_lens_finds_bridge(dumbbell):
     assert g.node_centroids.shape == (g.n_nodes, 2)
     assert len(g.bridges) >= 1  # the neck between the blobs is a bridge
     assert np.all(g.bridges < g.n_edges)  # bridges index valid edges
+    # CF-aware edge overlap: Bhattacharyya coefficient per edge, in [0, 1]; the bridge across the
+    # sparse neck has lower distributional overlap than the densest within-blob edge.
+    assert g.edge_overlap.shape == (g.n_edges,)
+    assert np.all((g.edge_overlap >= 0.0) & (g.edge_overlap <= 1.0))
+    assert g.edge_overlap[g.bridges].min() < g.edge_overlap.max()
 
 
 @pytest.mark.parametrize("lens", ["density", "radius", "l2norm", "coordinate", "eccentricity"])
@@ -944,6 +949,7 @@ def test_mapper_to_networkx_round_trips(dumbbell):
     assert graph.number_of_edges() == g.n_edges
     n_bridge_edges = sum(1 for _a, _b, d in graph.edges(data=True) if d["bridge"])
     assert n_bridge_edges == len(g.bridges)
+    assert all(0.0 <= d["overlap"] <= 1.0 for _a, _b, d in graph.edges(data=True))
     assert isinstance(nx.Graph(), type(graph))
 
 
@@ -1412,3 +1418,116 @@ def test_fit_predict_sparse_invalid_method():
     x, _ = _sparse_topics()
     with pytest.raises(ValueError, match="method"):
         betula_cluster.fit_predict_sparse(x, method="hdbscan")
+
+
+# ── hyperparameter tuning (betula_cluster.tuning) ────────────────────────────────────────────────
+
+
+def test_tune_random_returns_best(blobs):
+    x, _ = blobs
+    result = betula_cluster.tune(x, n_clusters=4, n_trials=6, seed=0)
+    assert isinstance(result, betula_cluster.TuneResult)
+    assert len(result.trials) == 6
+    assert set(result.best_params) == {"max_leaves", "feature", "normalize"}
+    assert np.isfinite(result.best_score)
+    assert result.best_score == max(t.score for t in result.trials)  # calinski_harabasz maximizes
+
+
+def test_tune_davies_bouldin_minimizes(blobs):
+    x, _ = blobs
+    result = betula_cluster.tune(x, n_clusters=4, objective="davies_bouldin", n_trials=6, seed=1)
+    assert result.best_score == min(t.score for t in result.trials)
+
+
+def test_tune_multi_objective_returns_pareto(blobs):
+    x, _ = blobs
+    result = betula_cluster.tune(x, n_clusters=4, n_trials=8, multi_objective=True, seed=2)
+    assert result.pareto  # at least one non-dominated config
+    assert all(p in result.trials for p in result.pareto)
+
+
+def test_tune_ari_objective_with_labels(blobs):
+    x, y = blobs
+    result = betula_cluster.tune(x, n_clusters=4, y=y, objective="ari", n_trials=6, seed=0)
+    assert -0.5 <= result.best_score <= 1.0
+
+
+def test_tune_ari_without_labels_raises(blobs):
+    x, _ = blobs
+    with pytest.raises(ValueError, match="requires ground-truth"):
+        betula_cluster.tune(x, n_clusters=4, objective="ari")
+
+
+def test_tune_unknown_objective_raises(blobs):
+    x, _ = blobs
+    with pytest.raises(ValueError, match="unknown objective"):
+        betula_cluster.tune(x, n_clusters=4, objective="silhouette")
+
+
+def test_tune_unknown_sampler_raises(blobs):
+    x, _ = blobs
+    with pytest.raises(ValueError, match="unknown sampler"):
+        betula_cluster.tune(x, n_clusters=4, sampler="grid")
+
+
+def test_tune_custom_space_and_fixed(blobs):
+    x, _ = blobs
+    space = {"max_leaves": ("cat", [64, 128]), "normalize": ("cat", [False])}
+    result = betula_cluster.tune(x, n_clusters=4, space=space, n_trials=4, seed=0, method="gmm")
+    for tr in result.trials:
+        assert tr.params["max_leaves"] in (64, 128)
+        assert tr.params["normalize"] is False
+
+
+def test_tune_metrics_and_degenerate():
+    tuning = betula_cluster.tuning
+    x = np.array([[0.0, 0.0], [0.1, 0.0], [5.0, 5.0], [5.1, 5.0]])
+    two = np.array([0, 0, 1, 1])
+    assert tuning.calinski_harabasz(x, two) > 0
+    assert tuning.davies_bouldin(x, two) >= 0
+    one = np.zeros(4, dtype=int)  # a single cluster is unscoreable → sentinel
+    assert tuning.calinski_harabasz(x, one) == float("-inf")
+    assert tuning.davies_bouldin(x, one) == float("inf")
+
+
+def test_tune_adjusted_rand():
+    tuning = betula_cluster.tuning
+    a = np.array([0, 0, 1, 1])
+    assert tuning.adjusted_rand(a, a) == pytest.approx(1.0)
+    assert tuning.adjusted_rand(a, np.array([0, 0, 0, 0])) == pytest.approx(0.0)
+    # trivial identical partitions hit the maximum == expected fast path
+    assert tuning.adjusted_rand(np.zeros(3, dtype=int), np.zeros(3, dtype=int)) == 1.0
+
+
+def test_tune_internal_guards():
+    tuning = betula_cluster.tuning
+    with pytest.raises(ValueError, match="parameter spec"):
+        tuning._sample(np.random.default_rng(0), ("linear", 1, 2))
+    x = np.zeros((4, 2))
+    assert tuning._score(x, np.zeros(4, dtype=int), None, "davies_bouldin") == float("inf")
+    assert tuning._score(x, np.zeros(4, dtype=int), None, "calinski_harabasz") == float("-inf")
+
+
+def test_tune_metric_extreme_scores():
+    tuning = betula_cluster.tuning
+    # perfectly tight clusters (zero within-cluster scatter) → Calinski-Harabasz is +inf (best)
+    x = np.array([[0.0, 0.0], [0.0, 0.0], [9.0, 9.0], [9.0, 9.0]])
+    assert tuning.calinski_harabasz(x, np.array([0, 0, 1, 1])) == float("inf")
+    # two distinct clusters with coincident centroids → Davies-Bouldin is +inf (worst), never a
+    # false 0.0 that would rank a bad clustering as perfect
+    xdb = np.array([[-1.0, 0.0], [1.0, 0.0], [0.0, -1.0], [0.0, 1.0]])
+    assert tuning.davies_bouldin(xdb, np.array([0, 0, 1, 1])) == float("inf")
+
+
+def test_tune_finalize_keeps_best_infinity():
+    tuning = betula_cluster.tuning
+    trial = tuning.Trial
+    perfect = trial(params={"i": 1}, score=float("inf"), n_leaves=5, time_s=0.1)  # best CH
+    okay = trial(params={"i": 2}, score=100.0, n_leaves=8, time_s=0.2)
+    worst = trial(params={"i": 3}, score=float("-inf"), n_leaves=3, time_s=0.05)  # worst sentinel
+    res = tuning._finalize([perfect, okay, worst], "calinski_harabasz", multi_objective=True)
+    assert res.best_score == float("inf") and res.best_params == {"i": 1}  # was dropped pre-fix
+    assert perfect in res.pareto and worst not in res.pareto
+    # all-worst pool → fall back to the raw trials instead of an empty selection
+    only_worst = tuning._finalize([worst], "calinski_harabasz", multi_objective=False)
+    assert only_worst.best_params == {"i": 3}

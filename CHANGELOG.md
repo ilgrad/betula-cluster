@@ -4,6 +4,40 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.3] — 2026-07-04
+
+### Added
+- `betula_cluster.tune` — memory-aware hyperparameter search over the CF knobs, scored by an internal
+  metric (Calinski-Harabasz / Davies-Bouldin) or ARI, with a multi-objective **quality / memory /
+  speed** Pareto mode. NumPy-only by default; an optional Optuna backend (TPE / NSGA-II) via
+  `pip install 'betula-cluster[tune]'`.
+- Property-based tests (`proptest`, dev-only) for the CF-tree invariants: the clustering feature is a
+  commutative monoid (`merge` is associative/commutative and equals a sequential build), folding a
+  tree's leaf features reconstructs the whole-dataset feature, the full-covariance upper-triangular
+  index is a bijection (incl. `dim ≥ 4`), and the Frequent-Directions sketch is lossless on low-rank
+  data and never overshoots the exact scatter.
+- Sparse-text benchmark (20 newsgroups, TF-IDF): the `O(nnz)` `fit_predict_sparse` path and the
+  standard reduce-then-cluster pipeline (TruncatedSVD / NMF → k-means) vs scikit-learn, written up
+  honestly in `bench/RESULTS.md` (raw high-`d` TF-IDF concentrates for every fast clusterer; on NMF
+  topics betula matches sklearn).
+- `MapperGraph.edge_overlap` — a Bhattacharyya coefficient in `(0, 1]` per Mapper edge, from the pooled
+  diagonal-Gaussian summaries of the two nodes' member microclusters. Surfaced on `to_networkx()` edges
+  as `overlap=…`, so a bridge between well-separated regions reads as a lower-weight edge than one
+  inside a dense blob.
+- Documentation site (MkDocs Material + `mkdocstrings` API autodoc, MathJax-rendered math) built from
+  `docs/`, with a GitHub Pages deploy workflow; `pip install 'betula-cluster[docs]'` for the toolchain.
+
+### Changed
+- Coverage floor (`cargo llvm-cov`, ≥95 % lines) now also measures the `persistence` and `cli` feature
+  sets, not just the default core.
+- Declared `rust-version = "1.82"` (MSRV) and lowered the real floor to it — the streaming heads had an
+  implicit 1.87 dependency (`u64::is_multiple_of`), now rewritten. Added `Documentation` / `Changelog`
+  project URLs.
+- Docs reconciled to the current suite: **167**-case Python suite, **141** Rust tests (137 unit + 4
+  integration), and **five** end-to-end use cases (README, DESIGN.md).
+- Repository hardening: `macOS` / `Windows` CI test legs, an sdist install smoke test, a nightly
+  `cargo audit` cron, Dependabot, and `SECURITY.md` / `CONTRIBUTING.md` / issue templates.
+
 ## [0.1.2] — 2026-06-28
 
 ### Added
@@ -129,4 +163,8 @@ First public release.
   far below `max_leaves`), and rebuilds reinsert in reverse-DFS leaf order. The CF-tree build is now
   byte-for-byte the reference (`betulars`) tree shape and at speed parity with matched build flags.
 
+[Unreleased]: https://github.com/ilgrad/betula-cluster/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/ilgrad/betula-cluster/releases/tag/v0.1.3
+[0.1.2]: https://github.com/ilgrad/betula-cluster/releases/tag/v0.1.2
+[0.1.1]: https://github.com/ilgrad/betula-cluster/releases/tag/v0.1.1
 [0.1.0]: https://github.com/ilgrad/betula-cluster/releases/tag/v0.1.0

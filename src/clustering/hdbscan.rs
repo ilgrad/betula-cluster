@@ -347,4 +347,42 @@ mod tests {
         assert_eq!(r1.labels, vec![0]);
         assert_eq!(r1.n_clusters, 1);
     }
+
+    #[test]
+    fn hdbscan_labels_isolated_point_as_noise() {
+        use crate::feature::{ClusterFeature, Spherical};
+        // A micro-cluster in a sparse region must be labelled noise (-1), not forced into a cluster —
+        // HDBSCAN*'s defining behaviour vs k-means / GMM.
+        let micro = |mx: f64, my: f64| {
+            let mut c = Spherical::<f64>::new(2);
+            c.push(&[mx, my], 1.0);
+            c
+        };
+        let mut feats: Vec<Spherical<f64>> = Vec::new();
+        for (x, y) in [(0.0, 0.0), (0.1, 0.0), (0.0, 0.1), (0.1, 0.1), (0.05, 0.05)] {
+            feats.push(micro(x, y)); // dense group A near the origin
+        }
+        for (x, y) in [
+            (10.0, 0.0),
+            (10.1, 0.0),
+            (10.0, 0.1),
+            (10.1, 0.1),
+            (10.05, 0.05),
+        ] {
+            feats.push(micro(x, y)); // dense group B near (10, 0)
+        }
+        feats.push(micro(5.0, 20.0)); // an isolated micro-cluster (index 10)
+
+        let res = hdbscan(&feats, 2, 3);
+        assert_eq!(res.labels[10], -1, "isolated micro must be noise");
+        assert!(
+            res.labels[0] >= 0 && res.labels[5] >= 0,
+            "dense groups must cluster"
+        );
+        assert_ne!(
+            res.labels[0], res.labels[5],
+            "A and B are distinct clusters"
+        );
+        assert_eq!(res.n_clusters, 2);
+    }
 }

@@ -1808,6 +1808,7 @@ impl Betula {
         )?;
         d.set_item("branch_points", branch_points.into_pyarray(py))?;
         d.set_item("bridges", bridges.into_pyarray(py))?;
+        d.set_item("edge_overlap", g.edge_overlap.clone().into_pyarray(py))?;
         Ok(d)
     }
 
@@ -2570,14 +2571,17 @@ impl PyKllSketch {
         self.inner.rank(value)
     }
 
+    /// Total number of values added.
     #[getter]
     fn count(&self) -> u64 {
         self.inner.count()
     }
+    /// Smallest value seen (`NaN` if empty).
     #[getter]
     fn min(&self) -> f64 {
         self.inner.min()
     }
+    /// Largest value seen (`NaN` if empty).
     #[getter]
     fn max(&self) -> f64 {
         self.inner.max()
@@ -2600,10 +2604,12 @@ impl PyDdSketch {
         })
     }
 
+    /// Add one value.
     fn update(&mut self, x: f64) {
         self.inner.update(x);
     }
 
+    /// Add every value of a 1-D array.
     fn update_many(&mut self, py: Python<'_>, data: PyReadonlyArray1<'_, f64>) -> PyResult<()> {
         let v = data.as_array().to_vec();
         py.detach(|| {
@@ -2614,16 +2620,19 @@ impl PyDdSketch {
         Ok(())
     }
 
+    /// Merge another DDSketch into this one.
     fn merge(&mut self, other: PyRef<'_, PyDdSketch>) -> PyResult<()> {
         self.inner
             .merge(&other.inner)
             .map_err(PyValueError::new_err)
     }
 
+    /// Estimated `q`-quantile (`q ∈ [0, 1]`).
     fn quantile(&self, q: f64) -> f64 {
         self.inner.quantile(q)
     }
 
+    /// Estimated quantiles for an array of `q` values.
     fn quantiles<'py>(
         &self,
         py: Python<'py>,
@@ -2633,18 +2642,22 @@ impl PyDdSketch {
         Ok(self.inner.quantiles(&qs).into_pyarray(py))
     }
 
+    /// Total number of values added.
     #[getter]
     fn count(&self) -> u64 {
         self.inner.count()
     }
+    /// Relative accuracy `α` (smaller ⇒ tighter quantiles, more buckets).
     #[getter]
     fn alpha(&self) -> f64 {
         self.inner.alpha()
     }
+    /// Smallest value seen (`NaN` if empty).
     #[getter]
     fn min(&self) -> f64 {
         self.inner.min()
     }
+    /// Largest value seen (`NaN` if empty).
     #[getter]
     fn max(&self) -> f64 {
         self.inner.max()

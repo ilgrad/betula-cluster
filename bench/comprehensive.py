@@ -365,6 +365,29 @@ def run_real_scale(dataset: str = "covtype") -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def run_sparse(datasets: list[str]) -> pd.DataFrame:
+    """High-dimensional sparse text (TF-IDF CSR): betula's O(nnz) sparse-native path
+    (`fit_predict_sparse`) vs sklearn, each isolated in a subprocess (time · peak RSS · ARI).
+    Skipped if the corpus can't be downloaded (offline)."""
+    rows = []
+    for ds in datasets:
+        for name in [
+            "betula-sparse",
+            "sklearn-kmeans",
+            "betula-svd",
+            "sklearn-svd",
+            "betula-nmf",
+            "sklearn-nmf",
+        ]:
+            res = _run_worker(["sparse_fit", name, ds], TIMEOUT * 3)
+            if res.get("error"):
+                print(f"  sparse {ds}: skipped ({res['error']})")
+                break
+            rows.append({"dataset": ds, "method": name, **res})
+            print(f"  sparse {ds} {name:18s} {res}")
+    return pd.DataFrame(rows)
+
+
 # ── plots ─────────────────────────────────────────────────────────────────────────────────────────
 def _ari_heatmap(df, title, path):
     import matplotlib.pyplot as plt
@@ -463,6 +486,8 @@ def main():
     if not args.quick:
         print("[real-scale] full covtype: betula vs sklearn (time · RSS · ARI)")
         run_real_scale("covtype").to_csv(HERE / "results_real_scale.csv", index=False)
+    print("[sparse] 20 newsgroups TF-IDF: betula sparse-native vs sklearn (time · RSS · ARI)")
+    run_sparse(["20news"]).to_csv(HERE / "results_sparse.csv", index=False)
     make_plots(q, s, m, qr)
     print("wrote results_*.csv, plots/*.png")
     return q, s, m

@@ -217,7 +217,7 @@ impl<R: Real, C: ClusterFeature<R>> DenStream<R, C> {
     fn tick(&mut self) {
         self.t += 1.0;
         let period = self.tp as u64;
-        if period > 0 && (self.t as u64).is_multiple_of(period) {
+        if period > 0 && (self.t as u64) % period == 0 {
             self.prune();
         }
     }
@@ -484,7 +484,7 @@ impl<R: Real, C: ClusterFeature<R>> DbStream<R, C> {
     fn tick(&mut self) {
         self.t += 1.0;
         let period = self.t_gap as u64;
-        if period > 0 && (self.t as u64).is_multiple_of(period) {
+        if period > 0 && (self.t as u64) % period == 0 {
             self.cleanup();
         }
     }

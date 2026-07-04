@@ -962,3 +962,199 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod prop_tests {
+    //! Property-based checks of the invariants DESIGN.md advertises: the CF is a commutative monoid
+    //! (merge = Σ points, order-independent), the full-covariance upper-triangular index is a
+    //! bijection (the `dim >= 4` cross-product regime), and the FD sketch is lossless on low-rank
+    //! data and never overshoots the exact scatter.
+    #![allow(clippy::needless_range_loop)] // symmetric-matrix checks read clearest with (i, j)
+    use super::*;
+    use proptest::prelude::*;
+
+    /// Relative closeness — merge reorders the stable Welford/Chan updates, so results agree up to
+    /// rounding rather than bit-for-bit.
+    fn close(a: f64, b: f64) -> bool {
+        (a - b).abs() <= 1e-7 * a.abs().max(b.abs()).max(1.0)
+    }
+
+    /// `(dim, points)` with every point sharing `dim`, `dim ∈ [min_dim, max_dim]`.
+    fn dim_points(
+        min_dim: usize,
+        max_dim: usize,
+        min_pts: usize,
+        max_pts: usize,
+    ) -> impl Strategy<Value = (usize, Vec<Vec<f64>>)> {
+        (min_dim..=max_dim).prop_flat_map(move |d| {
+            prop::collection::vec(
+                prop::collection::vec(-100.0f64..100.0, d..=d),
+                min_pts..=max_pts,
+            )
+            .prop_map(move |pts| (d, pts))
+        })
+    }
+
+    fn build<C: ClusterFeature<f64>>(d: usize, pts: &[Vec<f64>]) -> C {
+        let mut c = C::new(d);
+        for p in pts {
+            c.push(p, 1.0);
+        }
+        c
+    }
+
+    /// Weight, mean, ssd and per-dimension variance all agree (diagonal moments).
+    fn same<C: ClusterFeature<f64>>(a: &C, b: &C) -> bool {
+        close(a.weight(), b.weight())
+            && close(a.ssd(), b.ssd())
+            && (0..a.dim())
+                .all(|i| close(a.mean()[i], b.mean()[i]) && close(a.variance(i), b.variance(i)))
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(128))]
+
+        /// Merging two arbitrary partitions reconstructs the whole-dataset feature — for every
+        /// model. The CF-level "merge = Σ points" / commutative-monoid property.
+        #[test]
+        fn merge_equals_sequential((d, pts) in dim_points(2, 8, 2, 40), cut in 0usize..=40) {
+            let k = cut.min(pts.len());
+            macro_rules! check {
+                ($t:ty) => {{
+                    let full: $t = build(d, &pts);
+                    let mut a: $t = build(d, &pts[..k]);
+                    let b: $t = build(d, &pts[k..]);
+                    a.merge(&b);
+                    prop_assert!(same(&a, &full));
+                }};
+            }
+            check!(Spherical<f64>);
+            check!(Diagonal<f64>);
+            check!(Full<f64>);
+        }
+
+        /// `A ⊕ B == B ⊕ A`.
+        #[test]
+        fn merge_is_commutative((d, pts) in dim_points(2, 6, 2, 30), cut in 0usize..=30) {
+            let k = cut.min(pts.len());
+            let mut ab: Full<f64> = build(d, &pts[..k]);
+            ab.merge(&build::<Full<f64>>(d, &pts[k..]));
+            let mut ba: Full<f64> = build(d, &pts[k..]);
+            ba.merge(&build::<Full<f64>>(d, &pts[..k]));
+            prop_assert!(same(&ab, &ba));
+        }
+
+        /// `(A ⊕ B) ⊕ C == A ⊕ (B ⊕ C)`.
+        #[test]
+        fn merge_is_associative(
+            (d, pts) in dim_points(2, 6, 3, 30),
+            c1 in 0usize..=30,
+            c2 in 0usize..=30,
+        ) {
+            let n = pts.len();
+            let mut cuts = [c1.min(n), c2.min(n)];
+            cuts.sort_unstable();
+            let (p, q) = (cuts[0], cuts[1]);
+            let mut left: Full<f64> = build(d, &pts[..p]);
+            left.merge(&build::<Full<f64>>(d, &pts[p..q]));
+            left.merge(&build::<Full<f64>>(d, &pts[q..]));
+            let mut bc: Full<f64> = build(d, &pts[p..q]);
+            bc.merge(&build::<Full<f64>>(d, &pts[q..]));
+            let mut right: Full<f64> = build(d, &pts[..p]);
+            right.merge(&bc);
+            prop_assert!(same(&left, &right));
+        }
+
+        /// Full covariance (off-diagonals included) survives an arbitrary merge at `dim >= 4` — the
+        /// regime where the reference upper-triangular index bug corrupted cross-products.
+        #[test]
+        fn full_merge_preserves_covariance_dim_ge_4(
+            (d, pts) in dim_points(4, 8, 3, 30),
+            cut in 0usize..=30,
+        ) {
+            let k = cut.min(pts.len());
+            let full: Full<f64> = build(d, &pts);
+            let mut a: Full<f64> = build(d, &pts[..k]);
+            a.merge(&build::<Full<f64>>(d, &pts[k..]));
+            let (ca, cf) = (a.covariance(), full.covariance());
+            for i in 0..d {
+                for j in 0..d {
+                    prop_assert!(close(ca[i][j], cf[i][j]), "cov ({i},{j})");
+                }
+            }
+        }
+
+        /// The upper-triangular packing index is a bijection onto `0..d(d+1)/2` — no `(i, j)`
+        /// collides and every slot is used (round-trip), including `d >= 4`.
+        #[test]
+        fn upper_tri_index_is_a_bijection(d in 1usize..=12) {
+            let f: Full<f64> = Full::new(d);
+            let mut seen = vec![false; d * (d + 1) / 2];
+            for i in 0..d {
+                for j in i..d {
+                    let k = f.idx(i, j);
+                    prop_assert!(k < seen.len(), "idx out of range at ({i},{j})");
+                    prop_assert!(!seen[k], "collision at ({i},{j}) -> {k}");
+                    seen[k] = true;
+                }
+            }
+            prop_assert!(seen.into_iter().all(|b| b), "some slot never indexed");
+        }
+
+        /// FD sketch is lossless on genuinely low-rank data: rank-≤2 points in `R^d` (`d >= 4`, so
+        /// `ell = d` clears FD's lower-median shrink threshold `ceil((ell-1)/2) >= 2`) reproduce the
+        /// exact full covariance. `with_ell` clamps `ell` to `[1, dim]`, so `ell > d` is impossible.
+        #[test]
+        fn fd_lossless_on_low_rank(
+            (d, u, v, coeffs) in (4usize..=8).prop_flat_map(|d| {
+                (
+                    Just(d),
+                    prop::collection::vec(-10.0f64..10.0, d),
+                    prop::collection::vec(-10.0f64..10.0, d),
+                    prop::collection::vec((-5.0f64..5.0, -5.0f64..5.0), 3..=30),
+                )
+            })
+        ) {
+            let pts: Vec<Vec<f64>> = coeffs
+                .iter()
+                .map(|&(a, b)| (0..d).map(|k| a * u[k] + b * v[k]).collect())
+                .collect();
+            let full: Full<f64> = build(d, &pts);
+            let mut fd = FdSketch::<f64>::with_ell(d, d);
+            for p in &pts {
+                fd.push(p, 1.0);
+            }
+            prop_assert!(close(fd.weight(), full.weight()));
+            let (cfd, cfull) = (fd.cov_dense(), full.cov_dense());
+            for i in 0..d {
+                for j in 0..d {
+                    prop_assert!(close(cfd[i][j], cfull[i][j]), "cov ({i},{j})");
+                }
+            }
+        }
+
+        /// FD sketch with `ell < d` never overshoots (`BᵀB ⪯ AᵀA`, so total scatter <= exact) and
+        /// stays symmetric.
+        #[test]
+        fn fd_undershoots_and_symmetric((d, pts) in dim_points(3, 8, 6, 40), e in 0usize..100) {
+            let ell = 1 + e % (d - 1); // 1..=d-1
+            let full: Full<f64> = build(d, &pts);
+            let mut fd = FdSketch::<f64>::with_ell(d, ell);
+            for p in &pts {
+                fd.push(p, 1.0);
+            }
+            prop_assert!(
+                fd.ssd() <= full.ssd() * (1.0 + 1e-9) + 1e-9,
+                "overshoot: {} > {}",
+                fd.ssd(),
+                full.ssd()
+            );
+            let cov = fd.cov_dense();
+            for i in 0..d {
+                for j in 0..d {
+                    prop_assert!(close(cov[i][j], cov[j][i]), "asymmetry ({i},{j})");
+                }
+            }
+        }
+    }
+}

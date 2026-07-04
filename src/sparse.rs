@@ -237,4 +237,40 @@ mod tests {
         assert_eq!(nearest_sparse(&means, &musq, &[2], &[4.5], 4.5 * 4.5), 1);
         assert_eq!(nearest_sparse(&means, &musq, &[0], &[1.2], 1.2 * 1.2), 0);
     }
+
+    #[test]
+    fn sparse_scatter_loses_precision_on_near_duplicate_dense_points() {
+        // Documented regime (module note above): near-duplicate *dense* rows at large magnitude. The
+        // mean (classic ΣX/n) stays exact; the scatter S — from the expanded ‖x−μ‖² — cancels
+        // catastrophically (‖x‖² ≈ 2·(1e8)² has an ULP ~4, so the true scatter is quantised away).
+        let dim = 2;
+        let b = 1.0e8;
+        let idx = [0usize, 1usize];
+        let rows = [[b, b], [b + 1.0, b - 1.0]];
+
+        let mut sp = SparseSpherical::new(dim);
+        let mut dense = Spherical::<f64>::new(dim);
+        for r in &rows {
+            sp.push(&idx, r, norm_sq(r));
+            dense.push(r, 1.0); // cancellation-free Welford reference
+        }
+        let sparse = sp.into_spherical();
+        let true_ssd = 1.0; // mean [b+0.5, b−0.5]; each point contributes 0.5 ⇒ Σ = 1.0
+
+        for (a, d) in sparse.mean().iter().zip(dense.mean()) {
+            assert!((a - d).abs() < 1e-6, "means diverge: {a} vs {d}"); // mean stable in both paths
+        }
+        assert!(
+            (dense.ssd() - true_ssd).abs() < 1e-6,
+            "dense ssd = {}",
+            dense.ssd()
+        );
+        // the O(nnz) expanded sparse path cannot recover it (documented trade-off), yet never negative
+        assert!(
+            (sparse.ssd() - true_ssd).abs() > 0.5,
+            "sparse ssd = {}",
+            sparse.ssd()
+        );
+        assert!(sparse.ssd() >= 0.0);
+    }
 }

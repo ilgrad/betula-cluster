@@ -174,6 +174,37 @@ Clustering a **real** half-million-row dataset, each run isolated in its own sub
 betula-kmeans clusters the full 581 k-row covtype **~7× faster** than scikit-learn KMeans — at the same
 memory and a *better* ARI, on real data rather than blobs.
 
+## Sparse text — 20 newsgroups (TF-IDF)
+
+18 846 documents × 2 000 TF-IDF features clustered into the 20 ground-truth topics, each method
+isolated in its own subprocess (`bench/results_sparse.csv`):
+
+| reduction | clusterer | time | ARI |
+|---|---|---|---|
+| raw 2 000-D (none) | betula `fit_predict_sparse` (O(nnz)) | 9.9 s | 0.001 |
+| raw 2 000-D (none) | sklearn k-means | 1.8 s | 0.056 |
+| TruncatedSVD(50) | **betula** k-means | **0.42 s** | 0.078 |
+| TruncatedSVD(50) | sklearn k-means | 0.74 s | 0.130 |
+| NMF(20) | **betula** k-means | 2.5 s | **0.126** |
+| NMF(20) | sklearn k-means | 2.5 s | 0.124 |
+
+Read honestly:
+
+- **Raw high-dimensional TF-IDF is the wrong input for any compression / fast clusterer.** At
+  `d = 2 000` Euclidean distances concentrate, so the O(nnz) sparse-native path (0.001, ≈ random) and
+  even raw sklearn k-means (0.056) barely beat chance. The standard fix for sparse text is
+  **reduce-then-cluster**: project to a few dozen LSA / topic dimensions first (TruncatedSVD or NMF),
+  then cluster — which lifts every method far above the raw baselines.
+- **On the reduced features betula reaches parity when the reduction suits compression.** On NMF's 20
+  non-negative topic activations betula matches sklearn (0.126 vs 0.124); on SVD's 50 signed components
+  it trails (0.078 vs 0.130) — clustering ≤ 2 048 leaf microclusters instead of all 18 846 points loses
+  more of the overlapping-topic structure in the denser SVD space (mitigation: more leaves). This is the
+  documented *small-N + overlapping-density* regime; CF compression is built to pay off at large `N`,
+  not at ~19 k rows.
+- Net: `fit_predict_sparse` is a **scale / bounded-memory** tool for very large sparse inputs, not a
+  quality lever on high-`d` text — for text, reduce dimensionality first and cluster the dense topic
+  vectors.
+
 ## Conclusions
 
 - **Use betula** when data is large or streaming, memory is bounded, or you want one numerically
@@ -183,5 +214,8 @@ memory and a *better* ARI, on real data rather than blobs.
 - **Use raw scikit-learn** when `N` is small enough to fit comfortably and you want the canonical
   point-level algorithm with no compression — at small `N` the two-phase overhead removes betula's
   speed edge, and raw HDBSCAN is stronger on overlapping density.
+- **For sparse high-dimensional text**, reduce dimensionality first (TruncatedSVD / NMF / embeddings)
+  and cluster the dense topic vectors — raw TF-IDF concentrates and defeats every fast clusterer (see
+  *Sparse text* above).
 - The numbers above are what the committed `bench/comprehensive.py` produces; re-run it to regenerate
   every table and plot.

@@ -1,7 +1,7 @@
 # Usage guide
 
 Runnable snippets for every interface. For executed, plotted walk-throughs see the
-[example notebooks](../examples/README.md); for the full capability list see [`FEATURES.md`](FEATURES.md).
+[example notebooks](https://github.com/ilgrad/betula-cluster/blob/main/examples/README.md); for the full capability list see [`FEATURES.md`](FEATURES.md).
 
 ## One-shot — `fit_predict`
 
@@ -39,7 +39,7 @@ Feed chunks with `partial_fit`, finalize with a no-arg `partial_fit()`, then `pr
 bounded by `max_leaves` no matter how much data streams through (the CF-tree rebuilds, it never grows
 without limit) — or set **`memory_budget_mb`** and let it size `max_leaves` for you (a target for the
 tree's resident size; most meaningful for streaming, where the data is transient and the tree is what
-grows). Set **`huber_k`** (e.g. `2.0`) to winsorize each incoming point to ±`k·σ` of its target
+grows). Set **`huber_k`** (e.g. `2.0`) to winsorize each incoming point to $\pm k\sigma$ of its target
 microcluster before folding it in, so outliers in the stream cannot drag a centroid or inflate a radius.
 
 ```python
@@ -64,7 +64,30 @@ profile = est.cluster_profile(0)              # JSON-able geometry + nearest clu
 batch   = est.active_learning_batch(X_query, n=100, strategy="uncertain")  # rows to review/label
 
 snap = est.snapshot()                         # cluster geometry now; later, detect drift:
-drift = betula_cluster.Betula.compare_snapshots(snap, est_next.snapshot())  # shifts / mass ratios / births
+drift = betula_cluster.Betula.compare_snapshots(snap, est_next.snapshot())  # matched clusters: centroid shifts / mass ratios
+```
+
+## Topological structure — `mapper()`
+
+A TDA-Mapper skeleton over the microclusters: non-convex shape, **branch points**, and **bridges**
+(thin links that flag topic leakage / merges in embeddings). It runs over the $M \ll N$ microclusters,
+so it is cheap — an exploration tool, not a partition.
+
+```python
+est = betula_cluster.Betula(n_clusters=8).fit(X)
+g = est.mapper(lens="density", resolution=10, gain=0.3)  # lens: density|radius|l2norm|coordinate|eccentricity
+
+g.n_nodes, g.n_edges          # skeleton size
+g.branch_points               # nodes where the shape splits (degree >= 3)
+g.bridges                     # indices into g.edges whose removal disconnects the graph
+g.edge_overlap                # (n_edges,) Bhattacharyya overlap in (0, 1]: a bridge across a sparse
+                              # neck reads LOWER than an edge inside one dense blob — distributional,
+                              # not just a shared-microcluster count
+
+nxg = g.to_networkx()         # optional (needs networkx); edges carry weight / overlap / bridge
+
+# sweep resolution to find the topologically stable scale (β0 / branch / bridge counts vs resolution)
+curve = est.mapper_stability(resolutions=[8, 12, 16])
 ```
 
 ## Semi-supervised — COP-KMeans constraints
@@ -146,7 +169,7 @@ X = sp.csr_matrix(one_hot_features)          # never densified to N × d
 labels = betula_cluster.Betula(method="kmeans", feature="diagonal").fit_predict(X)
 ```
 
-For very high-dimensional sparse data (text TF-IDF, large one-hot), the `O(nnz)` sparse-native
+For very high-dimensional sparse data (text TF-IDF, large one-hot), the $O(\mathrm{nnz})$ sparse-native
 one-shot touches only the non-zeros:
 
 ```python
@@ -154,6 +177,54 @@ from betula_cluster import fit_predict_sparse
 
 labels = fit_predict_sparse(X, n_clusters=20, threshold=0.5)   # kmeans by default; O(nnz) per row
 ```
+
+## Hyperparameter tuning — memory-aware, dependency-free
+
+`betula_cluster.tune` searches the CF-representation knobs (compression resolution, covariance model,
+`normalize`) for the best clustering — with an internal metric, or ARI when you have labels. It is
+NumPy-only; its **multi-objective** mode returns the **quality / memory / speed** Pareto front, so you
+pick the point that fits your accuracy, footprint and latency budget.
+
+```python
+import numpy as np
+
+import betula_cluster
+
+X = np.random.default_rng(0).normal(size=(20_000, 16))
+
+# single-objective: maximize the internal Calinski-Harabasz score, then refit with the winner
+best = betula_cluster.tune(X, n_clusters=8, n_trials=40)
+labels = betula_cluster.fit_predict(X, n_clusters=8, **best.best_params)
+
+# multi-objective: the accuracy / memory / speed Pareto front
+result = betula_cluster.tune(X, n_clusters=8, multi_objective=True)
+for t in result.pareto:
+    print(t.params, f"score={t.score:.1f} leaves={t.n_leaves} time={t.time_s:.3f}s")
+```
+
+The **Optuna** backend drops in for random search at the same trial budget — usually better trials
+for the same cost. It is an optional extra (`pip install 'betula-cluster[tune]'`); the default path
+above needs only NumPy.
+
+```python
+# needs: pip install 'betula-cluster[tune]'
+best = betula_cluster.tune(
+    X,
+    n_clusters=8,
+    sampler="optuna",          # TPE (single-objective) / NSGA-II (multi_objective Pareto)
+    n_trials=60,
+    space={                    # optional: override the default search space
+        "max_leaves": ("int_log", 256, 8192),          # log-uniform integer
+        "feature": ("cat", ["spherical", "diagonal", "full"]),
+        "normalize": ("cat", [False, True]),
+    },
+)
+labels = betula_cluster.fit_predict(X, n_clusters=8, **best.best_params)
+```
+
+Objectives: `"calinski_harabasz"` (default, higher better), `"davies_bouldin"` (lower better), or
+`"ari"` (needs `y=`). Because betula fits are cheap, hundreds of trials stay fast — and every trial is
+scored for memory (`n_leaves`) and time, not just quality.
 
 ## Rust
 
@@ -210,4 +281,4 @@ RUSTFLAGS="-C target-cpu=native" maturin build --release --features python
 
 The published wheels deliberately stay portable (a `target-cpu=native` wheel raises `SIGILL` on any
 CPU older than the build host), so this is a local/private build only — see
-[`.cargo/config.toml`](../.cargo/config.toml).
+[`.cargo/config.toml`](https://github.com/ilgrad/betula-cluster/blob/main/.cargo/config.toml).

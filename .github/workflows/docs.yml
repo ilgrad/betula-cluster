@@ -1,0 +1,35 @@
+name: docs
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - docs/**
+      - mkdocs.yml
+      - python/**
+      - .github/workflows/docs.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: docs-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: astral-sh/setup-uv@v5
+      - name: Build extension + deploy docs
+        run: |
+          uv venv
+          uv pip install maturin mkdocs-material "mkdocstrings[python]" ruff numpy
+          # mkdocstrings imports the package, so the compiled core must be built first.
+          uv run maturin develop --release
+          uv run mkdocs gh-deploy --force --no-history

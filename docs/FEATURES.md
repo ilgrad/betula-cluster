@@ -1,11 +1,11 @@
 # Features — full reference
 
 A capability-by-capability reference. For runnable code see [`USAGE.md`](USAGE.md) and the
-[example notebooks](../examples/README.md); for the math behind these, see [`MATH.md`](MATH.md).
+[example notebooks](https://github.com/ilgrad/betula-cluster/blob/main/examples/README.md); for the math behind these, see [`MATH.md`](MATH.md).
 
 - CF-tree (BIRCH/BETULA Phase 1) with auto-rebuild and covariance models — spherical, diagonal,
   full (PSD-by-construction via Cholesky), and a **Frequent-Directions sketch** for very
-  high-dimensional data (`O(ℓ·d)` memory per leaf instead of `O(d²)`; trades speed for memory, for
+  high-dimensional data ($O(\ell d)$ memory per leaf instead of $O(d^2)$; trades speed for memory, for
   `d` so large the full covariance does not fit).
 - auto-vectorized distance kernels (tight inline reductions the compiler vectorizes — measured
   faster than runtime SIMD dispatch on the small-`d` hot path); rayon-parallel point
@@ -17,10 +17,11 @@ A capability-by-capability reference. For runnable code see [`USAGE.md`](USAGE.m
   **Ward agglomerative HAC** (exact, via nearest-neighbour chain; dendrogram-cut auto-k), and
   **HDBSCAN-style density clustering over the CF microclusters** (mass-aware mutual-reachability +
   mass-weighted stability → non-convex clusters and noise, automatic count; an *approximation* of
-  raw-point HDBSCAN over the `M ≪ N` microclusters, not identical to it).
+  raw-point HDBSCAN over the $M \ll N$ microclusters, not identical to it).
 - **Soft assignment & confidence**: `predict_proba` (true posterior for the GMM heads; a documented
   centroid-distance softmax *heuristic* for k-means / Ward / HDBSCAN), `assignment_confidence`,
-  `export_coreset` (the leaves as weighted points), `diagnostics`, `representatives`, `cluster_profile`.
+  `microcluster_proba_` (per-microcluster GMM responsibilities, GMM heads only), `export_coreset` (the
+  leaves as weighted points), `diagnostics`, `representatives`, `cluster_profile`.
 - **`DenStream`** — a separate streaming density clusterer (Cao et al., SDM 2006) over *fading*
   micro-clusters, for evolving streams where old data should decay out: `partial_fit` chunks, then
   `predict` (`-1` = noise). Reuses the same numerically stable CFs (decay is exact and leaves the
@@ -39,9 +40,9 @@ A capability-by-capability reference. For runnable code see [`USAGE.md`](USAGE.m
   materialized** (cluster a million-row sparse matrix that would never fit dense). This dense-tree
   path keeps the cancellation-free guarantee; compute scales with the feature count (the CF centroid
   is dense, as in every CF-tree method — sklearn-Birch included).
-- **`O(nnz)` sparse-native** (`fit_predict_sparse`) — for very high-dimensional sparse data, a
+- **$O(\mathrm{nnz})$ sparse-native** (`fit_predict_sparse`) — for very high-dimensional sparse data, a
   one-shot path that touches only the non-zeros: rows summarize into spherical micro-clusters keeping
-  `(n, ΣX, ‖ΣX‖², S)` so updates and centroid distances are `O(nnz)`, then a parametric head
+  $(n, \Sigma X, \|\Sigma X\|^2, S)$ so updates and centroid distances are $O(\mathrm{nnz})$, then a parametric head
   (`kmeans` default) clusters them. It uses the *expanded* squared-distance form for speed and so does
   **not** carry the dense path's cancellation-free guarantee — accurate for sparse rows far from the
   dense centroid; use the dense `Betula` path when you need cancellation-free scatter.
@@ -57,9 +58,9 @@ A capability-by-capability reference. For runnable code see [`USAGE.md`](USAGE.m
   is reported as infeasible — lower `threshold` to separate them); contradictory or over-constrained
   inputs raise rather than silently violate. `method="kmeans"` only, dense input.
 - **Mixed numeric + categorical** (`KPrototypes`) — **k-prototypes** (Huang, 1997) for data that is
-  part numeric, part categorical. Each cluster is a *mixed CF*: the stable numeric `(n, μ, S)` plus a
+  part numeric, part categorical. Each cluster is a *mixed CF*: the stable numeric $(n, \mu, S)$ plus a
   category-count histogram per categorical attribute (its mode is the categorical centroid). Distance
-  is `‖Δnumeric‖² + γ·(categorical mismatch)`, with `γ` auto-set to Huang's heuristic. Rows are
+  is $\|\Delta_\text{numeric}\|^2 + \gamma \cdot (\text{categorical mismatch})$, with $\gamma$ auto-set to Huang's heuristic. Rows are
   leader-summarized into bounded mixed micro-clusters first, so it scales like the rest of the library.
 - Python bindings: abi3 wheel, zero-copy numpy (one-shot `fit_predict` takes **float32 or
   float64** — `f32` data is clustered in `f32`, halving memory on embeddings), GIL released during
@@ -75,16 +76,27 @@ A capability-by-capability reference. For runnable code see [`USAGE.md`](USAGE.m
   `_radii_` / `_sizes_`) and, on top of it, `summary()`, `outlier_scores(X)` (distance to the
   assigned centroid ÷ cluster radius), `find_outliers`, `find_near_duplicates` (unscored groups),
   `near_duplicate_pairs(X, threshold)` (scored cosine pairs, exact within each leaf-block — the
-  scalable counterpart to an O(N²) all-pairs scan), `sample_representatives`, and
+  scalable counterpart to an $O(N^2)$ all-pairs scan), `sample_representatives`, and
   `assign_microclusters` — for embedding dataset cleaning, deduplication, and outlier discovery,
   reusing the CF-tree already built (no extra passes).
 - **Mapper topological skeleton** (`mapper()` → `MapperGraph`) — TDA Mapper specialised to the
   microclusters: a lens (`density` / `radius` / `l2norm` / `coordinate` / `eccentricity`) is covered
   by overlapping bins, microclusters in each bin are single-linked at a data-adaptive scale, and the
   nerve graph exposes **branch points** and **bridges** (thin links between otherwise separate
-  regions — topic leakage / merges in embeddings). Runs over the `M ≪ N` microclusters, with an
-  optional `to_networkx()` for plotting. An exploration tool (structure, RAG curation, dedup), not a
-  partition — complementary to the HDBSCAN density head.
+  regions — topic leakage / merges in embeddings). Each edge also carries a **CF-aware Bhattacharyya
+  overlap** (`edge_overlap ∈ (0, 1]`) from the two nodes' pooled diagonal-Gaussian summaries, so a
+  bridge across a sparse neck scores lower than an edge inside one dense blob — distributional, not a
+  bare shared-microcluster count. Runs over the $M \ll N$ microclusters, with an optional
+  `to_networkx()` (edges carry `weight` / `overlap` / `bridge`) for plotting; `mapper_stability()`
+  sweeps the resolution to find the topologically stable scale. An exploration tool (structure, RAG
+  curation, dedup), not a partition — complementary to the HDBSCAN density head.
+- **Memory-aware hyperparameter tuning** (`tune` → `TuneResult`) — searches betula's CF-representation
+  knobs (`max_leaves`, covariance model, `normalize`) for the best clustering into `n_clusters`,
+  scored by an internal metric (Calinski-Harabasz / Davies-Bouldin) or ARI against ground-truth
+  labels, with an optional **quality / memory (`n_leaves`) / speed (fit-time)** Pareto mode. NumPy-only
+  by default (random search); an optional Optuna backend (TPE / NSGA-II) via
+  `pip install 'betula-cluster[tune]'`. Because betula fits are cheap, a few hundred trials run in
+  seconds — the search is over the compression, so cost is bounded by the microcluster count, not `N`.
 
 ## Architecture (crate layout)
 
@@ -101,4 +113,4 @@ A capability-by-capability reference. For runnable code see [`USAGE.md`](USAGE.m
 | `model` | end-to-end `Model::fit` / `predict` |
 | `python` | PyO3 bindings: one-shot `fit_predict` + streaming `Betula` estimator |
 
-See [`DESIGN.md`](../DESIGN.md) for the full design and the verified mathematical foundation.
+See [`DESIGN.md`](https://github.com/ilgrad/betula-cluster/blob/main/DESIGN.md) for the full design and the verified mathematical foundation.

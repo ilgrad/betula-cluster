@@ -79,6 +79,11 @@ pub struct MapperGraph {
     pub nodes: Vec<MapperNode>,
     /// Nerve edges `(a, b, shared)`: nodes `a < b` sharing `shared` microclusters (cover overlap).
     pub edges: Vec<(usize, usize, usize)>,
+    /// Per-edge distributional overlap — the Bhattacharyya coefficient `∈ (0, 1]` between the two
+    /// nodes' pooled diagonal Gaussians (`1` = indistinguishable, `→ 0` across a real density gap).
+    /// Qualifies each nerve edge beyond the raw shared-microcluster count, so a structural bridge that
+    /// is *also* low-overlap is a true density gap rather than a cover artifact. Aligned with `edges`.
+    pub edge_overlap: Vec<f64>,
     /// Nodes of degree `≥ 3` — where the shape splits (branch points).
     pub branch_points: Vec<usize>,
     /// Indices into `edges` that are bridges: removing one disconnects its endpoints (a thin link
@@ -142,6 +147,22 @@ fn euclid(a: &[f64], b: &[f64]) -> f64 {
         .map(|(x, y)| (x - y) * (x - y))
         .sum::<f64>()
         .sqrt()
+}
+
+/// Bhattacharyya coefficient between two diagonal Gaussians (per-dimension mean/variance), in
+/// `(0, 1]`: `1` when identical, decaying toward `0` as the means separate or the spreads diverge.
+/// Variances are floored to stay positive (a microcluster of `n = 1` has zero variance).
+fn bhattacharyya_diag(mu_a: &[f64], var_a: &[f64], mu_b: &[f64], var_b: &[f64]) -> f64 {
+    let mut d_b = 0.0;
+    for k in 0..mu_a.len() {
+        let va = var_a[k].max(0.0) + 1e-12;
+        let vb = var_b[k].max(0.0) + 1e-12;
+        let vbar = 0.5 * (va + vb);
+        let dm = mu_a[k] - mu_b[k];
+        // Bhattacharyya distance of two 1-D Gaussians, summed over the (independent) dimensions.
+        d_b += 0.125 * dm * dm / vbar + 0.5 * (vbar.ln() - 0.5 * (va.ln() + vb.ln()));
+    }
+    (-d_b).exp().clamp(0.0, 1.0)
 }
 
 /// Evaluate the lens for every microcluster.
@@ -248,6 +269,7 @@ pub fn mapper<R: Real, C: ClusterFeature<R>>(features: &[C], p: &MapperParams) -
     let empty = MapperGraph {
         nodes: Vec::new(),
         edges: Vec::new(),
+        edge_overlap: Vec::new(),
         branch_points: Vec::new(),
         bridges: Vec::new(),
     };
@@ -374,6 +396,25 @@ pub fn mapper<R: Real, C: ClusterFeature<R>>(features: &[C], p: &MapperParams) -
         shared.into_iter().map(|((a, b), w)| (a, b, w)).collect();
     edges.sort_unstable();
 
+    // Per-node pooled diagonal Gaussian (merge the member microclusters), for CF-aware edge overlap.
+    let dim = features[0].dim();
+    let (node_mu, node_var): (Vec<Vec<f64>>, Vec<Vec<f64>>) = nodes
+        .iter()
+        .map(|node| {
+            let mut cf = C::new(dim);
+            for &i in &node.members {
+                cf.merge(&features[i]);
+            }
+            let mean: Vec<f64> = (0..dim).map(|k| cf.mean()[k].to_f64().unwrap()).collect();
+            let var: Vec<f64> = (0..dim).map(|k| cf.variance(k).to_f64().unwrap()).collect();
+            (mean, var)
+        })
+        .unzip();
+    let edge_overlap: Vec<f64> = edges
+        .iter()
+        .map(|&(a, b, _)| bhattacharyya_diag(&node_mu[a], &node_var[a], &node_mu[b], &node_var[b]))
+        .collect();
+
     let mut degree = vec![0usize; nodes.len()];
     for &(a, b, _) in &edges {
         degree[a] += 1;
@@ -385,6 +426,7 @@ pub fn mapper<R: Real, C: ClusterFeature<R>>(features: &[C], p: &MapperParams) -
     MapperGraph {
         nodes,
         edges,
+        edge_overlap,
         branch_points,
         bridges,
     }
@@ -431,6 +473,30 @@ mod tests {
             !g.bridges.is_empty(),
             "the thin neck between the two blobs must be a bridge edge"
         );
+        // CF-aware edge overlap: aligned with `edges`, in [0, 1], and the bridge (across the sparse
+        // neck) has lower distributional overlap than the densest within-blob edge.
+        assert_eq!(g.edge_overlap.len(), g.edges.len());
+        assert!(g.edge_overlap.iter().all(|&o| (0.0..=1.0).contains(&o)));
+        let bridge_overlap = g.edge_overlap[g.bridges[0]];
+        let max_overlap = g.edge_overlap.iter().cloned().fold(0.0_f64, f64::max);
+        assert!(
+            bridge_overlap < max_overlap,
+            "bridge overlap {bridge_overlap} should be below the densest edge {max_overlap}"
+        );
+    }
+
+    #[test]
+    fn bhattacharyya_diag_matches_known_values() {
+        // identical diagonal Gaussians → coefficient 1
+        let same = bhattacharyya_diag(&[0.0, 3.0], &[2.0, 1.0], &[0.0, 3.0], &[2.0, 1.0]);
+        assert!((same - 1.0).abs() < 1e-9, "identical = {same}");
+        // 1-D closed form BC = sqrt(2σaσb/(σa²+σb²))·exp(−Δ²/(4(σa²+σb²))); σ=1, Δ=2 → exp(−0.5)
+        let bc = bhattacharyya_diag(&[0.0], &[1.0], &[2.0], &[1.0]);
+        assert!((bc - (-0.5f64).exp()).abs() < 1e-6, "bc = {bc}");
+        // overlap decreases monotonically as the means separate
+        let near = bhattacharyya_diag(&[0.0], &[1.0], &[1.0], &[1.0]);
+        let far = bhattacharyya_diag(&[0.0], &[1.0], &[10.0], &[1.0]);
+        assert!(near > far && far < 1e-5, "near {near}, far {far}");
     }
 
     #[test]

@@ -48,8 +48,8 @@ jobs:
         run: cargo test --features cli --bin betula
       - name: cargo audit (security / unmaintained advisories)
         run: cargo audit
-      - name: coverage (llvm-cov, floor 95% lines)
-        run: cargo llvm-cov --summary-only --fail-under-lines 95
+      - name: coverage (llvm-cov, floor 95% lines; core + persistence + cli)
+        run: cargo llvm-cov --features persistence,cli --summary-only --fail-under-lines 95
 
   python-build:
     name: python (build · clippy)
@@ -77,6 +77,11 @@ jobs:
         with:
           name: wheel
           path: dist/*.whl
+      - name: sdist (build + install-from-source smoke test)
+        run: |
+          uv run --with maturin maturin sdist --out dist
+          uv run --refresh --with "$(ls dist/*.tar.gz | head -1)" \
+            python -c "import betula_cluster as b; print('sdist import ok', b.__version__)"
 
   python-test:
     name: python (pytest · py${{ matrix.python-version }})
@@ -107,3 +112,27 @@ jobs:
           wheel=$(ls dist/*.whl | head -1)
           uv run --python ${{ matrix.python-version }} --with mypy --with numpy --with "$wheel" \
             python -m mypy.stubtest betula_cluster
+
+  python-test-os:
+    name: python (pytest · ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: astral-sh/setup-uv@v5
+      # The published abi3 wheel is Linux-only in CI; build from source here so the extension is
+      # exercised natively on macOS and Windows (where release.yml also ships wheels).
+      - name: build (maturin develop) + pytest (wrapper coverage, floor 100%)
+        run: |
+          uv venv --python 3.12
+          uv pip install maturin numpy "scikit-learn>=1.3" scipy networkx pytest pytest-cov
+          uv run maturin develop --release
+          uv run pytest tests/test_python.py -q --cov=betula_cluster --cov-fail-under=100

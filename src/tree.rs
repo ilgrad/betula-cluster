@@ -1020,3 +1020,81 @@ mod tests {
         verify(&t, pts.len());
     }
 }
+
+#[cfg(test)]
+mod prop_tests {
+    //! Property-based "tree CF = Σ points": folding every leaf microcluster reconstructs the
+    //! whole-dataset feature, across random dimensions, point sets and absorption thresholds — the
+    //! invariant DESIGN.md advertises for the CF-tree.
+    #![allow(clippy::needless_range_loop)] // per-dimension mean comparison reads clearest with an index
+    use super::*;
+    use crate::distance::CentroidEuclidean;
+    use crate::feature::{ClusterFeature, Full};
+    use proptest::prelude::*;
+
+    fn close(a: f64, b: f64) -> bool {
+        (a - b).abs() <= 1e-7 * a.abs().max(b.abs()).max(1.0)
+    }
+
+    /// `(dim, points)` with every point sharing `dim ∈ [2, 6]`.
+    fn dim_points(min_pts: usize, max_pts: usize) -> impl Strategy<Value = (usize, Vec<Vec<f64>>)> {
+        (2usize..=6).prop_flat_map(move |d| {
+            prop::collection::vec(
+                prop::collection::vec(-50.0f64..50.0, d..=d),
+                min_pts..=max_pts,
+            )
+            .prop_map(move |pts| (d, pts))
+        })
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(96))]
+
+        #[test]
+        fn tree_leaves_fold_to_sum_of_points((d, pts) in dim_points(1, 80), thr in 0.0f64..5.0) {
+            let mut tree: CFTree<f64, Full<f64>, _, _> =
+                CFTree::new(d, 4, 4, thr, usize::MAX, CentroidEuclidean, CentroidEuclidean);
+            for p in &pts {
+                tree.insert(p);
+            }
+            let mut folded: Full<f64> = Full::new(d);
+            for leaf in tree.leaf_features() {
+                folded.merge(leaf);
+            }
+            let mut total: Full<f64> = Full::new(d);
+            for p in &pts {
+                total.push(p, 1.0);
+            }
+            prop_assert!(close(folded.weight(), total.weight()), "weight");
+            for i in 0..d {
+                prop_assert!(close(folded.mean()[i], total.mean()[i]), "mean {i}");
+            }
+            prop_assert!(close(folded.ssd(), total.ssd()), "ssd");
+        }
+
+        #[test]
+        fn tree_leaves_fold_to_sum_of_points_under_rebuild((d, pts) in dim_points(20, 200)) {
+            // threshold 0 + small max_leaves forces rebuilds (threshold-grow + reinsert of leaf CFs);
+            // folding the post-rebuild leaves must still reconstruct the whole-dataset feature.
+            let mut tree: CFTree<f64, Full<f64>, _, _> =
+                CFTree::new(d, 4, 4, 0.0, 12, CentroidEuclidean, CentroidEuclidean);
+            for p in &pts {
+                tree.insert(p);
+            }
+            prop_assert!(tree.rebuilds() > 0);
+            let mut folded: Full<f64> = Full::new(d);
+            for leaf in tree.leaf_features() {
+                folded.merge(leaf);
+            }
+            let mut total: Full<f64> = Full::new(d);
+            for p in &pts {
+                total.push(p, 1.0);
+            }
+            prop_assert!(close(folded.weight(), total.weight()), "weight");
+            for i in 0..d {
+                prop_assert!(close(folded.mean()[i], total.mean()[i]), "mean {i}");
+            }
+            prop_assert!(close(folded.ssd(), total.ssd()), "ssd");
+        }
+    }
+}

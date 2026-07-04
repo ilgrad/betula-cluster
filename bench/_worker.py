@@ -9,6 +9,8 @@ Usage (prints one JSON line):
     python _worker.py fit        <method> <dataset> <n>
     python _worker.py stream     <n> <d> <chunk>      # betula chunked partial_fit (bounded memory)
     python _worker.py oneshot_km <n> <d>              # sklearn KMeans, must hold the whole array
+    python _worker.py real_fit   <method> <dataset>   # full real dataset (time · RSS · ARI)
+    python _worker.py sparse_fit <method> <dataset>   # TF-IDF CSR: betula O(nnz) sparse-native vs sklearn
 """
 
 from __future__ import annotations
@@ -105,6 +107,40 @@ def load_real_worker(dataset: str):
     return x, np.asarray(y), k
 
 
+def load_sparse(dataset: str):
+    """Load a high-dimensional sparse text corpus as a TF-IDF CSR matrix (for the O(nnz) path)."""
+    from sklearn.datasets import fetch_20newsgroups
+    from sklearn.feature_extraction.text import TfidfVectorizer
+
+    if dataset == "20news":
+        data = fetch_20newsgroups(
+            subset="all", remove=("headers", "footers", "quotes"), random_state=0
+        )
+        x = TfidfVectorizer(max_features=2000, stop_words="english").fit_transform(data.data)
+        return x.tocsr().astype(np.float64), np.asarray(data.target), 20
+    raise ValueError(dataset)
+
+
+def reduce_dims(X, reducer: str, n_components: int):
+    """Reduce a sparse TF-IDF matrix to dense, L2-normalized low-dim features (LSA / topic vectors)
+    for the standard reduce-then-cluster text pipeline — the high-`d` fix for sparse text."""
+    from sklearn.preprocessing import normalize as l2
+
+    if reducer == "svd":
+        from sklearn.decomposition import TruncatedSVD
+
+        z = TruncatedSVD(n_components=n_components, random_state=0).fit_transform(X)
+    elif reducer == "nmf":
+        from sklearn.decomposition import NMF
+
+        z = NMF(
+            n_components=n_components, init="nndsvda", max_iter=200, random_state=0
+        ).fit_transform(X)
+    else:
+        raise ValueError(reducer)
+    return l2(z).astype(np.float64)  # cosine on the reduced features
+
+
 def fit_method(method: str, X, k: int, n: int):
     bkw = dict(threshold=0.0, max_leaves=2000, seed=0, n_jobs=1)
     mcs = max(20, n // 400)
@@ -198,6 +234,47 @@ def main() -> dict:
         X, y, k = load_real_worker(dataset)
         t0 = time.perf_counter()
         labels = np.asarray(fit_method(method, X, k, len(X)))
+        dt = time.perf_counter() - t0
+        from sklearn.metrics import adjusted_rand_score
+
+        return {
+            "time_s": dt,
+            "rss_mb": peak.mb(),
+            "n_clusters": len({int(v) for v in labels if v >= 0}),
+            "ari": round(float(adjusted_rand_score(y, labels)), 3),
+        }
+    if kind == "sparse_fit":
+        method, dataset = sys.argv[2], sys.argv[3]
+        X, y, k = load_sparse(dataset)
+        t0 = time.perf_counter()
+        if method == "betula-sparse":
+            import betula_cluster as bc
+
+            labels = np.asarray(
+                bc.fit_predict_sparse(X, n_clusters=k, method="kmeans", max_leaves=2048, seed=0)
+            )
+        elif method == "sklearn-kmeans":
+            from sklearn.cluster import KMeans
+
+            labels = np.asarray(KMeans(k, n_init=3, random_state=0).fit_predict(X))
+        elif method in ("betula-svd", "betula-nmf"):
+            import betula_cluster as bc
+
+            reducer = method.split("-", 1)[1]
+            z = reduce_dims(X, reducer, 50 if reducer == "svd" else 20)
+            labels = np.asarray(
+                bc.fit_predict(
+                    z, k, feature="spherical", method="kmeans", max_leaves=2048, seed=0, n_jobs=1
+                )
+            )
+        elif method in ("sklearn-svd", "sklearn-nmf"):
+            from sklearn.cluster import KMeans
+
+            reducer = method.split("-", 1)[1]
+            z = reduce_dims(X, reducer, 50 if reducer == "svd" else 20)
+            labels = np.asarray(KMeans(k, n_init=3, random_state=0).fit_predict(z))
+        else:
+            raise ValueError(method)
         dt = time.perf_counter() - t0
         from sklearn.metrics import adjusted_rand_score
 

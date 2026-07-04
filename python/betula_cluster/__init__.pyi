@@ -7,6 +7,9 @@ from typing import Any, Literal, final
 import numpy as np
 from numpy.typing import NDArray
 
+from .tuning import TuneResult as TuneResult
+from .tuning import tune as tune
+
 __all__ = [
     "Betula",
     "Coreset",
@@ -16,9 +19,11 @@ __all__ = [
     "KPrototypes",
     "KllSketch",
     "MapperGraph",
+    "TuneResult",
     "__version__",
     "fit_predict",
     "fit_predict_sparse",
+    "tune",
 ]
 
 __version__: str
@@ -52,6 +57,7 @@ class MapperGraph:
     node_lens: NDArray[np.float64]
     node_centroids: NDArray[np.float64]
     edges: NDArray[np.int64]
+    edge_overlap: NDArray[np.float64]
     branch_points: NDArray[np.int64]
     bridges: NDArray[np.int64]
     @property
@@ -278,34 +284,68 @@ class KllSketch:
     """Streaming KLL quantile sketch (rank-error guarantee)."""
 
     def __new__(cls, k: int = ..., seed: int = ...) -> KllSketch: ...
-    def update(self, x: float) -> None: ...
-    def update_many(self, data: NDArray[np.float64]) -> None: ...
-    def merge(self, other: KllSketch) -> None: ...
-    def quantile(self, q: float) -> float: ...
-    def quantiles(self, qs: NDArray[np.float64]) -> NDArray[np.float64]: ...
-    def rank(self, value: float) -> int: ...
+    def update(self, x: float) -> None:
+        """Add one value."""
+
+    def update_many(self, data: NDArray[np.float64]) -> None:
+        """Add every value of a 1-D array."""
+
+    def merge(self, other: KllSketch) -> None:
+        """Merge another KLL sketch in; this one then summarizes the union of both streams."""
+
+    def quantile(self, q: float) -> float:
+        """Estimated ``q``-quantile (``q`` in [0, 1]); exact at the endpoints, NaN if empty."""
+
+    def quantiles(self, qs: NDArray[np.float64]) -> NDArray[np.float64]:
+        """Estimated quantiles for an array of ``q`` values, in one pass over the built CDF."""
+
+    def rank(self, value: float) -> int:
+        """Estimated number of stored values ``<= value``."""
+
     @property
-    def count(self) -> int: ...
+    def count(self) -> int:
+        """Total number of values added."""
+
     @property
-    def min(self) -> float: ...
+    def min(self) -> float:
+        """Smallest value seen (NaN if empty)."""
+
     @property
-    def max(self) -> float: ...
+    def max(self) -> float:
+        """Largest value seen (NaN if empty)."""
 
 @final
 class DdSketch:
     """Streaming DDSketch quantile sketch (relative-error guarantee)."""
 
     def __new__(cls, alpha: float = ..., max_bins: int = ...) -> DdSketch: ...
-    def update(self, x: float) -> None: ...
-    def update_many(self, data: NDArray[np.float64]) -> None: ...
-    def merge(self, other: DdSketch) -> None: ...
-    def quantile(self, q: float) -> float: ...
-    def quantiles(self, qs: NDArray[np.float64]) -> NDArray[np.float64]: ...
+    def update(self, x: float) -> None:
+        """Add one value."""
+
+    def update_many(self, data: NDArray[np.float64]) -> None:
+        """Add every value of a 1-D array."""
+
+    def merge(self, other: DdSketch) -> None:
+        """Merge another DDSketch in; this one then summarizes the union of both streams."""
+
+    def quantile(self, q: float) -> float:
+        """Estimated ``q``-quantile (``q`` in [0, 1]); exact at the endpoints, NaN if empty."""
+
+    def quantiles(self, qs: NDArray[np.float64]) -> NDArray[np.float64]:
+        """Estimated quantiles for an array of ``q`` values."""
+
     @property
-    def count(self) -> int: ...
+    def count(self) -> int:
+        """Total number of values added."""
+
     @property
-    def alpha(self) -> float: ...
+    def alpha(self) -> float:
+        """Relative accuracy ``alpha`` (smaller = tighter quantiles, more buckets)."""
+
     @property
-    def min(self) -> float: ...
+    def min(self) -> float:
+        """Smallest value seen (NaN if empty)."""
+
     @property
-    def max(self) -> float: ...
+    def max(self) -> float:
+        """Largest value seen (NaN if empty)."""

@@ -1,7 +1,7 @@
 //! Global clustering (BIRCH Phase 3) on the leaf clustering features of a CF-tree.
 //!
 //! Parametric heads: weighted k-means ([`kmeans`]) and diagonal GMM-EM ([`gmm_diagonal`]).
-//! A density/topological head (HDBSCAN-on-CF) is added in a later milestone.
+//! A density head (HDBSCAN-on-CF, [`hdbscan`]) clusters the leaf microclusters directly.
 
 pub mod gmm;
 pub mod hdbscan;

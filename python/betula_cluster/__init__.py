@@ -22,6 +22,7 @@ from ._core import DdSketch, KllSketch, fit_predict  # type: ignore
 from ._core import DenStream as _CoreDenStream  # type: ignore
 from ._core import KPrototypes as _CoreKPrototypes  # type: ignore
 from ._core import fit_predict_sparse as _core_fit_predict_sparse  # type: ignore
+from .tuning import TuneResult, tune
 
 try:
     __version__ = version("betula-cluster")
@@ -37,9 +38,11 @@ __all__ = [
     "KPrototypes",
     "KllSketch",
     "MapperGraph",
+    "TuneResult",
     "__version__",
     "fit_predict",
     "fit_predict_sparse",
+    "tune",
 ]
 
 
@@ -51,6 +54,9 @@ class MapperGraph:
     share microclusters (from the cover overlap). ``branch_points`` are nodes where the shape splits
     (degree ≥ 3); ``bridges`` index the ``edges`` whose removal would disconnect the graph — thin
     links between otherwise separate regions (e.g. leakage between topics in an embedding).
+    ``edge_overlap`` is a per-edge Bhattacharyya coefficient in ``(0, 1]`` from the two nodes'
+    pooled diagonal-Gaussian summaries: a bridge across a sparse neck scores lower than an edge
+    inside one dense blob, so links are weighted by distributional overlap, not a bare shared count.
     """
 
     node_members: list[np.ndarray]  # microcluster indices per node
@@ -59,6 +65,7 @@ class MapperGraph:
     node_lens: np.ndarray  # (n_nodes,) mean lens value per node
     node_centroids: np.ndarray  # (n_nodes, dim) mass-weighted centroid per node
     edges: np.ndarray  # (n_edges, 3): columns (node_a, node_b, shared microcluster count)
+    edge_overlap: np.ndarray  # (n_edges,) Bhattacharyya overlap ∈ (0, 1] per edge
     branch_points: np.ndarray  # node indices with degree ≥ 3
     bridges: np.ndarray  # indices into `edges` that are bridges
 
@@ -93,7 +100,13 @@ class MapperGraph:
             )
         bridge_set = set(self.bridges.tolist())
         for e, row in enumerate(self.edges):
-            g.add_edge(int(row[0]), int(row[1]), weight=int(row[2]), bridge=e in bridge_set)
+            g.add_edge(
+                int(row[0]),
+                int(row[1]),
+                weight=int(row[2]),
+                overlap=float(self.edge_overlap[e]),
+                bridge=e in bridge_set,
+            )
         return g
 
 
@@ -320,8 +333,15 @@ class Betula:
         return _CoreBetula(**params)
 
     def fit(self, X, y=None, must_link=None, cannot_link=None):
-        # `X`: a dense float array or a scipy.sparse matrix (CSR-routed; never fully densified).
-        # `must_link` / `cannot_link`: optional (m, 2) row-index pairs → semi-supervised COP-KMeans.
+        """Fit the CF-tree on ``X`` and cluster it; returns ``self`` (scikit-learn style).
+
+        Args:
+            X: dense float32/float64 array or a ``scipy.sparse`` CSR matrix (never densified).
+            y: ignored; present for scikit-learn API compatibility.
+            must_link: optional ``(m, 2)`` row-index pairs forced into the same cluster.
+            cannot_link: optional ``(m, 2)`` row-index pairs forced apart. Any constraint switches
+                the run to semi-supervised COP-KMeans (``method="kmeans"``, dense input only).
+        """
         if must_link is not None or cannot_link is not None:
             return self._fit_constrained(X, must_link, cannot_link)
         csr = _to_csr(X)
@@ -335,6 +355,10 @@ class Betula:
         return self
 
     def fit_predict(self, X, y=None, must_link=None, cannot_link=None):
+        """Fit on ``X``; return one ``int64`` label per row (``-1`` = noise, HDBSCAN head).
+
+        Takes the same ``X`` / ``must_link`` / ``cannot_link`` as :meth:`fit`.
+        """
         if must_link is not None or cannot_link is not None:
             self._fit_constrained(X, must_link, cannot_link)
             return np.asarray(self.predict(X))
@@ -598,6 +622,7 @@ class Betula:
             node_lens=d["node_lens"],
             node_centroids=d["node_centroids"],
             edges=d["edges"],
+            edge_overlap=d["edge_overlap"],
             branch_points=d["branch_points"],
             bridges=d["bridges"],
         )

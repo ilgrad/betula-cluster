@@ -1,0 +1,60 @@
+site_name: betula-cluster
+site_description: Numerically stable, memory-bounded BETULA clustering with a Rust core
+site_url: https://ilgrad.github.io/betula-cluster/
+repo_url: https://github.com/ilgrad/betula-cluster
+repo_name: ilgrad/betula-cluster
+docs_dir: docs
+copyright: MIT-licensed · a Rust core with a scikit-learn API
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.top
+    - content.code.copy
+    - toc.follow
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: teal
+      accent: teal
+      toggle: { icon: material/weather-night, name: Switch to dark mode }
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: teal
+      accent: teal
+      toggle: { icon: material/weather-sunny, name: Switch to light mode }
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.highlight: { anchor_linenums: true }
+  - pymdownx.superfences
+  - pymdownx.inlinehilite
+  - pymdownx.arithmatex: { generic: true }
+  - toc: { permalink: true }
+
+extra_javascript:
+  - javascripts/mathjax.js
+  - https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [python]
+          options:
+            docstring_style: google
+            show_source: false
+            show_root_heading: true
+            show_signature_annotations: true
+            separate_signature: true
+            members_order: source
+
+nav:
+  - Home: index.md
+  - Usage guide: USAGE.md
+  - Features: FEATURES.md
+  - The math: MATH.md
+  - API reference: api.md

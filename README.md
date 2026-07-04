@@ -17,7 +17,7 @@
 pip install betula-cluster
 ```
 
-**Verified:** a **153-case** Python suite at **100% wrapper coverage** + **129** Rust tests,
+**Verified:** a **167-case** Python suite at **100% wrapper coverage** + **141** Rust tests,
 `clippy -D warnings` + `fmt` clean across all feature sets, CI on CPython 3.11–3.14 (one abi3 wheel).
 
 ## At a glance — honest benchmarks
@@ -94,7 +94,8 @@ est.partial_fit()                     # finalize the global clustering over ever
 labels = est.predict(X_query)
 ```
 
-Constraints (COP-KMeans), mixed numeric+categorical (`KPrototypes`), streaming density (`DenStream` /
+Memory-aware hyperparameter tuning (`tune`, optional Optuna), Mapper topology (`mapper`),
+constraints (COP-KMeans), mixed numeric+categorical (`KPrototypes`), streaming density (`DenStream` /
 `DbStream`), quantile sketches, `scipy.sparse` input, soft assignment / coresets / diagnostics, the
 Rust API, and the CLI — all in the [**usage guide**](https://github.com/ilgrad/betula-cluster/blob/main/docs/USAGE.md).
 
@@ -109,6 +110,8 @@ Rust API, and the CLI — all in the [**usage guide**](https://github.com/ilgrad
   `Pipeline` / `clone` / `GridSearchCV`); typed abi3 wheel, `save` / `load` + pickle, reusable Rust core.
 - **Inspection** — `predict_proba`, coresets, microcluster/cluster geometry, outliers, near-duplicates,
   representatives, diagnostics.
+- **Tuning** — `tune`: memory-aware hyperparameter search with a **quality / memory / speed** Pareto
+  mode; NumPy-only, optional Optuna backend (`pip install 'betula-cluster[tune]'`).
 
 **Experimental / evolving** — useful today, API may still move:
 
@@ -139,7 +142,7 @@ Full reference: [**`docs/FEATURES.md`**](https://github.com/ilgrad/betula-cluste
   [`predict_proba`, coresets, diagnostics](https://github.com/ilgrad/betula-cluster/blob/main/examples/11_soft_assignment_coreset_diagnostics.ipynb).
 - **Production ops** — [drift, active learning, robust, memory budgets](https://github.com/ilgrad/betula-cluster/blob/main/examples/12_drift_robust_memory.ipynb).
 
-And three **end-to-end use cases** (each scored against ground truth):
+And five **end-to-end use cases** (each scored against ground truth):
 
 - 🧹 [**Embedding dedup**](https://github.com/ilgrad/betula-cluster/blob/main/examples/usecases/usecase_01_embedding_dedup.ipynb) — collapse a repost-heavy corpus to representatives.
 - 🚨 [**Log anomaly detection**](https://github.com/ilgrad/betula-cluster/blob/main/examples/usecases/usecase_02_log_anomaly_detection.ipynb) — batch outlier scoring + streaming `DbStream` flags.
@@ -155,7 +158,7 @@ And three **end-to-end use cases** (each scored against ground truth):
 - [**Benchmarks**](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md) — methodology, every metric, all tables, honest wins & losses.
 - [**Design**](https://github.com/ilgrad/betula-cluster/blob/main/DESIGN.md) — internal design, invariants, and testing strategy.
 
-Verified: **129** Rust unit/integration tests + a **153-case** Python suite at **100%** wrapper
+Verified: **141** Rust unit/integration tests + a **167-case** Python suite at **100%** wrapper
 coverage (Rust ≥95%, CI-enforced), `clippy -D warnings` + `fmt` clean across all feature sets, on
 Python 3.11–3.14 (single abi3 wheel).
 
