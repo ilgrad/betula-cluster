@@ -7,6 +7,13 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- `method="spectral"` — spectral clustering over the CF-tree leaf microclusters for **non-convex /
+  manifold** clusters (moons, rings, spirals) that the centroid heads cannot separate. Self-tuning
+  symmetric k-NN affinity (Zelnik-Manor & Perona local scaling), the normalized Laplacian embedding
+  (Ng-Jordan-Weiss) via the in-house Jacobi eigensolver — no LAPACK/ARPACK, the crate stays
+  NumPy-only — with a k-means landmark reduction above 256 microclusters so the `O(m³)` solve stays
+  bounded. Dense input only; pair it with a small `threshold` (many leaves) so the microclusters
+  resolve the manifold. No built-in cluster-count selection: `n_clusters=0` defaults to 2.
 - `threshold="auto"` for the `Betula` estimator — removes the one hyperparameter users most often
   have to guess. A bounded-subsample pilot fits a `threshold=0` tree at the same `max_leaves` and
   reads the threshold it converges to, warm-starting the full fit near-converged instead of growing

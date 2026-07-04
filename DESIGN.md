@@ -57,6 +57,12 @@ radius $R = \sqrt{S/n}$. Mahalanobis-$\chi^2$ as an absorption option (`distance
 - **Ward-HAC**: agglomerative merging of leaf CFs by minimum variance increase (D4/Ward linkage),
   via the exact nearest-neighbour-chain algorithm — $O(m^2)$ time, $O(m)$ space. Merges are exact CF
   merges (no Lance-Williams update approximation).
+- **Spectral**: symmetric $k$-NN affinity over the leaf means with the self-tuning local scale of
+  Zelnik-Manor & Perona ($A_{ij}=\exp(-d_{ij}^2/\sigma_i\sigma_j)$), normalized $P=D^{-1/2}AD^{-1/2}$,
+  the top-$k$ eigenvectors of $P$ (= bottom-$k$ of $L_\text{sym}=I-P$, Ng-Jordan-Weiss) via the
+  in-house Jacobi solver, row-normalized and k-means-clustered. Above $256$ microclusters a k-means
+  landmark reduction keeps the $O(m^3)$ eigendecomposition bounded. Separates non-convex clusters;
+  no built-in $k$ selection ($k=0 \Rightarrow 2$).
 
 ### Phase-3b density/topological head (`../../plans/topology-tda.md`)
 **HDBSCAN-on-CF** (done): mutual-reachability (`min_samples` core distance) + mass-weighted
@@ -83,7 +89,7 @@ src/
   distance.rs    CFDistance trait + measures; uses simd kernels
   kernels.rs     auto-vectorized distance kernels (inline reductions)
   tree.rs        arena CF-tree (insert/split/rebuild)
-  clustering/    kmeans.rs, gmm.rs, ward.rs, hdbscan.rs (Phase 3)
+  clustering/    kmeans.rs, gmm.rs, ward.rs, spectral.rs, hdbscan.rs (Phase 3)
   stream.rs      DenStream + DbStream streaming density heads (fading micro-clusters)
   sparse.rs      O(nnz) sparse-native spherical summarisation (fit_predict_sparse)
   sketch/        KLL + DDSketch streaming quantile sketches (betula-sketch)
@@ -142,10 +148,11 @@ Python end-to-end + scikit-learn benchmark (`README.md`, `bench/RESULTS.md`):
   microcluster before the Welford fold so stream outliers cannot stretch a centroid/radius, gated by
   a 5-point warm-up and $\sigma_j = 0$ pass-through, leaving a valid $(n, \mu, S)$; point inserts only,
   rebuild reinserts unaffected).
-- Phase-3a `clustering::{kmeans, xmeans, gmm_diagonal, gmm_full, *_auto, ward_hac, ward_hac_auto}`
-  (**Hamerly-accelerated exact Lloyd**, tested ≡ brute; variant-C E-step + NIW/MAP; full-covariance
-  GMM; auto-$k$ at `n_clusters = 0` for every parametric head — BIC for k-means (X-means) / GMM,
-  dendrogram cut for Ward-HAC).
+- Phase-3a `clustering::{kmeans, xmeans, gmm_diagonal, gmm_full, *_auto, ward_hac, ward_hac_auto,
+  spectral}` (**Hamerly-accelerated exact Lloyd**, tested ≡ brute; variant-C E-step + NIW/MAP;
+  full-covariance GMM; self-tuning $k$-NN spectral embedding; auto-$k$ at `n_clusters = 0` for every
+  parametric head — BIC for k-means (X-means) / GMM, dendrogram cut for Ward-HAC, default 2 for
+  spectral).
 - `clustering::cop_kmeans` — **constrained** (semi-supervised) k-means (COP-KMeans, Wagstaff et al.
   2001): must-link transitive closure into chunklets, cannot-link lifted to chunklets, greedy
   nearest-feasible assignment, `n_init` restarts kept by SSE. Point constraints are translated to

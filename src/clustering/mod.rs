@@ -8,12 +8,14 @@ pub mod hdbscan;
 pub mod kmeans;
 pub mod kprototypes;
 pub(crate) mod rng;
+pub mod spectral;
 pub mod ward;
 
 pub use gmm::{gmm_diagonal, gmm_diagonal_auto, gmm_full, gmm_full_auto, Gmm, GmmFull};
 pub use hdbscan::{hdbscan, Hdbscan};
 pub use kmeans::{cop_kmeans, kmeans, xmeans, ConstraintError, KMeans};
 pub use kprototypes::{kprototypes, nearest_micro, summarize_mixed, MixedCf};
+pub use spectral::{spectral, Spectral};
 pub use ward::{ward_hac, ward_hac_auto, WardHac};
 
 #[cfg(test)]

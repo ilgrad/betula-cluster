@@ -71,6 +71,7 @@ def moons():
         ("full", "gmm-full"),
         ("fd", "gmm-full"),
         ("diagonal", "ward"),
+        ("spherical", "spectral"),
     ],
 )
 def test_fit_predict_recovers_blobs(blobs, feature, method):
@@ -91,6 +92,17 @@ def test_auto_k_selects_true_count_when_n_clusters_zero(blobs, feature, method):
     )
     assert n_labels(labels) == 4
     assert ari(labels, y) > 0.95
+
+
+def test_spectral_separates_moons_where_kmeans_fails(moons):
+    # The non-convex arms need a fine microcluster resolution for the affinity graph to follow the
+    # manifold, so pair spectral with a small threshold (many leaves).
+    x, y = moons
+    kw = dict(n_clusters=2, threshold=0.004, max_leaves=600, seed=0)
+    spectral = betula_cluster.fit_predict(x, method="spectral", **kw)
+    kmeans = betula_cluster.fit_predict(x, method="kmeans", **kw)
+    assert ari(spectral, y) > 0.9  # spectral recovers the two moons
+    assert ari(kmeans, y) < 0.6  # a centroid head cuts straight across them
 
 
 def test_float32_reproduces_float64_on_normal_range(blobs):
@@ -1436,8 +1448,9 @@ def test_fit_predict_sparse_rejects_dense():
 
 def test_fit_predict_sparse_invalid_method():
     x, _ = _sparse_topics()
-    with pytest.raises(ValueError, match="method"):
-        betula_cluster.fit_predict_sparse(x, method="hdbscan")
+    for bad in ("hdbscan", "spectral"):  # neither head is wired for the sparse O(nnz) path
+        with pytest.raises(ValueError, match="method"):
+            betula_cluster.fit_predict_sparse(x, method=bad)
 
 
 # ── hyperparameter tuning (betula_cluster.tuning) ────────────────────────────────────────────────

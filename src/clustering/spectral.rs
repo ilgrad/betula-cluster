@@ -1,0 +1,226 @@
+//! Spectral clustering on the CF-tree leaf microclusters.
+//!
+//! Builds a self-tuning RBF affinity over the leaf means (local scaling of Zelnik-Manor & Perona,
+//! NIPS 2004), forms the symmetric normalized affinity `P = D^{-1/2} A D^{-1/2}` whose top
+//! eigenvectors are the bottom eigenvectors of the normalized Laplacian `L_sym = I − P`
+//! (Ng-Jordan-Weiss, NIPS 2001), embeds each microcluster in the space of the `k` such
+//! eigenvectors, row-normalizes, and k-means-clusters the embedding. This separates non-convex /
+//! manifold clusters (rings, moons, spirals) that the centroid heads cannot.
+//!
+//! The eigensolver is the in-house cyclic-Jacobi routine (`O(M³)`; no LAPACK/ARPACK — the crate
+//! stays LEAN), so the microcluster count handed to it is capped: above [`SPECTRAL_MAX_NODES`] the
+//! leaves are first reduced to that many weighted k-means landmarks, spectral-clustered, and each
+//! leaf inherits its landmark's label. Spectral has no built-in cluster-count selection (the
+//! eigengap is unreliable on k-NN graphs), so `k == 0` (auto) falls back to [`SPECTRAL_DEFAULT_K`].
+
+use crate::clustering::kmeans::kmeans;
+use crate::feature::{ClusterFeature, Spherical};
+use crate::kernels::sq_euclidean;
+use crate::linalg::jacobi_eigen;
+use crate::types::Real;
+
+/// Microclusters solved directly by the eigensolver; above this, reduce to this many k-means
+/// landmarks first. Keeps the `O(M³)` Jacobi eigendecomposition well under a second.
+pub const SPECTRAL_MAX_NODES: usize = 256;
+/// Max neighbours kept in the affinity graph. A symmetric k-NN graph (not a full RBF) makes the
+/// affinity follow the data manifold, so non-convex clusters (moons, rings) separate — a dense
+/// RBF bridges them through the ambient gap. The realised degree scales down with the node count.
+const KNN: usize = 10;
+/// Floor on the k-NN degree so the affinity graph stays connected on small node counts.
+const MIN_KNN: usize = 4;
+/// Neighbour rank for the self-tuning local scale `σ_i` (Zelnik-Manor & Perona).
+const LOCAL_SCALE_NN: usize = 7;
+/// Cluster count used when `k == 0` (auto) is requested — spectral has no reliable built-in
+/// selection, and two clusters is the canonical non-convex case (moons / two rings).
+pub const SPECTRAL_DEFAULT_K: usize = 2;
+/// k-means restarts for the embedding and landmark reductions (mirrors the k-means head).
+const N_INIT: usize = 4;
+
+/// Result of a spectral run: one cluster label per input microcluster.
+pub struct Spectral {
+    /// Cluster index per input feature.
+    pub labels: Vec<usize>,
+}
+
+/// Spectral-cluster `features` into `k` groups (`k == 0` ⇒ [`SPECTRAL_DEFAULT_K`]). Above
+/// [`SPECTRAL_MAX_NODES`] features the graph is reduced to that many k-means landmarks first.
+pub fn spectral<R: Real, C: ClusterFeature<R>>(
+    features: &[C],
+    k: usize,
+    max_iter: usize,
+    seed: u64,
+) -> Spectral {
+    assert!(!features.is_empty(), "spectral needs at least one feature");
+    let k = if k == 0 { SPECTRAL_DEFAULT_K } else { k };
+    let m = features.len();
+    if m > SPECTRAL_MAX_NODES {
+        // Landmark reduction: weighted k-means to SPECTRAL_MAX_NODES centers, spectral on those,
+        // then every leaf inherits the label of the landmark it was assigned to.
+        let land = kmeans(features, SPECTRAL_MAX_NODES, max_iter, N_INIT, seed);
+        let sub = spectral_core::<R>(&land.centers, k, max_iter, seed);
+        let labels = land.labels.iter().map(|&a| sub[a]).collect();
+        return Spectral { labels };
+    }
+    let centers: Vec<Vec<R>> = features.iter().map(|f| f.mean().to_vec()).collect();
+    Spectral {
+        labels: spectral_core::<R>(&centers, k, max_iter, seed),
+    }
+}
+
+fn spectral_core<R: Real>(centers: &[Vec<R>], k: usize, max_iter: usize, seed: u64) -> Vec<usize> {
+    let n = centers.len();
+    if n == 1 {
+        return vec![0];
+    }
+    if k <= 1 {
+        return vec![0; n]; // single cluster
+    }
+    if k >= n {
+        return (0..n).collect(); // more clusters requested than nodes ⇒ each its own
+    }
+    let tiny = R::from_f64(1e-12).unwrap();
+
+    // Pairwise squared distances.
+    let mut d2 = vec![vec![R::zero(); n]; n];
+    for i in 0..n {
+        for j in (i + 1)..n {
+            let v = sq_euclidean(&centers[i], &centers[j]);
+            d2[i][j] = v;
+            d2[j][i] = v;
+        }
+    }
+
+    // Per node, sort neighbours by distance once, then read off the self-tuning local scale
+    // `σ_i` (distance to the `LOCAL_SCALE_NN`-th neighbour) and the `KNN` nearest for the graph.
+    // `scale_rank` ≥ 1 since n ≥ 2. A fixed large k-NN degree over few microclusters bridges the
+    // manifold (e.g. reconnects the two moons), so scale the realised degree down with the count.
+    let scale_rank = LOCAL_SCALE_NN.min(n - 1);
+    let knn = (n / 10).clamp(MIN_KNN, KNN).min(n - 1);
+    let mut sigma = vec![R::zero(); n];
+    let mut adj = vec![vec![false; n]; n];
+    for i in 0..n {
+        let mut idx: Vec<usize> = (0..n).filter(|&j| j != i).collect();
+        idx.sort_by(|&x, &y| d2[i][x].partial_cmp(&d2[i][y]).unwrap());
+        sigma[i] = d2[i][idx[scale_rank - 1]].sqrt().max(tiny);
+        for &j in &idx[0..knn] {
+            adj[i][j] = true; // symmetric k-NN: an edge if either endpoint keeps the other
+            adj[j][i] = true;
+        }
+    }
+
+    // Self-tuning RBF affinity `A_ij = exp(−d²_ij / (σ_i σ_j))` on the k-NN edges (zero elsewhere),
+    // degrees, and the symmetric normalized affinity `P = D^{-1/2} A D^{-1/2}`. `A` is exactly
+    // symmetric by construction, so `P` is too.
+    let mut deg = vec![R::zero(); n];
+    let mut a = vec![vec![R::zero(); n]; n];
+    for i in 0..n {
+        for j in 0..n {
+            if i != j && adj[i][j] {
+                let aff = (-d2[i][j] / (sigma[i] * sigma[j])).exp();
+                a[i][j] = aff;
+                deg[i] = deg[i] + aff;
+            }
+        }
+    }
+    let dinv: Vec<R> = deg.iter().map(|&d| R::one() / d.max(tiny).sqrt()).collect();
+    let mut p = vec![vec![R::zero(); n]; n];
+    for i in 0..n {
+        for j in 0..n {
+            p[i][j] = a[i][j] * dinv[i] * dinv[j];
+        }
+    }
+
+    // Top-`k` eigenvectors of `P` are the bottom-`k` of `L_sym = I − P` (here `2 ≤ k < n`).
+    let (eigvals, vecs) = jacobi_eigen(&p);
+    let mut order: Vec<usize> = (0..n).collect();
+    order.sort_by(|&i, &j| eigvals[j].partial_cmp(&eigvals[i]).unwrap()); // P eigenvalues descending
+
+    // Row-normalized eigenvector embedding (Ng-Jordan-Weiss), then k-means on the rows.
+    let sel = &order[0..k];
+    let embed: Vec<Spherical<R>> = (0..n)
+        .map(|i| {
+            let mut row: Vec<R> = sel.iter().map(|&c| vecs[i][c]).collect();
+            let norm = row.iter().map(|&x| x * x).sum::<R>().sqrt().max(tiny);
+            for x in row.iter_mut() {
+                *x = *x / norm;
+            }
+            let mut f = Spherical::new(k);
+            f.push(&row, R::one());
+            f
+        })
+        .collect();
+    kmeans(&embed, k, max_iter, N_INIT, seed).labels
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::clustering::rng::SplitMix64;
+    use crate::clustering::testutil::{ari, blobs, grid_micros, two_moons};
+    use std::collections::HashSet;
+
+    fn n_distinct(labels: &[usize]) -> usize {
+        labels.iter().copied().collect::<HashSet<_>>().len()
+    }
+
+    #[test]
+    fn spectral_separates_two_moons_where_kmeans_cannot() {
+        let mut rng = SplitMix64::new(7);
+        let (pts, truth) = two_moons(&mut rng, 250, 0.05);
+        let (micros, point_to_micro) = grid_micros(&pts, 0.12);
+        let micro_labels = spectral(&micros, 2, 100, 1).labels;
+        let pred: Vec<usize> = point_to_micro.iter().map(|&m| micro_labels[m]).collect();
+        assert_eq!(n_distinct(&micro_labels), 2);
+        // The non-convex moons are recovered — a centroid head (k-means) scores ~0 here.
+        assert!(ari(&pred, &truth) > 0.85, "moons ARI too low");
+    }
+
+    #[test]
+    fn spectral_auto_k_defaults_to_two() {
+        // k == 0 (auto) ⇒ SPECTRAL_DEFAULT_K = 2, which is exactly right for the two moons.
+        let mut rng = SplitMix64::new(5);
+        let (pts, truth) = two_moons(&mut rng, 250, 0.05);
+        let (micros, point_to_micro) = grid_micros(&pts, 0.12);
+        let micro_labels = spectral(&micros, 0, 100, 1).labels;
+        assert_eq!(n_distinct(&micro_labels), SPECTRAL_DEFAULT_K);
+        let pred: Vec<usize> = point_to_micro.iter().map(|&m| micro_labels[m]).collect();
+        assert!(ari(&pred, &truth) > 0.85, "auto-k moons ARI too low");
+    }
+
+    #[test]
+    fn spectral_more_clusters_than_nodes_is_identity() {
+        let (micros, _) = grid_micros(&[vec![0.0, 0.0], vec![9.0, 0.0], vec![0.0, 9.0]], 0.5);
+        let labels = spectral(&micros, 5, 100, 1).labels;
+        assert_eq!(labels, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn spectral_single_feature_is_one_cluster() {
+        let (micros, _) = grid_micros(&[vec![1.0, 2.0]], 1.0);
+        assert_eq!(spectral(&micros, 1, 100, 1).labels, vec![0]);
+    }
+
+    #[test]
+    fn spectral_k_one_collapses_to_a_single_cluster() {
+        let (micros, _) = grid_micros(&[vec![0.0, 0.0], vec![9.0, 0.0], vec![0.0, 9.0]], 0.5);
+        let labels = spectral(&micros, 1, 100, 1).labels;
+        assert_eq!(labels, vec![0, 0, 0]);
+    }
+
+    #[test]
+    fn spectral_landmark_reduction_above_the_cap() {
+        // > SPECTRAL_MAX_NODES microclusters force the k-means-landmark reduction path.
+        let mut rng = SplitMix64::new(11);
+        let centers = [[0.0, 0.0], [15.0, 0.0], [0.0, 15.0]];
+        let (pts, truth) = blobs(&mut rng, 700, &centers, 0.7);
+        let (micros, point_to_micro) = grid_micros(&pts, 0.12);
+        assert!(
+            micros.len() > SPECTRAL_MAX_NODES,
+            "need > cap microclusters"
+        );
+        let micro_labels = spectral(&micros, 3, 100, 1).labels;
+        assert_eq!(micro_labels.len(), micros.len());
+        let pred: Vec<usize> = point_to_micro.iter().map(|&m| micro_labels[m]).collect();
+        assert!(ari(&pred, &truth) > 0.9, "landmark spectral lost the blobs");
+    }
+}

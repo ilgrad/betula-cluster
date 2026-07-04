@@ -30,7 +30,7 @@ __version__: str
 
 _FloatArray = NDArray[np.float64] | NDArray[np.float32]
 _Feature = Literal["spherical", "diagonal", "full", "fd"]
-_Method = Literal["kmeans", "gmm", "gmm-full", "ward", "hdbscan"]
+_Method = Literal["kmeans", "gmm", "gmm-full", "ward", "spectral", "hdbscan"]
 _Distance = Literal["euclidean", "manhattan", "ward", "average"]
 _Absorb = Literal["euclidean", "chi2"]
 _Lens = Literal["density", "radius", "l2norm", "coordinate", "eccentricity"]

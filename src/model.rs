@@ -1,8 +1,8 @@
 //! End-to-end model: build a CF-tree, cluster its leaves (Phase 3), and label points.
 
 use crate::clustering::{
-    gmm_diagonal, gmm_diagonal_auto, gmm_full, gmm_full_auto, kmeans, ward_hac, ward_hac_auto,
-    xmeans,
+    gmm_diagonal, gmm_diagonal_auto, gmm_full, gmm_full_auto, kmeans, spectral, ward_hac,
+    ward_hac_auto, xmeans,
 };
 use crate::distance::CFDistance;
 use crate::feature::ClusterFeature;
@@ -24,6 +24,8 @@ pub enum Method {
     GmmFull,
     /// Ward agglomerative hierarchical clustering (variance-increase linkage).
     Ward,
+    /// Spectral clustering (self-tuning affinity + normalized Laplacian) for non-convex clusters.
+    Spectral,
 }
 
 /// A fitted model: a CF-tree plus a cluster label per leaf entry. A point is labelled by routing
@@ -92,6 +94,8 @@ pub(crate) fn cluster_leaves<R: Real, C: ClusterFeature<R>>(
         Method::GmmFull => gmm_full(features, k.min(nlv).max(1), max_iter, seed).labels,
         Method::Ward if k == 0 => ward_hac_auto(features, 2, auto_hi).labels,
         Method::Ward => ward_hac(features, k.min(nlv).max(1)).labels,
+        // Spectral resolves `k == 0` (eigengap) and clamps internally, so one arm covers both.
+        Method::Spectral => spectral(features, k, max_iter, seed).labels,
     }
 }
 
@@ -217,7 +221,13 @@ mod tests {
         }
         let feats = tree.leaf_features().to_vec();
         // every head, both fixed-k and auto-k (k == 0), hits its `cluster_leaves` arm.
-        for method in [Method::KMeans, Method::Gmm, Method::GmmFull, Method::Ward] {
+        for method in [
+            Method::KMeans,
+            Method::Gmm,
+            Method::GmmFull,
+            Method::Ward,
+            Method::Spectral,
+        ] {
             for k in [3usize, 0usize] {
                 let labels = cluster_leaves(&feats, k, method, 100, 1);
                 assert_eq!(labels.len(), feats.len());

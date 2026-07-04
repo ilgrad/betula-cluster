@@ -14,12 +14,16 @@ A capability-by-capability reference. For runnable code see [`USAGE.md`](USAGE.m
 - Global clustering heads: weighted **k-means** (k-means++ + exact Lloyd), **diagonal &
   full-covariance GMM-EM** (expected-log E-step + NIW/MAP regularization, full covariance captures
   rotated/correlated clusters, **BIC auto-selects the component count** when `n_clusters=0`),
-  **Ward agglomerative HAC** (exact, via nearest-neighbour chain; dendrogram-cut auto-k), and
+  **Ward agglomerative HAC** (exact, via nearest-neighbour chain; dendrogram-cut auto-k),
+  **spectral clustering** (self-tuning k-NN affinity + normalized Laplacian embedding via the
+  in-house Jacobi eigensolver, k-means-landmark-reduced above 256 microclusters — separates
+  non-convex / manifold clusters the centroid heads cannot; pair it with a small `threshold` so the
+  microclusters resolve the manifold), and
   **HDBSCAN-style density clustering over the CF microclusters** (mass-aware mutual-reachability +
   mass-weighted stability → non-convex clusters and noise, automatic count; an *approximation* of
   raw-point HDBSCAN over the $M \ll N$ microclusters, not identical to it).
 - **Soft assignment & confidence**: `predict_proba` (true posterior for the GMM heads; a documented
-  centroid-distance softmax *heuristic* for k-means / Ward / HDBSCAN), `assignment_confidence`,
+  centroid-distance softmax *heuristic* for k-means / Ward / spectral / HDBSCAN), `assignment_confidence`,
   `microcluster_proba_` (per-microcluster GMM responsibilities, GMM heads only), `export_coreset` (the
   leaves as weighted points), `diagnostics`, `representatives`, `cluster_profile`.
 - **`DenStream`** — a separate streaming density clusterer (Cao et al., SDM 2006) over *fading*
@@ -109,7 +113,7 @@ A capability-by-capability reference. For runnable code see [`USAGE.md`](USAGE.m
 | `kernels` | auto-vectorized distance kernels (inline reductions) |
 | `distance` | D0–D4, radius, Mahalanobis (stable forms) |
 | `tree` | arena CF-tree + auto-rebuild |
-| `clustering` | `kmeans`, `gmm_diagonal`, `gmm_full`, `ward_hac`, `hdbscan` |
+| `clustering` | `kmeans`, `gmm_diagonal`, `gmm_full`, `ward_hac`, `spectral`, `hdbscan` |
 | `model` | end-to-end `Model::fit` / `predict` |
 | `python` | PyO3 bindings: one-shot `fit_predict` + streaming `Betula` estimator |
 
