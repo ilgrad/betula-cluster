@@ -18,6 +18,7 @@ source (the diff-friendly form); the `.ipynb` is the rendered, executed output y
 | [`10_sparse_highdim`](10_sparse_highdim.ipynb) | `scipy.sparse` input (dense-tree path) and the `O(nnz)` **`fit_predict_sparse`**; sparsity pattern, speed + memory |
 | [`11_soft_assignment_coreset_diagnostics`](11_soft_assignment_coreset_diagnostics.ipynb) | `predict_proba` / `assignment_confidence`; `export_coreset` (refit anything); `diagnostics`, `cluster_profile`, `representatives` |
 | [`12_drift_robust_memory`](12_drift_robust_memory.ipynb) | `snapshot` + `compare_snapshots` drift; `active_learning_batch`; robust `huber_k`; `memory_budget_mb` |
+| [`13_graph_clustering`](13_graph_clustering.ipynb) | graph & manifold heads — `method="spectral"` on moons/spirals, `method="louvain"` community detection (auto-count), and `consensus` per-point stability maps |
 
 ## Use cases (concrete, end-to-end scenarios)
 
