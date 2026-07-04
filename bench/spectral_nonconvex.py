@@ -13,13 +13,12 @@ from __future__ import annotations
 import argparse
 import time
 
+import betula_cluster as bc
 import numpy as np
 from sklearn.cluster import SpectralClustering
 from sklearn.datasets import make_circles, make_moons
 from sklearn.metrics import adjusted_rand_score as ari
 from sklearn.preprocessing import StandardScaler
-
-import betula_cluster as bc
 
 BETULA_KW = dict(threshold=0.0, max_leaves=2000, seed=0)
 
