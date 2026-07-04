@@ -86,7 +86,9 @@ X = np.random.default_rng(0).normal(size=(100_000, 10))
 
 labels = betula_cluster.fit_predict(X, n_clusters=10, method="kmeans")
 labels = betula_cluster.fit_predict(X, n_clusters=0, feature="full", method="gmm-full")  # auto-k via BIC
-labels = betula_cluster.fit_predict(X, method="hdbscan", min_cluster_size=25)   # HDBSCAN-CF; -1 = noise
+labels = betula_cluster.fit_predict(X, n_clusters=8, method="spectral", threshold=0.0)   # non-convex / manifold
+labels = betula_cluster.fit_predict(X, method="leiden", threshold=0.4)                    # graph communities; count auto-discovered
+labels = betula_cluster.fit_predict(X, method="hdbscan", min_cluster_size=25)            # HDBSCAN-CF; -1 = noise
 ```
 
 Streaming / out-of-core — feed chunks, finalize, predict; memory stays bounded by `max_leaves`:
@@ -99,10 +101,23 @@ est.partial_fit()                     # finalize the global clustering over ever
 labels = est.predict(X_query)
 ```
 
+Robustness — the CF-tree is insertion-order sensitive, so `consensus` clusters several random
+permutations and votes, returning a consensus labelling **plus** a per-point stability score (any
+partitional head — `kmeans` / `gmm` / `ward` / `spectral`):
+
+```python
+res = betula_cluster.consensus(X, n_clusters=10, n_runs=5, method="kmeans", n_jobs=-1)  # -1 = all cores
+res.labels           # (n,) consensus label per point
+res.confidence       # (n,) in [0, 1] — per-point agreement across runs (1.0 = every order agrees)
+res.mean_confidence  # scalar robustness summary
+```
+
 Memory-aware hyperparameter tuning (`tune`, optional Optuna), Mapper topology (`mapper`),
-constraints (COP-KMeans), mixed numeric+categorical (`KPrototypes`), streaming density (`DenStream` /
-`DbStream`), quantile sketches, `scipy.sparse` input, soft assignment / coresets / diagnostics, the
-Rust API, and the CLI — all in the [**usage guide**](https://github.com/ilgrad/betula-cluster/blob/main/docs/USAGE.md).
+semi-supervised constraints (COP-KMeans), mixed numeric+categorical (`KPrototypes`), streaming
+density (`DenStream` / `DbStream`), the `O(nnz)` sparse-native path (`fit_predict_sparse`), quantile
+sketches, `scipy.sparse` input, `threshold="auto"`, soft assignment / coresets / diagnostics / drift
+snapshots / active-learning batches, the Rust API, and the CLI — all in the
+[**usage guide**](https://github.com/ilgrad/betula-cluster/blob/main/docs/USAGE.md).
 
 ## Capabilities
 
