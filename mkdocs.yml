@@ -32,6 +32,7 @@ markdown_extensions:
   - pymdownx.superfences
   - pymdownx.inlinehilite
   - pymdownx.arithmatex: { generic: true }
+  - pymdownx.snippets: { base_path: ["."], check_paths: true }
   - toc: { permalink: true }
 
 extra_javascript:
@@ -58,3 +59,4 @@ nav:
   - Features: FEATURES.md
   - The math: MATH.md
   - API reference: api.md
+  - Changelog: changelog.md

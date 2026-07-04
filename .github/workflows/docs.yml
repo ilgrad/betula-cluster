@@ -7,7 +7,12 @@ on:
       - docs/**
       - mkdocs.yml
       - python/**
+      - CHANGELOG.md
       - .github/workflows/docs.yml
+  # Every published GitHub Release (release.yml auto-creates one on a v* tag) refreshes the site,
+  # so a release always ships its docs even when the release commit only touches root files.
+  release:
+    types: [published]
   workflow_dispatch:
 
 permissions:
