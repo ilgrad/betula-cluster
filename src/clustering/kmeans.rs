@@ -234,6 +234,10 @@ pub fn cop_kmeans<R: Real, C: ClusterFeature<R>>(
     Ok(chunk_of.iter().map(|&c| assign[c]).collect())
 }
 
+/// **Greedy** weighted k-means++ (Arthur–Vassilvitskii; scikit-learn's default since 1.0). Each new
+/// centre samples `n_trials = 2 + ⌊ln k⌋` candidates ∝ weight·D² and keeps the one that most reduces
+/// the total potential `Σ_i w_i · min_c ‖x_i − c‖²` — strictly lower-variance, lower-inertia seeds than
+/// single-candidate sampling, at ~`ln k`× the (already negligible) init cost over the `M ≪ N` leaves.
 fn kmeans_plus_plus<R: Real>(
     means: &[Vec<R>],
     weights: &[R],
@@ -245,20 +249,35 @@ fn kmeans_plus_plus<R: Real>(
     let w0: Vec<f64> = weights.iter().map(|&w| to_f(w)).collect();
     centers.push(means[weighted_pick(&w0, rng)].clone());
 
+    // d2[i] = squared distance of point i to the nearest chosen centre.
     let mut d2: Vec<f64> = means
         .iter()
         .map(|m| to_f(sq_euclidean(m, &centers[0])))
         .collect();
+    let n_trials = 2 + (k as f64).ln().floor().max(0.0) as usize;
     while centers.len() < k {
         let probs: Vec<f64> = w0.iter().zip(&d2).map(|(&w, &d)| w * d).collect();
-        let next = means[weighted_pick(&probs, rng)].clone();
+        // Sample `n_trials` candidates ∝ weight·D²; keep the one giving the lowest resulting potential.
+        let mut best = usize::MAX;
+        let mut best_pot = f64::INFINITY;
+        for _ in 0..n_trials {
+            let cand = weighted_pick(&probs, rng);
+            let mut pot = 0.0;
+            for (i, m) in means.iter().enumerate() {
+                pot += w0[i] * to_f(sq_euclidean(m, &means[cand])).min(d2[i]);
+            }
+            if pot < best_pot {
+                best_pot = pot;
+                best = cand;
+            }
+        }
         for (di, m) in d2.iter_mut().zip(means) {
-            let nd = to_f(sq_euclidean(m, &next));
+            let nd = to_f(sq_euclidean(m, &means[best]));
             if nd < *di {
                 *di = nd;
             }
         }
-        centers.push(next);
+        centers.push(means[best].clone());
     }
     centers
 }
