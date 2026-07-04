@@ -1,0 +1,16 @@
+# cargo-mutants: mutation testing scoped to the numerically-critical, Rust-tested core.
+# `cargo mutants` (see .github/workflows/mutants.yml for the scheduled run). First pass targets the
+# CF math where a surviving mutant silently corrupts every downstream label; broaden later by
+# dropping `examine_globs`.
+examine_globs = [
+    "src/feature.rs",
+    "src/distance.rs",
+    "src/linalg.rs",
+    "src/stats.rs",
+    "src/sparse.rs",
+]
+# python.rs has no Rust-level test coverage (coverage runs --features persistence,cli, not python),
+# so any mutant there is a false survivor; the CLI bin is a thin wrapper.
+exclude_globs = ["src/python.rs", "src/bin/**"]
+# Floor the timeout so the proptest-heavy suite never spuriously times out under a mutant.
+minimum_test_timeout = 60

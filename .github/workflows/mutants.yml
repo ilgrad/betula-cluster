@@ -1,0 +1,46 @@
+name: mutation
+
+# Mutation testing is expensive — keep it OFF the PR critical path (scheduled + manual only).
+on:
+  schedule:
+    - cron: "0 5 * * 1" # Mondays 05:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cargo-mutants:
+    name: cargo-mutants (CF math core)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-mutants
+      - name: cargo mutants (scoped by .cargo/mutants.toml)
+        run: cargo mutants --no-shuffle -j2
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mutants-out
+          path: mutants.out
+
+  mutmut:
+    name: mutmut (tuning.py + wrapper)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: astral-sh/setup-uv@v5
+      - name: mutmut run (advisory)
+        run: |
+          uv venv --python 3.12
+          uv pip install maturin numpy "scikit-learn>=1.3" scipy networkx pytest mutmut
+          uv run maturin develop --release
+          uv run mutmut run || true
+          uv run mutmut results || true

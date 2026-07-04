@@ -1423,6 +1423,23 @@ def test_fit_predict_sparse_invalid_method():
 # ── hyperparameter tuning (betula_cluster.tuning) ────────────────────────────────────────────────
 
 
+def test_tune_metrics_match_reference_values():
+    # Exact hand-computed values pin the metric *formulas* — 100% line coverage does not (a mutant
+    # like between/(k-1) -> between*(k-1) preserves argmax and survives the argmax-only tune tests).
+    # Two well-separated clusters of two points each; values verified equal to scikit-learn's.
+    from betula_cluster.tuning import adjusted_rand, calinski_harabasz, davies_bouldin
+
+    x = np.array([[0.0, 0.0], [0.0, 2.0], [10.0, 0.0], [10.0, 2.0]])
+    labels = np.array([0, 0, 1, 1])
+    # CH = (between/(k-1)) / (within/(N-k)) = (100/1) / (4/2) = 50
+    assert abs(calinski_harabasz(x, labels) - 50.0) < 1e-9
+    # DB = mean_i max_{j!=i} (s_i + s_j) / d_ij = 0.5 * (0.2 + 0.2) = 0.2
+    assert abs(davies_bouldin(x, labels) - 0.2) < 1e-9
+    # ARI = 1 under any label permutation of a perfect partition; ~0 for a crossed partition.
+    assert abs(adjusted_rand(np.array([0, 0, 1, 1]), np.array([1, 1, 0, 0])) - 1.0) < 1e-9
+    assert abs(adjusted_rand(np.array([0, 0, 1, 1]), np.array([0, 1, 0, 1]))) < 0.5
+
+
 def test_tune_random_returns_best(blobs):
     x, _ = blobs
     result = betula_cluster.tune(x, n_clusters=4, n_trials=6, seed=0)

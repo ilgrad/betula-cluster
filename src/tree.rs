@@ -693,6 +693,29 @@ mod tests {
     }
 
     #[test]
+    fn absorption_boundary_is_inclusive() {
+        // A point at squared distance EXACTLY `threshold` from an entry must be absorbed — the gate is
+        // `<= threshold`, not `<`. `num_leaves` can't tell (both fit one leaf node under leaf_cap), so
+        // assert the entry count: absorbed -> 1 entry; a spurious `<` split -> 2.
+        let mut tree: CFTree<f64, Spherical<f64>, _, _> = CFTree::new(
+            2,
+            4,
+            8,
+            4.0,
+            usize::MAX,
+            CentroidEuclidean,
+            CentroidEuclidean,
+        );
+        tree.insert(&[0.0, 0.0]); // seeds one entry at the origin
+        tree.insert(&[2.0, 0.0]); // ‖(2,0)‖² = 4.0 == threshold -> must absorb, not seed a new entry
+        assert_eq!(
+            tree.entries.len(),
+            1,
+            "a point at distance² == threshold must be absorbed"
+        );
+    }
+
+    #[test]
     fn invariant_holds_with_absorption() {
         let mut tree: CFTree<f64, Spherical<f64>, _, _> = CFTree::new(
             2,

@@ -71,3 +71,10 @@ ignore = ["RUF001", "RUF002", "RUF003"]
 [tool.ruff.lint.per-file-ignores]
 # Benchmark/spike harnesses set up the environment before importing, and print wide tables.
 "bench/*" = ["E402", "E501"]
+
+[tool.mutmut]
+# Mutation testing (advisory, nightly — see .github/workflows/mutants.yml). Scoped to the two files
+# with real numeric logic; 100% line coverage says nothing about assertion strength, mutmut does.
+paths_to_mutate = "python/betula_cluster/tuning.py,python/betula_cluster/__init__.py"
+tests_dir = "tests/"
+runner = "python -m pytest -x -q tests/test_python.py"
