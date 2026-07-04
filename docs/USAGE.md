@@ -31,7 +31,9 @@ scikit-learn; leave it off for tabular data where magnitude is signal),
 `n_jobs` (parallel shard+merge tree build — `>1` gives ~4–5× on large
 `N`), `threshold`, `branching`, `leaf_cap`, `max_leaves`, `max_iter`, `min_samples`,
 `min_cluster_size`, `seed`. `n_clusters=0` ⇒ automatic `k` for every parametric head (BIC for
-k-means/GMM, dendrogram cut for Ward).
+k-means/GMM, dendrogram cut for Ward). `threshold="auto"` (dense only) drops the one knob users most
+often have to guess: a subsample pilot estimates a warm-start absorption radius, so the full fit
+starts near-converged instead of growing the threshold from zero.
 
 ## Streaming / out-of-core — the `Betula` estimator
 

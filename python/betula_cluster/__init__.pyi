@@ -112,7 +112,7 @@ class Betula:
         n_clusters: int = ...,
         feature: _Feature = ...,
         method: _Method = ...,
-        threshold: float = ...,
+        threshold: float | Literal["auto"] = ...,
         branching: int = ...,
         leaf_cap: int = ...,
         max_leaves: int = ...,

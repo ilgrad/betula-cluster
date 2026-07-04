@@ -4,6 +4,16 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- `threshold="auto"` for the `Betula` estimator — removes the one hyperparameter users most often
+  have to guess. A bounded-subsample pilot fits a `threshold=0` tree at the same `max_leaves` and
+  reads the threshold it converges to, warm-starting the full fit near-converged instead of growing
+  it from zero (fewer rebuild passes, lower peak leaf count on large `n`). Cached across refits /
+  streaming batches; below the pilot cap it is a no-op (growing from zero is already cheap), and it
+  is dense-only (raises on sparse input).
+
 ## [0.1.4] — 2026-07-04
 
 ### Added

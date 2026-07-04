@@ -1626,3 +1626,76 @@ def test_tune_finalize_keeps_best_infinity():
     # all-worst pool → fall back to the raw trials instead of an empty selection
     only_worst = tuning._finalize([worst], "calinski_harabasz", multi_objective=False)
     assert only_worst.best_params == {"i": 3}
+
+
+def test_auto_threshold_small_data_is_noop(blobs):
+    # n below the pilot cap: "auto" starts from zero exactly like the default, no double-fit.
+    x, _ = blobs
+    kw = dict(n_clusters=4, method="kmeans", seed=0)
+    auto = betula_cluster.Betula(threshold="auto", **kw).fit(x)
+    base = betula_cluster.Betula(threshold=0.0, **kw).fit(x)
+    assert auto.get_params()["threshold"] == "auto"  # configured value kept verbatim (sklearn)
+    assert auto._auto_threshold == 0.0  # pilot skipped
+    assert auto.threshold_ == base.threshold_  # ⇒ identical resolved tree
+    np.testing.assert_array_equal(auto.predict(x), base.predict(x))
+    auto.fit(x)  # refit reuses the cached estimate (cache-hit path), still a no-op
+    assert auto._auto_threshold == 0.0
+
+
+def test_auto_threshold_warm_starts_large_n():
+    # n above the pilot cap: the subsample pilot picks a real warm-start threshold, and the full
+    # fit rebuilds no more than the cold (threshold=0) build while matching its clustering.
+    ari = pytest.importorskip("sklearn.metrics").adjusted_rand_score
+    rng = np.random.default_rng(0)
+    centers = [[0, 0], [9, 0], [0, 9], [9, 9]]
+    x = np.vstack([rng.normal(c, 0.5, (1500, 2)) for c in centers])
+    y = np.repeat(np.arange(4), 1500)
+    kw = dict(n_clusters=4, method="kmeans", max_leaves=200, seed=0)
+    auto = betula_cluster.Betula(threshold="auto", **kw).fit(x)
+    base = betula_cluster.Betula(threshold=0.0, **kw).fit(x)
+    assert auto._auto_threshold > 0.0  # pilot on the subsample chose a positive warm start
+    assert auto.threshold_ > 0.0
+    assert auto.n_rebuilds_ <= base.n_rebuilds_  # warm start never rebuilds more than cold
+    assert ari(y, auto.predict(x)) >= 0.9
+
+
+def test_auto_threshold_fit_predict(blobs):
+    x, _ = blobs
+    labels = betula_cluster.Betula(
+        threshold="auto", n_clusters=4, method="kmeans", seed=0
+    ).fit_predict(x)
+    assert len(labels) == len(x)
+
+
+def test_auto_threshold_rejects_sparse():
+    sp = pytest.importorskip("scipy.sparse")
+    x = sp.random(60, 8, density=0.2, format="csr", random_state=0)
+    with pytest.raises(ValueError, match="requires a dense array"):
+        betula_cluster.Betula(threshold="auto").fit(x)
+
+
+def test_auto_threshold_streaming(blobs):
+    x, _ = blobs
+    est = betula_cluster.Betula(threshold="auto", n_clusters=4, method="kmeans", seed=0)
+    est.partial_fit(x[:1200])  # first batch resolves + caches the estimate
+    cached = est._auto_threshold
+    est.partial_fit(x[1200:])  # subsequent batch keeps the same tree, no re-pilot
+    assert est._auto_threshold == cached
+    est.partial_fit()  # finalize the streaming clustering (sklearn-Birch style)
+    assert len(est.predict(x)) == len(x)
+
+
+def test_auto_threshold_constrained(blobs):
+    x, _ = blobs
+    est = betula_cluster.Betula(threshold="auto", method="kmeans", n_clusters=4, seed=0)
+    est.fit(x, must_link=np.array([[0, 1]]))
+    assert est.get_params()["threshold"] == "auto"
+    assert len(est.predict(x)) == len(x)
+
+
+def test_auto_threshold_set_params_resets_cache(blobs):
+    x, _ = blobs
+    est = betula_cluster.Betula(threshold="auto", n_clusters=4, method="kmeans", seed=0).fit(x)
+    assert est._auto_threshold is not None
+    est.set_params(n_clusters=3)
+    assert est._auto_threshold is None  # a param change invalidates the pilot estimate

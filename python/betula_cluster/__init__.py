@@ -266,12 +266,22 @@ _DEFAULTS = {
 }
 _PARAM_NAMES = tuple(_DEFAULTS)
 
+# `threshold="auto"` pilot: fit this many points (max of the two) to estimate a warm-start
+# threshold. Oversampling the leaf budget makes the subsample crowd the tree to `max_leaves`, so
+# the threshold it converges to transfers to the full fit.
+_AUTO_PILOT_CAP_FACTOR = 8
+_AUTO_PILOT_MIN = 4000
+
 
 class Betula:
     """Streaming, scikit-learn-style BETULA estimator.
 
     Parameters are validated lazily — when the engine is built at ``fit`` / ``partial_fit`` time —
     following the scikit-learn convention that ``__init__`` only records its arguments verbatim.
+
+    ``threshold`` accepts a non-negative float (the CF absorption radius, ``0.0`` grows it from
+    scratch) or ``"auto"``: a subsample pilot then estimates a warm-start threshold so the full fit
+    starts near-converged instead of thrashing rebuilds up from zero. ``"auto"`` is dense-only.
     """
 
     def __init__(
@@ -322,6 +332,8 @@ class Betula:
         self.memory_budget_mb = memory_budget_mb
         self._est = None
         self._effective_max_leaves = max_leaves
+        # Cache for the pilot-estimated threshold when `threshold="auto"`; reset on `set_params`.
+        self._auto_threshold = None
 
     # ── scikit-learn parameter protocol ──────────────────────────────────────────────────────
     def get_params(self, deep=True):
@@ -336,19 +348,59 @@ class Betula:
                 )
             setattr(self, key, value)
         self._est = None  # params changed → any prior fit is stale
+        self._auto_threshold = None  # …and the pilot estimate no longer matches the params
         return self
 
     # ── fit / predict ────────────────────────────────────────────────────────────────────────
-    def _build(self, dim=None):
-        # `memory_budget_mb` is a wrapper-only knob: strip it and, when set (and the dimension is
-        # known), translate it into the `max_leaves` the engine actually uses.
-        params = {k: getattr(self, k) for k in _PARAM_NAMES if k != "memory_budget_mb"}
+    def _resolve_max_leaves(self, dim):
+        # `memory_budget_mb` is a wrapper-only knob: when set (and the dimension is known),
+        # translate it into the `max_leaves` the engine actually uses; otherwise pass it through.
         if self.memory_budget_mb is not None and dim is not None:
-            params["max_leaves"] = _budget_max_leaves(
-                self.memory_budget_mb, dim, self.feature, self.branching
-            )
+            return _budget_max_leaves(self.memory_budget_mb, dim, self.feature, self.branching)
+        return self.max_leaves
+
+    def _build(self, dim=None, threshold_override=None):
+        params = {k: getattr(self, k) for k in _PARAM_NAMES if k != "memory_budget_mb"}
+        params["max_leaves"] = self._resolve_max_leaves(dim)
+        # `threshold="auto"` is resolved to a float by the caller (see `_resolve_auto`); the engine
+        # only ever receives a concrete threshold.
+        if threshold_override is not None:
+            params["threshold"] = threshold_override
         self._effective_max_leaves = params["max_leaves"]
         return _CoreBetula(**params)
+
+    def _resolve_auto(self, X, csr):
+        """Resolve ``threshold="auto"`` to a float warm-start threshold; ``None`` when not auto.
+
+        Pilots a bounded subsample through a ``threshold=0`` tree with the same ``max_leaves`` and
+        reads the threshold it converges to, so the full fit starts near-converged instead of
+        thrashing rebuilds up from zero. The estimate is cached for refits / streaming batches.
+        """
+        if self.threshold != "auto":
+            return None
+        if csr is not None:
+            raise ValueError("threshold='auto' requires a dense array, not a sparse matrix")
+        if self._auto_threshold is None:
+            self._auto_threshold = self._pilot_threshold(np.asarray(X))
+        return self._auto_threshold
+
+    def _pilot_threshold(self, X):
+        dim = X.shape[1] if X.ndim == 2 else 1
+        max_leaves = self._resolve_max_leaves(dim)
+        cap = max(_AUTO_PILOT_CAP_FACTOR * max_leaves, _AUTO_PILOT_MIN)
+        n = X.shape[0]
+        if n <= cap:
+            # Small data: growing from zero is already cheap (rebuilds fold O(leaves), not O(n)),
+            # and a full-data pilot would just double the work — skip it and start at zero.
+            return 0.0
+        rng = np.random.default_rng(self.seed)
+        sub = X[rng.choice(n, cap, replace=False)]
+        params = {k: getattr(self, k) for k in _PARAM_NAMES if k != "memory_budget_mb"}
+        params["threshold"] = 0.0
+        params["max_leaves"] = max_leaves
+        pilot = _CoreBetula(**params)
+        pilot.fit(sub)
+        return float(pilot.threshold_)
 
     def fit(self, X, y=None, must_link=None, cannot_link=None):
         """Fit the CF-tree on ``X`` and cluster it; returns ``self`` (scikit-learn style).
@@ -363,11 +415,12 @@ class Betula:
         if must_link is not None or cannot_link is not None:
             return self._fit_constrained(X, must_link, cannot_link)
         csr = _to_csr(X)
+        override = self._resolve_auto(X, csr)
         if csr is not None:
-            est = self._build(csr[3])
+            est = self._build(csr[3], override)
             est.fit_csr(*csr)
         else:
-            est = self._build(_dim_of(X))
+            est = self._build(_dim_of(X), override)
             est.fit(X)
         self._est = est
         return self
@@ -381,11 +434,12 @@ class Betula:
             self._fit_constrained(X, must_link, cannot_link)
             return np.asarray(self.predict(X))
         csr = _to_csr(X)
+        override = self._resolve_auto(X, csr)
         if csr is not None:
-            est = self._build(csr[3])
+            est = self._build(csr[3], override)
             labels = est.fit_predict_csr(*csr)
         else:
-            est = self._build(_dim_of(X))
+            est = self._build(_dim_of(X), override)
             labels = est.fit_predict(X)
         self._est = est
         return labels
@@ -400,20 +454,22 @@ class Betula:
             raise ValueError("constrained clustering requires a dense array, not a sparse matrix")
         ml = _constraint_pairs(must_link)
         cl = _constraint_pairs(cannot_link)
-        est = self._build(_dim_of(X))
+        override = self._resolve_auto(X, None)
+        est = self._build(_dim_of(X), override)
         est.fit_constrained(X, ml, cl)
         self._est = est
         return self
 
     def partial_fit(self, X=None, y=None):
         csr = None if X is None else _to_csr(X)
+        override = self._resolve_auto(X, csr) if self._est is None else None
         if csr is not None:
             if self._est is None:
-                self._est = self._build(csr[3])
+                self._est = self._build(csr[3], override)
             self._est.partial_fit_csr(*csr)
         else:
             if self._est is None:
-                self._est = self._build(_dim_of(X))
+                self._est = self._build(_dim_of(X), override)
             self._est.partial_fit(X)
         return self
 
