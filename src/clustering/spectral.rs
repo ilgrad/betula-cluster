@@ -13,23 +13,15 @@
 //! leaf inherits its landmark's label. Spectral has no built-in cluster-count selection (the
 //! eigengap is unreliable on k-NN graphs), so `k == 0` (auto) falls back to [`SPECTRAL_DEFAULT_K`].
 
+use crate::clustering::graph::knn_affinity;
 use crate::clustering::kmeans::kmeans;
 use crate::feature::{ClusterFeature, Spherical};
-use crate::kernels::sq_euclidean;
 use crate::linalg::jacobi_eigen;
 use crate::types::Real;
 
 /// Microclusters solved directly by the eigensolver; above this, reduce to this many k-means
 /// landmarks first. Keeps the `O(M³)` Jacobi eigendecomposition well under a second.
 pub const SPECTRAL_MAX_NODES: usize = 256;
-/// Max neighbours kept in the affinity graph. A symmetric k-NN graph (not a full RBF) makes the
-/// affinity follow the data manifold, so non-convex clusters (moons, rings) separate — a dense
-/// RBF bridges them through the ambient gap. The realised degree scales down with the node count.
-const KNN: usize = 10;
-/// Floor on the k-NN degree so the affinity graph stays connected on small node counts.
-const MIN_KNN: usize = 4;
-/// Neighbour rank for the self-tuning local scale `σ_i` (Zelnik-Manor & Perona).
-const LOCAL_SCALE_NN: usize = 7;
 /// Cluster count used when `k == 0` (auto) is requested — spectral has no reliable built-in
 /// selection, and two clusters is the canonical non-convex case (moons / two rings).
 pub const SPECTRAL_DEFAULT_K: usize = 2;
@@ -80,46 +72,15 @@ fn spectral_core<R: Real>(centers: &[Vec<R>], k: usize, max_iter: usize, seed: u
     }
     let tiny = R::from_f64(1e-12).unwrap();
 
-    // Pairwise squared distances.
-    let mut d2 = vec![vec![R::zero(); n]; n];
-    for i in 0..n {
-        for j in (i + 1)..n {
-            let v = sq_euclidean(&centers[i], &centers[j]);
-            d2[i][j] = v;
-            d2[j][i] = v;
-        }
-    }
-
-    // Per node, sort neighbours by distance once, then read off the self-tuning local scale
-    // `σ_i` (distance to the `LOCAL_SCALE_NN`-th neighbour) and the `KNN` nearest for the graph.
-    // `scale_rank` ≥ 1 since n ≥ 2. A fixed large k-NN degree over few microclusters bridges the
-    // manifold (e.g. reconnects the two moons), so scale the realised degree down with the count.
-    let scale_rank = LOCAL_SCALE_NN.min(n - 1);
-    let knn = (n / 10).clamp(MIN_KNN, KNN).min(n - 1);
-    let mut sigma = vec![R::zero(); n];
-    let mut adj = vec![vec![false; n]; n];
-    for i in 0..n {
-        let mut idx: Vec<usize> = (0..n).filter(|&j| j != i).collect();
-        idx.sort_by(|&x, &y| d2[i][x].partial_cmp(&d2[i][y]).unwrap());
-        sigma[i] = d2[i][idx[scale_rank - 1]].sqrt().max(tiny);
-        for &j in &idx[0..knn] {
-            adj[i][j] = true; // symmetric k-NN: an edge if either endpoint keeps the other
-            adj[j][i] = true;
-        }
-    }
-
-    // Self-tuning RBF affinity `A_ij = exp(−d²_ij / (σ_i σ_j))` on the k-NN edges (zero elsewhere),
-    // degrees, and the symmetric normalized affinity `P = D^{-1/2} A D^{-1/2}`. `A` is exactly
-    // symmetric by construction, so `P` is too.
+    // Symmetric self-tuning k-NN affinity graph, then its degrees and the normalized affinity
+    // `P = D^{-1/2} A D^{-1/2}` (`A` is exactly symmetric by construction, so `P` is too).
+    let adj = knn_affinity(centers);
     let mut deg = vec![R::zero(); n];
     let mut a = vec![vec![R::zero(); n]; n];
-    for i in 0..n {
-        for j in 0..n {
-            if i != j && adj[i][j] {
-                let aff = (-d2[i][j] / (sigma[i] * sigma[j])).exp();
-                a[i][j] = aff;
-                deg[i] = deg[i] + aff;
-            }
+    for (i, row) in adj.iter().enumerate() {
+        for &(j, w) in row {
+            a[i][j] = w;
+            deg[i] = deg[i] + w;
         }
     }
     let dinv: Vec<R> = deg.iter().map(|&d| R::one() / d.max(tiny).sqrt()).collect();

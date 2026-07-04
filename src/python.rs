@@ -51,12 +51,13 @@ fn parse_method(method: &str, min_samples: usize, min_cluster_size: usize) -> Py
         "gmm-full" => Ok(Kind::Parametric(Method::GmmFull)),
         "ward" => Ok(Kind::Parametric(Method::Ward)),
         "spectral" => Ok(Kind::Parametric(Method::Spectral)),
+        "louvain" => Ok(Kind::Parametric(Method::Louvain)),
         "hdbscan" => Ok(Kind::Hdbscan {
             min_samples,
             min_cluster_size,
         }),
         _ => Err(PyValueError::new_err(
-            "method must be 'kmeans', 'gmm', 'gmm-full', 'ward', 'spectral' or 'hdbscan'",
+            "method must be 'kmeans', 'gmm', 'gmm-full', 'ward', 'spectral', 'louvain' or 'hdbscan'",
         )),
     }
 }

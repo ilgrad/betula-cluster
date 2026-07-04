@@ -105,6 +105,18 @@ def test_spectral_separates_moons_where_kmeans_fails(moons):
     assert ari(kmeans, y) < 0.6  # a centroid head cuts straight across them
 
 
+def test_louvain_detects_communities_without_k(blobs):
+    x, y = blobs
+    # Louvain community detection discovers the count from the microcluster graph — n_clusters is
+    # ignored. Pair it with a moderate threshold; a very fine graph over-splits (modularity's
+    # resolution limit).
+    labels = betula_cluster.fit_predict(
+        x, n_clusters=99, method="louvain", threshold=0.3, max_leaves=400, seed=1
+    )
+    assert n_labels(labels) == 4  # four communities found despite n_clusters=99
+    assert ari(labels, y) > 0.95
+
+
 def test_float32_reproduces_float64_on_normal_range(blobs):
     x, y = blobs
     kw = dict(feature="diagonal", method="gmm", threshold=0.05, max_leaves=300, seed=1)
@@ -1448,7 +1460,7 @@ def test_fit_predict_sparse_rejects_dense():
 
 def test_fit_predict_sparse_invalid_method():
     x, _ = _sparse_topics()
-    for bad in ("hdbscan", "spectral"):  # neither head is wired for the sparse O(nnz) path
+    for bad in ("hdbscan", "spectral", "louvain"):  # none is wired for the sparse O(nnz) path
         with pytest.raises(ValueError, match="method"):
             betula_cluster.fit_predict_sparse(x, method=bad)
 

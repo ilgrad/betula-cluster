@@ -7,6 +7,13 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- `method="louvain"` — **graph clustering / community detection** over the microcluster affinity
+  graph. Louvain modularity maximization (Blondel et al. 2008) with a Leiden-style connectivity
+  guarantee (each community is internally connected); it **discovers the community count** from the
+  graph, so no `k` is needed (like the density head). Pure Rust — no eigensolver, the crate stays
+  NumPy-only. Best for community/blob structure at a moderate `threshold` (a very fine graph
+  over-splits per modularity's resolution limit); use `method="spectral"` for elongated manifolds.
+  The self-tuning k-NN affinity graph is now shared between the spectral and Louvain heads.
 - `betula_cluster.consensus(X, n_clusters, n_runs=…)` — clusters `X` under several random
   insertion-order permutations and votes, turning the CF-tree's **insertion-order sensitivity**
   (Known Limitation #1) into a measurable quantity: a consensus labelling plus a **per-point
