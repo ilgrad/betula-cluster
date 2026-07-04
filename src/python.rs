@@ -884,36 +884,12 @@ impl<R: Real> TreeState<R> {
     }
 }
 
-/// Tree-construction config passed to [`TreeState::stream_chunk`] (groups the estimator's settings).
-/// Validate CSR arrays so the row-expansion never indexes out of bounds: matched `data`/`indices`
-/// lengths, an `indptr` that starts at 0, is non-decreasing, and ends at `nnz`, in-range column
-/// indices, and finite values.
+/// Validate CSR arrays at the untrusted boundary before the `O(nnz)` row expansion. Delegates to the
+/// pure-Rust [`crate::sparse::validate_csr`] (matched lengths, well-formed `indptr`, in-range indices,
+/// finite values, and an `n_features` upper bound so a hostile caller can't force an unbounded
+/// allocation), mapping its message to a Python `ValueError`.
 fn validate_csr(data: &[f64], indices: &[i64], indptr: &[i64], n_features: usize) -> PyResult<()> {
-    if n_features == 0 {
-        return Err(PyValueError::new_err("n_features must be > 0"));
-    }
-    if data.len() != indices.len() {
-        return Err(PyValueError::new_err(
-            "CSR data and indices must have equal length",
-        ));
-    }
-    if indptr.first() != Some(&0) || *indptr.last().unwrap_or(&-1) as usize != data.len() {
-        return Err(PyValueError::new_err(
-            "CSR indptr must start at 0 and end at nnz",
-        ));
-    }
-    if indptr.windows(2).any(|w| w[1] < w[0]) {
-        return Err(PyValueError::new_err("CSR indptr must be non-decreasing"));
-    }
-    if indices.iter().any(|&c| c < 0 || c as usize >= n_features) {
-        return Err(PyValueError::new_err("CSR column index out of range"));
-    }
-    if data.iter().any(|v| !v.is_finite()) {
-        return Err(PyValueError::new_err(
-            "data contains NaN or infinite values",
-        ));
-    }
-    Ok(())
+    crate::sparse::validate_csr(data, indices, indptr, n_features).map_err(PyValueError::new_err)
 }
 
 /// Extract an `(m, 2)` integer constraint array as row-index pairs (validates the second axis).

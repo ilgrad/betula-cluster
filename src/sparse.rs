@@ -144,10 +144,58 @@ pub fn nearest_sparse(
     best
 }
 
+/// Upper bound on `n_features` for the sparse-native path. This path materialises a **dense** centroid
+/// per micro-cluster (`O(n_features)` memory each), so a feature count beyond this cannot fit in RAM
+/// regardless of how sparse the rows are — reduce dimensionality first (e.g. TruncatedSVD, the
+/// reduce-then-cluster path). The cap is also a hard trust-boundary guard: without it a caller could
+/// pass a single-nonzero row with a huge `n_features` and force an unbounded allocation (`vec![0.0;
+/// n_features]`). `2^30` features is already ~8 GB per centroid — far past where this path is viable.
+pub const MAX_SPARSE_FEATURES: usize = 1 << 30;
+
+/// Validate CSR arrays at the untrusted boundary so the `O(nnz)` row expansion can never index out of
+/// bounds or force an unbounded allocation: `n_features ∈ 1..=MAX_SPARSE_FEATURES`, matched
+/// `data`/`indices` lengths, an `indptr` that starts at 0, is non-decreasing, and ends at `nnz`,
+/// in-range column indices, and finite values. Returns a human-readable message on failure (the caller
+/// maps it to its own error type). Pure — no PyO3 — so it is reachable on stable Rust for fuzzing/tests.
+pub fn validate_csr(
+    data: &[f64],
+    indices: &[i64],
+    indptr: &[i64],
+    n_features: usize,
+) -> Result<(), String> {
+    if n_features == 0 {
+        return Err("n_features must be > 0".into());
+    }
+    if n_features > MAX_SPARSE_FEATURES {
+        return Err(format!(
+            "n_features {n_features} exceeds the sparse-native cap {MAX_SPARSE_FEATURES}: this path \
+             materialises a dense centroid per micro-cluster, so reduce dimensionality first \
+             (e.g. TruncatedSVD)"
+        ));
+    }
+    if data.len() != indices.len() {
+        return Err("CSR data and indices must have equal length".into());
+    }
+    if indptr.first() != Some(&0) || *indptr.last().unwrap_or(&-1) as usize != data.len() {
+        return Err("CSR indptr must start at 0 and end at nnz".into());
+    }
+    if indptr.windows(2).any(|w| w[1] < w[0]) {
+        return Err("CSR indptr must be non-decreasing".into());
+    }
+    if indices.iter().any(|&c| c < 0 || c as usize >= n_features) {
+        return Err("CSR column index out of range".into());
+    }
+    if data.iter().any(|v| !v.is_finite()) {
+        return Err("data contains NaN or infinite values".into());
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::feature::ClusterFeature;
+    use proptest::prelude::*;
 
     /// Dense reference: the spherical CF built from the same rows must match the sparse accumulator's
     /// weight, mean, and (to the expansion's accuracy) scatter.
@@ -272,5 +320,47 @@ mod tests {
             sparse.ssd()
         );
         assert!(sparse.ssd() >= 0.0);
+    }
+
+    #[test]
+    fn validate_csr_rejects_hostile_n_features() {
+        // The trust-boundary DoS: a single non-zero with a huge n_features would force an ~8 EB
+        // `vec![0.0; n_features]`. Must be rejected up front, not allocated.
+        assert!(validate_csr(&[1.0], &[0], &[0, 1], usize::MAX / 2).is_err());
+        assert!(validate_csr(&[1.0], &[0], &[0, 1], MAX_SPARSE_FEATURES + 1).is_err());
+        assert!(validate_csr(&[1.0], &[0], &[0, 1], MAX_SPARSE_FEATURES).is_ok());
+    }
+
+    #[test]
+    fn validate_csr_catches_malformed_arrays() {
+        assert!(validate_csr(&[1.0], &[0], &[0, 1], 0).is_err()); // n_features == 0
+        assert!(validate_csr(&[1.0, 2.0], &[0], &[0, 1], 4).is_err()); // data/indices length mismatch
+        assert!(validate_csr(&[1.0], &[0], &[1, 1], 4).is_err()); // indptr[0] != 0
+        assert!(validate_csr(&[1.0], &[0], &[0, 2], 4).is_err()); // indptr end != nnz
+        assert!(validate_csr(&[1.0, 2.0], &[0, 1], &[0, 2, 1], 4).is_err()); // non-decreasing
+        assert!(validate_csr(&[1.0], &[9], &[0, 1], 4).is_err()); // column index out of range
+        assert!(validate_csr(&[1.0], &[-1], &[0, 1], 4).is_err()); // negative column index
+        assert!(validate_csr(&[f64::NAN], &[0], &[0, 1], 4).is_err()); // non-finite value
+        assert!(validate_csr(&[], &[], &[0], 4).is_ok()); // zero rows is valid
+    }
+
+    proptest! {
+        // Any CSR that passes validation must summarise without panicking and conserve finite mass —
+        // no out-of-bounds slice, no NaN centroid. Bounds keep the property test itself from OOMing;
+        // most random inputs fail validation (that path must not panic either).
+        #[test]
+        fn validated_csr_never_panics(
+            data in prop::collection::vec(-1e6f64..1e6, 0..48),
+            indices in prop::collection::vec(-2i64..64, 0..48),
+            indptr in prop::collection::vec(-2i64..96, 0..12),
+            n_features in 0usize..64,
+        ) {
+            if validate_csr(&data, &indices, &indptr, n_features).is_ok() {
+                let micros = summarize_sparse(&data, &indices, &indptr, n_features, 0.5, 32);
+                let mass: f64 = micros.iter().map(|m| m.weight()).sum();
+                prop_assert!(mass.is_finite());
+                prop_assert!(micros.iter().all(|m| m.mean().iter().all(|v| v.is_finite())));
+            }
+        }
     }
 }
