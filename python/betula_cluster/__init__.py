@@ -343,6 +343,7 @@ _DEFAULTS = {
     "decay": 1.0,
     "normalize": False,
     "huber_k": None,
+    "resolution": 1.0,
     "memory_budget_mb": None,
 }
 _PARAM_NAMES = tuple(_DEFAULTS)
@@ -385,6 +386,7 @@ class Betula:
         decay=1.0,
         normalize=False,
         huber_k=None,
+        resolution=1.0,
         memory_budget_mb=None,
     ):
         self.n_clusters = n_clusters
@@ -408,6 +410,9 @@ class Betula:
         # microcluster before folding it in, so outliers cannot stretch a centroid/radius. ``None``
         # disables it. Most useful for streaming, where re-fitting on cleaned data is not an option.
         self.huber_k = huber_k
+        # Leiden resolution γ (only method="leiden" / "leiden-cpm"): higher ⇒ more, smaller
+        # communities. The modularity objective has a resolution limit; "leiden-cpm" does not.
+        self.resolution = resolution
         # When set, max_leaves is derived from this budget (+ dim + feature) at fit time: a target
         # for the CF-tree resident size (MiB), not total RSS. Most useful for streaming.
         self.memory_budget_mb = memory_budget_mb

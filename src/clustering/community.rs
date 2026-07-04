@@ -1,15 +1,20 @@
-//! Community detection on the CF-tree leaf microclusters (graph clustering).
+//! Community detection on the CF-tree leaf microclusters (graph clustering) via the **Leiden**
+//! algorithm (Traag, Waltman & van Eck 2019).
 //!
 //! Builds the shared self-tuning k-NN affinity graph over the leaf means (see [`crate::clustering::
-//! graph`]) and runs **Louvain modularity maximization** (Blondel et al. 2008): greedy local moving
-//! of nodes between communities to increase modularity, then aggregation of each community into a
-//! super-node, repeated until modularity stops improving. Unlike the parametric heads it needs **no
-//! `k`** — the community count is discovered from the graph structure.
+//! graph`]) and optimizes a quality function over it with Leiden's three phases per level:
 //!
-//! Each returned community is guaranteed internally connected: after Louvain converges, any community
-//! that is disconnected in the affinity graph is split into its connected components. This is the key
-//! correctness property the Leiden refinement (Traag et al. 2019) adds over plain Louvain, obtained
-//! here with a single post-hoc pass (cheap and exact on the small microcluster graph).
+//! 1. **local moving** — greedily move nodes between communities to raise the quality (as in Louvain);
+//! 2. **refinement** — inside each community, rebuild sub-communities by merging singletons *along
+//!    edges*, so every sub-community is connected by construction (this is the fix Leiden adds over
+//!    Louvain, which can leave communities internally disconnected or badly connected);
+//! 3. **aggregation** — collapse each refined sub-community to a super-node and seed the next level
+//!    from the pre-refinement partition, which lets Leiden re-split and reach higher quality.
+//!
+//! It **discovers the community count** — no `k`. Two quality functions: **modularity** (γ = 1 is the
+//! Newman-Girvan default; the resolution `γ` trades community count against size but has a resolution
+//! limit) and **CPM** (Constant Potts Model — resolution-limit-free, but `γ` is an absolute density
+//! threshold on the edge-weight scale). Pure Rust, no eigensolver.
 
 use crate::clustering::graph::knn_affinity;
 use crate::clustering::rng::SplitMix64;
@@ -17,9 +22,14 @@ use crate::feature::ClusterFeature;
 use crate::types::Real;
 use std::collections::HashMap;
 
-/// Resolution `γ` of the modularity null model. `1.0` is the classic Newman-Girvan modularity;
-/// higher favours more, smaller communities.
-const RESOLUTION: f64 = 1.0;
+/// Quality function optimized by [`leiden`].
+#[derive(Clone, Copy)]
+pub enum Objective {
+    /// Newman-Girvan modularity with resolution `γ` (has a resolution limit).
+    Modularity,
+    /// Constant Potts Model with resolution `γ` (resolution-limit-free; `γ` is a density threshold).
+    Cpm,
+}
 
 /// Result of a community-detection run: one community label per input microcluster.
 pub struct Community {
@@ -28,11 +38,13 @@ pub struct Community {
 }
 
 /// A weighted undirected working graph. `adj` holds only inter-node (external) edges; internal edges
-/// created by aggregation are folded into `degree` (a community's degree is the sum of its members').
+/// created by aggregation are folded into `degree` / `size` (a super-node inherits the sums of its
+/// members), so `2m` and the node-count total are invariant across levels.
 struct Graph {
     adj: Vec<Vec<(usize, f64)>>,
-    degree: Vec<f64>,
-    two_m: f64, // = 2·(total edge weight); invariant across aggregation levels
+    degree: Vec<f64>, // weighted degree — modularity null model
+    size: Vec<f64>,   // node count — CPM null model
+    two_m: f64,
 }
 
 impl Graph {
@@ -42,12 +54,26 @@ impl Graph {
             .map(|r| r.iter().map(|&(_, w)| w).sum())
             .collect();
         let two_m = degree.iter().sum();
-        Self { adj, degree, two_m }
+        let size = vec![1.0; adj.len()];
+        Self {
+            adj,
+            degree,
+            size,
+            two_m,
+        }
+    }
+    fn len(&self) -> usize {
+        self.adj.len()
     }
 }
 
-/// Louvain community detection on the leaf microclusters; `k` is not used (the count is discovered).
-pub fn louvain<R: Real, C: ClusterFeature<R>>(features: &[C], seed: u64) -> Community {
+/// Leiden community detection on the leaf microclusters. `resolution` is `γ`; `k` is not used.
+pub fn leiden<R: Real, C: ClusterFeature<R>>(
+    features: &[C],
+    resolution: f64,
+    objective: Objective,
+    seed: u64,
+) -> Community {
     let n = features.len();
     if n <= 1 {
         return Community { labels: vec![0; n] };
@@ -57,131 +83,200 @@ pub fn louvain<R: Real, C: ClusterFeature<R>>(features: &[C], seed: u64) -> Comm
         .map(|f| f.mean().iter().map(|&x| x.to_f64().unwrap()).collect())
         .collect();
     let base = knn_affinity::<f64>(&centers);
-    let labels = enforce_connectivity(&detect(&base, seed), &base);
-    Community { labels }
+    Community {
+        labels: detect(&base, resolution, objective, seed),
+    }
 }
 
-/// Multi-level Louvain: local-move to a fixpoint, aggregate, repeat until no move improves modularity.
-fn detect(base: &[Vec<(usize, f64)>], seed: u64) -> Vec<usize> {
+/// Gain of adding a node (degree `ki`, size `si`, edge weight `w_to` into community `c`) to `c`,
+/// whose current totals are `tot_deg` / `tot_size`. Constant terms shared across candidates cancel,
+/// so the argmax of this is the argmax of ΔQ.
+#[allow(clippy::too_many_arguments)]
+fn gain(
+    obj: Objective,
+    gamma: f64,
+    two_m: f64,
+    w_to: f64,
+    ki: f64,
+    si: f64,
+    tot_deg: f64,
+    tot_size: f64,
+) -> f64 {
+    match obj {
+        Objective::Modularity => w_to - gamma * tot_deg * ki / two_m,
+        Objective::Cpm => w_to - gamma * tot_size * si,
+    }
+}
+
+fn shuffled(n: usize, seed: u64) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..n).collect();
+    let mut rng = SplitMix64::new(seed);
+    for i in (1..n).rev() {
+        let j = (rng.next_u64() % (i as u64 + 1)) as usize;
+        order.swap(i, j);
+    }
+    order
+}
+
+/// Multi-level Leiden: local-move → refine → aggregate (seeded from the local-move partition),
+/// until aggregation no longer coarsens the graph.
+fn detect(base: &[Vec<(usize, f64)>], gamma: f64, obj: Objective, seed: u64) -> Vec<usize> {
     let n = base.len();
-    let mut membership: Vec<usize> = (0..n).collect(); // original node → current community
+    let mut membership: Vec<usize> = (0..n).collect(); // original node → current super-node
     let mut g = Graph::from_adj(base.to_vec());
+    let mut init: Vec<usize> = (0..n).collect(); // seed partition for the current local-move
     let mut level = 0u64;
     loop {
-        let (part, improved) = one_level(&g, seed.wrapping_add(level));
-        if !improved {
-            break;
-        }
+        let part = one_level(&g, obj, gamma, seed.wrapping_add(level), &init);
+        let refined = refine(&g, &part, obj, gamma, seed.wrapping_add(level));
         for m in membership.iter_mut() {
-            *m = part[*m];
+            *m = refined[*m];
         }
-        let c = part.iter().max().map_or(0, |&x| x + 1);
-        g = aggregate(&g, &part, c);
+        let n_ref = refined.iter().max().map_or(0, |&x| x + 1);
+        if n_ref == g.len() {
+            break; // refinement did not coarsen the graph ⇒ converged
+        }
+        let (next, coarse_seed) = aggregate(&g, &part, &refined, n_ref);
+        g = next;
+        init = coarse_seed;
         level += 1;
     }
     relabel(&membership)
 }
 
-/// One local-moving pass over the current graph: each node greedily joins the neighbouring community
-/// with the largest modularity gain, iterating until no node moves. Returns the (relabelled) partition
-/// and whether any node changed community.
-fn one_level(g: &Graph, seed: u64) -> (Vec<usize>, bool) {
-    let n = g.adj.len();
-    let mut comm: Vec<usize> = (0..n).collect();
-    let mut sigma_tot = g.degree.clone(); // Σ degree per community (each node its own to start)
-    let mut order: Vec<usize> = (0..n).collect();
-    let mut rng = SplitMix64::new(seed);
-    for i in (1..n).rev() {
-        let j = (rng.next_u64() % (i as u64 + 1)) as usize; // Fisher-Yates, seeded visit order
-        order.swap(i, j);
+/// One local-moving pass, started from partition `init`: each node greedily joins the neighbouring
+/// community with the largest quality gain, iterating until no node moves.
+fn one_level(g: &Graph, obj: Objective, gamma: f64, seed: u64, init: &[usize]) -> Vec<usize> {
+    let n = g.len();
+    let mut comm = init.to_vec();
+    let nc = comm.iter().max().map_or(0, |&x| x + 1);
+    let mut tot_deg = vec![0.0; nc];
+    let mut tot_size = vec![0.0; nc];
+    for i in 0..n {
+        tot_deg[comm[i]] += g.degree[i];
+        tot_size[comm[i]] += g.size[i];
     }
-    let mut improved = false;
+    let order = shuffled(n, seed);
     let mut moved = true;
     while moved {
         moved = false;
         for &i in &order {
             let ci = comm[i];
-            let ki = g.degree[i];
+            let (ki, si) = (g.degree[i], g.size[i]);
             let mut w_to: HashMap<usize, f64> = HashMap::new();
             for &(j, w) in &g.adj[i] {
                 *w_to.entry(comm[j]).or_insert(0.0) += w;
             }
-            // Remove i from its community before scoring so every candidate is compared equally.
-            // Gain of joining community `c` is `w_to[c] − γ·Σtot[c]·k_i / 2m`; rejoining `ci` (now
-            // possibly empty ⇒ the "stay isolated" option, gain 0) is the baseline.
-            sigma_tot[ci] -= ki;
-            let gain = |c: usize| -> f64 {
-                w_to.get(&c).copied().unwrap_or(0.0) - RESOLUTION * sigma_tot[c] * ki / g.two_m
+            tot_deg[ci] -= ki;
+            tot_size[ci] -= si;
+            let score = |c: usize, td: &[f64], ts: &[f64]| {
+                gain(
+                    obj,
+                    gamma,
+                    g.two_m,
+                    w_to.get(&c).copied().unwrap_or(0.0),
+                    ki,
+                    si,
+                    td[c],
+                    ts[c],
+                )
             };
             let mut best_c = ci;
-            let mut best_gain = gain(ci);
+            let mut best = score(ci, &tot_deg, &tot_size);
             for &c in w_to.keys() {
-                let g_c = gain(c);
-                if g_c > best_gain {
-                    best_gain = g_c;
+                let s = score(c, &tot_deg, &tot_size);
+                if s > best {
+                    best = s;
                     best_c = c;
                 }
             }
-            sigma_tot[best_c] += ki;
+            tot_deg[best_c] += ki;
+            tot_size[best_c] += si;
             comm[i] = best_c;
             if best_c != ci {
                 moved = true;
-                improved = true;
             }
         }
     }
-    (relabel(&comm), improved)
+    relabel(&comm)
 }
 
-/// Aggregate each community into a super-node: external inter-community edges are summed; internal
-/// edges are dropped from `adj` but preserved in `degree` (member-degree sum), keeping `2m` invariant.
-fn aggregate(g: &Graph, part: &[usize], c: usize) -> Graph {
-    let mut degree = vec![0.0; c];
-    let mut acc: Vec<HashMap<usize, f64>> = vec![HashMap::new(); c];
+/// Refinement: within each community of `part`, grow sub-communities by merging *singleton* nodes
+/// along edges into a same-community sub-community of positive gain. Because a node is only ever
+/// merged into a sub-community it has an edge to, every refined sub-community is connected.
+fn refine(g: &Graph, part: &[usize], obj: Objective, gamma: f64, seed: u64) -> Vec<usize> {
+    let n = g.len();
+    let mut refined: Vec<usize> = (0..n).collect();
+    let mut singleton = vec![true; n];
+    let mut tot_deg = g.degree.clone();
+    let mut tot_size = g.size.clone();
+    for &v in &shuffled(n, seed ^ 0x9e37_79b9) {
+        if !singleton[v] {
+            continue; // only merge nodes still alone in their refined sub-community
+        }
+        let cv = part[v];
+        let (kv, sv) = (g.degree[v], g.size[v]);
+        let mut w_to: HashMap<usize, f64> = HashMap::new();
+        for &(j, w) in &g.adj[v] {
+            if part[j] == cv {
+                *w_to.entry(refined[j]).or_insert(0.0) += w; // only sub-communities inside cv
+            }
+        }
+        tot_deg[refined[v]] -= kv;
+        tot_size[refined[v]] -= sv;
+        let mut best_c = refined[v];
+        let mut best = 0.0; // require a strictly positive gain to leave the singleton
+        for (&c, &w) in &w_to {
+            let s = gain(obj, gamma, g.two_m, w, kv, sv, tot_deg[c], tot_size[c]);
+            if s > best {
+                best = s;
+                best_c = c;
+            }
+        }
+        tot_deg[best_c] += kv;
+        tot_size[best_c] += sv;
+        if best_c != refined[v] {
+            refined[v] = best_c;
+            singleton[best_c] = false; // the target sub-community is no longer a lone singleton
+        }
+    }
+    relabel(&refined)
+}
+
+/// Aggregate each refined sub-community to a super-node; return the aggregated graph and the seed
+/// partition for the next level (each super-node keeps the *pre-refinement* community of its members,
+/// so the next local-move can re-split them).
+fn aggregate(g: &Graph, part: &[usize], refined: &[usize], nr: usize) -> (Graph, Vec<usize>) {
+    let mut degree = vec![0.0; nr];
+    let mut size = vec![0.0; nr];
+    let mut coarse = vec![usize::MAX; nr];
+    let mut acc: Vec<HashMap<usize, f64>> = vec![HashMap::new(); nr];
     for (i, row) in g.adj.iter().enumerate() {
-        let ci = part[i];
-        degree[ci] += g.degree[i];
+        let ri = refined[i];
+        degree[ri] += g.degree[i];
+        size[ri] += g.size[i];
+        coarse[ri] = part[i]; // all members of a refined sub-community share one coarse community
         for &(j, w) in row {
-            let cj = part[j];
-            if ci != cj {
-                *acc[ci].entry(cj).or_insert(0.0) += w;
+            let rj = refined[j];
+            if ri != rj {
+                *acc[ri].entry(rj).or_insert(0.0) += w;
             }
         }
     }
     let adj = acc.into_iter().map(|m| m.into_iter().collect()).collect();
-    Graph {
-        adj,
-        degree,
-        two_m: g.two_m,
-    }
+    let two_m = g.two_m;
+    (
+        Graph {
+            adj,
+            degree,
+            size,
+            two_m,
+        },
+        relabel(&coarse),
+    )
 }
 
-/// Split any disconnected community into its connected components (in the base graph), so every
-/// returned community is internally connected. BFS assigns each same-label component a fresh id.
-fn enforce_connectivity(labels: &[usize], base: &[Vec<(usize, f64)>]) -> Vec<usize> {
-    let n = labels.len();
-    let mut out = vec![usize::MAX; n];
-    let mut next = 0;
-    for s in 0..n {
-        if out[s] != usize::MAX {
-            continue;
-        }
-        out[s] = next;
-        let mut stack = vec![s];
-        while let Some(u) = stack.pop() {
-            for &(v, _) in &base[u] {
-                if out[v] == usize::MAX && labels[v] == labels[u] {
-                    out[v] = next;
-                    stack.push(v);
-                }
-            }
-        }
-        next += 1;
-    }
-    out
-}
-
-/// Map arbitrary community ids to a contiguous `0..k` in first-seen order.
+/// Map arbitrary ids to a contiguous `0..k` in first-seen order.
 fn relabel(labels: &[usize]) -> Vec<usize> {
     let mut map: HashMap<usize, usize> = HashMap::new();
     labels
@@ -204,7 +299,7 @@ mod tests {
         labels.iter().copied().collect::<HashSet<_>>().len()
     }
 
-    fn modularity(base: &[Vec<(usize, f64)>], labels: &[usize]) -> f64 {
+    fn modularity(base: &[Vec<(usize, f64)>], labels: &[usize], gamma: f64) -> f64 {
         let deg: Vec<f64> = base
             .iter()
             .map(|r| r.iter().map(|&(_, w)| w).sum())
@@ -219,50 +314,105 @@ mod tests {
                     .sum::<f64>()
             })
             .sum();
-        let mut comm_deg: HashMap<usize, f64> = HashMap::new();
+        let mut cd: HashMap<usize, f64> = HashMap::new();
         for (i, &l) in labels.iter().enumerate() {
-            *comm_deg.entry(l).or_insert(0.0) += deg[i];
+            *cd.entry(l).or_insert(0.0) += deg[i];
         }
-        let null: f64 = comm_deg.values().map(|&s| s * s).sum();
-        (internal - RESOLUTION * null / two_m) / two_m
+        (internal - gamma * cd.values().map(|&s| s * s).sum::<f64>() / two_m) / two_m
+    }
+
+    /// True if every community is connected in the base graph (Leiden's guarantee).
+    fn all_communities_connected(base: &[Vec<(usize, f64)>], labels: &[usize]) -> bool {
+        let n = labels.len();
+        let mut seen = vec![false; n];
+        for s in 0..n {
+            if seen[s] {
+                continue;
+            }
+            let mut stack = vec![s];
+            seen[s] = true;
+            let mut members = 1;
+            while let Some(u) = stack.pop() {
+                for &(v, _) in &base[u] {
+                    if !seen[v] && labels[v] == labels[u] {
+                        seen[v] = true;
+                        members += 1;
+                        stack.push(v);
+                    }
+                }
+            }
+            // the BFS from s covered one connected same-label component; it must equal the whole
+            // community for `s`, i.e. no other node shares s's label outside this component.
+            if members != labels.iter().filter(|&&l| l == labels[s]).count() {
+                return false;
+            }
+        }
+        true
     }
 
     #[test]
-    fn louvain_discovers_separated_blobs_without_k() {
-        // Community detection on compact groups: the count is found from the graph, not supplied.
+    fn leiden_discovers_separated_blobs_without_k() {
         let mut rng = SplitMix64::new(4);
         let centers = [[0.0, 0.0], [12.0, 0.0], [0.0, 12.0]];
         let (pts, truth) = blobs(&mut rng, 300, &centers, 0.5);
-        let (micros, point_to_micro) = grid_micros(&pts, 1.0);
-        let labels = louvain(&micros, 1).labels;
-        assert_eq!(n_distinct(&labels), 3); // three communities discovered, no k given
-        let pred: Vec<usize> = point_to_micro.iter().map(|&m| labels[m]).collect();
+        let (micros, p2m) = grid_micros(&pts, 1.0);
+        let labels = leiden(&micros, 1.0, Objective::Modularity, 1).labels;
+        assert_eq!(n_distinct(&labels), 3);
+        let pred: Vec<usize> = p2m.iter().map(|&m| labels[m]).collect();
         assert!(ari(&pred, &truth) > 0.95);
     }
 
     #[test]
-    fn louvain_beats_trivial_partitions_on_modularity() {
-        // A single connected cloud with community structure: Louvain splits it (exercising the
-        // multi-level cross-community aggregation) into a partition of strictly higher modularity
-        // than either trivial partition.
+    fn leiden_communities_are_connected_and_beat_trivial() {
         let mut rng = SplitMix64::new(1);
         let centers = [[0.0, 0.0], [5.0, 0.0]];
         let (pts, _t) = blobs(&mut rng, 300, &centers, 1.0);
         let (micros, _) = grid_micros(&pts, 0.5);
         let centers_f: Vec<Vec<f64>> = micros.iter().map(|f| f.mean().to_vec()).collect();
         let base = knn_affinity::<f64>(&centers_f);
-        let labels = louvain(&micros, 1).labels;
-        assert!(n_distinct(&labels) >= 2);
-        let all_one = vec![0usize; micros.len()];
-        let singletons: Vec<usize> = (0..micros.len()).collect();
-        let q = modularity(&base, &labels);
-        assert!(q > modularity(&base, &all_one));
-        assert!(q > modularity(&base, &singletons));
+        let labels = leiden(&micros, 1.0, Objective::Modularity, 1).labels;
+        // Leiden's key guarantee: every community is internally connected.
+        assert!(all_communities_connected(&base, &labels));
+        // …and the checker is not vacuous — two far, non-adjacent nodes sharing a label is caught.
+        let mut broken = vec![1usize; micros.len()];
+        broken[0] = 0;
+        broken[micros.len() - 1] = 0;
+        assert!(!all_communities_connected(&base, &broken));
+        let q = modularity(&base, &labels, 1.0);
+        assert!(q > modularity(&base, &vec![0; micros.len()], 1.0));
+        assert!(q > modularity(&base, &(0..micros.len()).collect::<Vec<_>>(), 1.0));
     }
 
     #[test]
-    fn louvain_single_feature_is_one_community() {
+    fn leiden_resolution_controls_granularity() {
+        let mut rng = SplitMix64::new(2);
+        let (pts, _t) = blobs(&mut rng, 400, &[[0.0, 0.0], [4.0, 0.0], [8.0, 0.0]], 0.9);
+        let (micros, _) = grid_micros(&pts, 0.4);
+        let coarse = n_distinct(&leiden(&micros, 0.5, Objective::Modularity, 1).labels);
+        let fine = n_distinct(&leiden(&micros, 2.0, Objective::Modularity, 1).labels);
+        assert!(
+            fine >= coarse,
+            "higher γ should not yield fewer communities ({fine} vs {coarse})"
+        );
+    }
+
+    #[test]
+    fn leiden_cpm_objective_partitions_blobs() {
+        let mut rng = SplitMix64::new(3);
+        let centers = [[0.0, 0.0], [12.0, 0.0], [0.0, 12.0]];
+        let (pts, truth) = blobs(&mut rng, 300, &centers, 0.5);
+        let (micros, p2m) = grid_micros(&pts, 1.0);
+        let labels = leiden(&micros, 0.05, Objective::Cpm, 1).labels;
+        let pred: Vec<usize> = p2m.iter().map(|&m| labels[m]).collect();
+        assert!(ari(&pred, &truth) > 0.9);
+    }
+
+    #[test]
+    fn leiden_single_feature_is_one_community() {
         let (micros, _) = grid_micros(&[vec![1.0, 2.0]], 1.0);
-        assert_eq!(louvain(&micros, 1).labels, vec![0]);
+        assert_eq!(
+            leiden(&micros, 1.0, Objective::Modularity, 1).labels,
+            vec![0]
+        );
     }
 }

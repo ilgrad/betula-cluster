@@ -1,8 +1,8 @@
 //! End-to-end model: build a CF-tree, cluster its leaves (Phase 3), and label points.
 
 use crate::clustering::{
-    gmm_diagonal, gmm_diagonal_auto, gmm_full, gmm_full_auto, kmeans, louvain, spectral, ward_hac,
-    ward_hac_auto, xmeans,
+    gmm_diagonal, gmm_diagonal_auto, gmm_full, gmm_full_auto, kmeans, leiden, spectral, ward_hac,
+    ward_hac_auto, xmeans, Objective,
 };
 use crate::distance::CFDistance;
 use crate::feature::ClusterFeature;
@@ -26,8 +26,9 @@ pub enum Method {
     Ward,
     /// Spectral clustering (self-tuning affinity + normalized Laplacian) for non-convex clusters.
     Spectral,
-    /// Louvain community detection on the microcluster affinity graph (auto community count).
-    Louvain,
+    /// Leiden community detection on the microcluster affinity graph (auto community count).
+    /// `resolution` is γ; `cpm` selects the Constant Potts Model over modularity.
+    Leiden { resolution: f64, cpm: bool },
 }
 
 /// A fitted model: a CF-tree plus a cluster label per leaf entry. A point is labelled by routing
@@ -98,8 +99,15 @@ pub(crate) fn cluster_leaves<R: Real, C: ClusterFeature<R>>(
         Method::Ward => ward_hac(features, k.min(nlv).max(1)).labels,
         // Spectral resolves `k == 0` (eigengap) and clamps internally, so one arm covers both.
         Method::Spectral => spectral(features, k, max_iter, seed).labels,
-        // Louvain discovers the community count from the graph; `k` is ignored (like HDBSCAN).
-        Method::Louvain => louvain(features, seed).labels,
+        // Leiden discovers the community count from the graph; `k` is ignored (like HDBSCAN).
+        Method::Leiden { resolution, cpm } => {
+            let obj = if cpm {
+                Objective::Cpm
+            } else {
+                Objective::Modularity
+            };
+            leiden(features, resolution, obj, seed).labels
+        }
     }
 }
 
@@ -231,7 +239,14 @@ mod tests {
             Method::GmmFull,
             Method::Ward,
             Method::Spectral,
-            Method::Louvain,
+            Method::Leiden {
+                resolution: 1.0,
+                cpm: false,
+            },
+            Method::Leiden {
+                resolution: 0.05,
+                cpm: true,
+            },
         ] {
             for k in [3usize, 0usize] {
                 let labels = cluster_leaves(&feats, k, method, 100, 1);

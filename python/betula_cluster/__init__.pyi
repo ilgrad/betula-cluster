@@ -32,7 +32,9 @@ __version__: str
 
 _FloatArray = NDArray[np.float64] | NDArray[np.float32]
 _Feature = Literal["spherical", "diagonal", "full", "fd"]
-_Method = Literal["kmeans", "gmm", "gmm-full", "ward", "spectral", "louvain", "hdbscan"]
+_Method = Literal[
+    "kmeans", "gmm", "gmm-full", "ward", "spectral", "leiden", "leiden-cpm", "hdbscan"
+]
 _Distance = Literal["euclidean", "manhattan", "ward", "average"]
 _Absorb = Literal["euclidean", "chi2"]
 _Lens = Literal["density", "radius", "l2norm", "coordinate", "eccentricity"]
@@ -112,6 +114,7 @@ def fit_predict(
     chi2_scale: float = ...,
     n_jobs: int = ...,
     normalize: bool = ...,
+    resolution: float = ...,
 ) -> NDArray[np.int64]:
     """Cluster ``data`` in one shot and return per-point integer labels (``-1`` = noise)."""
 
@@ -149,6 +152,7 @@ class Betula:
         decay: float = ...,
         normalize: bool = ...,
         huber_k: float | None = ...,
+        resolution: float = ...,
         memory_budget_mb: float | None = ...,
     ) -> None: ...
     def get_params(self, deep: bool = ...) -> dict[str, Any]: ...

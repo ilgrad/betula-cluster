@@ -19,16 +19,17 @@ A capability-by-capability reference. For runnable code see [`USAGE.md`](USAGE.m
   in-house Jacobi eigensolver, k-means-landmark-reduced above 256 microclusters — separates
   non-convex / manifold clusters the centroid heads cannot; pair it with a small `threshold` so the
   microclusters resolve the manifold),
-  **Louvain community detection** (graph clustering) over the microcluster affinity graph
-  (modularity maximization, Blondel et al. 2008, + a Leiden-style connectivity guarantee — each
-  community is internally connected; **discovers the community count**, no `k` needed; pure Rust, no
+  **Leiden community detection** (graph clustering, Traag et al. 2019) over the microcluster affinity
+  graph — local moving → refinement (each community connected by construction) → seeded aggregation;
+  **discovers the community count**, no `k` needed; a `resolution` γ knob with **modularity**
+  (`"leiden"`) or resolution-limit-free **CPM** (`"leiden-cpm"`) objectives; pure Rust, no
   eigensolver — pair it with a moderate `threshold`, a very fine graph over-splits per modularity's
   resolution limit), and
   **HDBSCAN-style density clustering over the CF microclusters** (mass-aware mutual-reachability +
   mass-weighted stability → non-convex clusters and noise, automatic count; an *approximation* of
   raw-point HDBSCAN over the $M \ll N$ microclusters, not identical to it).
 - **Soft assignment & confidence**: `predict_proba` (true posterior for the GMM heads; a documented
-  centroid-distance softmax *heuristic* for k-means / Ward / spectral / Louvain / HDBSCAN),
+  centroid-distance softmax *heuristic* for k-means / Ward / spectral / Leiden / HDBSCAN),
   `assignment_confidence`,
   `microcluster_proba_` (per-microcluster GMM responsibilities, GMM heads only), `export_coreset` (the
   leaves as weighted points), `diagnostics`, `representatives`, `cluster_profile`.
@@ -124,7 +125,7 @@ A capability-by-capability reference. For runnable code see [`USAGE.md`](USAGE.m
 | `kernels` | auto-vectorized distance kernels (inline reductions) |
 | `distance` | D0–D4, radius, Mahalanobis (stable forms) |
 | `tree` | arena CF-tree + auto-rebuild |
-| `clustering` | `kmeans`, `gmm_diagonal`, `gmm_full`, `ward_hac`, `spectral`, `louvain`, `hdbscan` |
+| `clustering` | `kmeans`, `gmm_diagonal`, `gmm_full`, `ward_hac`, `spectral`, `leiden`, `hdbscan` |
 | `model` | end-to-end `Model::fit` / `predict` |
 | `python` | PyO3 bindings: one-shot `fit_predict` + streaming `Betula` estimator |
 

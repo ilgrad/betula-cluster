@@ -9,7 +9,7 @@
 
 > **Rust-powered, memory-bounded clustering for large embeddings & tabular streams.** It compresses raw
 > data into numerically stable **BETULA** microclusters, then runs the clustering head on the
-> *compressed* representation — k-means · GMM (diagonal & full) · Ward · **spectral** · **Louvain**
+> *compressed* representation — k-means · GMM (diagonal & full) · Ward · **spectral** · **Leiden**
 > community detection · HDBSCAN-CF · Mapper — so cost scales with the microcluster count, not `N`.
 > Streaming `partial_fit`, a scikit-learn API, from-scratch
 > **Rust** core + **PyO3**, no LAPACK or SciPy at runtime.
@@ -56,7 +56,7 @@ addresses all three:
   is PSD by construction. Classic BIRCH loses all digits near coordinate `1e7`; betula does not.
 - **Memory-bounded by design** — the CF-tree caps its leaves (`max_leaves`) and rebuilds, so it never
   explodes; streaming memory is flat in `N` and clusters data larger than RAM.
-- **Complete** — one stable engine spanning k-means / GMM (diag & full) / Ward / spectral / Louvain
+- **Complete** — one stable engine spanning k-means / GMM (diag & full) / Ward / spectral / Leiden
   community detection / HDBSCAN-style / Mapper, with streaming `partial_fit`, a scikit-learn API,
   and dataset-structure inspection.
 

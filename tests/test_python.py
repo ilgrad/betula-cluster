@@ -105,16 +105,25 @@ def test_spectral_separates_moons_where_kmeans_fails(moons):
     assert ari(kmeans, y) < 0.6  # a centroid head cuts straight across them
 
 
-def test_louvain_detects_communities_without_k(blobs):
+@pytest.mark.parametrize("method,resolution", [("leiden", 1.0), ("leiden-cpm", 0.03)])
+def test_leiden_detects_communities_without_k(blobs, method, resolution):
     x, y = blobs
-    # Louvain community detection discovers the count from the microcluster graph — n_clusters is
-    # ignored. Pair it with a moderate threshold; a very fine graph over-splits (modularity's
-    # resolution limit).
+    # Leiden discovers the count from the microcluster graph — n_clusters is ignored. Pair it with a
+    # moderate threshold; a fine graph over-splits (modularity's resolution limit). CPM's γ is on a
+    # smaller, density scale.
     labels = betula_cluster.fit_predict(
-        x, n_clusters=99, method="louvain", threshold=0.3, max_leaves=400, seed=1
+        x, 99, method=method, threshold=0.3, max_leaves=400, resolution=resolution, seed=1
     )
     assert n_labels(labels) == 4  # four communities found despite n_clusters=99
     assert ari(labels, y) > 0.95
+
+
+def test_leiden_resolution_controls_granularity(blobs):
+    x, _ = blobs
+    kw = dict(n_clusters=99, method="leiden", threshold=0.3, max_leaves=400, seed=1)
+    coarse = n_labels(betula_cluster.fit_predict(x, resolution=1.0, **kw))
+    fine = n_labels(betula_cluster.fit_predict(x, resolution=4.0, **kw))
+    assert fine > coarse  # higher γ ⇒ more, smaller communities
 
 
 def test_float32_reproduces_float64_on_normal_range(blobs):
@@ -1460,7 +1469,7 @@ def test_fit_predict_sparse_rejects_dense():
 
 def test_fit_predict_sparse_invalid_method():
     x, _ = _sparse_topics()
-    for bad in ("hdbscan", "spectral", "louvain"):  # none is wired for the sparse O(nnz) path
+    for bad in ("hdbscan", "spectral", "leiden"):  # none is wired for the sparse O(nnz) path
         with pytest.raises(ValueError, match="method"):
             betula_cluster.fit_predict_sparse(x, method=bad)
 

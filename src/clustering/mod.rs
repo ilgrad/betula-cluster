@@ -13,7 +13,7 @@ pub(crate) mod rng;
 pub mod spectral;
 pub mod ward;
 
-pub use community::{louvain, Community};
+pub use community::{leiden, Community, Objective};
 pub use gmm::{gmm_diagonal, gmm_diagonal_auto, gmm_full, gmm_full_auto, Gmm, GmmFull};
 pub use hdbscan::{hdbscan, Hdbscan};
 pub use kmeans::{cop_kmeans, kmeans, xmeans, ConstraintError, KMeans};

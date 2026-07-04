@@ -63,13 +63,16 @@ radius $R = \sqrt{S/n}$. Mahalanobis-$\chi^2$ as an absorption option (`distance
   in-house Jacobi solver, row-normalized and k-means-clustered. Above $256$ microclusters a k-means
   landmark reduction keeps the $O(m^3)$ eigendecomposition bounded. Separates non-convex clusters;
   no built-in $k$ selection ($k=0 \Rightarrow 2$).
-- **Louvain** (graph clustering / community detection): the same shared self-tuning $k$-NN affinity
-  graph (`clustering::graph`), then greedy modularity maximization $Q=\sum_c[\Sigma_{in,c}/2m -
-  \gamma(\Sigma_{tot,c}/2m)^2]$ — local moving (move gain $k_{i,C}-\gamma k_i\Sigma_{tot,C}/2m$) to a
-  fixpoint, aggregate each community to a super-node ($2m$ invariant), repeat. **Discovers the
-  community count** (no $k$). Each community is guaranteed internally connected (Leiden's key fix,
-  via a post-hoc connected-components split). Modularity's resolution limit ⇒ pair with a moderate
-  `threshold`. $\gamma=1$ (Newman-Girvan modularity).
+- **Leiden** (graph clustering / community detection, Traag-Waltman-van Eck 2019): the same shared
+  self-tuning $k$-NN affinity graph (`clustering::graph`), then the full three-phase Leiden per level
+  — **local moving** (move gain $k_{i,C}-\gamma k_i\Sigma_{tot,C}/2m$ to a fixpoint) → **refinement**
+  (sub-communities grown from singletons *along edges*, so each is connected by construction — the
+  guarantee Leiden adds over Louvain, replacing a post-hoc split) → **aggregation** ($2m$ invariant)
+  seeded from the pre-refinement partition, until it stops coarsening. **Discovers the community
+  count** (no $k$). Two objectives: **modularity** $Q=\sum_c[\Sigma_{in,c}/2m-\gamma(\Sigma_{tot,c}/
+  2m)^2]$ (`"leiden"`, has a resolution limit) and **CPM** $H=\sum_c[e_c-\gamma\binom{n_c}{2}]$
+  (`"leiden-cpm"`, resolution-limit-free). `resolution` $\gamma$ is the granularity knob; pair with a
+  moderate `threshold`.
 
 ### Phase-3b density/topological head (`../../plans/topology-tda.md`)
 **HDBSCAN-on-CF** (done): mutual-reachability (`min_samples` core distance) + mass-weighted
@@ -156,11 +159,11 @@ Python end-to-end + scikit-learn benchmark (`README.md`, `bench/RESULTS.md`):
   a 5-point warm-up and $\sigma_j = 0$ pass-through, leaving a valid $(n, \mu, S)$; point inserts only,
   rebuild reinserts unaffected).
 - Phase-3a `clustering::{kmeans, xmeans, gmm_diagonal, gmm_full, *_auto, ward_hac, ward_hac_auto,
-  spectral, louvain}` (**Hamerly-accelerated exact Lloyd**, tested ≡ brute; variant-C E-step +
-  NIW/MAP; full-covariance GMM; self-tuning $k$-NN spectral embedding; Louvain modularity community
-  detection over `clustering::graph`; auto-$k$ at `n_clusters = 0` for every parametric head — BIC
-  for k-means (X-means) / GMM, dendrogram cut for Ward-HAC, default 2 for spectral; Louvain
-  discovers the count from the graph and ignores $k$).
+  spectral, leiden}` (**Hamerly-accelerated exact Lloyd**, tested ≡ brute; variant-C E-step +
+  NIW/MAP; full-covariance GMM; self-tuning $k$-NN spectral embedding; **Leiden** modularity / CPM
+  community detection over `clustering::graph`; auto-$k$ at `n_clusters = 0` for every parametric
+  head — BIC for k-means (X-means) / GMM, dendrogram cut for Ward-HAC, default 2 for spectral;
+  Leiden discovers the count from the graph and ignores $k$).
 - `clustering::cop_kmeans` — **constrained** (semi-supervised) k-means (COP-KMeans, Wagstaff et al.
   2001): must-link transitive closure into chunklets, cannot-link lifted to chunklets, greedy
   nearest-feasible assignment, `n_init` restarts kept by SSE. Point constraints are translated to

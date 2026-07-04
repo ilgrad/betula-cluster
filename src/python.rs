@@ -44,20 +44,33 @@ enum Kind {
 }
 
 /// Map the `method` keyword (+ HDBSCAN params) to an internal [`Kind`].
-fn parse_method(method: &str, min_samples: usize, min_cluster_size: usize) -> PyResult<Kind> {
+fn parse_method(
+    method: &str,
+    min_samples: usize,
+    min_cluster_size: usize,
+    resolution: f64,
+) -> PyResult<Kind> {
     match method {
         "kmeans" => Ok(Kind::Parametric(Method::KMeans)),
         "gmm" => Ok(Kind::Parametric(Method::Gmm)),
         "gmm-full" => Ok(Kind::Parametric(Method::GmmFull)),
         "ward" => Ok(Kind::Parametric(Method::Ward)),
         "spectral" => Ok(Kind::Parametric(Method::Spectral)),
-        "louvain" => Ok(Kind::Parametric(Method::Louvain)),
+        "leiden" => Ok(Kind::Parametric(Method::Leiden {
+            resolution,
+            cpm: false,
+        })),
+        "leiden-cpm" => Ok(Kind::Parametric(Method::Leiden {
+            resolution,
+            cpm: true,
+        })),
         "hdbscan" => Ok(Kind::Hdbscan {
             min_samples,
             min_cluster_size,
         }),
         _ => Err(PyValueError::new_err(
-            "method must be 'kmeans', 'gmm', 'gmm-full', 'ward', 'spectral', 'louvain' or 'hdbscan'",
+            "method must be 'kmeans', 'gmm', 'gmm-full', 'ward', 'spectral', 'leiden', \
+             'leiden-cpm' or 'hdbscan'",
         )),
     }
 }
@@ -487,7 +500,8 @@ fn run_oneshot<R: Real + Element>(
     data, n_clusters = 8, feature = "diagonal", method = "gmm", threshold = 0.0,
     branching = 32, leaf_cap = 32, max_leaves = 2000, max_iter = 100,
     min_samples = 5, min_cluster_size = 5, seed = 0, distance = "euclidean",
-    absorb = "euclidean", chi2_p = 0.95, chi2_scale = 0.0, n_jobs = 1, normalize = false
+    absorb = "euclidean", chi2_p = 0.95, chi2_scale = 0.0, n_jobs = 1, normalize = false,
+    resolution = 1.0
 ))]
 #[allow(clippy::too_many_arguments)]
 fn fit_predict<'py>(
@@ -510,8 +524,9 @@ fn fit_predict<'py>(
     chi2_scale: f64,
     n_jobs: usize,
     normalize: bool,
+    resolution: f64,
 ) -> PyResult<Bound<'py, PyArray1<i64>>> {
-    let kind = parse_method(method, min_samples, min_cluster_size)?;
+    let kind = parse_method(method, min_samples, min_cluster_size, resolution)?;
     let labels = if let Ok(a) = data.extract::<PyReadonlyArray2<'py, f64>>() {
         run_oneshot::<f64>(
             py, a, n_clusters, feature, kind, distance, absorb, chi2_p, chi2_scale, threshold,
@@ -973,6 +988,10 @@ struct StreamCfg<'a> {
 /// Stateful BETULA estimator. `partial_fit` streams data into a memory-bounded CF-tree; `fit`
 /// (re)builds from one array; `predict` labels new points via their nearest leaf. The covariance
 /// model and dimensionality are locked in at the first `partial_fit` / `fit`.
+fn default_resolution() -> f64 {
+    1.0
+}
+
 #[pyclass(name = "Betula", module = "betula_cluster._core")]
 #[derive(serde::Serialize, serde::Deserialize)]
 struct Betula {
@@ -1000,6 +1019,9 @@ struct Betula {
     /// Huber/winsorization radius in per-dimension std units; `None` disables robust insertion.
     #[serde(default)]
     huber_k: Option<f64>,
+    /// Leiden resolution `γ` (only used by `method="leiden"` / `"leiden-cpm"`); kept for `get_params`.
+    #[serde(default = "default_resolution")]
+    resolution: f64,
     dim: usize,
     // The estimator holds an f64 *or* an f32 tree (chosen by the first input's dtype) — at most one
     // is ever `Some`. f32 halves the resident tree memory on high-d embeddings.
@@ -1299,7 +1321,7 @@ impl Betula {
         branching = 32, leaf_cap = 32, max_leaves = 2000, max_iter = 100,
         min_samples = 5, min_cluster_size = 5, seed = 0,
         distance = "euclidean", absorb = "euclidean", chi2_p = 0.95, chi2_scale = 0.0, decay = 1.0,
-        normalize = false, huber_k = None
+        normalize = false, huber_k = None, resolution = 1.0
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -1321,8 +1343,9 @@ impl Betula {
         decay: f64,
         normalize: bool,
         huber_k: Option<f64>,
+        resolution: f64,
     ) -> PyResult<Self> {
-        let kind = parse_method(method, min_samples, min_cluster_size)?;
+        let kind = parse_method(method, min_samples, min_cluster_size, resolution)?;
         let route = parse_route(distance)?;
         if !matches!(feature, "spherical" | "diagonal" | "full" | "fd") {
             return Err(PyValueError::new_err(
@@ -1367,6 +1390,7 @@ impl Betula {
             decay,
             normalize,
             huber_k,
+            resolution,
             dim: 0,
             state64: None,
             state32: None,
@@ -1841,6 +1865,7 @@ impl Betula {
         d.set_item("decay", self.decay)?;
         d.set_item("normalize", self.normalize)?;
         d.set_item("huber_k", self.huber_k)?;
+        d.set_item("resolution", self.resolution)?;
         Ok(d)
     }
 

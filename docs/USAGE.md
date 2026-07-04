@@ -19,7 +19,7 @@ labels = betula_cluster.fit_predict(X, method="hdbscan", min_samples=10, min_clu
 # hdbscan: label -1 == noise
 ```
 
-Keyword args: `feature ∈ {spherical, diagonal, full, fd}`, `method ∈ {kmeans, gmm, gmm-full, ward, spectral, louvain, hdbscan}`,
+Keyword args: `feature ∈ {spherical, diagonal, full, fd}`, `method ∈ {kmeans, gmm, gmm-full, ward, spectral, leiden, leiden-cpm, hdbscan}`,
 `distance ∈ {euclidean, manhattan, ward, average}` (routing measure),
 `absorb ∈ {euclidean, chi2}` (`chi2` = mass-invariant Mahalanobis gate at level `chi2_p` with
 `chi2_scale` = within-cluster variance; fixes the BIRCH size-imbalance bug), `decay` (EWMA factor
@@ -43,11 +43,12 @@ starts near-converged instead of growing the threshold from zero.
 | elliptical / correlated / anisotropic, soft assignment | `gmm` (diag) or `gmm-full` | yes (or `0` = BIC) |
 | a cluster *hierarchy* / merge structure | `ward` | yes (or `0` = dendrogram cut) |
 | **non-convex / manifold** shapes (moons, rings, spirals) | `spectral` | yes (pair with a **small** `threshold`) |
-| **community / graph structure**, unknown count | `louvain` | **no** — count is discovered (moderate `threshold`) |
+| **community / graph structure**, unknown count | `leiden` (or `leiden-cpm`) | **no** — count is discovered; tune `resolution` |
 | variable-density clusters **+ noise**, unknown count | `hdbscan` | no |
 | topological skeleton / #components / loops | [`mapper()`](FEATURES.md) | no |
 
-`n_clusters=0` auto-selects `k` for the parametric heads; `louvain` / `hdbscan` always discover it.
+`n_clusters=0` auto-selects `k` for the parametric heads; `leiden` / `hdbscan` always discover it
+(`leiden` reads the count off the graph — tune granularity with `resolution` γ, higher ⇒ more).
 For a robustness score per point, wrap any partitional head in `consensus` (see below).
 
 ## Streaming / out-of-core — the `Betula` estimator
