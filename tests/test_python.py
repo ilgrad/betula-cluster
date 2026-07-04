@@ -1461,6 +1461,7 @@ def test_tune_metrics_match_reference_values():
 
 
 def test_dbcv_validates_density_partitions():
+    pytest.importorskip("sklearn.datasets")  # make_moons has no clean NumPy one-liner
     from betula_cluster.tuning import dbcv
     from sklearn.datasets import make_blobs, make_moons
 
@@ -1503,9 +1504,12 @@ def test_dbcv_edge_cases():
 
 
 def _blobs_xl():
-    from sklearn.datasets import make_blobs
-
-    return make_blobs(n_samples=2000, centers=4, cluster_std=0.5, random_state=0)
+    # NumPy-only blobs (no sklearn) so the subsampling-path test runs on the numpy-only CI matrix.
+    rng = np.random.default_rng(0)
+    centers = np.array([[0, 0], [9, 0], [0, 9], [9, 9]], dtype=float)
+    x = np.vstack([rng.normal(c, 0.5, (500, 2)) for c in centers])
+    y = np.repeat(np.arange(4), 500)
+    return x, y
 
 
 def test_tune_dbcv_objective(blobs):
