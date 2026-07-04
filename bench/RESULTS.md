@@ -86,12 +86,12 @@ cost is bounded by the microcluster count, so the same call scales to `N = 1 M`.
 |---|---|---|---|
 | **betula-spectral** | **1.00** | **1.00** | **0.40 s / 0.25 s** |
 | sklearn-SpectralClustering (k-NN affinity) | 1.00 | 1.00 | 1.31 s / 1.01 s |
-| betula-louvain | 0.14 | 0.12 | 0.09 s / 0.12 s |
+| betula-leiden | 0.13 | 0.11 | 0.10 s / 0.12 s |
 
-`method="louvain"` (graph community detection) is included as an honest negative: it is built for
-community / blob structure, not elongated manifolds — modularity chops each arc into ~16–19 segments
-(ARI ~0.13), exactly the resolution-limit behaviour the docs warn about. Use spectral for manifolds,
-Louvain for communities.
+`method="leiden"` (graph community detection) is included as an honest negative: it is built for
+community / blob structure, not elongated manifolds — modularity chops each arc into ~17–21 segments
+(ARI ~0.12), exactly the resolution-limit behaviour the docs warn about. Use spectral for manifolds,
+Leiden for communities.
 
 ## Speed — fit time at N = 1 000 000
 
