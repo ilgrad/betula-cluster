@@ -101,6 +101,11 @@ A capability-by-capability reference. For runnable code see [`USAGE.md`](USAGE.m
   by default (random search); an optional Optuna backend (TPE / NSGA-II) via
   `pip install 'betula-cluster[tune]'`. Because betula fits are cheap, a few hundred trials run in
   seconds — the search is over the compression, so cost is bounded by the microcluster count, not `N`.
+- **Consensus & stability** (`consensus` → `ConsensusResult`) — clusters `X` under several random
+  insertion-order permutations and votes, converting the CF-tree's insertion-order sensitivity into a
+  measurable signal: a consensus labelling plus a **per-point stability score** in `[0, 1]` (low on
+  unstable boundaries, high where every order agrees). NumPy-only; partitional heads at a fixed
+  `n_clusters`.
 
 ## Architecture (crate layout)
 

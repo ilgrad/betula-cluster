@@ -1712,3 +1712,42 @@ def test_auto_threshold_set_params_resets_cache(blobs):
     assert est._auto_threshold is not None
     est.set_params(n_clusters=3)
     assert est._auto_threshold is None  # a param change invalidates the pilot estimate
+
+
+def test_consensus_is_stable_on_separated_blobs(blobs):
+    x, y = blobs
+    res = betula_cluster.consensus(x, 4, n_runs=5, method="kmeans", threshold=0.05, max_leaves=300)
+    assert res.labels.shape == (len(x),) and res.confidence.shape == (len(x),)
+    assert res.confidence.min() >= 0.0 and res.confidence.max() <= 1.0
+    assert res.n_runs == 5
+    assert ari(res.labels, y) > 0.95  # consensus recovers the true partition
+    assert res.mean_confidence > 0.95  # well-separated ⇒ every insertion order agrees
+
+
+def test_consensus_confidence_drops_on_overlap():
+    # heavily overlapping blobs: boundary points land in different clusters across insertion orders,
+    # so their per-point confidence falls below 1.
+    rng = np.random.default_rng(0)
+    x = np.vstack([rng.normal(c, 2.0, (400, 2)) for c in ([0, 0], [3, 0], [0, 3])])
+    res = betula_cluster.consensus(x, 3, n_runs=6, method="kmeans", threshold=0.1, max_leaves=300)
+    assert res.confidence.min() < 1.0
+    assert (res.confidence < 1.0).any()
+
+
+def test_consensus_single_run_is_trivially_confident(blobs):
+    x, _ = blobs
+    res = betula_cluster.consensus(x, 4, n_runs=1, method="kmeans", threshold=0.05, max_leaves=300)
+    assert np.all(res.confidence == 1.0)  # one run always agrees with itself
+
+
+def test_consensus_rejects_bad_n_runs(blobs):
+    x, _ = blobs
+    with pytest.raises(ValueError, match="n_runs"):
+        betula_cluster.consensus(x, 4, n_runs=0)
+
+
+def test_consensus_rejects_density_method(blobs):
+    x, _ = blobs
+    outliers = np.array([[50.0, 50.0], [60.0, -60.0], [-70.0, 70.0]])  # guarantee HDBSCAN noise
+    with pytest.raises(ValueError, match="partitional"):
+        betula_cluster.consensus(np.vstack([x, outliers]), 4, method="hdbscan", threshold=0.05)

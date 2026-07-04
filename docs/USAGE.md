@@ -228,6 +228,23 @@ Objectives: `"calinski_harabasz"` (default, higher better), `"davies_bouldin"` (
 `"ari"` (needs `y=`). Because betula fits are cheap, hundreds of trials stay fast — and every trial is
 scored for memory (`n_leaves`) and time, not just quality.
 
+## Consensus & stability — `consensus`
+
+The CF-tree depends on insertion order. `consensus` clusters several random permutations of the input
+and votes, so you get a robust labelling **and** a per-point stability score — low where a point sits
+on an unstable boundary, high where every insertion order groups it the same way.
+
+```python
+res = betula_cluster.consensus(X, n_clusters=8, n_runs=5, method="kmeans")
+res.labels          # (n,) consensus label per point
+res.confidence      # (n,) in [0, 1] — per-point agreement across runs
+res.mean_confidence # scalar robustness summary
+stable = X[res.confidence == 1.0]   # points every insertion order agrees on
+```
+
+For the partitional heads (`kmeans` / `gmm` / `ward` / `spectral`) at a fixed `n_clusters`; extra
+kwargs are forwarded to `fit_predict`.
+
 ## Rust
 
 ```rust

@@ -12,6 +12,7 @@ from .tuning import tune as tune
 
 __all__ = [
     "Betula",
+    "ConsensusResult",
     "Coreset",
     "DbStream",
     "DdSketch",
@@ -21,6 +22,7 @@ __all__ = [
     "MapperGraph",
     "TuneResult",
     "__version__",
+    "consensus",
     "fit_predict",
     "fit_predict_sparse",
     "tune",
@@ -46,6 +48,25 @@ class Coreset:
     radii: NDArray[np.float64]
     @property
     def n_points(self) -> float: ...
+
+@dataclass(frozen=True)
+class ConsensusResult:
+    """Consensus of insertion-order-permuted clusterings + a per-point stability score."""
+
+    labels: NDArray[np.int64]
+    confidence: NDArray[np.float64]
+    n_runs: int
+    @property
+    def mean_confidence(self) -> float: ...
+
+def consensus(
+    X: _FloatArray,
+    n_clusters: int,
+    *,
+    n_runs: int = ...,
+    seed: int = ...,
+    **fit_kwargs: object,
+) -> ConsensusResult: ...
 
 @dataclass(frozen=True)
 class MapperGraph:

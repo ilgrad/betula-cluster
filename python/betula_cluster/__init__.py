@@ -31,6 +31,7 @@ except PackageNotFoundError:  # pragma: no cover - source tree without install m
 
 __all__ = [
     "Betula",
+    "ConsensusResult",
     "Coreset",
     "DbStream",
     "DdSketch",
@@ -40,6 +41,7 @@ __all__ = [
     "MapperGraph",
     "TuneResult",
     "__version__",
+    "consensus",
     "fit_predict",
     "fit_predict_sparse",
     "tune",
@@ -146,6 +148,76 @@ class Coreset:
     def n_points(self) -> float:
         """Total mass (≈ number of points summarized)."""
         return float(self.weights.sum())
+
+
+@dataclass(frozen=True)
+class ConsensusResult:
+    """Consensus of several insertion-order-permuted clusterings + a per-point stability score.
+
+    The CF-tree is sensitive to insertion order; clustering ``n_runs`` random permutations and
+    voting turns that into a measurable quantity. ``labels`` is the majority label per point (input
+    order); ``confidence`` is the fraction of runs agreeing with it — low on an unstable boundary,
+    high where every insertion order groups the point the same way.
+    """
+
+    labels: np.ndarray  # (n,) consensus label per point
+    confidence: np.ndarray  # (n,) in [0, 1] — fraction of runs agreeing with the consensus label
+    n_runs: int
+
+    @property
+    def mean_confidence(self) -> float:
+        """Mean per-point stability across the input — a scalar robustness summary in [0, 1]."""
+        return float(self.confidence.mean())
+
+
+def _align_labels(labels: np.ndarray, reference: np.ndarray) -> np.ndarray:
+    """Relabel ``labels`` into ``reference``'s id space by maximum cluster overlap so votes from
+    different runs refer to the same clusters. Not a strict bijection — when two runs genuinely
+    disagree, the merge surfaces as reduced consensus, which is the point."""
+    ref_ids, ref_pos = np.unique(reference, return_inverse=True)
+    lab_ids, lab_pos = np.unique(labels, return_inverse=True)
+    contingency = np.zeros((lab_ids.size, ref_ids.size), dtype=np.int64)
+    np.add.at(contingency, (lab_pos, ref_pos), 1)
+    best = ref_ids[contingency.argmax(axis=1)]  # lab cluster → best-overlap ref cluster
+    lut = np.zeros(int(lab_ids.max()) + 1, dtype=np.int64)
+    lut[lab_ids] = best
+    return lut[labels]
+
+
+def consensus(
+    X, n_clusters: int, *, n_runs: int = 5, seed: int = 0, **fit_kwargs
+) -> ConsensusResult:
+    """Cluster ``X`` under ``n_runs`` random insertion-order permutations; return the consensus
+    labelling and a per-point stability score (see :class:`ConsensusResult`).
+
+    Extra keyword arguments are forwarded to :func:`fit_predict` (``feature`` / ``method`` /
+    ``threshold`` / …). Intended for the partitional heads (``kmeans`` / ``gmm`` / ``ward`` /
+    ``spectral``) at a fixed ``n_clusters``; density heads (``hdbscan``) emit noise / variable
+    counts the vote cannot align, and are rejected.
+    """
+    if n_runs < 1:
+        raise ValueError("n_runs must be >= 1")
+    x = np.asarray(X)
+    n = x.shape[0]
+    rng = np.random.default_rng(seed)
+    runs = []
+    for r in range(n_runs):
+        perm = rng.permutation(n)
+        labels_perm = np.asarray(fit_predict(x[perm], n_clusters, seed=seed + r, **fit_kwargs))
+        if labels_perm.min() < 0:
+            raise ValueError("consensus requires a partitional method (got noise labels < 0)")
+        original = np.empty(n, dtype=np.int64)
+        original[perm] = labels_perm  # undo the permutation → labels back in the input's order
+        runs.append(original)
+    reference = runs[0]
+    aligned = np.array([reference] + [_align_labels(r, reference) for r in runs[1:]])
+    counts = np.zeros((n, int(aligned.max()) + 1), dtype=np.int64)
+    idx = np.arange(n)
+    for row in aligned:
+        counts[idx, row] += 1
+    return ConsensusResult(
+        labels=counts.argmax(axis=1), confidence=counts.max(axis=1) / n_runs, n_runs=n_runs
+    )
 
 
 def _farthest_point_order(points: np.ndarray, k: int) -> np.ndarray:
