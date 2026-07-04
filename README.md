@@ -9,15 +9,16 @@
 
 > **Rust-powered, memory-bounded clustering for large embeddings & tabular streams.** It compresses raw
 > data into numerically stable **BETULA** microclusters, then runs the clustering head on the
-> *compressed* representation — k-means · GMM (diagonal & full) · Ward · HDBSCAN-CF · Mapper — so cost
-> scales with the microcluster count, not `N`. Streaming `partial_fit`, a scikit-learn API, from-scratch
+> *compressed* representation — k-means · GMM (diagonal & full) · Ward · **spectral** · **Louvain**
+> community detection · HDBSCAN-CF · Mapper — so cost scales with the microcluster count, not `N`.
+> Streaming `partial_fit`, a scikit-learn API, from-scratch
 > **Rust** core + **PyO3**, no LAPACK or SciPy at runtime.
 
 ```bash
 pip install betula-cluster
 ```
 
-**Verified:** a **172-case** Python suite at **100% wrapper coverage** + **147** Rust tests,
+**Verified:** a **188-case** Python suite at **100% wrapper coverage** + **156** Rust tests,
 `clippy -D warnings` + `fmt` clean across all feature sets, CI on CPython 3.11–3.14 (one abi3 wheel).
 
 ## At a glance — honest benchmarks
@@ -28,7 +29,9 @@ with peak RSS sampled from `/proc/self/statm`. Full methodology, every metric, a
 
 - 🎯 **Quality at parity.** betula's k-means / GMM / Ward land within **≈0.01 ARI** of their
   scikit-learn counterparts; full-covariance GMM recovers anisotropic clusters just as well
-  (0.90 vs 0.90); HDBSCAN-on-CF nails non-convex moons & circles (**ARI 1.00**).
+  (0.90 vs 0.90); on non-convex moons & circles both the density and **spectral** heads hit
+  **ARI 1.00** — spectral matching scikit-learn's own `SpectralClustering` at **3–4× the speed**
+  (it eigensolves the microclusters, not all `N`).
 - ⚡ **15–40× faster at N = 1 000 000.** betula-kmeans labels a million points in **0.20 s** vs
   scikit-learn KMeans 3.3 s (17×), Birch 8.0 s (40×), GaussianMixture 5.5 s (27×).
 - 🪶 **Bounded memory.** Streaming 10 M points peaks at **~57 MB — flat in N** — while an in-core
@@ -53,8 +56,9 @@ addresses all three:
   is PSD by construction. Classic BIRCH loses all digits near coordinate `1e7`; betula does not.
 - **Memory-bounded by design** — the CF-tree caps its leaves (`max_leaves`) and rebuilds, so it never
   explodes; streaming memory is flat in `N` and clusters data larger than RAM.
-- **Complete** — one stable engine spanning k-means / GMM (diag & full) / Ward / HDBSCAN-style /
-  Mapper, with streaming `partial_fit`, a scikit-learn API, and dataset-structure inspection.
+- **Complete** — one stable engine spanning k-means / GMM (diag & full) / Ward / spectral / Louvain
+  community detection / HDBSCAN-style / Mapper, with streaming `partial_fit`, a scikit-learn API,
+  and dataset-structure inspection.
 
 The math (stable CF, the expected-log GMM E-step, distance derivations, relation to BIRCH/BETULA) is
 written up — verified symbolically and numerically — in [**`docs/MATH.md`**](https://github.com/ilgrad/betula-cluster/blob/main/docs/MATH.md).
@@ -158,7 +162,7 @@ And five **end-to-end use cases** (each scored against ground truth):
 - [**Benchmarks**](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md) — methodology, every metric, all tables, honest wins & losses.
 - [**Design**](https://github.com/ilgrad/betula-cluster/blob/main/DESIGN.md) — internal design, invariants, and testing strategy.
 
-Verified: **147** Rust unit/integration tests + a **172-case** Python suite at **100%** wrapper
+Verified: **156** Rust unit/integration tests + a **188-case** Python suite at **100%** wrapper
 coverage (Rust ≥95%, CI-enforced), `clippy -D warnings` + `fmt` clean across all feature sets, on
 Python 3.11–3.14 (single abi3 wheel).
 

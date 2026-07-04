@@ -35,6 +35,21 @@ k-means/GMM, dendrogram cut for Ward). `threshold="auto"` (dense only) drops the
 often have to guess: a subsample pilot estimates a warm-start absorption radius, so the full fit
 starts near-converged instead of growing the threshold from zero.
 
+### Choosing a head
+
+| your data / goal | `method` | needs `k`? |
+|---|---|---|
+| compact/spherical groups, fastest | `kmeans` | yes |
+| elliptical / correlated / anisotropic, soft assignment | `gmm` (diag) or `gmm-full` | yes (or `0` = BIC) |
+| a cluster *hierarchy* / merge structure | `ward` | yes (or `0` = dendrogram cut) |
+| **non-convex / manifold** shapes (moons, rings, spirals) | `spectral` | yes (pair with a **small** `threshold`) |
+| **community / graph structure**, unknown count | `louvain` | **no** — count is discovered (moderate `threshold`) |
+| variable-density clusters **+ noise**, unknown count | `hdbscan` | no |
+| topological skeleton / #components / loops | [`mapper()`](FEATURES.md) | no |
+
+`n_clusters=0` auto-selects `k` for the parametric heads; `louvain` / `hdbscan` always discover it.
+For a robustness score per point, wrap any partitional head in `consensus` (see below).
+
 ## Streaming / out-of-core — the `Betula` estimator
 
 Feed chunks with `partial_fit`, finalize with a no-arg `partial_fit()`, then `predict`. Memory stays
