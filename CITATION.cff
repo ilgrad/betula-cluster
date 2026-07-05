@@ -1,0 +1,24 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+type: software
+title: "betula-cluster"
+abstract: >-
+  Fast, numerically stable BETULA clustering with a Rust core: memory-bounded
+  clustering of large embeddings and tabular streams behind a
+  scikit-learn-compatible API.
+authors:
+  - family-names: "Gradina"
+    given-names: "Ilia"
+    orcid: "https://orcid.org/0009-0008-0911-8765"
+version: "0.1.5"
+date-released: "2026-07-04"
+license: MIT
+repository-code: "https://github.com/ilgrad/betula-cluster"
+url: "https://ilgrad.github.io/betula-cluster/"
+keywords:
+  - clustering
+  - BIRCH
+  - BETULA
+  - streaming
+  - Rust
+  - machine learning

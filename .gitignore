@@ -21,3 +21,5 @@ __pycache__/
 # editor
 .idea/
 .vscode/
+# JOSS paper build artifact (paper.md / paper.bib are tracked)
+/paper/paper.pdf
