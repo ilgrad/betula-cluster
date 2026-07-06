@@ -10,6 +10,18 @@ repository = "https://github.com/ilgrad/betula-cluster"
 readme = "README.md"
 keywords = ["clustering", "birch", "betula", "cf-tree", "gmm"]
 categories = ["algorithms", "science", "data-structures"]
+# Keep the crates.io package lean: none of these are needed to build or use the Rust crate — they are
+# Python notebooks, benchmarks, the docs site, and the JOSS paper, and bloat the download ~30×.
+exclude = [
+    "examples/",
+    "bench/",
+    "docs/",
+    "paper/",
+    "research/",
+    "python/",
+    "*.ipynb",
+    "uv.lock",
+]
 
 [lib]
 name = "betula_cluster"
