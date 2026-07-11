@@ -20,7 +20,7 @@ jobs:
     name: rust (fmt · clippy · test)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy, llvm-tools-preview
@@ -57,12 +57,12 @@ jobs:
     env:
       PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v7
       - name: ruff check
         run: uvx ruff check python/ tests/ bench/
       - name: ruff format --check
@@ -73,7 +73,7 @@ jobs:
         run: cargo clippy --features python -- -D warnings
       - name: build abi3 wheel
         run: uv run --with maturin maturin build --release --out dist
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: wheel
           path: dist/*.whl
@@ -102,9 +102,9 @@ jobs:
       matrix:
         python-version: ["3.11", "3.12", "3.13", "3.14"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+      - uses: actions/download-artifact@v8
         with:
           name: wheel
           path: dist
@@ -136,10 +136,10 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v7
       # The published abi3 wheel is Linux-only in CI; build from source here so the extension is
       # exercised natively on macOS and Windows (where release.yml also ships wheels).
       - name: build (maturin develop) + pytest (wrapper coverage, floor 100%)

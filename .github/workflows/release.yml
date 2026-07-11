@@ -29,8 +29,8 @@ jobs:
           - { runner: macos-14, target: aarch64 }
           - { runner: windows-latest, target: x64 }
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.x"
       - name: Build wheels
@@ -40,7 +40,7 @@ jobs:
           args: --release --out dist
           manylinux: auto
           sccache: "true"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: wheels-${{ matrix.platform.runner }}-${{ matrix.platform.target }}
           path: dist
@@ -49,13 +49,13 @@ jobs:
     name: sdist
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Build sdist
         uses: PyO3/maturin-action@v1
         with:
           command: sdist
           args: --out dist
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: wheels-sdist
           path: dist
@@ -69,7 +69,7 @@ jobs:
     permissions:
       id-token: write # OIDC token for PyPI Trusted Publishing
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: wheels-*
           merge-multiple: true
@@ -84,7 +84,7 @@ jobs:
       id-token: write # OIDC token for crates.io Trusted Publishing
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       # Tokenless Trusted Publishing (OIDC), like the PyPI job above. Configure a trusted publisher for
       # this repo once at https://crates.io/crates/betula-cluster/settings before the first `v*` tag.
@@ -102,7 +102,7 @@ jobs:
     permissions:
       contents: write # create the GitHub Release
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Extract this version's CHANGELOG section
         run: |
           ver="${GITHUB_REF_NAME#v}"
@@ -112,7 +112,7 @@ jobs:
             f { print }
           ' CHANGELOG.md > release-notes.md
           echo "----- release notes -----"; cat release-notes.md
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           name: betula-cluster ${{ github.ref_name }}
           body_path: release-notes.md
