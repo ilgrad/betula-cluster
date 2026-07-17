@@ -37,7 +37,9 @@ All notable changes to this project are documented here. The format follows
   microclusters as a weighted point set and clusters the modes of the KDE
   `ρ_h(x) = Σ_j n_j exp(−‖x−μ_j‖²/2h²)`; it **sweeps the bandwidth `h` and keeps the labelling at the
   most persistent mode count** (the widest plateau of the modes-vs-`log h` curve), so it needs **no
-  `k` and no bandwidth** and finds non-convex, arbitrary-count structure. Pure-Rust mean-shift over
+  `k` and no bandwidth** and finds non-convex, arbitrary-count structure. A **prominence**-based mode
+  merge (collapse peaks separated by only a shallow density valley) cleans the mode-count curve, so it
+  is robust from 2 to ~8+ well-separated clusters and on unequal densities. Pure-Rust mean-shift over
   the `M ≪ N` leaves — cost bounded by the leaf budget, not `N`.
 
 ## [0.1.5] — 2026-07-04

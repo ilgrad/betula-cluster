@@ -92,7 +92,11 @@ modes of the KDE `ρ_h(x) = Σ_j n_j exp(−‖x−μ_j‖²/2h²)` (found by me
 the bandwidth `h` merges modes — a one-parameter Morse filtration. Rather than fix `h` (or `k`), the
 head sweeps `h` log-spaced and reports the labelling at the **most persistent** mode count: the widest
 plateau of the "number of modes vs `log h`" curve, with the trivial fully-merged tail winning only when
-no multi-mode structure is at least as persistent. This is parameter-free and non-convex-aware.
+no multi-mode structure is at least as persistent. At each scale, raw mean-shift modes separated by
+only a **shallow density valley** (`ρ` along the connecting segment stays ≥ `VALLEY_RATIO = 0.8` of the
+lower peak) are merged by prominence — this collapses the spurious sub-peaks a single cluster produces
+at fine bandwidths, cleaning the curve so the persistent plateau is unambiguous (robust from 2 to ~8+
+clusters). This is parameter-free and non-convex-aware.
 
 ## Other verified improvements
 

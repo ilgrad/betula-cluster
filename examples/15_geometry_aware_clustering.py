@@ -49,9 +49,9 @@ plt.rcParams.update({"figure.dpi": 110, "font.size": 9})
 # %%
 fig, axes = plt.subplots(1, 3, figsize=(10.5, 3.6))
 rows = []
-for ax, k in zip(axes, (2, 3, 4)):
-    X, y = make_blobs(n_samples=1600, centers=k, cluster_std=0.65, random_state=10 + k)
-    labels = betula_cluster.fit_predict(X, method="scale-space", threshold=0.08, max_leaves=450, seed=0)
+for ax, k in zip(axes, (2, 4, 8)):
+    X, y = make_blobs(n_samples=2000, centers=k, cluster_std=0.6, random_state=10 + k)
+    labels = betula_cluster.fit_predict(X, method="scale-space", threshold=0.08, max_leaves=500, seed=0)
     found = len(set(labels))
     ax.scatter(X[:, 0], X[:, 1], c=labels, cmap="tab10", s=6, alpha=0.85)
     ax.set(title=f"true {k} → found {found}  (no k given)", xticks=[], yticks=[])
@@ -88,11 +88,13 @@ for name, kw in [
 pd.DataFrame(compare).set_index("method")
 
 # %% [markdown]
-# **When scale-space shines — and when it does not (honest scope).** It is at its best on a handful of
-# **density-separated** clusters in **low-to-moderate dimension**. It is *not* a universal replacement:
-# in very high dimension the KDE flattens (density concentrates — on 64-D `digits` every point merges
-# into one mode), and with many or very unequally dense clusters the persistence plateau is
-# ambiguous. There, reach for `hdbscan` (variable density + noise) or `gmm` with BIC (`n_clusters=0`).
+# **When scale-space shines — and when it does not (honest scope).** A **prominence**-based mode merge
+# (collapse peaks separated by only a shallow density valley) keeps it robust across a **broad range of
+# counts** — 2 to ~8+ well-separated clusters — in **low-to-moderate dimension**, and unequal cluster
+# densities are fine. It is still not a universal replacement: in very high dimension the KDE flattens
+# (density concentrates — on 64-D `digits` every point merges into one mode), and heavily overlapping
+# clusters blur the modes. There, reach for `hdbscan` (variable density + noise) or `gmm` with BIC
+# (`n_clusters=0`).
 
 # %% [markdown]
 # ## 2 · Geometry-aware Leiden (GeoBETULA)

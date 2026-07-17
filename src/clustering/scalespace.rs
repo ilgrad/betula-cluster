@@ -15,6 +15,11 @@ use crate::feature::ClusterFeature;
 use crate::kernels::sq_euclidean;
 use crate::types::Real;
 
+/// Two raw modes are the same cluster when the density valley between them stays above this fraction
+/// of the lower peak (a shallow saddle) — this collapses the spurious sub-peaks a single cluster
+/// produces at fine bandwidths while keeping genuinely separated clusters apart.
+const VALLEY_RATIO: f64 = 0.8;
+
 /// Result of a scale-space run: one cluster label per input microcluster, plus the selected scale.
 pub struct ScaleSpace {
     /// Cluster index per input feature.
@@ -104,7 +109,8 @@ fn bandwidth_range(mu: &[Vec<f64>]) -> (f64, f64) {
 }
 
 /// Mean-shift every microcluster mean uphill on `ρ_h` (data points fixed at `μ`, weighted by `n`),
-/// then merge converged positions within `h/2` into modes. Returns `(mode label per point, #modes)`.
+/// then group the converged positions into modes by [`prominence_modes`]. Returns
+/// `(mode label per point, #modes)`.
 #[allow(clippy::needless_range_loop)] // mean-shift mutates pts[i] in place while reading μ/pts by index
 fn mean_shift(mu: &[Vec<f64>], n: &[f64], h: f64, max_iter: usize) -> (Vec<usize>, usize) {
     let m = mu.len();
@@ -138,29 +144,99 @@ fn mean_shift(mu: &[Vec<f64>], n: &[f64], h: f64, max_iter: usize) -> (Vec<usize
             break;
         }
     }
-    merge_modes(&pts, h * 0.5)
+    prominence_modes(&pts, mu, n, h)
 }
 
-/// Greedily merge points within `tol` of an existing mode representative.
-fn merge_modes(pts: &[Vec<f64>], tol: f64) -> (Vec<usize>, usize) {
-    let tol2 = tol * tol;
+/// Group converged mean-shift points into modes by **prominence**: tight-unique the endpoints into
+/// raw modes, then union two nearby raw modes when the density valley between them stays above
+/// `VALLEY_RATIO` of the lower peak (a shallow saddle). This collapses the spurious sub-peaks a
+/// single cluster produces at fine bandwidths while keeping separated clusters apart, so the
+/// mode-count-vs-scale curve is clean. Returns `(mode label per point, #modes)`.
+#[allow(clippy::needless_range_loop)] // pairwise valley checks read clearest with (a, b, t, k) indices
+fn prominence_modes(pts: &[Vec<f64>], mu: &[Vec<f64>], n: &[f64], h: f64) -> (Vec<usize>, usize) {
+    let inv2h2 = 1.0 / (2.0 * h * h);
+    // Tight-unique the converged points into raw modes.
+    let tol2 = (0.1 * h).powi(2);
     let mut reps: Vec<Vec<f64>> = Vec::new();
-    let mut labels = vec![0usize; pts.len()];
+    let mut raw = vec![0usize; pts.len()];
     for (i, p) in pts.iter().enumerate() {
         match reps.iter().position(|r| sq_euclidean::<f64>(p, r) <= tol2) {
-            Some(c) => labels[i] = c,
+            Some(c) => raw[i] = c,
             None => {
-                labels[i] = reps.len();
+                raw[i] = reps.len();
                 reps.push(p.clone());
             }
         }
     }
-    (labels, reps.len())
+    let m = reps.len();
+    let rho = |x: &[f64]| -> f64 {
+        mu.iter()
+            .zip(n)
+            .map(|(muj, &nj)| nj * (-sq_euclidean::<f64>(x, muj) * inv2h2).exp())
+            .sum()
+    };
+    let peak: Vec<f64> = reps.iter().map(|r| rho(r)).collect();
+
+    // Union raw modes joined by a shallow valley. Only nearby pairs can qualify — modes farther than
+    // `4h` apart always have a deep valley, so they are skipped (keeps this out of `O(m²·dim)`).
+    let mut parent: Vec<usize> = (0..m).collect();
+    let cutoff2 = (4.0 * h).powi(2);
+    let dim = mu[0].len();
+    for a in 0..m {
+        for b in (a + 1)..m {
+            if sq_euclidean::<f64>(&reps[a], &reps[b]) > cutoff2 {
+                continue;
+            }
+            let mut valley = f64::INFINITY;
+            for t in 1..12 {
+                let f = t as f64 / 12.0; // interior points of the a→b segment
+                let seg: Vec<f64> = (0..dim)
+                    .map(|k| reps[a][k] * (1.0 - f) + reps[b][k] * f)
+                    .collect();
+                valley = valley.min(rho(&seg));
+            }
+            if valley >= VALLEY_RATIO * peak[a].min(peak[b]) {
+                let (ra, rb) = (uf_find(&mut parent, a), uf_find(&mut parent, b));
+                if ra != rb {
+                    parent[ra] = rb;
+                }
+            }
+        }
+    }
+
+    // Relabel components to dense ids and map every point through its raw mode.
+    let mut comp = vec![usize::MAX; m];
+    let mut n_modes = 0;
+    for a in 0..m {
+        let r = uf_find(&mut parent, a);
+        if comp[r] == usize::MAX {
+            comp[r] = n_modes;
+            n_modes += 1;
+        }
+    }
+    let labels = raw.iter().map(|&r| comp[uf_find(&mut parent, r)]).collect();
+    (labels, n_modes)
 }
 
-/// Select the scale index by mode persistence: the widest plateau of equal `≥ 2`-mode counts wins,
-/// but only if it is at least as wide as the widest single-mode (merged) plateau — otherwise the
-/// data is one cluster and the single-mode scale is chosen. Returns the middle of the winning run.
+/// Union-find root with path halving.
+fn uf_find(parent: &mut [usize], x: usize) -> usize {
+    let mut r = x;
+    while parent[r] != r {
+        r = parent[r];
+    }
+    let mut c = x;
+    while parent[c] != r {
+        let nx = parent[c];
+        parent[c] = r;
+        c = nx;
+    }
+    r
+}
+
+/// Select the scale index by mode persistence: the widest `≥ 2`-mode plateau wins if it spans at
+/// least two scales (prominence merging makes spurious multi-mode runs width-1, so a wider run is
+/// real structure); otherwise the data is one cluster and the widest single-mode run is chosen.
+/// Returns the middle of the winning run.
 fn select_scale(counts: &[usize]) -> usize {
     let (mut best2_start, mut best2_len) = (0usize, 0usize); // widest run with count ≥ 2
     let (mut best1_start, mut best1_len) = (0usize, 0usize); // widest run with count == 1
@@ -181,7 +257,9 @@ fn select_scale(counts: &[usize]) -> usize {
         }
         i = j;
     }
-    if best2_len >= 2 && best2_len >= best1_len {
+    // With prominence merging, spurious multi-mode runs are width-1, so a ≥2-wide multi-mode plateau
+    // is real structure and wins outright; otherwise the data is one cluster (widest single-mode run).
+    if best2_len >= 2 {
         best2_start + best2_len / 2
     } else if best1_len > 0 {
         best1_start + best1_len / 2
@@ -208,6 +286,30 @@ mod tests {
         let labels: Vec<usize> = assign.iter().map(|&mi| res.labels[mi]).collect();
         assert!(
             ari(&labels, &truth) > 0.95,
+            "ARI = {}",
+            ari(&labels, &truth)
+        );
+    }
+
+    #[test]
+    fn scale_space_recovers_many_clusters() {
+        // Six well-separated blobs — before prominence merging this collapsed to a single mode.
+        let mut rng = SplitMix64::new(9);
+        let centers = [
+            [0.0, 0.0],
+            [12.0, 0.0],
+            [0.0, 12.0],
+            [12.0, 12.0],
+            [6.0, 21.0],
+            [21.0, 6.0],
+        ];
+        let (pts, truth) = blobs(&mut rng, 300, &centers, 0.6);
+        let (micros, assign) = grid_micros(&pts, 0.6);
+        let res = scale_space(&micros, 15, 100);
+        assert!(res.n_modes >= 5, "expected ≥5 modes, got {}", res.n_modes);
+        let labels: Vec<usize> = assign.iter().map(|&mi| res.labels[mi]).collect();
+        assert!(
+            ari(&labels, &truth) > 0.85,
             "ARI = {}",
             ari(&labels, &truth)
         );
