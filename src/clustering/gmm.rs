@@ -55,9 +55,13 @@ fn gmm_diagonal_once<R: Real, C: ClusterFeature<R>>(
     let reg = R::from_f64(1e-3).unwrap();
     let tiny = R::from_f64(1e-12).unwrap();
     let gvar = global_variance(&mu, &n, dim);
+    // Variance floor. The relative part (`1e-3·gvar_d`) keeps per-dimension variances from collapsing
+    // toward zero on high-dimensional data — a collapsed diagonal variance makes the E-step wildly
+    // over-confident on one dimension and the mixture over-fits away from the (good) k-means warm start
+    // (e.g. `digits`, 64-D). The absolute `tiny` keeps constant dimensions (`gvar_d = 0`) finite.
     let floor: Vec<R> = gvar
         .iter()
-        .map(|&g| g * R::from_f64(1e-6).unwrap() + tiny)
+        .map(|&g| g * R::from_f64(1e-3).unwrap() + tiny)
         .collect();
 
     // warm start from k-means
@@ -386,11 +390,25 @@ fn gmm_full_once<R: Real, C: ClusterFeature<R>>(
                 }
             }
         }
+        let dfloor = R::from_f64(1e-3).unwrap();
         for c in 0..k {
             let denom = nk[c] + reg;
             for a in 0..dim {
                 for b in 0..dim {
                     new_covs[c][a][b] = (new_covs[c][a][b] + reg * gcov[a][b]) / denom;
+                }
+            }
+            // Per-dimension diagonal floor, relative to the global variance `gcov[d][d]`. In high
+            // dimensions a component's covariance can go near-singular along low-variance directions;
+            // the expected-log trace correction −½ tr(Σ_k⁻¹ Σ_i) then explodes and starves the
+            // component, emptying it and collapsing the recovered count. Flooring the diagonal keeps
+            // Σ_k well-conditioned. Relative to `gcov[d][d]` (not the global mean scale, which is
+            // inflated by between-cluster separation and would over-regularize tight clusters);
+            // off-diagonals (orientation) are left untouched, so anisotropic fits are preserved.
+            for d in 0..dim {
+                let floor = dfloor * gcov[d][d];
+                if new_covs[c][d][d] < floor {
+                    new_covs[c][d][d] = floor;
                 }
             }
         }
@@ -640,6 +658,76 @@ mod tests {
         let (af, ad) = (ari(&lf, &truth), ari(&ld, &truth));
         assert!(af > 0.6, "full-cov ARI = {af} (diagonal = {ad})");
         assert!(af > ad, "full-cov {af} should beat diagonal {ad}");
+    }
+
+    #[test]
+    fn gmm_full_floors_covariance_in_high_dim() {
+        // Regression for the high-dimensional covariance collapse. When a full-covariance component's
+        // own covariance goes near-singular along the directions in which its blob is tight (the norm
+        // in high dimensions), the expected-log trace correction −½ tr(Σ_k⁻¹ Σ_i) turns over-confident
+        // and a component can be starved to zero responsibility, dropping the recovered count below k
+        // (observed on `digits`: 10 → 9). The per-dimension floor on each component's covariance
+        // diagonal, `1e-3·gcov_dd`, keeps every Σ_k well-conditioned. Tight, well-separated blobs in
+        // 10-D: within each blob the variance is ~0 in every dimension, so the raw component covariance
+        // is ~0 while the global variance is large along the axes that separate the blobs.
+        use crate::feature::{ClusterFeature, SecondMoment, Spherical};
+        let dim = 10;
+        let k = 5;
+        let mut rng = SplitMix64::new(101);
+        let mut micros: Vec<Spherical<f64>> = Vec::new();
+        let mut truth: Vec<usize> = Vec::new();
+        for c in 0..k {
+            for _ in 0..4 {
+                let mut f = Spherical::new(dim);
+                for _ in 0..25 {
+                    let mut p = vec![0.0; dim];
+                    p[c] = 6.0;
+                    for pd in &mut p {
+                        *pd += 1e-4 * rng.gauss(); // negligible within-blob spread ⇒ near-singular Σ_k
+                    }
+                    f.push(&p, 1.0);
+                }
+                micros.push(f);
+                truth.push(c);
+            }
+        }
+        let g = gmm_full(&micros, k, 200, 7);
+
+        // (a) every component stays populated — no starvation collapse.
+        let distinct: std::collections::HashSet<usize> = g.labels.iter().copied().collect();
+        assert_eq!(
+            distinct.len(),
+            k,
+            "recovered {} of {k} components",
+            distinct.len()
+        );
+        assert!(
+            ari(&g.labels, &truth) > 0.99,
+            "ARI = {}",
+            ari(&g.labels, &truth)
+        );
+
+        // (b) the per-dimension covariance-diagonal floor is applied (fails if the floor is removed:
+        // the raw component covariances here are ~1e-8, far below `1e-3·gcov_dd` on the separating axes).
+        let mu: Vec<Vec<f64>> = micros.iter().map(|f| f.mean().to_vec()).collect();
+        let n: Vec<f64> = micros.iter().map(|f| f.weight()).collect();
+        let sig: Vec<SecondMoment<f64>> = micros.iter().map(|f| f.second_moment()).collect();
+        let gcov = global_cov(&mu, &n, &sig, dim);
+        let mut floor_bound = false;
+        for cov in &g.covs {
+            for d in 0..dim {
+                let floor = 1e-3 * gcov[d][d];
+                assert!(
+                    cov[d][d] + 1e-12 >= floor,
+                    "cov diag {} below floor {floor} in dim {d}",
+                    cov[d][d]
+                );
+                if floor > 1e-6 {
+                    floor_bound = true; // at least one dimension where the floor genuinely binds
+                }
+            }
+        }
+        assert!(floor_bound, "test did not exercise a binding floor");
     }
 
     #[test]

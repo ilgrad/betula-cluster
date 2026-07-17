@@ -42,6 +42,26 @@ All notable changes to this project are documented here. The format follows
   is robust from 2 to ~8+ well-separated clusters and on unequal densities. Pure-Rust mean-shift over
   the `M ≪ N` leaves — cost bounded by the leaf budget, not `N`.
 
+### Fixed
+- **High-dimensional GMM regularization** — the expected-log E-step adds a within-leaf correction
+  (`−½ Σ_d (Σ_i)_dd/σ²_kd` for diagonal, `−½ tr(Σ_k⁻¹ Σ_i)` for full covariance) that turns
+  *over-confident* when a component's own covariance goes near-singular along a low-variance
+  direction — which is the norm in high dimensions with few effective microclusters per component.
+  Two floors now keep the component covariances well-conditioned:
+  - `method="gmm"` (diagonal): per-dimension variance floor raised from `1e-6·gvar_d` to
+    `1e-3·gvar_d`. `digits` (64-D) ARI 0.372 → 0.396, now ahead of scikit-learn's
+    `GaussianMixture(covariance_type="diag")` (0.324).
+  - `method="gmm-full"` (full covariance): added a per-dimension floor on each component's covariance
+    **diagonal** at `1e-3·gcov_dd` (off-diagonals — orientation — untouched). Previously a component
+    could be starved to zero responsibility and the recovered count dropped below `k`; on `digits`
+    the fit collapsed to 9 clusters at ARI 0.391, and now holds all 10 at ARI 0.511 — ahead of
+    scikit-learn's `GaussianMixture(covariance_type="full")` (0.402).
+
+  The floors are relative to the **per-dimension** global variance (not the global mean scale, which
+  is inflated by between-cluster separation and would over-regularize tight clusters), so
+  low-dimensional and anisotropic fits are unchanged (well-separated blobs still ARI 1.00; the
+  rotated-anisotropic 2-D case still ties `GaussianMixture` at 0.887). No API change.
+
 ## [0.1.5] — 2026-07-04
 
 ### Added
