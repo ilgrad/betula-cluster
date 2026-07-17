@@ -22,3 +22,30 @@ keywords:
   - streaming
   - Rust
   - machine learning
+# This package is an independent software implementation (with extensions) of the BETULA algorithm;
+# the underlying methods are credited to their authors below.
+references:
+  - type: article
+    scope: "betula-cluster implements the BETULA numerically stable CF-tree algorithm introduced here."
+    authors:
+      - family-names: "Lang"
+        given-names: "Andreas"
+      - family-names: "Schubert"
+        given-names: "Erich"
+    title: "BETULA: Fast clustering of large data with improved BIRCH CF-Trees"
+    journal: "Information Systems"
+    year: 2022
+    doi: "10.1016/j.is.2021.101918"
+  - type: conference-paper
+    scope: "BETULA refines the original BIRCH clustering algorithm."
+    authors:
+      - family-names: "Zhang"
+        given-names: "Tian"
+      - family-names: "Ramakrishnan"
+        given-names: "Raghu"
+      - family-names: "Livny"
+        given-names: "Miron"
+    title: "BIRCH: An Efficient Data Clustering Method for Very Large Databases"
+    collection-title: "Proceedings of the 1996 ACM SIGMOD International Conference on Management of Data"
+    year: 1996
+    doi: "10.1145/233269.233324"
