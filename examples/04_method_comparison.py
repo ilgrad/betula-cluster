@@ -64,7 +64,7 @@ def methods(k):
     """(column title, callable X -> labels) for each algorithm."""
     return [
         ("betula\nk-means", lambda X: betula_cluster.fit_predict(X, k, feature="diagonal", method="kmeans")),
-        ("betula\nGMM-full", lambda X: betula_cluster.fit_predict(X, k, feature="diagonal", method="gmm-full")),
+        ("betula\nGMM-full", lambda X: betula_cluster.fit_predict(X, k, feature="full", method="gmm-full")),
         ("betula\nWard", lambda X: betula_cluster.fit_predict(X, k, feature="diagonal", method="ward")),
         ("betula\nHDBSCAN", lambda X: betula_cluster.fit_predict(X, method="hdbscan", min_samples=5, min_cluster_size=30)),
         ("sklearn\nBirch", lambda X: Birch(n_clusters=k).fit_predict(X)),

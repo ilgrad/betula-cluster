@@ -32,7 +32,7 @@ Applied walk-throughs that compose the features above into a real task, each sco
 | [`usecase_02_log_anomaly_detection`](usecases/usecase_02_log_anomaly_detection.ipynb) | anomaly detection on log events — batch `outlier_scores` (ROC-AUC, precision@k) **and** streaming `DbStream` real-time noise flags |
 | [`usecase_03_customer_segmentation`](usecases/usecase_03_customer_segmentation.ipynb) | mixed RFM + categorical segmentation with `KPrototypes` — a persona + action table, and why mixed beats numeric-only |
 | [`usecase_04_rag_corpus_curation`](usecases/usecase_04_rag_corpus_curation.ipynb) | prepping an embedding store for RAG — junk removal (`outlier_scores`), topic coherence (`mapper_stability`, β₀ = #topics), and topic-leakage detection (Mapper) |
-| [`usecase_05_real_data_clustering`](usecases/usecase_05_real_data_clustering.ipynb) | clustering a **real** dataset (handwritten `digits`) — ARI parity with scikit-learn, average-digit centroids, medoid exemplars, a refit-anything coreset |
+| [`usecase_05_real_data_clustering`](usecases/usecase_05_real_data_clustering.ipynb) | clustering a **real** 64-D dataset (handwritten `digits`) — betula's regularized `gmm` / `gmm-full` **lead scikit-learn on both mean ARI and worst-case stability** (the per-dimension covariance floor stops the high-dimensional component collapse), plus average-digit centroids, medoid exemplars, a refit-anything coreset |
 | [`usecase_06_graph_communities`](usecases/usecase_06_graph_communities.ipynb) | community detection on an embedding corpus — **`method="leiden"`** discovers the group count with no `k`, `resolution` γ / CPM dial granularity, and `consensus` flags ambiguous items |
 
 ## Run / re-render
