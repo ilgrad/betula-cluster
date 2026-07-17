@@ -4,6 +4,42 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- `method="spherical-kmeans"` / `method="vmf"` — **directional clustering on the unit hypersphere**
+  for L2-normalized embeddings (CLIP / face / sentence / speaker vectors), where cosine — not
+  Euclidean — geometry is what matters. `spherical-kmeans` is hard cosine assignment
+  (`argmax_c μ̂·μ_c`, centers re-normalized to the sphere); `vmf` is a soft **mixture of
+  von Mises–Fisher** distributions (EM, a true posterior for `predict_proba`, and BIC auto-`k` when
+  `n_clusters=0`). Both reduce each leaf to its weighted mean `(n_i, μ_i)`, so the cluster resultant
+  `R_c = Σ n_i μ_i` stays **exactly mergeable** — the BETULA property carries through to the sphere —
+  and the within-leaf spread `‖μ_i‖` feeds the concentration `κ` (Banerjee et al. 2005), so
+  microcluster compression does not over-estimate it. The engine L2-normalizes input automatically
+  for these methods (`get_params` stays verbatim). The `κ` normalizer uses a dependency-free,
+  numerically stable `log I_ν(κ)` (log-space series) — no Bessel library, the crate stays NumPy-only.
+  Available on the dense one-shot / streaming estimator, the sparse (`O(nnz)`) path, and as the
+  `spherical_kmeans` / `movmf` / `movmf_auto` Rust functions.
+- `covariance_weight` (`method="leiden"` / `"leiden-cpm"`, `feature="full"`) — **covariance-aware
+  community detection**. `β > 0` adds a **log-Euclidean** shape term `β·‖logΣ_i − logΣ_j‖²_F` to the
+  microcluster affinity graph, so two microclusters must be close in **both** centroid *and*
+  covariance to be neighbours — useful when clusters differ by orientation / shape (covariance
+  descriptors, motion / time-series windows, anisotropic blobs). `logΣ` is computed with the in-house
+  Jacobi eigensolver (new `linalg::matrix_log`) — no new dependency; `β = 0` (default) is the
+  existing centroid-only affinity, bit-for-bit unchanged.
+- `tangent_weight` / `tangent_rank` (`method="leiden"` / `"leiden-cpm"`, `feature="full"`) —
+  **GeoBETULA manifold-aware community detection**. `γ > 0` adds a **Grassmann** term
+  `γ · d²_Gr(U_i, U_j)` (projection distance between each microcluster's rank-`tangent_rank` principal
+  subspace) to the affinity, so communities must agree in centroid, covariance **and** manifold
+  orientation — separating crossing / adjacent manifolds that share a centroid neighbourhood. Reuses
+  the in-house Jacobi eigensolver (no new dependency); `γ = 0` (default) leaves the graph unchanged.
+- `method="scale-space"` — **scale-space (Morse-persistence) density-mode clustering**. Treats the
+  microclusters as a weighted point set and clusters the modes of the KDE
+  `ρ_h(x) = Σ_j n_j exp(−‖x−μ_j‖²/2h²)`; it **sweeps the bandwidth `h` and keeps the labelling at the
+  most persistent mode count** (the widest plateau of the modes-vs-`log h` curve), so it needs **no
+  `k` and no bandwidth** and finds non-convex, arbitrary-count structure. Pure-Rust mean-shift over
+  the `M ≪ N` leaves — cost bounded by the leaf budget, not `N`.
+
 ## [0.1.5] — 2026-07-04
 
 ### Added

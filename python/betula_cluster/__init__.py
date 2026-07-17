@@ -344,9 +344,17 @@ _DEFAULTS = {
     "normalize": False,
     "huber_k": None,
     "resolution": 1.0,
+    "covariance_weight": 0.0,
+    "tangent_weight": 0.0,
+    "tangent_rank": 2,
     "memory_budget_mb": None,
 }
 _PARAM_NAMES = tuple(_DEFAULTS)
+
+# Directional heads (`spherical-kmeans` / `vmf`) cluster points on the unit sphere, so the engine
+# is always built with ``normalize=True`` for them. ``self.normalize`` is left as the user set it —
+# ``get_params`` stays verbatim so ``sklearn.base.clone`` / ``set_params`` round-trip unchanged.
+_DIRECTIONAL_METHODS = ("spherical-kmeans", "vmf")
 
 # `threshold="auto"` pilot: fit this many points (max of the two) to estimate a warm-start
 # threshold. Oversampling the leaf budget makes the subsample crowd the tree to `max_leaves`, so
@@ -387,6 +395,9 @@ class Betula:
         normalize=False,
         huber_k=None,
         resolution=1.0,
+        covariance_weight=0.0,
+        tangent_weight=0.0,
+        tangent_rank=2,
         memory_budget_mb=None,
     ):
         self.n_clusters = n_clusters
@@ -413,6 +424,15 @@ class Betula:
         # Leiden resolution γ (only method="leiden" / "leiden-cpm"): higher ⇒ more, smaller
         # communities. The modularity objective has a resolution limit; "leiden-cpm" does not.
         self.resolution = resolution
+        # Covariance-aware Leiden weight β (method="leiden" / "leiden-cpm" with feature="full"):
+        # >0 adds a log-Euclidean shape term to the microcluster affinity, so communities agree in
+        # both centroid and covariance. 0 disables it (plain centroid affinity).
+        self.covariance_weight = covariance_weight
+        # Tangent-aware Leiden weight γ + subspace rank (method="leiden" / "leiden-cpm",
+        # feature="full"): >0 adds a Grassmann term over each microcluster's rank-`tangent_rank`
+        # principal subspace, separating crossing/adjacent manifolds. 0 disables it.
+        self.tangent_weight = tangent_weight
+        self.tangent_rank = tangent_rank
         # When set, max_leaves is derived from this budget (+ dim + feature) at fit time: a target
         # for the CF-tree resident size (MiB), not total RSS. Most useful for streaming.
         self.memory_budget_mb = memory_budget_mb
@@ -453,6 +473,8 @@ class Betula:
         if threshold_override is not None:
             params["threshold"] = threshold_override
         self._effective_max_leaves = params["max_leaves"]
+        if self.method in _DIRECTIONAL_METHODS:
+            params["normalize"] = True
         return _CoreBetula(**params)
 
     def _resolve_auto(self, X, csr):
@@ -484,6 +506,8 @@ class Betula:
         params = {k: getattr(self, k) for k in _PARAM_NAMES if k != "memory_budget_mb"}
         params["threshold"] = 0.0
         params["max_leaves"] = max_leaves
+        if self.method in _DIRECTIONAL_METHODS:
+            params["normalize"] = True
         pilot = _CoreBetula(**params)
         pilot.fit(sub)
         return float(pilot.threshold_)
@@ -858,12 +882,12 @@ class Betula:
     def predict_proba(self, X):
         """Per-point soft assignment, shape ``(n, n_components)``.
 
-        The **GMM** heads return the true posterior responsibilities (routed via each point's
-        microcluster). **k-means / Ward / HDBSCAN** return a heuristic ``softmax(−d²/2τ²)`` over the
-        cluster centroids (``τ`` = mean cluster radius) — a confidence *proxy*, **not** a calibrated
-        posterior. Columns are component indices aligned with :meth:`predict`."""
+        The **GMM** and **vMF** heads return the true posterior responsibilities (routed via each
+        point's microcluster). **k-means / Ward / HDBSCAN** return a heuristic ``softmax(−d²/2τ²)``
+        over the cluster centroids (``τ`` = mean cluster radius) — a confidence *proxy*, **not** a
+        calibrated posterior. Columns are component indices aligned with :meth:`predict`."""
         est = self._require_fit()
-        if self.method in ("gmm", "gmm-full"):
+        if self.method in ("gmm", "gmm-full", "vmf"):
             leaf_proba = est.microcluster_proba_
             leaves = np.asarray(est.assign_microclusters(X))
             return leaf_proba[leaves]

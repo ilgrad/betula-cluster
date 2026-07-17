@@ -1,8 +1,8 @@
 //! End-to-end model: build a CF-tree, cluster its leaves (Phase 3), and label points.
 
 use crate::clustering::{
-    gmm_diagonal, gmm_diagonal_auto, gmm_full, gmm_full_auto, kmeans, leiden, spectral, ward_hac,
-    ward_hac_auto, xmeans, Objective,
+    gmm_diagonal, gmm_diagonal_auto, gmm_full, gmm_full_auto, kmeans, leiden, movmf, movmf_auto,
+    spectral, spherical_kmeans, ward_hac, ward_hac_auto, xmeans, Objective,
 };
 use crate::distance::CFDistance;
 use crate::feature::ClusterFeature;
@@ -27,8 +27,21 @@ pub enum Method {
     /// Spectral clustering (self-tuning affinity + normalized Laplacian) for non-convex clusters.
     Spectral,
     /// Leiden community detection on the microcluster affinity graph (auto community count).
-    /// `resolution` is γ; `cpm` selects the Constant Potts Model over modularity.
-    Leiden { resolution: f64, cpm: bool },
+    /// `resolution` is γ; `cpm` selects the Constant Potts Model over modularity. `cov_weight > 0`
+    /// adds a log-Euclidean covariance/shape term and `tangent_weight > 0` a Grassmann
+    /// tangent-subspace term (rank `tangent_rank`) to the affinity — GeoBETULA, best with
+    /// `feature="full"`.
+    Leiden {
+        resolution: f64,
+        cpm: bool,
+        cov_weight: f64,
+        tangent_weight: f64,
+        tangent_rank: usize,
+    },
+    /// Spherical k-means on the unit sphere (hard cosine assignment) for L2-normalized embeddings.
+    SphericalKMeans,
+    /// Mixture of von Mises–Fisher distributions (soft directional EM; BIC auto-`k` when `k == 0`).
+    Movmf,
 }
 
 /// A fitted model: a CF-tree plus a cluster label per leaf entry. A point is labelled by routing
@@ -100,14 +113,39 @@ pub(crate) fn cluster_leaves<R: Real, C: ClusterFeature<R>>(
         // Spectral resolves `k == 0` (eigengap) and clamps internally, so one arm covers both.
         Method::Spectral => spectral(features, k, max_iter, seed).labels,
         // Leiden discovers the community count from the graph; `k` is ignored (like HDBSCAN).
-        Method::Leiden { resolution, cpm } => {
+        Method::Leiden {
+            resolution,
+            cpm,
+            cov_weight,
+            tangent_weight,
+            tangent_rank,
+        } => {
             let obj = if cpm {
                 Objective::Cpm
             } else {
                 Objective::Modularity
             };
-            leiden(features, resolution, obj, seed).labels
+            leiden(
+                features,
+                resolution,
+                obj,
+                seed,
+                cov_weight,
+                tangent_weight,
+                tangent_rank,
+            )
+            .labels
         }
+        // Spherical k-means needs a `k`; `k == 0` selects it by BIC via the vMF mixture.
+        Method::SphericalKMeans if k == 0 => {
+            let kk = movmf_auto(features, 1, auto_hi, max_iter, seed).means.len();
+            spherical_kmeans(features, kk.min(nlv).max(1), max_iter, 4, seed).labels
+        }
+        Method::SphericalKMeans => {
+            spherical_kmeans(features, k.min(nlv).max(1), max_iter, 4, seed).labels
+        }
+        Method::Movmf if k == 0 => movmf_auto(features, 1, auto_hi, max_iter, seed).labels,
+        Method::Movmf => movmf(features, k.min(nlv).max(1), max_iter, seed).labels,
     }
 }
 
@@ -151,6 +189,16 @@ pub(crate) fn cluster_leaves_proba<R: Real, C: ClusterFeature<R>>(
         }
         Method::GmmFull => {
             let g = gmm_full(features, k.min(nlv).max(1), max_iter, seed);
+            let p = flatten(&g.resp);
+            (g.labels, Some(p))
+        }
+        Method::Movmf if k == 0 => {
+            let g = movmf_auto(features, 1, auto_hi, max_iter, seed);
+            let p = flatten(&g.resp);
+            (g.labels, Some(p))
+        }
+        Method::Movmf => {
+            let g = movmf(features, k.min(nlv).max(1), max_iter, seed);
             let p = flatten(&g.resp);
             (g.labels, Some(p))
         }
@@ -242,11 +290,26 @@ mod tests {
             Method::Leiden {
                 resolution: 1.0,
                 cpm: false,
+                cov_weight: 0.0,
+                tangent_weight: 0.0,
+                tangent_rank: 2,
             },
             Method::Leiden {
                 resolution: 0.05,
                 cpm: true,
+                cov_weight: 0.0,
+                tangent_weight: 0.0,
+                tangent_rank: 2,
             },
+            Method::Leiden {
+                resolution: 1.0,
+                cpm: false,
+                cov_weight: 0.5,
+                tangent_weight: 0.5,
+                tangent_rank: 2,
+            },
+            Method::SphericalKMeans,
+            Method::Movmf,
         ] {
             for k in [3usize, 0usize] {
                 let labels = cluster_leaves(&feats, k, method, 100, 1);

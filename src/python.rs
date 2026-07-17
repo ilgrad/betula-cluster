@@ -18,6 +18,7 @@ use pyo3::prelude::*;
 use rayon::prelude::*;
 
 use crate::clustering::hdbscan::hdbscan;
+use crate::clustering::scalespace::scale_space;
 use crate::clustering::{
     cop_kmeans, kprototypes, nearest_micro, summarize_mixed, ConstraintError, MixedCf,
 };
@@ -41,6 +42,8 @@ enum Kind {
         min_samples: usize,
         min_cluster_size: usize,
     },
+    /// Scale-space KDE-mode clustering with persistence-selected scale (no `k`, no bandwidth).
+    ScaleSpace,
 }
 
 /// Map the `method` keyword (+ HDBSCAN params) to an internal [`Kind`].
@@ -49,6 +52,9 @@ fn parse_method(
     min_samples: usize,
     min_cluster_size: usize,
     resolution: f64,
+    covariance_weight: f64,
+    tangent_weight: f64,
+    tangent_rank: usize,
 ) -> PyResult<Kind> {
     match method {
         "kmeans" => Ok(Kind::Parametric(Method::KMeans)),
@@ -59,18 +65,27 @@ fn parse_method(
         "leiden" => Ok(Kind::Parametric(Method::Leiden {
             resolution,
             cpm: false,
+            cov_weight: covariance_weight,
+            tangent_weight,
+            tangent_rank,
         })),
         "leiden-cpm" => Ok(Kind::Parametric(Method::Leiden {
             resolution,
             cpm: true,
+            cov_weight: covariance_weight,
+            tangent_weight,
+            tangent_rank,
         })),
+        "spherical-kmeans" => Ok(Kind::Parametric(Method::SphericalKMeans)),
+        "vmf" => Ok(Kind::Parametric(Method::Movmf)),
         "hdbscan" => Ok(Kind::Hdbscan {
             min_samples,
             min_cluster_size,
         }),
+        "scale-space" => Ok(Kind::ScaleSpace),
         _ => Err(PyValueError::new_err(
             "method must be 'kmeans', 'gmm', 'gmm-full', 'ward', 'spectral', 'leiden', \
-             'leiden-cpm' or 'hdbscan'",
+             'leiden-cpm', 'spherical-kmeans', 'vmf', 'hdbscan' or 'scale-space'",
         )),
     }
 }
@@ -96,6 +111,14 @@ fn label_features_proba<R: Real, C: ClusterFeature<R>>(
             min_samples,
             min_cluster_size,
         } => (hdbscan(feats, min_samples, min_cluster_size).labels, None),
+        Kind::ScaleSpace => (
+            scale_space(feats, 0, max_iter)
+                .labels
+                .into_iter()
+                .map(|l| l as i64)
+                .collect(),
+            None,
+        ),
     }
 }
 
@@ -416,6 +439,12 @@ fn cluster<R: Real, C: ClusterFeature<R>>(
                 res.labels[tree.nearest_entry(&flat[i * dim..(i + 1) * dim])]
             })
         }
+        Kind::ScaleSpace => {
+            let res = scale_space(tree.leaf_features(), 0, max_iter);
+            map_rows(n, |i| {
+                res.labels[tree.nearest_entry(&flat[i * dim..(i + 1) * dim])] as i64
+            })
+        }
     }
 }
 
@@ -442,6 +471,13 @@ fn run_oneshot<R: Real + Element>(
     normalize: bool,
 ) -> PyResult<Vec<i64>> {
     let (mut flat, n, dim) = to_flat(&data)?;
+    // Directional heads cluster points on the unit sphere, so they always operate on L2-normalized
+    // rows regardless of the caller's `normalize` flag.
+    let normalize = normalize
+        || matches!(
+            kind,
+            Kind::Parametric(Method::SphericalKMeans | Method::Movmf)
+        );
     if normalize {
         normalize_rows(&mut flat, n, dim);
     }
@@ -501,7 +537,7 @@ fn run_oneshot<R: Real + Element>(
     branching = 32, leaf_cap = 32, max_leaves = 2000, max_iter = 100,
     min_samples = 5, min_cluster_size = 5, seed = 0, distance = "euclidean",
     absorb = "euclidean", chi2_p = 0.95, chi2_scale = 0.0, n_jobs = 1, normalize = false,
-    resolution = 1.0
+    resolution = 1.0, covariance_weight = 0.0, tangent_weight = 0.0, tangent_rank = 2
 ))]
 #[allow(clippy::too_many_arguments)]
 fn fit_predict<'py>(
@@ -525,8 +561,19 @@ fn fit_predict<'py>(
     n_jobs: usize,
     normalize: bool,
     resolution: f64,
+    covariance_weight: f64,
+    tangent_weight: f64,
+    tangent_rank: usize,
 ) -> PyResult<Bound<'py, PyArray1<i64>>> {
-    let kind = parse_method(method, min_samples, min_cluster_size, resolution)?;
+    let kind = parse_method(
+        method,
+        min_samples,
+        min_cluster_size,
+        resolution,
+        covariance_weight,
+        tangent_weight,
+        tangent_rank,
+    )?;
     let labels = if let Ok(a) = data.extract::<PyReadonlyArray2<'py, f64>>() {
         run_oneshot::<f64>(
             py, a, n_clusters, feature, kind, distance, absorb, chi2_p, chi2_scale, threshold,
@@ -992,6 +1039,14 @@ fn default_resolution() -> f64 {
     1.0
 }
 
+fn default_covariance_weight() -> f64 {
+    0.0
+}
+
+fn default_tangent_rank() -> usize {
+    2
+}
+
 #[pyclass(name = "Betula", module = "betula_cluster._core")]
 #[derive(serde::Serialize, serde::Deserialize)]
 struct Betula {
@@ -1022,6 +1077,16 @@ struct Betula {
     /// Leiden resolution `γ` (only used by `method="leiden"` / `"leiden-cpm"`); kept for `get_params`.
     #[serde(default = "default_resolution")]
     resolution: f64,
+    /// Covariance-aware Leiden weight `β` (log-Euclidean shape term, `method="leiden"` / `"leiden-cpm"`
+    /// with `feature="full"`); kept for `get_params`.
+    #[serde(default = "default_covariance_weight")]
+    covariance_weight: f64,
+    /// Tangent-aware Leiden weight `γ` (Grassmann subspace term); kept for `get_params`.
+    #[serde(default = "default_covariance_weight")]
+    tangent_weight: f64,
+    /// Rank `r` of the local tangent subspaces compared by `tangent_weight`; kept for `get_params`.
+    #[serde(default = "default_tangent_rank")]
+    tangent_rank: usize,
     dim: usize,
     // The estimator holds an f64 *or* an f32 tree (chosen by the first input's dtype) — at most one
     // is ever `Some`. f32 halves the resident tree memory on high-d embeddings.
@@ -1321,7 +1386,8 @@ impl Betula {
         branching = 32, leaf_cap = 32, max_leaves = 2000, max_iter = 100,
         min_samples = 5, min_cluster_size = 5, seed = 0,
         distance = "euclidean", absorb = "euclidean", chi2_p = 0.95, chi2_scale = 0.0, decay = 1.0,
-        normalize = false, huber_k = None, resolution = 1.0
+        normalize = false, huber_k = None, resolution = 1.0, covariance_weight = 0.0,
+        tangent_weight = 0.0, tangent_rank = 2
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -1344,8 +1410,19 @@ impl Betula {
         normalize: bool,
         huber_k: Option<f64>,
         resolution: f64,
+        covariance_weight: f64,
+        tangent_weight: f64,
+        tangent_rank: usize,
     ) -> PyResult<Self> {
-        let kind = parse_method(method, min_samples, min_cluster_size, resolution)?;
+        let kind = parse_method(
+            method,
+            min_samples,
+            min_cluster_size,
+            resolution,
+            covariance_weight,
+            tangent_weight,
+            tangent_rank,
+        )?;
         let route = parse_route(distance)?;
         if !matches!(feature, "spherical" | "diagonal" | "full" | "fd") {
             return Err(PyValueError::new_err(
@@ -1391,6 +1468,9 @@ impl Betula {
             normalize,
             huber_k,
             resolution,
+            covariance_weight,
+            tangent_weight,
+            tangent_rank,
             dim: 0,
             state64: None,
             state32: None,
@@ -1866,6 +1946,9 @@ impl Betula {
         d.set_item("normalize", self.normalize)?;
         d.set_item("huber_k", self.huber_k)?;
         d.set_item("resolution", self.resolution)?;
+        d.set_item("covariance_weight", self.covariance_weight)?;
+        d.set_item("tangent_weight", self.tangent_weight)?;
+        d.set_item("tangent_rank", self.tangent_rank)?;
         Ok(d)
     }
 
@@ -2699,8 +2782,11 @@ fn parse_parametric(method: &str) -> PyResult<Method> {
         "gmm" => Ok(Method::Gmm),
         "gmm-full" => Ok(Method::GmmFull),
         "ward" => Ok(Method::Ward),
+        "spherical-kmeans" => Ok(Method::SphericalKMeans),
+        "vmf" => Ok(Method::Movmf),
         _ => Err(PyValueError::new_err(
-            "method must be 'kmeans', 'gmm', 'gmm-full' or 'ward' for sparse input",
+            "method must be 'kmeans', 'gmm', 'gmm-full', 'ward', 'spherical-kmeans' or 'vmf' \
+             for sparse input",
         )),
     }
 }

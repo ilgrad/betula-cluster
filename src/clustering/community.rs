@@ -16,7 +16,7 @@
 //! limit) and **CPM** (Constant Potts Model — resolution-limit-free, but `γ` is an absolute density
 //! threshold on the edge-weight scale). Pure Rust, no eigensolver.
 
-use crate::clustering::graph::knn_affinity;
+use crate::clustering::graph::{knn_affinity, knn_affinity_geo, log_covariances, tangent_bases};
 use crate::clustering::rng::SplitMix64;
 use crate::feature::ClusterFeature;
 use crate::types::Real;
@@ -67,12 +67,31 @@ impl Graph {
     }
 }
 
+/// Cast an `m × d × d` (or `m × d × r`) tensor to `f64` for the affinity graph.
+fn to_f64_tensors<R: Real>(t: Vec<Vec<Vec<R>>>) -> Vec<Vec<Vec<f64>>> {
+    t.into_iter()
+        .map(|m| {
+            m.into_iter()
+                .map(|row| row.into_iter().map(|x| x.to_f64().unwrap()).collect())
+                .collect()
+        })
+        .collect()
+}
+
 /// Leiden community detection on the leaf microclusters. `resolution` is `γ`; `k` is not used.
+/// `cov_weight > 0` adds a log-Euclidean **covariance/shape** term and `tangent_weight > 0` a
+/// Grassmann **tangent-subspace** term (rank `tangent_rank`) to the microcluster affinity, so
+/// communities agree in centroid, shape, and manifold orientation (GeoBETULA; best with
+/// `feature="full"`). Both `0` reproduce the plain centroid affinity.
+#[allow(clippy::too_many_arguments)]
 pub fn leiden<R: Real, C: ClusterFeature<R>>(
     features: &[C],
     resolution: f64,
     objective: Objective,
     seed: u64,
+    cov_weight: f64,
+    tangent_weight: f64,
+    tangent_rank: usize,
 ) -> Community {
     let n = features.len();
     if n <= 1 {
@@ -82,7 +101,18 @@ pub fn leiden<R: Real, C: ClusterFeature<R>>(
         .iter()
         .map(|f| f.mean().iter().map(|&x| x.to_f64().unwrap()).collect())
         .collect();
-    let base = knn_affinity::<f64>(&centers);
+    let log_covs = (cov_weight > 0.0).then(|| to_f64_tensors(log_covariances(features)));
+    let tangents =
+        (tangent_weight > 0.0).then(|| to_f64_tensors(tangent_bases(features, tangent_rank)));
+    let base = if log_covs.is_some() || tangents.is_some() {
+        knn_affinity_geo::<f64>(
+            &centers,
+            log_covs.as_deref().map(|lc| (lc, cov_weight)),
+            tangents.as_deref().map(|t| (t, tangent_weight)),
+        )
+    } else {
+        knn_affinity::<f64>(&centers)
+    };
     Community {
         labels: detect(&base, resolution, objective, seed),
     }
@@ -356,7 +386,7 @@ mod tests {
         let centers = [[0.0, 0.0], [12.0, 0.0], [0.0, 12.0]];
         let (pts, truth) = blobs(&mut rng, 300, &centers, 0.5);
         let (micros, p2m) = grid_micros(&pts, 1.0);
-        let labels = leiden(&micros, 1.0, Objective::Modularity, 1).labels;
+        let labels = leiden(&micros, 1.0, Objective::Modularity, 1, 0.0, 0.0, 2).labels;
         assert_eq!(n_distinct(&labels), 3);
         let pred: Vec<usize> = p2m.iter().map(|&m| labels[m]).collect();
         assert!(ari(&pred, &truth) > 0.95);
@@ -370,7 +400,7 @@ mod tests {
         let (micros, _) = grid_micros(&pts, 0.5);
         let centers_f: Vec<Vec<f64>> = micros.iter().map(|f| f.mean().to_vec()).collect();
         let base = knn_affinity::<f64>(&centers_f);
-        let labels = leiden(&micros, 1.0, Objective::Modularity, 1).labels;
+        let labels = leiden(&micros, 1.0, Objective::Modularity, 1, 0.0, 0.0, 2).labels;
         // Leiden's key guarantee: every community is internally connected.
         assert!(all_communities_connected(&base, &labels));
         // …and the checker is not vacuous — two far, non-adjacent nodes sharing a label is caught.
@@ -388,8 +418,9 @@ mod tests {
         let mut rng = SplitMix64::new(2);
         let (pts, _t) = blobs(&mut rng, 400, &[[0.0, 0.0], [4.0, 0.0], [8.0, 0.0]], 0.9);
         let (micros, _) = grid_micros(&pts, 0.4);
-        let coarse = n_distinct(&leiden(&micros, 0.5, Objective::Modularity, 1).labels);
-        let fine = n_distinct(&leiden(&micros, 2.0, Objective::Modularity, 1).labels);
+        let coarse =
+            n_distinct(&leiden(&micros, 0.5, Objective::Modularity, 1, 0.0, 0.0, 2).labels);
+        let fine = n_distinct(&leiden(&micros, 2.0, Objective::Modularity, 1, 0.0, 0.0, 2).labels);
         assert!(
             fine >= coarse,
             "higher γ should not yield fewer communities ({fine} vs {coarse})"
@@ -402,7 +433,7 @@ mod tests {
         let centers = [[0.0, 0.0], [12.0, 0.0], [0.0, 12.0]];
         let (pts, truth) = blobs(&mut rng, 300, &centers, 0.5);
         let (micros, p2m) = grid_micros(&pts, 1.0);
-        let labels = leiden(&micros, 0.05, Objective::Cpm, 1).labels;
+        let labels = leiden(&micros, 0.05, Objective::Cpm, 1, 0.0, 0.0, 2).labels;
         let pred: Vec<usize> = p2m.iter().map(|&m| labels[m]).collect();
         assert!(ari(&pred, &truth) > 0.9);
     }
@@ -411,7 +442,7 @@ mod tests {
     fn leiden_single_feature_is_one_community() {
         let (micros, _) = grid_micros(&[vec![1.0, 2.0]], 1.0);
         assert_eq!(
-            leiden(&micros, 1.0, Objective::Modularity, 1).labels,
+            leiden(&micros, 1.0, Objective::Modularity, 1, 0.0, 0.0, 2).labels,
             vec![0]
         );
     }

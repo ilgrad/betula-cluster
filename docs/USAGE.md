@@ -19,7 +19,7 @@ labels = betula_cluster.fit_predict(X, method="hdbscan", min_samples=10, min_clu
 # hdbscan: label -1 == noise
 ```
 
-Keyword args: `feature ∈ {spherical, diagonal, full, fd}`, `method ∈ {kmeans, gmm, gmm-full, ward, spectral, leiden, leiden-cpm, hdbscan}`,
+Keyword args: `feature ∈ {spherical, diagonal, full, fd}`, `method ∈ {kmeans, gmm, gmm-full, ward, spectral, leiden, leiden-cpm, spherical-kmeans, vmf, hdbscan, scale-space}`,
 `distance ∈ {euclidean, manhattan, ward, average}` (routing measure),
 `absorb ∈ {euclidean, chi2}` (`chi2` = mass-invariant Mahalanobis gate at level `chi2_p` with
 `chi2_scale` = within-cluster variance; fixes the BIRCH size-imbalance bug), `decay` (EWMA factor
@@ -31,7 +31,10 @@ scikit-learn; leave it off for tabular data where magnitude is signal),
 `n_jobs` (parallel shard+merge tree build — `>1` gives ~4–5× on large
 `N`), `threshold`, `branching`, `leaf_cap`, `max_leaves`, `max_iter`, `min_samples`,
 `min_cluster_size`, `resolution` (Leiden γ — granularity for `method="leiden"` / `"leiden-cpm"`, higher
-⇒ more communities), `seed`. `n_clusters=0` ⇒ automatic `k` for every parametric head (BIC for
+⇒ more communities), `covariance_weight` (Leiden β — a log-Euclidean covariance/shape term in the
+affinity, `feature="full"`; `0` = off, the centroid-only default), `tangent_weight` / `tangent_rank`
+(Leiden γ — a Grassmann tangent-subspace term of rank `tangent_rank` for manifold-aware communities,
+`feature="full"`; `0` = off), `seed`. `n_clusters=0` ⇒ automatic `k` for every parametric head (BIC for
 k-means/GMM, dendrogram cut for Ward). `threshold="auto"` (dense only) drops the one knob users most
 often have to guess: a subsample pilot estimates a warm-start absorption radius, so the full fit
 starts near-converged instead of growing the threshold from zero.
@@ -42,10 +45,12 @@ starts near-converged instead of growing the threshold from zero.
 |---|---|---|
 | compact/spherical groups, fastest | `kmeans` | yes |
 | elliptical / correlated / anisotropic, soft assignment | `gmm` (diag) or `gmm-full` | yes (or `0` = BIC) |
+| **L2-normalized embeddings** (CLIP / face / sentence / speaker), cosine geometry | `vmf` (soft) or `spherical-kmeans` (hard) | yes (or `0` = BIC, `vmf`) |
 | a cluster *hierarchy* / merge structure | `ward` | yes (or `0` = dendrogram cut) |
 | **non-convex / manifold** shapes (moons, rings, spirals) | `spectral` | yes (pair with a **small** `threshold`) |
 | **community / graph structure**, unknown count | `leiden` (or `leiden-cpm`) | **no** — count is discovered; tune `resolution` |
 | variable-density clusters **+ noise**, unknown count | `hdbscan` | no |
+| **density peaks**, arbitrary count, no `k` *or* bandwidth to pick | `scale-space` | **no** — scale chosen by mode persistence |
 | topological skeleton / #components / loops | [`mapper()`](FEATURES.md) | no |
 
 `n_clusters=0` auto-selects `k` for the parametric heads; `leiden` / `hdbscan` always discover it

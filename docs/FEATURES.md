@@ -22,14 +22,26 @@ A capability-by-capability reference. For runnable code see [`USAGE.md`](USAGE.m
   **Leiden community detection** (graph clustering, Traag et al. 2019) over the microcluster affinity
   graph — local moving → refinement (each community connected by construction) → seeded aggregation;
   **discovers the community count**, no `k` needed; a `resolution` γ knob with **modularity**
-  (`"leiden"`) or resolution-limit-free **CPM** (`"leiden-cpm"`) objectives; pure Rust, no
-  eigensolver — pair it with a moderate `threshold`, a very fine graph over-splits per modularity's
-  resolution limit), and
+  (`"leiden"`) or resolution-limit-free **CPM** (`"leiden-cpm"`) objectives; pure Rust — pair it with
+  a moderate `threshold`, a very fine graph over-splits per modularity's resolution limit;
+  `covariance_weight > 0` makes the affinity **covariance-aware** via a log-Euclidean shape term
+  (`feature="full"`), so communities agree in both centroid and covariance; `tangent_weight > 0` adds
+  a **Grassmann** tangent-subspace term (GeoBETULA) for manifold-aware communities that separate
+  crossing / adjacent structures),
+  **directional clustering on the unit hypersphere** — hard **spherical k-means**
+  (`"spherical-kmeans"`) and a soft **mixture of von Mises–Fisher** distributions (`"vmf"`, EM with a
+  true posterior and BIC auto-`k`) for L2-normalized embeddings (CLIP / face / sentence / speaker),
+  where cosine — not Euclidean — geometry matters; each leaf keeps its weighted mean so the resultant
+  `R_c = Σ n_i μ_i` is exactly mergeable (BETULA on the sphere) and the concentration `κ`
+  (Banerjee 2005) is estimated without a Bessel library, with input auto-L2-normalized, and
   **HDBSCAN-style density clustering over the CF microclusters** (mass-aware mutual-reachability +
   mass-weighted stability → non-convex clusters and noise, automatic count; an *approximation* of
-  raw-point HDBSCAN over the $M \ll N$ microclusters, not identical to it).
-- **Soft assignment & confidence**: `predict_proba` (true posterior for the GMM heads; a documented
-  centroid-distance softmax *heuristic* for k-means / Ward / spectral / Leiden / HDBSCAN),
+  raw-point HDBSCAN over the $M \ll N$ microclusters, not identical to it), and
+  **scale-space (Morse-persistence) density-mode clustering** (`method="scale-space"` — mean-shift over
+  the microcluster KDE, with the bandwidth *and* the cluster count chosen by **mode persistence** across
+  scale, so no `k` or bandwidth is required; non-convex, arbitrary count).
+- **Soft assignment & confidence**: `predict_proba` (true posterior for the GMM and **vMF** heads; a
+  documented centroid-distance softmax *heuristic* for k-means / Ward / spectral / Leiden / HDBSCAN),
   `assignment_confidence`,
   `microcluster_proba_` (per-microcluster GMM responsibilities, GMM heads only), `export_coreset` (the
   leaves as weighted points), `diagnostics`, `representatives`, `cluster_profile`.
@@ -125,7 +137,7 @@ A capability-by-capability reference. For runnable code see [`USAGE.md`](USAGE.m
 | `kernels` | auto-vectorized distance kernels (inline reductions) |
 | `distance` | D0–D4, radius, Mahalanobis (stable forms) |
 | `tree` | arena CF-tree + auto-rebuild |
-| `clustering` | `kmeans`, `gmm_diagonal`, `gmm_full`, `ward_hac`, `spectral`, `leiden`, `hdbscan` |
+| `clustering` | `kmeans`, `gmm_diagonal`, `gmm_full`, `ward_hac`, `spectral`, `leiden`, `spherical_kmeans`, `movmf`, `scale_space`, `hdbscan` |
 | `model` | end-to-end `Model::fit` / `predict` |
 | `python` | PyO3 bindings: one-shot `fit_predict` + streaming `Betula` estimator |
 

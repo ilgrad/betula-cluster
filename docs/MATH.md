@@ -46,6 +46,54 @@ $$
 with NIW/MAP regularization $\Sigma_k = (\Psi + \dots)/(\nu + N_k + d + 1)$ so a 1-point leaf never yields a
 singular covariance.
 
+## Directional clustering: spherical k-means & von Mises–Fisher
+
+On L2-normalized data every point lies on the unit sphere `S^{d-1}`, where cosine — not Euclidean —
+similarity is the meaningful geometry (CLIP / face / sentence / speaker embeddings). Two heads cluster
+by direction: **spherical k-means** (hard) and a **mixture of von Mises–Fisher** distributions (soft).
+
+**Exact merge on the sphere.** A leaf summarizing points `{xₚ}` on the sphere is reduced to its
+weighted mean `μ_i = (Σ xₚ)/n_i`, whose length `‖μ_i‖ = R̄_i ∈ [0, 1]` is the leaf's *mean resultant
+length* — a direct measure of within-leaf angular concentration. The cluster resultant is
+`R_c = Σ_{i∈c} n_i μ_i = Σ_{p∈c} xₚ`, additive across leaves and independent of how points were
+grouped: the BETULA exact-merge property carries through unchanged. The MLE mean direction is
+`μ̂_c = R_c / ‖R_c‖` and `R̄_c = ‖R_c‖ / N_c`. Keeping `μ_i` **un-normalized** is essential —
+re-normalizing each leaf to a unit direction discards `R̄_i`, makes the compression look artificially
+concentrated, over-estimates `κ`, and fragments the mixture.
+
+**Concentration.** The vMF concentration uses the Banerjee et al. (2005) closed form
+`κ̂ ≈ R̄(d − R̄²)/(1 − R̄²)`, which avoids inverting the Bessel ratio. The normalizer
+`C_d(κ) = κ^{d/2−1} / ((2π)^{d/2} I_{d/2−1}(κ))` still needs `log I_ν(κ)`; we take it from the
+all-positive power series in log-space — pull out `(κ/2)^ν`, accumulate the term ratio
+`(κ/2)² / (m(ν+m))` with an online log-sum-exp — which is stable for large `κ` and needs no Bessel
+library (the crate stays NumPy-only). `κ` is capped for numerical safety.
+
+The EM E-step is the exact expected log-likelihood of a leaf's points under component `c`,
+`n_i·[ln π_c + log C_d(κ_c)] + κ_c · μ_c · R_i` with `R_i = n_i μ_i` the raw resultant, so a
+spread-out leaf contributes proportionally weaker evidence — the directional analogue of the
+full-covariance GMM's within-leaf `−½ tr(Σ_c⁻¹ Σ_i)` correction. `predict_proba` returns this true
+posterior; `n_clusters=0` selects the component count by BIC.
+
+## Geometry-aware graph (GeoBETULA) and scale-space modes
+
+Two heads exploit the geometry *within* each microcluster, on the `M ≪ N` leaves.
+
+**GeoBETULA (`method="leiden"`).** The self-tuning k-NN affinity graph normally uses the centroid
+distance `‖μ_i − μ_j‖²`. Two optional terms make it geometry-aware: a **log-Euclidean** covariance
+term `β·‖logΣ_i − logΣ_j‖²_F` (the SPD-manifold metric, `covariance_weight`) so neighbours agree in
+*shape*, and a **Grassmann** term `γ·d²_Gr(U_i, U_j)` with `d²_Gr = r − ‖U_iᵀ U_j‖²_F` — the
+projection distance between the two rank-`r` principal subspaces `U_i` (top-`r` eigenvectors of `Σ_i`),
+`tangent_weight` — so neighbours agree in *manifold orientation*. This separates crossing or adjacent
+manifolds that share a centroid neighbourhood but differ in local tangent. Both reuse the in-house
+Jacobi eigensolver; both default to `0` (plain centroid affinity).
+
+**Scale-space modes (`method="scale-space"`).** Treat the leaves as a weighted sample and take the
+modes of the KDE `ρ_h(x) = Σ_j n_j exp(−‖x−μ_j‖²/2h²)` (found by mean-shift) as clusters. Increasing
+the bandwidth `h` merges modes — a one-parameter Morse filtration. Rather than fix `h` (or `k`), the
+head sweeps `h` log-spaced and reports the labelling at the **most persistent** mode count: the widest
+plateau of the "number of modes vs `log h`" curve, with the trivial fully-merged tail winning only when
+no multi-mode structure is at least as persistent. This is parameter-free and non-convex-aware.
+
 ## Other verified improvements
 
 - **Distances `D0`–`D4`** are the BIRCH measures re-derived on $(n, \mu, S)$ (Maxima-verified

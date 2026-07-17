@@ -161,6 +161,36 @@ pub fn jacobi_eigen<R: Real>(matrix: &[Vec<R>]) -> (Vec<R>, Vec<Vec<R>>) {
     (eig, v)
 }
 
+/// Matrix logarithm of a symmetric positive-(semi)definite matrix `A`, via its symmetric
+/// eigendecomposition: `log A = U · diag(ln max(λ_k, floor)) · Uᵀ`. Eigenvalues are floored at
+/// `floor` before the log so a near-singular (ridge-regularized) covariance stays finite — the
+/// log-Euclidean metric needs strictly positive eigenvalues. The result is symmetric.
+#[allow(clippy::needless_range_loop)] // symmetric recomposition reads clearest with (i, j, k) indices
+pub fn matrix_log<R: Real>(a: &[Vec<R>], floor: R) -> Vec<Vec<R>> {
+    let n = a.len();
+    let (eig, u) = jacobi_eigen(a);
+    let logl: Vec<R> = eig.iter().map(|&l| l.max(floor).ln()).collect();
+    let mut out = vec![vec![R::zero(); n]; n];
+    for i in 0..n {
+        for j in 0..n {
+            let mut s = R::zero();
+            for k in 0..n {
+                s = s + u[i][k] * logl[k] * u[j][k];
+            }
+            out[i][j] = s;
+        }
+    }
+    out
+}
+
+/// Squared Frobenius distance `‖A − B‖²_F = Σ_{ij} (A_ij − B_ij)²` between two same-shape matrices.
+pub fn frobenius_sq_diff<R: Real>(a: &[Vec<R>], b: &[Vec<R>]) -> R {
+    a.iter()
+        .zip(b)
+        .flat_map(|(ar, br)| ar.iter().zip(br).map(|(&x, &y)| (x - y) * (x - y)))
+        .fold(R::zero(), |acc, v| acc + v)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -188,6 +218,36 @@ mod tests {
         assert!(close(logdet_from_chol(&l), 8.0_f64.ln())); // det = 4*3 - 2*2 = 8
                                                             // A⁻¹ = 1/8 [[3,-2],[-2,4]]; δ=[1,1] -> δᵀA⁻¹δ = (3-2-2+4)/8 = 3/8
         assert!(close(mahalanobis_sq_from_chol(&l, &[1.0, 1.0]), 3.0 / 8.0));
+    }
+
+    #[test]
+    fn matrix_log_inverts_matrix_exp() {
+        // exp(log A) == A for an SPD A: eigendecompose log A, exponentiate its eigenvalues, recompose.
+        let a = vec![vec![4.0, 1.0], vec![1.0, 3.0]];
+        let la = matrix_log(&a, 1e-12);
+        assert!(close(la[0][1], la[1][0]), "log A must stay symmetric");
+        let (eig, u) = jacobi_eigen(&la);
+        let e: Vec<f64> = eig.iter().map(|&l| l.exp()).collect();
+        for i in 0..2 {
+            for j in 0..2 {
+                let recon: f64 = (0..2).map(|k| u[i][k] * e[k] * u[j][k]).sum();
+                assert!(close(recon, a[i][j]), "exp(log A) != A at ({i},{j})");
+            }
+        }
+    }
+
+    #[test]
+    fn matrix_log_of_identity_is_zero() {
+        let l = matrix_log(&[vec![1.0, 0.0], vec![0.0, 1.0]], 1e-12);
+        assert!(l.iter().flatten().all(|&v| close(v, 0.0)));
+    }
+
+    #[test]
+    fn frobenius_sq_diff_matches_manual() {
+        // diffs 1, 0, -2, 0 → 1 + 4 = 5.
+        let a = vec![vec![1.0, 2.0], vec![3.0, 4.0]];
+        let b = vec![vec![0.0, 2.0], vec![5.0, 4.0]];
+        assert!(close(frobenius_sq_diff(&a, &b), 5.0));
     }
 
     #[test]

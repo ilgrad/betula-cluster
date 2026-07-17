@@ -48,6 +48,10 @@ with peak RSS sampled from `/proc/self/statm`. Full methodology, every metric, a
 
 ## Why
 
+**Who it's for:** practitioners clustering large embedding or tabular datasets — in batch or as a
+stream — who need bounded memory *and* the numerical stability that classic BIRCH and in-core
+scikit-learn don't provide together.
+
 Clustering libraries tend to either not scale (full GMM/HDBSCAN on raw points), lose precision
 (classic BIRCH computes variance as `SS − ‖LS‖²/n`, which catastrophically cancels far from the
 origin), or blow up in memory (BIRCH-family subcluster explosion in high dimensions). betula-cluster
@@ -76,6 +80,18 @@ algorithm with no compression: at small `N` the two-phase overhead removes the s
 HDBSCAN is stronger on overlapping density. betula-cluster trades a CF-compression approximation for
 scale and bounded memory — if you need neither, a plain in-core clusterer is simpler.
 
+## Installation
+
+```bash
+pip install betula-cluster            # prebuilt abi3 wheels, CPython 3.11–3.14
+pip install 'betula-cluster[tune]'    # + Optuna backend for memory-aware tuning
+```
+
+NumPy is the only runtime dependency — no SciPy, LAPACK, or BLAS. Prebuilt wheels ship for Linux
+(x86-64 + aarch64), macOS (Intel + Apple Silicon), and Windows (x64); one abi3 wheel covers every
+supported Python. Building from source needs a Rust toolchain — `maturin develop --release` (or
+`pip install .`) in a clone.
+
 ## Quick start
 
 ```python
@@ -89,6 +105,7 @@ labels = betula_cluster.fit_predict(X, n_clusters=0, feature="full", method="gmm
 labels = betula_cluster.fit_predict(X, n_clusters=8, method="spectral", threshold=0.0)   # non-convex / manifold
 labels = betula_cluster.fit_predict(X, method="leiden", threshold=0.4)                    # graph communities; count auto-discovered
 labels = betula_cluster.fit_predict(X, method="hdbscan", min_cluster_size=25)            # HDBSCAN-CF; -1 = noise
+labels = betula_cluster.fit_predict(X, n_clusters=10, method="vmf")                       # directional / cosine (input auto-L2-normalized)
 ```
 
 Streaming / out-of-core — feed chunks, finalize, predict; memory stays bounded by `max_leaves`:
@@ -124,8 +141,10 @@ snapshots / active-learning batches, the Rust API, and the CLI — all in the
 **Stable core** — production-ready:
 
 - **Clustering heads** — weighted k-means (Hamerly), GMM (diagonal & full covariance, BIC auto-`k`),
-  exact Ward HAC, **spectral** (non-convex / manifold), and **Leiden** graph community detection
-  (auto community count, `resolution` / CPM), all over the numerically stable BETULA CF-tree.
+  exact Ward HAC, **spectral** (non-convex / manifold), **Leiden** graph community detection
+  (auto community count, `resolution` / CPM), and **directional** spherical k-means / von
+  Mises–Fisher mixtures for L2-normalized embeddings (cosine geometry), all over the numerically
+  stable BETULA CF-tree.
 - **Streaming** — `partial_fit` at bounded memory (`max_leaves` / `memory_budget_mb`), EWMA `decay`.
 - **scikit-learn API** — `fit` / `predict` / `fit_predict`, `get_params` / `set_params` (works with
   `Pipeline` / `clone` / `GridSearchCV`); typed abi3 wheel, `save` / `load` + pickle, reusable Rust core.
@@ -137,8 +156,9 @@ snapshots / active-learning batches, the Rust API, and the CLI — all in the
 
 **Experimental / evolving** — useful today, API may still move:
 
-- **Density & topology** — HDBSCAN-CF (density over microclusters) and a Mapper topological skeleton
-  (`mapper` / `mapper_stability`).
+- **Density & topology** — HDBSCAN-CF (density over microclusters), **scale-space** Morse-persistence
+  density-mode clustering (`method="scale-space"` — no `k`, no bandwidth), and a Mapper topological
+  skeleton (`mapper` / `mapper_stability`).
 - **More heads & data** — `DenStream` / `DbStream` evolving-stream density, mergeable `KllSketch` /
   `DdSketch` quantiles, `scipy.sparse` (`O(nnz)`, never densified), mixed numeric+categorical
   (`KPrototypes`), COP-KMeans constraints, robust (Huber) insertion, drift snapshots, dependency-free CLI.
@@ -199,6 +219,30 @@ Honest scope — inherent to a CF-compression + streaming design, not bugs:
 5. **The expected-log GMM optimizes a CF-level objective**, not pointwise EM (a deliberate, measured
    choice for coarse CFs).
 6. **Frequent-Directions is an approximate low-rank covariance** (exact only up to its rank `ℓ`).
+
+## How to cite
+
+If betula-cluster supports your research, please cite **the software** and **the underlying
+algorithms** it implements. Machine-readable metadata (including the method references) lives in
+[`CITATION.cff`](https://github.com/ilgrad/betula-cluster/blob/main/CITATION.cff) — GitHub's
+*"Cite this repository"* renders it directly.
+
+```bibtex
+@software{gradina_betula_cluster,
+  author  = {Gradina, Ilia},
+  title   = {betula-cluster: numerically stable {BETULA} clustering with a {Rust} core},
+  year    = {2026},
+  version = {0.1.5},
+  license = {MIT},
+  url     = {https://github.com/ilgrad/betula-cluster}
+}
+```
+
+betula-cluster is an independent implementation (with extensions); the algorithms are due to
+**BETULA** — Lang & Schubert, *Information Systems* (2022),
+[doi:10.1016/j.is.2021.101918](https://doi.org/10.1016/j.is.2021.101918) — building on **BIRCH** —
+Zhang, Ramakrishnan & Livny, *SIGMOD* (1996),
+[doi:10.1145/233269.233324](https://doi.org/10.1145/233269.233324).
 
 ## License
 

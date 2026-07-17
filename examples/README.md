@@ -19,6 +19,7 @@ source (the diff-friendly form); the `.ipynb` is the rendered, executed output y
 | [`11_soft_assignment_coreset_diagnostics`](11_soft_assignment_coreset_diagnostics.ipynb) | `predict_proba` / `assignment_confidence`; `export_coreset` (refit anything); `diagnostics`, `cluster_profile`, `representatives` |
 | [`12_drift_robust_memory`](12_drift_robust_memory.ipynb) | `snapshot` + `compare_snapshots` drift; `active_learning_batch`; robust `huber_k`; `memory_budget_mb` |
 | [`13_graph_clustering`](13_graph_clustering.ipynb) | graph & manifold heads — `method="spectral"` on moons/spirals, `method="leiden"` community detection (auto-count), and `consensus` per-point stability maps |
+| [`14_directional_embeddings`](14_directional_embeddings.ipynb) | **directional** heads for L2-normalized embeddings — `method="vmf"` (von Mises–Fisher mixture: soft posterior, concentration `κ`, BIC auto-`k`) and `method="spherical-kmeans"`; why direction beats Euclidean distance when magnitude varies |
 
 ## Use cases (concrete, end-to-end scenarios)
 

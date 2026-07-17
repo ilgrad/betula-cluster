@@ -10,7 +10,9 @@ pub mod hdbscan;
 pub mod kmeans;
 pub mod kprototypes;
 pub(crate) mod rng;
+pub mod scalespace;
 pub mod spectral;
+pub mod vmf;
 pub mod ward;
 
 pub use community::{leiden, Community, Objective};
@@ -18,7 +20,9 @@ pub use gmm::{gmm_diagonal, gmm_diagonal_auto, gmm_full, gmm_full_auto, Gmm, Gmm
 pub use hdbscan::{hdbscan, Hdbscan};
 pub use kmeans::{cop_kmeans, kmeans, xmeans, ConstraintError, KMeans};
 pub use kprototypes::{kprototypes, nearest_micro, summarize_mixed, MixedCf};
+pub use scalespace::{scale_space, ScaleSpace};
 pub use spectral::{spectral, Spectral};
+pub use vmf::{movmf, movmf_auto, spherical_kmeans, Movmf, SphericalKMeans};
 pub use ward::{ward_hac, ward_hac_auto, WardHac};
 
 #[cfg(test)]

@@ -94,6 +94,91 @@ def test_auto_k_selects_true_count_when_n_clusters_zero(blobs, feature, method):
     assert ari(labels, y) > 0.95
 
 
+# ── directional heads (spherical-kmeans / vMF) ───────────────────────────────────────────────────
+
+
+@pytest.fixture(scope="module")
+def sphere_blobs():
+    """Three vMF-like clusters on the unit hypersphere; returns (X unit-norm float64, y)."""
+    rng = np.random.default_rng(2)
+    d, k, per = 16, 3, 500
+    centers = rng.normal(size=(k, d))
+    centers /= np.linalg.norm(centers, axis=1, keepdims=True)
+    xs, ys = [], []
+    for c, ctr in enumerate(centers):
+        pts = ctr + 0.25 * rng.normal(size=(per, d))
+        pts /= np.linalg.norm(pts, axis=1, keepdims=True)
+        xs.append(pts)
+        ys += [c] * per
+    return np.vstack(xs).astype(np.float64), np.array(ys)
+
+
+@pytest.mark.parametrize("method", ["spherical-kmeans", "vmf"])
+def test_directional_recovers_sphere_blobs(sphere_blobs, method):
+    x, y = sphere_blobs
+    labels = betula_cluster.fit_predict(x, 3, method=method, threshold=0.05, max_leaves=300, seed=1)
+    assert ari(labels, y) > 0.9
+
+
+def test_vmf_auto_k_selects_true_count(sphere_blobs):
+    x, y = sphere_blobs
+    labels = betula_cluster.fit_predict(
+        x, n_clusters=0, method="vmf", threshold=0.05, max_leaves=300, seed=1
+    )
+    assert n_labels(labels) == 3
+    assert ari(labels, y) > 0.9
+
+
+def test_vmf_predict_proba_is_true_posterior(sphere_blobs):
+    x, y = sphere_blobs
+    est = betula_cluster.Betula(
+        method="vmf", n_clusters=3, threshold=0.05, max_leaves=300, seed=1
+    ).fit(x)
+    proba = est.predict_proba(x)
+    assert proba.shape == (len(x), 3)
+    assert np.allclose(proba.sum(axis=1), 1.0, atol=1e-6)
+    assert ari(proba.argmax(axis=1), y) > 0.9
+
+
+def test_directional_methods_force_normalization(sphere_blobs):
+    x, y = sphere_blobs
+    est = betula_cluster.Betula(method="vmf", n_clusters=3, threshold=0.05, max_leaves=300, seed=1)
+    # get_params stays verbatim (normalize left False) so sklearn clone / set_params round-trip…
+    assert est.get_params()["normalize"] is False
+    # …yet non-unit input still clusters correctly: the engine normalizes for directional heads.
+    labels = est.fit(x * 9.0).predict(x * 9.0)
+    assert ari(labels, y) > 0.9
+
+
+def test_directional_auto_threshold_pilots_on_normalized_data():
+    rng = np.random.default_rng(5)
+    d, k, per = 8, 3, 1800  # 5400 rows > the auto-threshold pilot cap (4000) → the pilot fires
+    centers = rng.normal(size=(k, d))
+    centers /= np.linalg.norm(centers, axis=1, keepdims=True)
+    xs, ys = [], []
+    for c, ctr in enumerate(centers):
+        pts = ctr + 0.25 * rng.normal(size=(per, d))
+        pts /= np.linalg.norm(pts, axis=1, keepdims=True)
+        xs.append(pts)
+        ys += [c] * per
+    x, y = np.vstack(xs), np.array(ys)
+    est = betula_cluster.Betula(
+        method="vmf", n_clusters=3, threshold="auto", max_leaves=100, seed=1
+    )
+    labels = est.fit_predict(x)
+    assert ari(labels, y) > 0.85
+
+
+def test_scale_space_recovers_blobs_without_k(blobs):
+    # scale-space picks the number of density modes by persistence — no n_clusters needed.
+    x, y = blobs
+    labels = betula_cluster.fit_predict(
+        x, method="scale-space", threshold=0.05, max_leaves=300, seed=1
+    )
+    assert n_labels(labels) == 4
+    assert ari(labels, y) > 0.9
+
+
 def test_spectral_separates_moons_where_kmeans_fails(moons):
     # The non-convex arms need a fine microcluster resolution for the affinity graph to follow the
     # manifold, so pair spectral with a small threshold (many leaves).
@@ -124,6 +209,46 @@ def test_leiden_resolution_controls_granularity(blobs):
     coarse = n_labels(betula_cluster.fit_predict(x, resolution=1.0, **kw))
     fine = n_labels(betula_cluster.fit_predict(x, resolution=4.0, **kw))
     assert fine > coarse  # higher γ ⇒ more, smaller communities
+
+
+def test_leiden_covariance_aware_recovers_blobs(blobs):
+    # covariance_weight adds a log-Euclidean shape term to the Leiden affinity (feature="full");
+    # on well-separated blobs it must recover the communities and not degrade them.
+    x, y = blobs
+    est = betula_cluster.Betula(
+        n_clusters=99,
+        feature="full",
+        method="leiden",
+        covariance_weight=0.3,
+        threshold=0.3,
+        max_leaves=400,
+        seed=1,
+    )
+    labels = est.fit_predict(x)
+    assert est.get_params()["covariance_weight"] == 0.3  # verbatim (sklearn clone/set_params)
+    assert n_labels(labels) >= 4  # recovers the structure (the shape term may split a little finer)
+    assert ari(labels, y) > 0.85
+
+
+def test_leiden_tangent_aware_recovers_blobs(blobs):
+    # tangent_weight adds a Grassmann subspace term (GeoBETULA); on well-separated blobs it must
+    # still recover the communities. get_params stays verbatim for sklearn clone / set_params.
+    x, y = blobs
+    est = betula_cluster.Betula(
+        n_clusters=99,
+        feature="full",
+        method="leiden",
+        tangent_weight=0.5,
+        tangent_rank=1,
+        threshold=0.3,
+        max_leaves=400,
+        seed=1,
+    )
+    labels = est.fit_predict(x)
+    assert est.get_params()["tangent_weight"] == 0.5
+    assert est.get_params()["tangent_rank"] == 1
+    assert n_labels(labels) >= 4
+    assert ari(labels, y) > 0.85
 
 
 def test_float32_reproduces_float64_on_normal_range(blobs):
