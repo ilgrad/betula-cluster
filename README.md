@@ -10,7 +10,8 @@
 > **Rust-powered, memory-bounded clustering for large embeddings & tabular streams.** It compresses raw
 > data into numerically stable **BETULA** microclusters, then runs the clustering head on the
 > *compressed* representation — k-means · GMM (diagonal & full) · Ward · **spectral** · **Leiden**
-> community detection · HDBSCAN-CF · Mapper — so cost scales with the microcluster count, not `N`.
+> community detection · **directional** (von Mises–Fisher / spherical) · HDBSCAN-CF · **scale-space**
+> modes · Mapper — so cost scales with the microcluster count, not `N`.
 > Streaming `partial_fit`, a scikit-learn API, from-scratch
 > **Rust** core + **PyO3**, no LAPACK or SciPy at runtime.
 
@@ -18,7 +19,7 @@
 pip install betula-cluster
 ```
 
-**Verified:** a **190-case** Python suite at **100% wrapper coverage** + **158** Rust tests,
+**Verified:** a **199-case** Python suite at **100% wrapper coverage** + **176** Rust tests,
 `clippy -D warnings` + `fmt` clean across all feature sets, CI on CPython 3.11–3.14 (one abi3 wheel).
 
 ## At a glance — honest benchmarks
@@ -200,7 +201,7 @@ And five **end-to-end use cases** (each scored against ground truth):
 - [**Benchmarks**](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md) — methodology, every metric, all tables, honest wins & losses.
 - [**Design**](https://github.com/ilgrad/betula-cluster/blob/main/DESIGN.md) — internal design, invariants, and testing strategy.
 
-Verified: **158** Rust unit/integration tests + a **190-case** Python suite at **100%** wrapper
+Verified: **176** Rust unit/integration tests + a **199-case** Python suite at **100%** wrapper
 coverage (Rust ≥95%, CI-enforced), `clippy -D warnings` + `fmt` clean across all feature sets, on
 Python 3.11–3.14 (single abi3 wheel).
 
@@ -246,4 +247,4 @@ Zhang, Ramakrishnan & Livny, *SIGMOD* (1996),
 
 ## License
 
-MIT.
+MIT © Ilia Gradina
