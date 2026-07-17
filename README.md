@@ -143,7 +143,8 @@ snapshots / active-learning batches, the Rust API, and the CLI — all in the
 
 - **Clustering heads** — weighted k-means (Hamerly), GMM (diagonal & full covariance, BIC auto-`k`),
   exact Ward HAC, **spectral** (non-convex / manifold), **Leiden** graph community detection
-  (auto community count, `resolution` / CPM), and **directional** spherical k-means / von
+  (auto community count, `resolution` / CPM, optional covariance/manifold-aware affinity), and
+  **directional** spherical k-means / von
   Mises–Fisher mixtures for L2-normalized embeddings (cosine geometry), all over the numerically
   stable BETULA CF-tree.
 - **Streaming** — `partial_fit` at bounded memory (`max_leaves` / `memory_budget_mb`), EWMA `decay`.

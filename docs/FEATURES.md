@@ -12,8 +12,10 @@ A capability-by-capability reference. For runnable code see [`USAGE.md`](USAGE.m
   labeling and rebuild-threshold estimation (deterministic — bit-identical labels to the serial
   path; `parallel` feature, on by default, `--no-default-features` for a serial build).
 - Global clustering heads: weighted **k-means** (k-means++ + exact Lloyd), **diagonal &
-  full-covariance GMM-EM** (expected-log E-step + NIW/MAP regularization, full covariance captures
-  rotated/correlated clusters, **BIC auto-selects the component count** when `n_clusters=0`),
+  full-covariance GMM-EM** (expected-log E-step + NIW/MAP regularization + a per-dimension covariance
+  floor that keeps components well-conditioned in high dimensions — no starved-component collapse,
+  full covariance captures rotated/correlated clusters, **BIC auto-selects the component count** when
+  `n_clusters=0`),
   **Ward agglomerative HAC** (exact, via nearest-neighbour chain; dendrogram-cut auto-k),
   **spectral clustering** (self-tuning k-NN affinity + normalized Laplacian embedding via the
   in-house Jacobi eigensolver, k-means-landmark-reduced above 256 microclusters — separates

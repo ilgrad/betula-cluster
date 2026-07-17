@@ -46,6 +46,17 @@ $$
 with NIW/MAP regularization $\Sigma_k = (\Psi + \dots)/(\nu + N_k + d + 1)$ so a 1-point leaf never yields a
 singular covariance.
 
+**High-dimensional floor.** With few effective leaves per component, $\Sigma_k$ can still go
+near-singular along a low-variance direction, which makes the $-\tfrac12\operatorname{tr}(\Sigma_k^{-1}\Sigma_i)$
+correction over-confident and *starves* the component — its responsibility collapses to zero and the
+recovered count drops below `k`. A per-dimension floor on each component's covariance **diagonal** at
+$10^{-3}\,(\Sigma_\text{global})_{dd}$ — relative to the global *per-dimension* variance (not the mean
+scale, which between-cluster separation inflates), with off-diagonals / orientation left untouched —
+keeps every $\Sigma_k$ well-conditioned. On 64-dimensional `digits` it holds all 10 components (an
+unfloored fit starves one to 9) and raises full-covariance ARI $0.39 \to 0.51$, past scikit-learn's
+`GaussianMixture` (0.40), while low-dimensional and rotated-anisotropic fits are unchanged. The
+diagonal GMM floors its per-dimension variance the same way ($10^{-3}\,(\Sigma_\text{global})_{dd}$).
+
 ## Directional clustering: spherical k-means & von Mises–Fisher
 
 On L2-normalized data every point lies on the unit sphere `S^{d-1}`, where cosine — not Euclidean —
