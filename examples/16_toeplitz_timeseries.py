@@ -170,12 +170,79 @@ plt.show()
 pd.DataFrame(curve, index=[f"d={dd}" for dd in ds]).round(3)
 
 # %% [markdown]
+# ## When AR is not enough — `method="gmm-toeplitz-full"`
+#
+# An AR(w) precision is **banded**: it can only express autocovariance up to lag `w`. Some signals carry
+# their structure *beyond* any low order — e.g. a **single echo** `x_t = e_t + 0.7·e_{t−K}` at a long lag
+# `K`. There `gmm-toeplitz` (capped at `w_max = 10`) is structurally blind, but the general
+# **`gmm-toeplitz-full`** head — a dense positive-definite Toeplitz covariance built from the *full*
+# (biased) autocovariance — captures it. It costs `O(d³)` per component instead of `O(d·w)`, so it is the
+# opt-in rung: reach for it only when the structure lives beyond a low AR order.
+
+
+# %%
+def echo_windows(n, d, lag, rng):
+    """Single-echo MA `x_t = e_t + 0.7·e_{t−lag}`: autocovariance nonzero only at lags 0 and `lag`."""
+    out = np.empty((n, d))
+    for k in range(n):
+        e = rng.normal(size=d + lag)
+        win = e[lag:] + 0.7 * e[:d]
+        out[k] = (win - win.mean()) / win.std()
+    return out
+
+
+ECHO = (16, 28, 40)  # echo lags, all beyond w_max=10
+
+
+def echo_mixture(d, per, seed):
+    rng = np.random.default_rng(seed)
+    xs = [echo_windows(per, d, k, rng) for k in ECHO]
+    y = np.concatenate([np.full(per, c) for c in range(len(ECHO))])
+    return np.ascontiguousarray(np.vstack(xs), dtype=np.float64), y
+
+
+de = 96
+Xe, ye = echo_mixture(de, per=30, seed=1)
+echo_rows = [
+    ("betula gmm-toeplitz-full", betula_cluster.fit_predict(Xe, 3, method="gmm-toeplitz-full", **kw)),
+    ("betula gmm-toeplitz (AR)", betula_cluster.fit_predict(Xe, 3, method="gmm-toeplitz", **kw)),
+    (
+        "betula gmm (diag)",
+        betula_cluster.fit_predict(Xe, 3, method="gmm", feature="diagonal", threshold=0.0, seed=1),
+    ),
+]
+etbl = pd.DataFrame(
+    {
+        "method": [r[0] for r in echo_rows],
+        "ARI": [round(ari(ye, np.asarray(r[1])), 3) for r in echo_rows],
+    }
+).set_index("method")
+
+fig, ax = plt.subplots(figsize=(6.4, 2.6))
+ax.barh(range(len(etbl)), etbl["ARI"], color=["#e76f51", "#bbb", "#bbb"])
+ax.set(
+    yticks=range(len(etbl)),
+    xlabel="ARI",
+    xlim=(min(0, etbl["ARI"].min()) - 0.05, 1.05),
+    title=f"single-echo mixture, lags {ECHO} > w_max=10  (d={de})",
+)
+ax.set_yticklabels(etbl.index)
+ax.invert_yaxis()
+for i, v in enumerate(etbl["ARI"]):
+    ax.text(v + 0.02, i, f"{v:.2f}", va="center", fontsize=8)
+fig.tight_layout()
+plt.show()
+etbl
+
+# %% [markdown]
 # **Takeaway.** For **ordered, stationary** signals — time-series windows, trajectories, sensor
-# waveforms — the neighbour correlation is the signal, and `method="gmm-toeplitz"` is the head that
-# models it: an AR(w) / Toeplitz precision (positive-definite by construction, `O(w)` parameters, order
-# by BIC) that stays well-posed exactly where diagonal is blind and full covariance is singular. Use
-# `feature="spherical"` or `"diagonal"`; it runs over the CF microclusters like every other head, so
-# it inherits betula's scale and bounded memory. It is **for ordered coordinates only** — on generic
+# waveforms — the neighbour correlation is the signal, and the Toeplitz heads are the ones that model
+# it. **`method="gmm-toeplitz"`** fits an AR(w) / Toeplitz precision (positive-definite by construction,
+# `O(w)` parameters, order by BIC) that stays well-posed exactly where diagonal is blind and full
+# covariance is singular; **`method="gmm-toeplitz-full"`** drops the AR order cap for a general
+# positive-definite Toeplitz covariance (`O(d³)`) when the structure lives beyond a low order (the echo
+# above). Use `feature="spherical"` or `"diagonal"`; both run over the CF microclusters like every other
+# head, so they inherit betula's scale and bounded memory. **For ordered coordinates only** — on generic
 # embeddings a coordinate permutation would destroy the Toeplitz structure, so reach for `gmm` /
 # `gmm-full` there. See the [Usage guide](../docs/USAGE.md) and
 # [`docs/MATH.md`](../docs/MATH.md#toeplitz--ar-covariance-for-stationary-signals).

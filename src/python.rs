@@ -79,6 +79,7 @@ fn parse_method(
         "spherical-kmeans" => Ok(Kind::Parametric(Method::SphericalKMeans)),
         "vmf" => Ok(Kind::Parametric(Method::Movmf)),
         "gmm-toeplitz" => Ok(Kind::Parametric(Method::GmmToeplitz)),
+        "gmm-toeplitz-full" => Ok(Kind::Parametric(Method::GmmToeplitzFull)),
         "hdbscan" => Ok(Kind::Hdbscan {
             min_samples,
             min_cluster_size,
@@ -86,7 +87,8 @@ fn parse_method(
         "scale-space" => Ok(Kind::ScaleSpace),
         _ => Err(PyValueError::new_err(
             "method must be 'kmeans', 'gmm', 'gmm-full', 'ward', 'spectral', 'leiden', \
-             'leiden-cpm', 'spherical-kmeans', 'vmf', 'gmm-toeplitz', 'hdbscan' or 'scale-space'",
+             'leiden-cpm', 'spherical-kmeans', 'vmf', 'gmm-toeplitz', 'gmm-toeplitz-full', \
+             'hdbscan' or 'scale-space'",
         )),
     }
 }
@@ -1702,7 +1704,7 @@ impl Betula {
     fn microcluster_proba_<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray2<f64>>> {
         let (flat, k) = self.proba.as_ref().ok_or_else(|| {
             PyValueError::new_err(
-                "predict_proba posterior is only available after fit with method='gmm', 'gmm-full', 'vmf' or 'gmm-toeplitz'",
+                "predict_proba posterior is only available after fit with method='gmm', 'gmm-full', 'vmf', 'gmm-toeplitz' or 'gmm-toeplitz-full'",
             )
         })?;
         let rows = flat.len().checked_div(*k).unwrap_or(0);

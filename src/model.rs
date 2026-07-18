@@ -2,8 +2,8 @@
 
 use crate::clustering::{
     gmm_diagonal, gmm_diagonal_auto, gmm_full, gmm_full_auto, gmm_toeplitz, gmm_toeplitz_auto,
-    kmeans, leiden, movmf, movmf_auto, spectral, spherical_kmeans, ward_hac, ward_hac_auto, xmeans,
-    Objective,
+    gmm_toeplitz_full, gmm_toeplitz_full_auto, kmeans, leiden, movmf, movmf_auto, spectral,
+    spherical_kmeans, ward_hac, ward_hac_auto, xmeans, Objective,
 };
 use crate::distance::CFDistance;
 use crate::feature::ClusterFeature;
@@ -46,6 +46,9 @@ pub enum Method {
     /// AR / Toeplitz-structured GMM for ordered, wide-sense-stationary signals (time-series windows,
     /// trajectories). BIC auto-`k` when `k == 0`; use `feature="spherical"` or `"diagonal"`.
     GmmToeplitz,
+    /// General (non-AR) positive-definite Toeplitz-covariance GMM for ordered stationary signals whose
+    /// autocovariance a low-order AR cannot capture. BIC auto-`k` when `k == 0`.
+    GmmToeplitzFull,
 }
 
 /// A fitted model: a CF-tree plus a cluster label per leaf entry. A point is labelled by routing
@@ -154,6 +157,12 @@ pub(crate) fn cluster_leaves<R: Real, C: ClusterFeature<R>>(
             gmm_toeplitz_auto(features, 1, auto_hi, max_iter, seed).labels
         }
         Method::GmmToeplitz => gmm_toeplitz(features, k.min(nlv).max(1), max_iter, seed).labels,
+        Method::GmmToeplitzFull if k == 0 => {
+            gmm_toeplitz_full_auto(features, 1, auto_hi, max_iter, seed).labels
+        }
+        Method::GmmToeplitzFull => {
+            gmm_toeplitz_full(features, k.min(nlv).max(1), max_iter, seed).labels
+        }
     }
 }
 
@@ -217,6 +226,16 @@ pub(crate) fn cluster_leaves_proba<R: Real, C: ClusterFeature<R>>(
         }
         Method::GmmToeplitz => {
             let g = gmm_toeplitz(features, k.min(nlv).max(1), max_iter, seed);
+            let p = flatten(&g.resp);
+            (g.labels, Some(p))
+        }
+        Method::GmmToeplitzFull if k == 0 => {
+            let g = gmm_toeplitz_full_auto(features, 1, auto_hi, max_iter, seed);
+            let p = flatten(&g.resp);
+            (g.labels, Some(p))
+        }
+        Method::GmmToeplitzFull => {
+            let g = gmm_toeplitz_full(features, k.min(nlv).max(1), max_iter, seed);
             let p = flatten(&g.resp);
             (g.labels, Some(p))
         }
@@ -304,6 +323,7 @@ mod tests {
             Method::Gmm,
             Method::GmmFull,
             Method::GmmToeplitz,
+            Method::GmmToeplitzFull,
             Method::Ward,
             Method::Spectral,
             Method::Leiden {

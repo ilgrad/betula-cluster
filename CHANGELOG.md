@@ -4,6 +4,27 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] — 2026-07-18
+
+### Added
+- `method="gmm-toeplitz-full"` — **general (non-AR) positive-definite Toeplitz-covariance GMM** for
+  ordered wide-sense-stationary signals whose autocovariance a low-order AR cannot capture (e.g. a
+  long-lag echo / narrowband structure beyond the AR order). Each component covariance is the dense
+  Toeplitz matrix built from the **biased (periodogram-consistent) autocovariance** — positive-
+  semidefinite by construction, made strictly positive-definite by the within-leaf variance plus a
+  small ridge — factored by Cholesky for an exact multivariate-Gaussian E-step. `O(d²)` parameters,
+  `O(d³)` per component; BIC auto-`k` at `n_clusters=0`; a true posterior via `predict_proba`. This is
+  the general (non-AR) rung of the Toeplitz ladder recorded in
+  [`docs/adr/001-gmm-toeplitz.md`](docs/adr/001-gmm-toeplitz.md). On a long-lag-echo mixture (echo lag
+  `K ∈ {16, 28, 40}`, all beyond the AR order) it recovers the components (ARI 0.70 → 0.97 as the window
+  grows) where the banded `gmm-toeplitz` sits at chance; on AR-generated signals the two match
+  (`bench/toeplitz_ar_mixture.py`).
+
+### Changed
+- `gmm-toeplitz`: raised the internal AR-order cap `w_max` 6 → 10. BIC still selects the smallest
+  sufficient order (easy signals are bit-for-bit unchanged); higher-order / MA-like signals gain
+  headroom before the general `gmm-toeplitz-full` head is needed.
+
 ## [0.2.0] — 2026-07-18
 
 ### Added

@@ -34,7 +34,7 @@ leaf's own spread and **washes out components on a coarse CF-tree**. betula-clus
 **expected log-likelihood** responsibility (measured to give higher ARI — `research/RESULTS-estep.md`):
 
 $$
-\log r_{ik} = \log \pi_k + \log \mathcal{N}(\mu_i \mid \mu_k, \Sigma_k) - \tfrac{1}{2}\operatorname{tr}(\Sigma_k^{-1}\Sigma_i) \qquad \text{(then log-sum-exp normalized)}
+\log r_{ik} = \log \pi_k + \log \mathcal{N}(\mu_i \mid \mu_k, \Sigma_k) - \tfrac{1}{2}\mathrm{tr}(\Sigma_k^{-1}\Sigma_i) \qquad \text{(then log-sum-exp normalized)}
 $$
 
 The M-step folds the within-leaf scatter back in, so the fitted components stay exact:
@@ -47,7 +47,7 @@ with NIW/MAP regularization $\Sigma_k = (\Psi + \dots)/(\nu + N_k + d + 1)$ so a
 singular covariance.
 
 **High-dimensional floor.** With few effective leaves per component, $\Sigma_k$ can still go
-near-singular along a low-variance direction, which makes the $-\tfrac12\operatorname{tr}(\Sigma_k^{-1}\Sigma_i)$
+near-singular along a low-variance direction, which makes the $-\tfrac12\mathrm{tr}(\Sigma_k^{-1}\Sigma_i)$
 correction over-confident and *starves* the component — its responsibility collapses to zero and the
 recovered count drops below `k`. A per-dimension floor on each component's covariance **diagonal** at
 $10^{-3}\,(\Sigma_\text{global})_{dd}$ — relative to the global *per-dimension* variance (not the mean
@@ -64,7 +64,7 @@ it is fixed by an autocovariance sequence rather than a dense $d\times d$ matrix
 models each component covariance as an **AR(w)** process. The pooled biased autocovariance
 
 $$
-r_c(\tau) = \frac{1}{N_c\,d}\sum_i w_{ic}\Bigl[\textstyle\sum_t \delta_{it}\,\delta_{i,t+\tau} + [\tau=0]\operatorname{tr}\Sigma_i\Bigr],
+r_c(\tau) = \frac{1}{N_c\,d}\sum_i w_{ic}\Bigl[\textstyle\sum_t \delta_{it}\,\delta_{i,t+\tau} + [\tau=0]\mathrm{tr}\Sigma_i\Bigr],
 \qquad \delta_i = \mu_i - \mu_c,
 $$
 
@@ -83,6 +83,21 @@ not $d$). This is well-posed at $N_k \ll d$, where full covariance is singular a
 blind to the neighbour correlation. Ordered coordinates only — a permutation destroys the structure.
 (Gohberg-Semencul Toeplitz-precision estimation, arXiv:2311.14995; see
 [`docs/adr/001-gmm-toeplitz.md`](adr/001-gmm-toeplitz.md).)
+
+**General (non-AR) Toeplitz covariance** (`method="gmm-toeplitz-full"`). AR(w) has a *banded* precision,
+so it cannot represent an autocovariance whose support exceeds order $w$ (e.g. a single echo at lag
+$K > w$). The general head drops the banded assumption: it forms the dense Toeplitz covariance
+$\Sigma_{ts} = r^{\mathrm b}_c(|t-s|)$ directly from the **biased** ($\div d$) autocovariance $r^{\mathrm b}_c$.
+The biased sequence is periodogram-consistent, so $\Sigma$ is **positive-semidefinite by construction**
+(each leaf contributes the autocorrelation of its zero-padded deviation, a nonnegative spectrum; a
+nonnegative-weighted sum stays PSD), and the $\div d$ bias shrinks high-lag terms — a free regularization
+exactly where $N_k \ll d$. A ridge (the within-leaf variance plus $10^{-6}\,r^{\mathrm b}_c(0)$) makes it
+strictly PD; a Cholesky factor gives the exact multivariate-Gaussian log-density
+$-\tfrac12(d\ln 2\pi + \ln|\Sigma| + \delta^\top\Sigma^{-1}\delta)$. Cost is $O(d^2)$ parameters and $O(d^3)$
+per component (vs AR's $O(d\,w)$), so it is the opt-in rung for signals a low-order AR cannot fit: on a
+long-lag-echo mixture ($K\in\{16,28,40\}>w_{\max}=10$) it reaches ARI $0.70\!\to\!0.97$ as the window grows
+where the AR head sits at chance, and it matches the AR head on AR-generated signals
+(`bench/toeplitz_ar_mixture.py`).
 
 ## Directional clustering: spherical k-means & von Mises–Fisher
 
@@ -151,14 +166,14 @@ clusters). This is parameter-free and non-convex-aware.
   Normal-Inverse-Gamma prior $\text{var}_\text{eff} = (S + \kappa s_0)/(n + \kappa)$, finite at $n = 1$. Fixes the
   size-imbalance failure where a 12-point vs a $10^4$-point cluster decide differently (sklearn #22854).
 - **Frequent-Directions sketch** (high $d$): the full-cov GMM consumes it in **low-rank** form —
-  $\operatorname{tr}(\Sigma_k^{-1}\Sigma_i) = \sum_r \|L_k^{-1} f_r\|^2$ — so it never materializes a $d \times d$ matrix per leaf and keeps
+  $\mathrm{tr}(\Sigma_k^{-1}\Sigma_i) = \sum_r \|L_k^{-1} f_r\|^2$ — so it never materializes a $d \times d$ matrix per leaf and keeps
   $O(\ell d)$ memory through clustering. Identical math to the dense path.
 - **Rebuild threshold** is the within-leaf mean nearest-sibling gap (ELKI/BETULA-standard,
   $O(M \cdot \text{capacity})$), raised monotonically — no global all-pairs scan, no over-growth collapse.
 - **Robust insertion** (`huber_k = k`, optional): before a point $x$ is folded into its target
   microcluster $(n, \mu, S)$, each coordinate is winsorized to the cluster's own scale,
 
-  $\tilde{x}_j = \operatorname{clip}\bigl(x_j,\ \mu_j - k\sigma_j,\ \mu_j + k\sigma_j\bigr), \quad \sigma_j = \sqrt{S_j / n}$
+  $\tilde{x}_j = \mathrm{clip}\bigl(x_j,\ \mu_j - k\sigma_j,\ \mu_j + k\sigma_j\bigr), \quad \sigma_j = \sqrt{S_j / n}$
 
   and the stable Welford update runs on $\tilde{x}$ instead of $x$. A coordinate with $\sigma_j = 0$ (no scale
   yet) passes through unchanged, and the clip is skipped until the target holds ≥ 5 points (so the

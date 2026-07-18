@@ -21,7 +21,10 @@ A capability-by-capability reference. For runnable code see [`USAGE.md`](USAGE.m
   positive-definite precision `Γ = AᵀA/σ²`, `O(w)` parameters, order `w` by BIC), well-posed at
   `N_k ≪ d` where full covariance is singular and a diagonal model is blind to neighbour correlation
   (ordered coordinates only — not generic embeddings; based on the Gohberg-Semencul estimator of
-  arXiv:2311.14995, see [`docs/adr/001-gmm-toeplitz.md`](adr/001-gmm-toeplitz.md)),
+  arXiv:2311.14995, see [`docs/adr/001-gmm-toeplitz.md`](adr/001-gmm-toeplitz.md)) plus a general
+  (non-AR) **`gmm-toeplitz-full`** head — a dense positive-definite Toeplitz covariance from the biased
+  autocovariance — for signals whose autocovariance a low-order AR cannot represent (e.g. a long-lag
+  echo: it recovers such a mixture where the banded AR head sits at chance),
   **Ward agglomerative HAC** (exact, via nearest-neighbour chain; dendrogram-cut auto-k),
   **spectral clustering** (self-tuning k-NN affinity + normalized Laplacian embedding via the
   in-house Jacobi eigensolver, k-means-landmark-reduced above 256 microclusters — separates

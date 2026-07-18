@@ -49,7 +49,7 @@ radius $R = \sqrt{S/n}$. Mahalanobis-$\chi^2$ as an absorption option (`distance
   within-CF spread: $\text{SSE} = \sum_i [S_i + n_i\|\mu_i - c\|^2]$.
 - **GMM-EM** (spherical/diagonal/full): each leaf CF is a mini-Gaussian $\mathcal{N}(\mu_i, \Sigma_i)$.
   **E-step = expected-log (variant C)** — *measured best* (`research/RESULTS-estep.md`):
-  $\log r_{ik} = \log \pi_k + \log \mathcal{N}(\mu_i\mid\mu_k, \Sigma_k) - \tfrac{1}{2}\operatorname{tr}(\Sigma_k^{-1}\Sigma_i)$, log-sum-exp normalized.
+  $\log r_{ik} = \log \pi_k + \log \mathcal{N}(\mu_i\mid\mu_k, \Sigma_k) - \tfrac{1}{2}\mathrm{tr}(\Sigma_k^{-1}\Sigma_i)$, log-sum-exp normalized.
   (The paper's convolution $\mathcal{N}(\mu_i\mid\mu_k, \Sigma_k+\Sigma_i)$ is *worse* on coarse CFs — washes out
   components.) M-step folds within-CF spread:
   $\Sigma_k = \sum_i w_{ik}(\Sigma_i + (\mu_i-\mu_k)(\mu_i-\mu_k)^\top)/N_k$, $w_{ik} = n_i r_{ik}$; NIW/MAP regularization
@@ -142,7 +142,7 @@ Python end-to-end + scikit-learn benchmark (`README.md`, `bench/RESULTS.md`):
   `FdSketch` is a Frequent-Directions scatter sketch (Liberty 2013; $\ell \times d$, $M \approx B^\top B$) for very high $d$
   where a full $d \times d$ per leaf does not fit: $O(\ell d)$ memory, exact mean/weight, lossless on rank $\le \ell$
   data, and it trades speed for memory (an eigendecomposition per shrink). The full-cov GMM consumes
-  it in **low-rank form** (`SecondMoment::LowRank`): $\operatorname{tr}(\Sigma_k^{-1}\Sigma_i) = \sum_r \|L_k^{-1} f_r\|^2$ and the
+  it in **low-rank form** (`SecondMoment::LowRank`): $\mathrm{tr}(\Sigma_k^{-1}\Sigma_i) = \sum_r \|L_k^{-1} f_r\|^2$ and the
   M-step accumulates $\sum_r f_r f_r^\top$, so the GMM never materialises a $d \times d$ matrix per leaf and FD's
   $O(\ell d)$ advantage carries through clustering (otherwise it would be lost). Identical math to the
   dense path. All PSD; tested incl. $\mathrm{dim}\ge 4$ merge, FD-vs-full agreement on low-rank data, and

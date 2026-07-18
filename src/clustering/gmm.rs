@@ -489,7 +489,7 @@ fn global_cov<R: Real>(mu: &[Vec<R>], n: &[R], sig: &[SecondMoment<R>], dim: usi
 }
 
 /// Cholesky of `cov + r·I`, growing the ridge `r` until positive-definite; returns `(L, log|·|)`.
-fn chol_regularized<R: Real>(cov: &[Vec<R>], scale: R, ridge0: R) -> (Vec<Vec<R>>, R) {
+pub(crate) fn chol_regularized<R: Real>(cov: &[Vec<R>], scale: R, ridge0: R) -> (Vec<Vec<R>>, R) {
     let dim = cov.len();
     let mut r = ridge0 * scale;
     for _ in 0..10 {

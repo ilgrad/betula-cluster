@@ -1,7 +1,8 @@
 # ADR 001 — Toeplitz / AR-structured GMM covariance head (`gmm-toeplitz`)
 
-**Status:** Accepted · **implemented** (experimental, off by default), ships in **0.2.0** · validated in
-Rust (`clustering::gmm_toeplitz`) and Python (`method="gmm-toeplitz"`).
+**Status:** Accepted · **implemented** (experimental, off by default). The **AR(w)** head
+(`method="gmm-toeplitz"`) ships in **0.2.0**; the general (non-AR) **`gmm-toeplitz-full`** head ships in
+**0.3.0**. Validated in Rust (`clustering::gmm_toeplitz`) and Python.
 
 ## Context
 
@@ -48,6 +49,15 @@ Toeplitz-structured**.
   embeddings, where coordinate order is meaningless and a permutation destroys the Toeplitz structure
   (expected effect there is negative). Off by default.
 - **No new dependencies** — Levinson-Durbin + banded matvec are pure arithmetic (stays NumPy-only).
+- **General (non-AR) rung** (`method="gmm-toeplitz-full"`, 0.3.0). AR(w) has a *banded* precision, so it
+  cannot represent an autocovariance whose support exceeds order `w` (e.g. a single echo at lag `K > w`).
+  A second head forms the dense Toeplitz covariance directly from the **biased** autocovariance
+  `r_b(0..d−1)` — positive-semidefinite by construction (periodogram-consistent; the `÷d` bias shrinks
+  high lags, a free regularization at `N_k ≪ d`), ridge-regularized to strict PD, and Cholesky-factored
+  for an exact multivariate-Gaussian E-step. `O(d²)` parameters / `O(d³)` per component — opt-in, chosen
+  by the user (not per-component BIC, to keep the AR head's `O(d·w)` cost). Measured: on a
+  lag-`K∈{16,28,40}` echo mixture (all `> w_max=10`) it recovers the components (ARI 0.70→0.97 as the
+  window grows) where the AR head sits at chance, and it matches the AR head on AR-generated signals.
 
 ## Validation
 
@@ -103,14 +113,16 @@ log-likelihood), no ground-truth used in fitting.
    `w_max = 6` **1.00**. Clustering only needs the per-component fits to *differ*, not to be exact, so
    the extra generality is a parameter-efficiency refinement, not a
    capability gap; the cheap lever if a hard signal appears is to raise `w_max` (an internal constant).
-   **Planned for a future release** (recorded here as the agreed next step): a three-rung ladder,
-   escalated only on measured evidence — (1) raise `TOEPLITZ_W_MAX` (one constant; AR(w) approaches any
-   WSS precision as `w↑`, stays closed-form and BIC-gated so easy cases keep the smallest sufficient
-   order); (2) a deterministic **nearest-PD-Toeplitz** projection (alternating onto {Toeplitz} ∩ {PSD},
-   `O(d²)`) for a genuine *non-banded* precision without a numerical optimizer; (3) the full paper
-   **GS-MLE** (per-component non-convex optimization over the two Gohberg-Semencul generators) only if a
-   real signal measurably beats both (1) and (2). Rung (3) trades the head's determinism and `O(d·w)`
-   speed for a gain the probe above suggests is marginal, so it stays gated behind that evidence.
+   The three-rung ladder, **rungs 1–2 now implemented in 0.3.0**, escalated only on measured evidence:
+   (1) **done** — raised `TOEPLITZ_W_MAX` 6 → 10 (AR(w) approaches any WSS precision as `w↑`, stays
+   closed-form; BIC keeps the smallest sufficient order, so easy signals are unchanged); (2) **done** —
+   the general `gmm-toeplitz-full` head, a dense PD Toeplitz covariance from the **biased** autocovariance
+   (PSD by construction — simpler *and* cheaper than the alternating {Toeplitz} ∩ {PSD} projection first
+   sketched, with no numerical optimizer), which recovers a long-lag-echo mixture (lag `K > w_max`) that
+   AR cannot (ARI 0.70 → 0.97 vs chance); (3) **deferred** — the full paper **GS-MLE** (per-component
+   non-convex optimization over the two Gohberg-Semencul generators) only if a real signal measurably
+   beats (2). Rung (3) trades the head's determinism for a gain the biased-Toeplitz estimator already
+   captures on every case tested, so it stays gated behind that evidence.
 4. **Do nothing; tell time-series users to preprocess.** The weak default, rejected: the head is a
    genuine capability no preprocessing recovers. This ADR records the design and the measured evidence
    alongside the 0.2.0 implementation.

@@ -268,31 +268,50 @@ Clustering a **real** half-million-row dataset, each run isolated in its own sub
 betula-kmeans clusters the full 581 k-row covtype **~5.8× faster** than scikit-learn KMeans — at the
 same memory and a matching ARI (0.047 vs 0.049), on real data rather than blobs.
 
-## Structured covariance — `gmm-toeplitz` on AR / stationary signals
+## Structured covariance — `gmm-toeplitz` / `gmm-toeplitz-full` on stationary signals
 
 For **ordered, wide-sense-stationary** signals (fixed-length time-series windows, waveforms, sensor
 traces) neither diagonal nor full covariance is the right prior: diagonal ignores the neighbour
 correlation that *is* the signal, and full has `O(d²)` parameters and is singular exactly when
 `N_k ≪ d`. `method="gmm-toeplitz"` models each component covariance as **AR(w) / Toeplitz-structured**
-(Levinson-Durbin → exact Gohberg-Semencul precision, order picked by BIC), `O(w)` parameters,
-positive-definite by construction — see [ADR 001](../docs/adr/001-gmm-toeplitz.md).
+(Levinson-Durbin → exact Gohberg-Semencul precision, order by BIC), `O(w)` parameters; the companion
+`method="gmm-toeplitz-full"` drops the AR order cap for a **general positive-definite Toeplitz**
+covariance (dense, from the biased autocovariance) — both positive-definite by construction, see
+[ADR 001](../docs/adr/001-gmm-toeplitz.md).
 
 The adversarial test (`bench/toeplitz_ar_mixture.py`): a 3-component mixture of AR processes that
 differ **only** in autocovariance (each window rescaled to unit marginal variance, so the signal is
 entirely in the covariance *structure*), 30 windows per component, ARI vs window length `d`:
 
-| d (window) | N_k/d | **gmm-toeplitz** | betula-diag | betula-full | sklearn-diag | sklearn-full |
-|---|---|---|---|---|---|---|
-| 32  | 0.94 | **0.484** | −0.007 | −0.005 |  0.075 | −0.009 |
-| 64  | 0.47 | **0.658** | −0.014 | −0.006 |  0.014 |  0.019 |
-| 128 | 0.23 | **0.934** | −0.009 |  0.001 | −0.001 |  0.028 |
-| 256 | 0.12 | **1.000** | −0.015 |  0.023 | −0.014 | −0.002 |
+| d (window) | N_k/d | **gmm-toeplitz** | **gmm-toeplitz-full** | betula-diag | betula-full | sklearn-diag | sklearn-full |
+|---|---|---|---|---|---|---|---|
+| 32  | 0.94 | **0.484** | 0.459 | −0.007 | −0.005 |  0.075 | −0.009 |
+| 64  | 0.47 | 0.658 | **0.679** | −0.014 | −0.006 |  0.014 |  0.019 |
+| 128 | 0.23 | **0.934** | 0.903 | −0.009 |  0.001 | −0.001 |  0.028 |
+| 256 | 0.12 | **1.000** | **1.000** | −0.015 |  0.023 | −0.014 | −0.002 |
 
-Only the AR/Toeplitz head recovers the components — and it **improves with `d`** (more positions to
-pool the autocovariance) to perfect separation, precisely the regime (`N_k ≪ d`) where diagonal is
-blind and full is singular; every other head sits at chance. It is **experimental / off by default**
-and scoped to ordered stationary signals — on generic embeddings (no coordinate order) the structure is
-meaningless; use `gmm` / `gmm-full` there.
+Both Toeplitz heads recover the components — **improving with `d`** to perfect separation, precisely the
+regime (`N_k ≪ d`) where diagonal is blind and full is singular; every non-Toeplitz head sits at chance.
+On these AR-generated signals the general `gmm-toeplitz-full` head **matches** the matched AR head (it
+edges it at `d = 64`).
+
+**Where the general head is *required*.** AR(w) has a *banded* precision, so it cannot represent an
+autocovariance whose support exceeds order `w`. A mixture whose components differ only by a **single echo
+at lag `K ∈ {16, 28, 40}`** (all beyond the cap `w_max = 10`) is invisible to AR — only the general
+`gmm-toeplitz-full` head recovers it:
+
+| d (window) | N_k/d | gmm-toeplitz (AR) | **gmm-toeplitz-full** | betula-diag |
+|---|---|---|---|---|
+| 64  | 0.47 | −0.009 | **0.697** | −0.003 |
+| 96  | 0.31 | −0.013 | **0.901** |  0.018 |
+| 128 | 0.23 | −0.011 | **0.934** | −0.007 |
+| 192 | 0.16 | −0.006 | **0.966** | −0.007 |
+
+The AR head is at chance (a lag-`K > w` spike is unreachable by any order-`w` model); the general head
+climbs `0.70 → 0.97` as the window grows. Both heads are **experimental / off by default** and scoped to
+ordered stationary signals — on generic embeddings (no coordinate order) the structure is meaningless;
+use `gmm` / `gmm-full` there. Guidance: reach for `gmm-toeplitz` first (`O(d·w)`, fast); switch to
+`gmm-toeplitz-full` (`O(d³)`) when the structure lives beyond a low AR order.
 
 ## Sparse text — 20 newsgroups (TF-IDF)
 

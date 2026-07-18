@@ -43,6 +43,7 @@ _Method = Literal[
     "spherical-kmeans",
     "vmf",
     "gmm-toeplitz",
+    "gmm-toeplitz-full",
     "hdbscan",
     "scale-space",
 ]

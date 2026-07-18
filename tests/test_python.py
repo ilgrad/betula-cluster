@@ -192,6 +192,26 @@ def test_gmm_toeplitz_predict_proba(ar_windows):
     assert ari(proba.argmax(axis=1), y) > 0.6
 
 
+def test_gmm_toeplitz_full_clusters_ar_mixture(ar_windows):
+    x, y = ar_windows
+    kw = dict(feature="spherical", threshold=0.0, seed=1)
+    full = betula_cluster.fit_predict(x, 3, method="gmm-toeplitz-full", **kw)
+    diag = betula_cluster.fit_predict(x, 3, method="gmm", **kw)
+    a_full, a_diag = ari(full, y), ari(diag, y)
+    assert a_full > 0.5, f"toeplitz-full ARI = {a_full}"
+    assert a_full > a_diag + 0.2, f"toeplitz-full {a_full} should beat diagonal {a_diag}"
+
+
+def test_gmm_toeplitz_full_auto_k_and_proba(ar_windows):
+    x, _ = ar_windows
+    est = betula_cluster.Betula(
+        method="gmm-toeplitz-full", n_clusters=0, feature="spherical", threshold=0.0, seed=1
+    ).fit(x)
+    proba = est.predict_proba(x)
+    assert proba.shape[0] == len(x)
+    assert np.allclose(proba.sum(axis=1), 1.0, atol=1e-6)
+
+
 def test_directional_methods_force_normalization(sphere_blobs):
     x, y = sphere_blobs
     est = betula_cluster.Betula(method="vmf", n_clusters=3, threshold=0.05, max_leaves=300, seed=1)
