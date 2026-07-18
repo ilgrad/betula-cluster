@@ -32,6 +32,7 @@ __version__: str
 
 _FloatArray = NDArray[np.float64] | NDArray[np.float32]
 _Feature = Literal["spherical", "diagonal", "full", "fd"]
+_Projection = Literal["none", "weighted-nmf"]
 _Method = Literal[
     "kmeans",
     "gmm",
@@ -130,6 +131,8 @@ def fit_predict(
     covariance_weight: float = ...,
     tangent_weight: float = ...,
     tangent_rank: int = ...,
+    projection: _Projection = ...,
+    projection_dim: int = ...,
 ) -> NDArray[np.int64]:
     """Cluster ``data`` in one shot and return per-point integer labels (``-1`` = noise)."""
 
@@ -171,6 +174,8 @@ class Betula:
         covariance_weight: float = ...,
         tangent_weight: float = ...,
         tangent_rank: int = ...,
+        projection: _Projection = ...,
+        projection_dim: int = ...,
         memory_budget_mb: float | None = ...,
     ) -> None: ...
     def get_params(self, deep: bool = ...) -> dict[str, Any]: ...

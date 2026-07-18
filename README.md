@@ -20,7 +20,7 @@
 pip install betula-cluster
 ```
 
-**Verified:** a **202-case** Python suite at **100% wrapper coverage** + **177** Rust tests,
+**Verified:** a **210-case** Python suite at **100% wrapper coverage** + **182** Rust tests,
 `clippy -D warnings` + `fmt` clean across all feature sets, CI on CPython 3.11–3.14 (one abi3 wheel).
 
 ## At a glance — honest benchmarks
@@ -135,7 +135,8 @@ res.mean_confidence  # scalar robustness summary
 
 Memory-aware hyperparameter tuning (`tune`, optional Optuna), Mapper topology (`mapper`),
 semi-supervised constraints (COP-KMeans), mixed numeric+categorical (`KPrototypes`), streaming
-density (`DenStream` / `DbStream`), the `O(nnz)` sparse-native path (`fit_predict_sparse`), quantile
+density (`DenStream` / `DbStream`), the `O(nnz)` sparse-native path (`fit_predict_sparse`),
+CF-weighted NMF for nonnegative data (`projection="weighted-nmf"`), quantile
 sketches, `scipy.sparse` input, `threshold="auto"`, soft assignment / coresets / diagnostics / drift
 snapshots / active-learning batches, the Rust API, and the CLI — all in the
 [**usage guide**](https://github.com/ilgrad/betula-cluster/blob/main/docs/USAGE.md).
@@ -177,7 +178,7 @@ Full reference: [**`docs/FEATURES.md`**](https://github.com/ilgrad/betula-cluste
 
 ## Examples
 
-**Sixteen** executed, plotted notebooks — one per capability — live in
+**Seventeen** executed, plotted notebooks — one per capability — live in
 [`examples/`](https://github.com/ilgrad/betula-cluster/blob/main/examples/README.md) (render on GitHub):
 
 - **Core** — [quickstart](https://github.com/ilgrad/betula-cluster/blob/main/examples/01_quickstart.ipynb),
@@ -197,6 +198,7 @@ Full reference: [**`docs/FEATURES.md`**](https://github.com/ilgrad/betula-cluste
   [directional embeddings (vMF / spherical)](https://github.com/ilgrad/betula-cluster/blob/main/examples/14_directional_embeddings.ipynb),
   [geometry-aware clustering (covariance / manifold)](https://github.com/ilgrad/betula-cluster/blob/main/examples/15_geometry_aware_clustering.ipynb).
 - **Time-series** — [`gmm-toeplitz` AR/Toeplitz covariance for stationary signals](https://github.com/ilgrad/betula-cluster/blob/main/examples/16_toeplitz_timeseries.ipynb).
+- **Nonnegative data** — [`projection="weighted-nmf"` CF-weighted NMF on topic counts](https://github.com/ilgrad/betula-cluster/blob/main/examples/17_nmf_topics.ipynb).
 
 And six **end-to-end use cases** (each scored against ground truth):
 
@@ -215,7 +217,7 @@ And six **end-to-end use cases** (each scored against ground truth):
 - [**Benchmarks**](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md) — methodology, every metric, all tables, honest wins & losses.
 - [**Design**](https://github.com/ilgrad/betula-cluster/blob/main/DESIGN.md) — internal design, invariants, and testing strategy.
 
-Verified: **177** Rust unit + 4 integration tests + a **202-case** Python suite at **100%** wrapper
+Verified: **182** Rust unit + 4 integration tests + a **210-case** Python suite at **100%** wrapper
 coverage (Rust ≥95%, CI-enforced), `clippy -D warnings` + `fmt` clean across all feature sets, on
 Python 3.11–3.14 (single abi3 wheel).
 

@@ -2,7 +2,8 @@
 
 Reproduce: `.venv/bin/python bench/comprehensive.py` (writes `results_{quality,scaling,memory,real,
 real_hires,real_normalize,real_scale,sparse}.csv` and `plots/*.png`) plus `bench/spectral_nonconvex.py`
-(spectral timing) and `bench/toeplitz_ar_mixture.py` (the `gmm-toeplitz` showcase). Every cell is
+(spectral timing), `bench/toeplitz_ar_mixture.py` (the `gmm-toeplitz` showcase) and
+`bench/nmf_cf_weighted.py` (CF-weighted NMF scale). Every cell is
 guarded and failures are recorded, not hidden; both **wins and losses** are reported below. All numbers
 on this page are from a single fresh run on **Python 3.14 + latest NumPy/SciPy/scikit-learn** (env
 table below), machine otherwise idle.

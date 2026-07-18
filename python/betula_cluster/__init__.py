@@ -347,6 +347,8 @@ _DEFAULTS = {
     "covariance_weight": 0.0,
     "tangent_weight": 0.0,
     "tangent_rank": 2,
+    "projection": "none",
+    "projection_dim": 64,
     "memory_budget_mb": None,
 }
 _PARAM_NAMES = tuple(_DEFAULTS)
@@ -398,6 +400,8 @@ class Betula:
         covariance_weight=0.0,
         tangent_weight=0.0,
         tangent_rank=2,
+        projection="none",
+        projection_dim=64,
         memory_budget_mb=None,
     ):
         self.n_clusters = n_clusters
@@ -433,6 +437,11 @@ class Betula:
         # principal subspace, separating crossing/adjacent manifolds. 0 disables it.
         self.tangent_weight = tangent_weight
         self.tangent_rank = tangent_rank
+        # Phase-3 CF-weighted NMF reduction for **nonnegative** data (TF-IDF / counts / spectra).
+        # "weighted-nmf" factorizes leaf centroids into `projection_dim` nonnegative codes over the
+        # M ≪ N microclusters, then the head clusters the codes; "none" disables it.
+        self.projection = projection
+        self.projection_dim = projection_dim
         # When set, max_leaves is derived from this budget (+ dim + feature) at fit time: a target
         # for the CF-tree resident size (MiB), not total RSS. Most useful for streaming.
         self.memory_budget_mb = memory_budget_mb
@@ -512,6 +521,21 @@ class Betula:
         pilot.fit(sub)
         return float(pilot.threshold_)
 
+    def _check_projection_input(self, X, csr):
+        # CF-weighted NMF is defined only for nonnegative data; reject signed input rather than
+        # silently shifting it (a shift changes angles / cosine geometry). Dense input only here.
+        if self.projection != "weighted-nmf":
+            return
+        if csr is not None:
+            raise ValueError(
+                "projection='weighted-nmf' requires a dense nonnegative array, not a sparse matrix"
+            )
+        if bool((np.asarray(X) < 0).any()):
+            raise ValueError(
+                "projection='weighted-nmf' requires nonnegative data (X >= 0). For signed "
+                "embeddings use method='vmf'/'spherical-kmeans' or reduce with PCA/TruncatedSVD."
+            )
+
     def fit(self, X, y=None, must_link=None, cannot_link=None):
         """Fit the CF-tree on ``X`` and cluster it; returns ``self`` (scikit-learn style).
 
@@ -525,6 +549,7 @@ class Betula:
         if must_link is not None or cannot_link is not None:
             return self._fit_constrained(X, must_link, cannot_link)
         csr = _to_csr(X)
+        self._check_projection_input(X, csr)
         override = self._resolve_auto(X, csr)
         if csr is not None:
             est = self._build(csr[3], override)
@@ -544,6 +569,7 @@ class Betula:
             self._fit_constrained(X, must_link, cannot_link)
             return np.asarray(self.predict(X))
         csr = _to_csr(X)
+        self._check_projection_input(X, csr)
         override = self._resolve_auto(X, csr)
         if csr is not None:
             est = self._build(csr[3], override)

@@ -80,6 +80,13 @@ A capability-by-capability reference. For runnable code see [`USAGE.md`](USAGE.m
   (`kmeans` default) clusters them. It uses the *expanded* squared-distance form for speed and so does
   **not** carry the dense path's cancellation-free guarantee — accurate for sparse rows far from the
   dense centroid; use the dense `Betula` path when you need cancellation-free scatter.
+- **CF-weighted NMF reduction** (`projection="weighted-nmf"`, `projection_dim`) — for **nonnegative**
+  data (TF-IDF / bag-of-words / event counts / spectrogram magnitudes / histograms), a nonnegative
+  low-rank projection applied over the $M \ll N$ leaf **centroids**, not the raw $N \times d$ matrix: by
+  König-Huygens the weighted-centroid NMF equals the full-data NMF up to the within-leaf scatter
+  constant, so it runs NMF at BETULA scale and bounded memory (something point-level NMF cannot), then
+  any head clusters the nonnegative codes. Dependency-free weighted **HALS** (no BLAS — the matrices are
+  small because $M \ll N$). Signed input is rejected, not shifted; dense only. See [`MATH.md`](MATH.md).
 - **Robust insertion** (`huber_k`) — optional Huber/winsorized point updates: each incoming point is
   clamped to within `huber_k` per-dimension standard deviations of its target microcluster *before*
   it is folded in, so a single extreme value cannot stretch a centroid or inflate a radius. Off by

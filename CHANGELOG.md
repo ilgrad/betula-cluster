@@ -4,6 +4,21 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] — 2026-07-18
+
+### Added
+- `projection="weighted-nmf"` (+ `projection_dim`) — **CF-weighted nonnegative matrix factorization** as
+  a Phase-3 reducer for **nonnegative** data (TF-IDF / bag-of-words / event counts / spectrogram
+  magnitudes / histograms). Rather than factorizing the raw `N×d` matrix (which defeats the compression),
+  it factorizes the `M ≪ N` leaf **centroids** weighted by their mass, `X̃_j = √n_j·μ_j`: by
+  König-Huygens the full-data NMF objective equals the weighted-centroid one up to the within-leaf
+  scatter constant, so the expensive factorization runs over the microclusters — memory-bounded, `O(M·d·r)`
+  — and any head (k-means / GMM / Leiden) then clusters the nonnegative codes. The solver is a
+  dependency-free weighted **HALS** (coordinate descent, Gram-reuse across sweeps); the compression, not a
+  fast NMF, is the speedup. Available on the one-shot `fit_predict` and the streaming `Betula` estimator.
+  Signed input is rejected (no silent shifting — use `vmf` / `spherical-kmeans` or PCA / TruncatedSVD for
+  embeddings); dense input in this release. See [`docs/MATH.md`](docs/MATH.md).
+
 ## [0.3.0] — 2026-07-18
 
 ### Added

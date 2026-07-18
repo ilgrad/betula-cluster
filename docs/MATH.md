@@ -99,6 +99,29 @@ long-lag-echo mixture ($K\in\{16,28,40\}>w_{\max}=10$) it reaches ARI $0.70\!\to
 where the AR head sits at chance, and it matches the AR head on AR-generated signals
 (`bench/toeplitz_ar_mixture.py`).
 
+## CF-weighted NMF for nonnegative data
+
+For **nonnegative** features (TF-IDF, bag-of-words, event counts, spectrogram magnitudes, histograms) a
+nonnegative low-rank factorization $X \approx W H$, $W, H \ge 0$, is often the natural representation — its
+parts $H$ are interpretable and additive. Factorizing the raw $N \times d$ matrix is $O(N d r)$ per
+iteration and holds an $N \times r$ code matrix, defeating BETULA's compression. `projection="weighted-nmf"`
+factorizes the $M \ll N$ leaf **centroids** instead. Assigning every point in leaf $C_j$ the same code
+$z_j$ (the hard-leaf approximation every Phase-3 head already makes), König-Huygens gives
+
+$$
+\sum_{x_i \in C_j} \lVert x_i - z_j H \rVert^2 = \underbrace{\sum_{x_i \in C_j} \lVert x_i - \mu_j \rVert^2}_{\text{within-leaf scatter (const in } z,H)} + n_j \lVert \mu_j - z_j H \rVert^2 ,
+$$
+
+so minimizing the full-data objective is equivalent — up to that constant — to the **weighted centroid**
+problem $\min_{Z,H \ge 0} \sum_j n_j \lVert \mu_j - z_j H \rVert^2 = \lVert \tilde X - \tilde Z H \rVert_F^2$
+with $\tilde X_j = \sqrt{n_j}\,\mu_j$, $\tilde Z_j = \sqrt{n_j}\,z_j$. The factorization runs over the
+microclusters ($O(M d r)$ per sweep, memory-bounded) and any head then clusters the nonnegative codes
+$z_j$. The solver is a dependency-free weighted **HALS** (coordinate descent, reusing the Gram /
+cross-product matrices $HH^\top$, $\tilde X H^\top$, $W^\top W$, $W^\top \tilde X$ across sweeps); because
+$M$ is small the matrices are tiny, so no BLAS is needed — **the compression, not a fast NMF kernel, is the
+speed-up**. Nonnegative input only; signed data is rejected rather than shifted (a shift would destroy
+angles). For signed embeddings use the directional heads or reduce with PCA / TruncatedSVD first.
+
 ## Directional clustering: spherical k-means & von Mises–Fisher
 
 On L2-normalized data every point lies on the unit sphere `S^{d-1}`, where cosine — not Euclidean —

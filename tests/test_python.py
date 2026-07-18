@@ -212,6 +212,91 @@ def test_gmm_toeplitz_full_auto_k_and_proba(ar_windows):
     assert np.allclose(proba.sum(axis=1), 1.0, atol=1e-6)
 
 
+@pytest.fixture
+def nmf_topics():
+    """Nonnegative documents: each a nonnegative mix of one of 3 latent parts (NMF's setting)."""
+    rng = np.random.default_rng(4)
+    h = np.abs(rng.normal(size=(3, 30))) * (rng.random((3, 30)) < 0.4)
+    xs, ys = [], []
+    for c in range(3):
+        for _ in range(200):
+            w = np.zeros(3)
+            w[c] = 1.0 + rng.random()
+            xs.append(w @ h + 0.03 * rng.random(30))
+            ys.append(c)
+    return np.ascontiguousarray(xs), np.array(ys)
+
+
+def test_projection_weighted_nmf_module(nmf_topics):
+    x, y = nmf_topics
+    labels = betula_cluster.fit_predict(
+        x,
+        3,
+        method="kmeans",
+        feature="spherical",
+        threshold=0.0,
+        seed=0,
+        projection="weighted-nmf",
+        projection_dim=6,
+    )
+    assert n_labels(labels) == 3
+    assert ari(labels, y) > 0.9
+
+
+def test_projection_weighted_nmf_estimator(nmf_topics):
+    x, y = nmf_topics
+    kw = dict(
+        n_clusters=3,
+        method="kmeans",
+        feature="spherical",
+        threshold=0.0,
+        seed=0,
+        projection="weighted-nmf",
+        projection_dim=6,
+    )
+    assert ari(betula_cluster.Betula(**kw).fit_predict(x), y) > 0.9
+    est = betula_cluster.Betula(**kw).fit(x)  # fit / predict round-trip also honours the projection
+    assert ari(est.predict(x), y) > 0.9
+
+
+def test_projection_get_params_roundtrip():
+    est = betula_cluster.Betula(projection="weighted-nmf", projection_dim=6)
+    assert est.get_params()["projection"] == "weighted-nmf"
+    assert est.get_params()["projection_dim"] == 6
+    est.set_params(projection="none")
+    assert est.get_params()["projection"] == "none"
+
+
+def test_projection_rejects_negative(nmf_topics):
+    x, _ = nmf_topics
+    xneg = x.copy()
+    xneg[0, 0] = -1.0
+    with pytest.raises(ValueError, match="nonnegative"):
+        betula_cluster.fit_predict(xneg, 3, method="kmeans", projection="weighted-nmf")
+    with pytest.raises(ValueError, match="nonnegative"):
+        betula_cluster.Betula(projection="weighted-nmf", method="kmeans").fit(xneg)
+    with pytest.raises(ValueError, match="nonnegative"):
+        betula_cluster.Betula(projection="weighted-nmf", method="kmeans").fit_predict(xneg)
+
+
+def test_projection_rejects_sparse():
+    sp = pytest.importorskip("scipy.sparse")
+    csr = sp.random(60, 20, density=0.3, format="csr", random_state=0)
+    csr.data = np.abs(csr.data)
+    with pytest.raises(ValueError, match="dense"):
+        betula_cluster.Betula(projection="weighted-nmf", method="kmeans").fit_predict(csr)
+
+
+def test_projection_invalid_args():
+    x = np.abs(np.random.default_rng(0).normal(size=(60, 8)))
+    with pytest.raises(ValueError, match="projection must be"):
+        betula_cluster.fit_predict(x, 3, method="kmeans", projection="bogus")
+    with pytest.raises(ValueError, match="projection_dim must be"):
+        betula_cluster.fit_predict(
+            x, 3, method="kmeans", projection="weighted-nmf", projection_dim=0
+        )
+
+
 def test_directional_methods_force_normalization(sphere_blobs):
     x, y = sphere_blobs
     est = betula_cluster.Betula(method="vmf", n_clusters=3, threshold=0.05, max_leaves=300, seed=1)
