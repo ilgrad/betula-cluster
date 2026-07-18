@@ -6,6 +6,7 @@
 [![Python coverage 100%](https://img.shields.io/badge/python%20coverage-100%25-brightgreen.svg)](https://github.com/ilgrad/betula-cluster/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/ilgrad/betula-cluster/blob/main/LICENSE-MIT)
 [![Rust core · PyO3](https://img.shields.io/badge/Rust%20core-PyO3-orange.svg)](https://github.com/ilgrad/betula-cluster)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21427331.svg)](https://doi.org/10.5281/zenodo.21427331)
 
 > **Rust-powered, memory-bounded clustering for large embeddings & tabular streams.** It compresses raw
 > data into numerically stable **BETULA** microclusters, then runs the clustering head on the
@@ -245,6 +246,7 @@ algorithms** it implements. Machine-readable metadata (including the method refe
   title   = {betula-cluster: numerically stable {BETULA} clustering with a {Rust} core},
   year    = {2026},
   version = {0.2.0},
+  doi     = {10.5281/zenodo.21427331},
   license = {MIT},
   url     = {https://github.com/ilgrad/betula-cluster}
 }

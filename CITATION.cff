@@ -10,8 +10,12 @@ authors:
   - family-names: "Gradina"
     given-names: "Ilia"
     orcid: "https://orcid.org/0009-0008-0911-8765"
-version: "0.1.5"
-date-released: "2026-07-04"
+version: "0.2.0"
+date-released: "2026-07-18"
+identifiers:
+  - type: doi
+    value: "10.5281/zenodo.21427331"
+    description: "Concept DOI — always resolves to the latest release."
 license: MIT
 repository-code: "https://github.com/ilgrad/betula-cluster"
 url: "https://ilgrad.github.io/betula-cluster/"
