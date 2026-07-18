@@ -174,7 +174,7 @@ Full reference: [**`docs/FEATURES.md`**](https://github.com/ilgrad/betula-cluste
 
 ## Examples
 
-**Twelve** executed, plotted notebooks — one per capability — live in
+**Sixteen** executed, plotted notebooks — one per capability — live in
 [`examples/`](https://github.com/ilgrad/betula-cluster/blob/main/examples/README.md) (render on GitHub):
 
 - **Core** — [quickstart](https://github.com/ilgrad/betula-cluster/blob/main/examples/01_quickstart.ipynb),
@@ -190,14 +190,19 @@ Full reference: [**`docs/FEATURES.md`**](https://github.com/ilgrad/betula-cluste
 - **Soft assignment & coresets** —
   [`predict_proba`, coresets, diagnostics](https://github.com/ilgrad/betula-cluster/blob/main/examples/11_soft_assignment_coreset_diagnostics.ipynb).
 - **Production ops** — [drift, active learning, robust, memory budgets](https://github.com/ilgrad/betula-cluster/blob/main/examples/12_drift_robust_memory.ipynb).
+- **Graph & geometry** — [graph clustering (Leiden)](https://github.com/ilgrad/betula-cluster/blob/main/examples/13_graph_clustering.ipynb),
+  [directional embeddings (vMF / spherical)](https://github.com/ilgrad/betula-cluster/blob/main/examples/14_directional_embeddings.ipynb),
+  [geometry-aware clustering (covariance / manifold)](https://github.com/ilgrad/betula-cluster/blob/main/examples/15_geometry_aware_clustering.ipynb).
+- **Time-series** — [`gmm-toeplitz` AR/Toeplitz covariance for stationary signals](https://github.com/ilgrad/betula-cluster/blob/main/examples/16_toeplitz_timeseries.ipynb).
 
-And five **end-to-end use cases** (each scored against ground truth):
+And six **end-to-end use cases** (each scored against ground truth):
 
 - 🧹 [**Embedding dedup**](https://github.com/ilgrad/betula-cluster/blob/main/examples/usecases/usecase_01_embedding_dedup.ipynb) — collapse a repost-heavy corpus to representatives.
 - 🚨 [**Log anomaly detection**](https://github.com/ilgrad/betula-cluster/blob/main/examples/usecases/usecase_02_log_anomaly_detection.ipynb) — batch outlier scoring + streaming `DbStream` flags.
 - 👥 [**Customer segmentation**](https://github.com/ilgrad/betula-cluster/blob/main/examples/usecases/usecase_03_customer_segmentation.ipynb) — mixed RFM + categorical personas with `KPrototypes`.
 - 🧠 [**RAG corpus curation**](https://github.com/ilgrad/betula-cluster/blob/main/examples/usecases/usecase_04_rag_corpus_curation.ipynb) — junk removal, topic coherence, and topic-leakage detection via Mapper.
 - 🔢 [**Real-data clustering**](https://github.com/ilgrad/betula-cluster/blob/main/examples/usecases/usecase_05_real_data_clustering.ipynb) — handwritten digits, ARI parity + centroid/exemplar inspection.
+- 🌐 [**Graph communities**](https://github.com/ilgrad/betula-cluster/blob/main/examples/usecases/usecase_06_graph_communities.ipynb) — Leiden community detection on a network, scored against planted communities.
 
 ## Documentation
 

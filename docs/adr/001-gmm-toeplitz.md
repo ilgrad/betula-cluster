@@ -103,6 +103,14 @@ log-likelihood), no ground-truth used in fitting.
    `w_max = 6` **1.00**. Clustering only needs the per-component fits to *differ*, not to be exact, so
    the extra generality is a parameter-efficiency refinement, not a
    capability gap; the cheap lever if a hard signal appears is to raise `w_max` (an internal constant).
+   **Planned for a future release** (recorded here as the agreed next step): a three-rung ladder,
+   escalated only on measured evidence — (1) raise `TOEPLITZ_W_MAX` (one constant; AR(w) approaches any
+   WSS precision as `w↑`, stays closed-form and BIC-gated so easy cases keep the smallest sufficient
+   order); (2) a deterministic **nearest-PD-Toeplitz** projection (alternating onto {Toeplitz} ∩ {PSD},
+   `O(d²)`) for a genuine *non-banded* precision without a numerical optimizer; (3) the full paper
+   **GS-MLE** (per-component non-convex optimization over the two Gohberg-Semencul generators) only if a
+   real signal measurably beats both (1) and (2). Rung (3) trades the head's determinism and `O(d·w)`
+   speed for a gain the probe above suggests is marginal, so it stays gated behind that evidence.
 4. **Do nothing; tell time-series users to preprocess.** The weak default, rejected: the head is a
    genuine capability no preprocessing recovers. This ADR records the design and the measured evidence
    alongside the 0.2.0 implementation.
