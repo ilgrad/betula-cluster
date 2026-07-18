@@ -88,19 +88,20 @@ log-likelihood), no ground-truth used in fitting.
 2. **Reduce dimensionality first (SVD/PCA), then cluster with an existing head.** Destroys the
    neighbour correlation the prior exploits; we already measure this failure on SVD-reduced sparse text
    (`bench/RESULTS.md`). Rejected.
-3. **The paper's exact GS estimator.** **Implemented** — the exact Gohberg-Semencul precision
-   `Γ = (1/σ²)(BBᵀ − ZZᵀ)` is realised via the prediction-error decomposition (see the E-step above;
-   the reflection-coefficient clamp is the paper's PD box constraint), measurably beating the initial
-   conditional likelihood on short windows. Two paper variants are *not* implemented and remain
-   deferred, both by evidence: (a) the **covariance-method** coefficient estimator
-   `â = S⁻¹_{≥1,≥1} S_{≥1,0}` (lower bias but needs the box *projection* to stay PD — the
-   autocorrelation-method Yule-Walker/Levinson estimator we use is already PD and, per the probe below,
-   sufficient); (b) a **general (non-AR) Toeplitz** precision. A probe over the cases where AR(w) is
-   intuitively suspect shows banded AR(w, BIC) is *not* restrictive for clustering: periodic signals
-   (two sinusoids of different period + white control) ARI **1.00** — a single sinusoid is an AR(2)
-   resonance, so period needs no order; MA(2) (infinite AR order) **0.93–1.00**; four-sinusoid signals
-   whose true AR order (~8) exceeds `w_max = 6` **1.00**. Clustering only needs the per-component fits
-   to *differ*, not to be exact, so the extra generality is a parameter-efficiency refinement, not a
+3. **The paper's GS machinery — exact precision *and* covariance-method estimator, both implemented.**
+   The exact Gohberg-Semencul precision `Γ = (1/σ²)(BBᵀ − ZZᵀ)` is realised via the prediction-error
+   decomposition (see the E-step; the reflection-coefficient clamp is the paper's PD box constraint),
+   and the **covariance-method** estimator is realised as the *unbiased* (per-lag `d − τ`)
+   autocovariance projected back to a stable AR by that same clamp — the CF-compatible form of
+   `â = S⁻¹_{≥1,≥1} S_{≥1,0}` with the paper's PD projection. Measured: the exact precision adds **+0.04
+   ARI** at short windows; the covariance method adds **+0.01–0.04 mean ARI** *and a better worst case*
+   across seeds at every `d` tested. The one variant left is a **general (non-AR) Toeplitz** precision,
+   deferred *with evidence*: a probe over the cases where AR(w) is intuitively suspect shows banded
+   AR(w, BIC) is not restrictive for clustering — periodic signals (two sinusoids of different period +
+   white control) ARI **1.00** (a single sinusoid is an AR(2) resonance, so period needs no order),
+   MA(2) (infinite AR order) **0.93–1.00**, four-sinusoid signals whose true AR order (~8) exceeds
+   `w_max = 6` **1.00**. Clustering only needs the per-component fits to *differ*, not to be exact, so
+   the extra generality is a parameter-efficiency refinement, not a
    capability gap; the cheap lever if a hard signal appears is to raise `w_max` (an internal constant).
 4. **Do nothing; tell time-series users to preprocess.** The weak default. This ADR records the design
    so it is ready when 0.3.0 scope is set, without blocking the 0.2.0 release.

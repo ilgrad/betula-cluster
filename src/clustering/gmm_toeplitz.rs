@@ -110,9 +110,10 @@ fn ar_loglik_exact<R: Real>(delta: &[R], phi: &[Vec<R>], v: &[R], w: usize) -> R
     ll
 }
 
-/// Pooled biased weighted autocovariance `r[0..=w]` of a component with mean `mu_c`. `wt[i]` is the
-/// leaf's responsibility-weighted mass `n_i · r_{ic}`; the within-leaf per-dimension variance is
-/// folded into the zero lag.
+/// Pooled unbiased (covariance-method) weighted autocovariance `r[0..=w]` of a component with mean
+/// `mu_c`. `wt[i]` is the leaf's responsibility-weighted mass `n_i · r_{ic}`; the within-leaf
+/// per-dimension variance is folded into the zero lag. Each lag is normalized by its own count
+/// `d − τ` (see the note in the body).
 fn component_autocov<R, C>(features: &[C], wt: &[R], mu_c: R, dim: usize, w: usize) -> Vec<R>
 where
     R: Real,
@@ -140,8 +141,14 @@ where
         r[0] = r[0] + wi * trv;
         nsum = nsum + wi;
     }
-    let denom = (nsum * R::from_usize(dim).unwrap()).max(R::from_f64(1e-12).unwrap());
-    for rt in r.iter_mut() {
+    // Unbiased normalization (divide lag τ by `d − τ`, not `d`) — the covariance-method estimator:
+    // less biased than the autocorrelation method, sharper on few samples, measured to cluster better
+    // (mean and worst-case ARI over seeds). It is not guaranteed PSD, but `levinson_full`'s
+    // reflection-coefficient clamp projects it back to a stable (positive-definite) AR — the
+    // CF-compatible form of the paper's covariance-method + PD-projection (arXiv:2311.14995).
+    let tiny = R::from_f64(1e-12).unwrap();
+    for (tau, rt) in r.iter_mut().enumerate() {
+        let denom = (nsum * R::from_usize(dim - tau).unwrap()).max(tiny);
         *rt = *rt / denom;
     }
     r

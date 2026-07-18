@@ -43,7 +43,8 @@ All notable changes to this project are documented here. The format follows
   the `M ≪ N` leaves — cost bounded by the leaf budget, not `N`.
 - `method="gmm-toeplitz"` — **AR / Toeplitz-structured GMM for ordered, wide-sense-stationary
   signals** (fixed-length time-series windows, trajectories, sensor / audio / vibration waveforms).
-  Each component's covariance is an **AR(w)** process: the pooled autocovariance is mapped by
+  Each component's covariance is an **AR(w)** process: the pooled **unbiased (covariance-method)**
+  autocovariance is mapped by
   **Levinson-Durbin** to the exact **Gohberg-Semencul** precision `Γ = (1/σ²)(BBᵀ − ZZᵀ)`, evaluated by
   the prediction-error decomposition so the `w` boundary positions are modelled exactly — **positive-
   definite by construction** (the reflection-coefficient clamp is the GS box constraint), `O(w)`
