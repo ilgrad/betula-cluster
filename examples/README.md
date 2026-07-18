@@ -21,6 +21,7 @@ source (the diff-friendly form); the `.ipynb` is the rendered, executed output y
 | [`13_graph_clustering`](13_graph_clustering.ipynb) | graph & manifold heads — `method="spectral"` on moons/spirals, `method="leiden"` community detection (auto-count), and `consensus` per-point stability maps |
 | [`14_directional_embeddings`](14_directional_embeddings.ipynb) | **directional** heads for L2-normalized embeddings — `method="vmf"` (von Mises–Fisher mixture: soft posterior, concentration `κ`, BIC auto-`k`) and `method="spherical-kmeans"`; why direction beats Euclidean distance when magnitude varies |
 | [`15_geometry_aware_clustering`](15_geometry_aware_clustering.ipynb) | head-to-head vs scikit-learn: **`method="scale-space"`** is parameter-free *and* more accurate + faster than `MeanShift` (and beats wrong-`k` k-means), and **covariance-aware `gmm-full`** ties `GaussianMixture` while crushing spherical k-means on anisotropic clusters — plus the GeoBETULA `covariance_weight` / `tangent_weight` knobs |
+| [`16_toeplitz_timeseries`](16_toeplitz_timeseries.ipynb) | **`method="gmm-toeplitz"`** — clustering ordered **time-series windows** by their autocovariance *shape* (AR / Toeplitz covariance). Where a diagonal model is blind and full covariance is singular (`N_k ≪ d`), the AR(w) head recovers the components and **beats scikit-learn's `GaussianMixture`** — and it sharpens as the window grows |
 
 ## Use cases (concrete, end-to-end scenarios)
 

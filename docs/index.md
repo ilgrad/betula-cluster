@@ -35,9 +35,9 @@ labels = betula_cluster.fit_predict(X, n_clusters=10, method="kmeans")
 - **Bounded memory.** `max_leaves` / `memory_budget_mb` cap the tree, so `partial_fit` streams data
   larger than RAM.
 - **One engine.** k-means · GMM (diagonal & full) · Ward · spectral · Leiden community detection ·
-  directional (spherical k-means / von Mises–Fisher) · scale-space density modes · HDBSCAN-CF ·
-  Mapper topology — plus dedup, outliers, representatives, coresets, `consensus` stability and
-  memory-aware `tune`, over the same stable CF-tree.
+  directional (spherical k-means / von Mises–Fisher) · scale-space density modes · AR/Toeplitz GMM
+  (time-series windows) · HDBSCAN-CF · Mapper topology — plus dedup, outliers, representatives,
+  coresets, `consensus` stability and memory-aware `tune`, over the same stable CF-tree.
 - **Lean.** A single typed abi3 wheel, zero LAPACK / SciPy at runtime; the only dependency is NumPy.
 
 Benchmarks (speed, memory, quality — wins *and* losses) are reproducible from `bench/comprehensive.py`

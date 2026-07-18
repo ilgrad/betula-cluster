@@ -162,6 +162,9 @@ snapshots / active-learning batches, the Rust API, and the CLI — all in the
 - **Density & topology** — HDBSCAN-CF (density over microclusters), **scale-space** Morse-persistence
   density-mode clustering (`method="scale-space"` — no `k`, no bandwidth), and a Mapper topological
   skeleton (`mapper` / `mapper_stability`).
+- **Structured-covariance GMM** — **`method="gmm-toeplitz"`**: AR / Toeplitz covariance for **ordered,
+  stationary signals** (time-series windows, trajectories, sensor waveforms), well-posed where full
+  covariance is singular (`N_k ≪ d`) and a diagonal model ignores neighbour correlation.
 - **More heads & data** — `DenStream` / `DbStream` evolving-stream density, mergeable `KllSketch` /
   `DdSketch` quantiles, `scipy.sparse` (`O(nnz)`, never densified), mixed numeric+categorical
   (`KPrototypes`), COP-KMeans constraints, robust (Huber) insertion, drift snapshots, dependency-free CLI.

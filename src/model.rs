@@ -1,8 +1,9 @@
 //! End-to-end model: build a CF-tree, cluster its leaves (Phase 3), and label points.
 
 use crate::clustering::{
-    gmm_diagonal, gmm_diagonal_auto, gmm_full, gmm_full_auto, kmeans, leiden, movmf, movmf_auto,
-    spectral, spherical_kmeans, ward_hac, ward_hac_auto, xmeans, Objective,
+    gmm_diagonal, gmm_diagonal_auto, gmm_full, gmm_full_auto, gmm_toeplitz, gmm_toeplitz_auto,
+    kmeans, leiden, movmf, movmf_auto, spectral, spherical_kmeans, ward_hac, ward_hac_auto, xmeans,
+    Objective,
 };
 use crate::distance::CFDistance;
 use crate::feature::ClusterFeature;
@@ -42,6 +43,9 @@ pub enum Method {
     SphericalKMeans,
     /// Mixture of von Mises–Fisher distributions (soft directional EM; BIC auto-`k` when `k == 0`).
     Movmf,
+    /// AR / Toeplitz-structured GMM for ordered, wide-sense-stationary signals (time-series windows,
+    /// trajectories). BIC auto-`k` when `k == 0`; use `feature="spherical"` or `"diagonal"`.
+    GmmToeplitz,
 }
 
 /// A fitted model: a CF-tree plus a cluster label per leaf entry. A point is labelled by routing
@@ -146,6 +150,10 @@ pub(crate) fn cluster_leaves<R: Real, C: ClusterFeature<R>>(
         }
         Method::Movmf if k == 0 => movmf_auto(features, 1, auto_hi, max_iter, seed).labels,
         Method::Movmf => movmf(features, k.min(nlv).max(1), max_iter, seed).labels,
+        Method::GmmToeplitz if k == 0 => {
+            gmm_toeplitz_auto(features, 1, auto_hi, max_iter, seed).labels
+        }
+        Method::GmmToeplitz => gmm_toeplitz(features, k.min(nlv).max(1), max_iter, seed).labels,
     }
 }
 
@@ -285,6 +293,7 @@ mod tests {
             Method::KMeans,
             Method::Gmm,
             Method::GmmFull,
+            Method::GmmToeplitz,
             Method::Ward,
             Method::Spectral,
             Method::Leiden {

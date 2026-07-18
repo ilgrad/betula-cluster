@@ -15,7 +15,13 @@ A capability-by-capability reference. For runnable code see [`USAGE.md`](USAGE.m
   full-covariance GMM-EM** (expected-log E-step + NIW/MAP regularization + a per-dimension covariance
   floor that keeps components well-conditioned in high dimensions — no starved-component collapse,
   full covariance captures rotated/correlated clusters, **BIC auto-selects the component count** when
-  `n_clusters=0`),
+  `n_clusters=0`), an **AR / Toeplitz-structured GMM** (`method="gmm-toeplitz"`) for **ordered,
+  wide-sense-stationary signals** — fixed-length time-series windows, trajectories, sensor / audio
+  waveforms — where each component covariance is an AR(w) process (Levinson-Durbin → a banded
+  positive-definite precision `Γ = AᵀA/σ²`, `O(w)` parameters, order `w` by BIC), well-posed at
+  `N_k ≪ d` where full covariance is singular and a diagonal model is blind to neighbour correlation
+  (ordered coordinates only — not generic embeddings; based on the Gohberg-Semencul estimator of
+  arXiv:2311.14995, see [`docs/adr/001-gmm-toeplitz.md`](adr/001-gmm-toeplitz.md)),
   **Ward agglomerative HAC** (exact, via nearest-neighbour chain; dendrogram-cut auto-k),
   **spectral clustering** (self-tuning k-NN affinity + normalized Laplacian embedding via the
   in-house Jacobi eigensolver, k-means-landmark-reduced above 256 microclusters — separates

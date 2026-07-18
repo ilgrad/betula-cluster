@@ -41,6 +41,16 @@ All notable changes to this project are documented here. The format follows
   merge (collapse peaks separated by only a shallow density valley) cleans the mode-count curve, so it
   is robust from 2 to ~8+ well-separated clusters and on unequal densities. Pure-Rust mean-shift over
   the `M ≪ N` leaves — cost bounded by the leaf budget, not `N`.
+- `method="gmm-toeplitz"` — **AR / Toeplitz-structured GMM for ordered, wide-sense-stationary
+  signals** (fixed-length time-series windows, trajectories, sensor / audio / vibration waveforms).
+  Each component's covariance is an **AR(w)** process: the pooled autocovariance is mapped by
+  **Levinson-Durbin** to a banded whitening-filter precision `Γ = AᵀA/σ²` — **positive-definite by
+  construction**, `O(w)` parameters, order `w` chosen by BIC — so it stays well-posed in the
+  `N_k ≪ d` regime where full covariance is singular and a diagonal model is blind to neighbour
+  correlation. Reuses the CF scatter (no new tree machinery); a scalar stationary mean; BIC auto-`k`
+  at `n_clusters=0`. **For ordered coordinates only** — on generic embeddings the Toeplitz prior is
+  wrong (use `gmm` / `gmm-full`). Based on the Gohberg-Semencul Toeplitz-precision estimator of
+  arXiv:2311.14995; design and validation in [`docs/adr/001-gmm-toeplitz.md`](docs/adr/001-gmm-toeplitz.md).
 
 ### Fixed
 - **High-dimensional GMM regularization** — the expected-log E-step adds a within-leaf correction

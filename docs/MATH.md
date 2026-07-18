@@ -57,6 +57,29 @@ unfloored fit starves one to 9) and raises full-covariance ARI $0.39 \to 0.51$, 
 `GaussianMixture` (0.40), while low-dimensional and rotated-anisotropic fits are unchanged. The
 diagonal GMM floors its per-dimension variance the same way ($10^{-3}\,(\Sigma_\text{global})_{dd}$).
 
+## Toeplitz / AR covariance for stationary signals
+
+For an ordered **wide-sense-stationary** signal the covariance is Toeplitz, $\Sigma_{ts} = c(|t-s|)$, so
+it is fixed by an autocovariance sequence rather than a dense $d\times d$ matrix. `method="gmm-toeplitz"`
+models each component covariance as an **AR(w)** process. The pooled biased autocovariance
+
+$$
+r_c(\tau) = \frac{1}{N_c\,d}\sum_i w_{ic}\Bigl[\textstyle\sum_t \delta_{it}\,\delta_{i,t+\tau} + [\tau=0]\operatorname{tr}\Sigma_i\Bigr],
+\qquad \delta_i = \mu_i - \mu_c,
+$$
+
+(from the leaf mean deviations, with the within-leaf variance folded into the zero lag) is mapped by the
+**Levinson-Durbin** recursion to AR coefficients $a$ and innovation variance $\sigma^2$. The precision is
+the banded whitening filter $\Gamma = A^\top A/\sigma^2$, where $A$ has unit diagonal and $-a_j$ on the
+$j$-th sub-diagonal. It is **positive-definite by construction** ($\sigma^2 > 0$, $|A| = 1$) with $O(w)$
+parameters. The E-step is $O(d\,w)$: $\log\det\Gamma = -d\ln\sigma^2$ and the Mahalanobis term is the
+whitening-residual energy $\lVert A\delta\rVert^2/\sigma^2 = \sum_{t\ge w}(\delta_t - \sum_j a_j\delta_{t-j})^2/\sigma^2$;
+the order $w$ is chosen per component by BIC, and the mean is a single stationary scalar (one parameter,
+not $d$). This is well-posed at $N_k \ll d$, where full covariance is singular and a diagonal model is
+blind to the neighbour correlation. Ordered coordinates only — a permutation destroys the structure.
+(Gohberg-Semencul Toeplitz-precision estimation, arXiv:2311.14995; see
+[`docs/adr/001-gmm-toeplitz.md`](adr/001-gmm-toeplitz.md).)
+
 ## Directional clustering: spherical k-means & von Mises–Fisher
 
 On L2-normalized data every point lies on the unit sphere `S^{d-1}`, where cosine — not Euclidean —

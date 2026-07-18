@@ -159,7 +159,7 @@ Python end-to-end + scikit-learn benchmark (`README.md`, `bench/RESULTS.md`):
   a 5-point warm-up and $\sigma_j = 0$ pass-through, leaving a valid $(n, \mu, S)$; point inserts only,
   rebuild reinserts unaffected).
 - Phase-3a `clustering::{kmeans, xmeans, gmm_diagonal, gmm_full, *_auto, ward_hac, ward_hac_auto,
-  spectral, leiden, spherical_kmeans, movmf, scale_space}` (**Hamerly-accelerated exact Lloyd**,
+  spectral, leiden, spherical_kmeans, movmf, scale_space, gmm_toeplitz}` (**Hamerly-accelerated exact Lloyd**,
   tested ≡ brute; variant-C E-step + NIW/MAP + a per-dimension covariance floor for high-dimensional
   stability; full-covariance GMM; self-tuning $k$-NN spectral embedding; **Leiden** modularity / CPM
   community detection over `clustering::graph`, optionally **covariance/manifold-aware** (log-Euclidean

@@ -42,6 +42,7 @@ _Method = Literal[
     "leiden-cpm",
     "spherical-kmeans",
     "vmf",
+    "gmm-toeplitz",
     "hdbscan",
     "scale-space",
 ]

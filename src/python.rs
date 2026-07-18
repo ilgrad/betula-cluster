@@ -78,6 +78,7 @@ fn parse_method(
         })),
         "spherical-kmeans" => Ok(Kind::Parametric(Method::SphericalKMeans)),
         "vmf" => Ok(Kind::Parametric(Method::Movmf)),
+        "gmm-toeplitz" => Ok(Kind::Parametric(Method::GmmToeplitz)),
         "hdbscan" => Ok(Kind::Hdbscan {
             min_samples,
             min_cluster_size,
@@ -85,7 +86,7 @@ fn parse_method(
         "scale-space" => Ok(Kind::ScaleSpace),
         _ => Err(PyValueError::new_err(
             "method must be 'kmeans', 'gmm', 'gmm-full', 'ward', 'spectral', 'leiden', \
-             'leiden-cpm', 'spherical-kmeans', 'vmf', 'hdbscan' or 'scale-space'",
+             'leiden-cpm', 'spherical-kmeans', 'vmf', 'gmm-toeplitz', 'hdbscan' or 'scale-space'",
         )),
     }
 }

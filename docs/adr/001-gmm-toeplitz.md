@@ -1,6 +1,7 @@
 # ADR 001 — Toeplitz / AR-structured GMM covariance head (`gmm-toeplitz`)
 
-**Status:** Proposed · target **0.3.0**, experimental (off by default) · not scheduled for 0.2.0.
+**Status:** Accepted · **implemented** (experimental, off by default), ships in 0.3.0 · validated in
+Rust (`clustering::gmm_toeplitz`) and Python (`method="gmm-toeplitz"`).
 
 ## Context
 

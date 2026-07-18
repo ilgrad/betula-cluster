@@ -140,6 +140,47 @@ def test_vmf_predict_proba_is_true_posterior(sphere_blobs):
     assert ari(proba.argmax(axis=1), y) > 0.9
 
 
+@pytest.fixture(scope="module")
+def ar_windows():
+    """Three AR components distinguishable ONLY by autocovariance (unit marginal variance)."""
+    rng = np.random.default_rng(3)
+    d, per = 64, 18
+    specs = ([0.8], [1.1, -0.4], [])  # AR(1) · AR(2) · white-noise control
+    xs, ys = [], []
+    for c, a in enumerate(specs):
+        a = np.asarray(a, float)
+        w = len(a)
+        for _ in range(per):
+            buf = np.zeros(d + 200)
+            e = rng.normal(size=d + 200)
+            for t in range(w, d + 200):
+                buf[t] = (a * buf[t - w : t][::-1]).sum() + e[t] if w else e[t]
+            win = buf[200:]
+            win = (win - win.mean()) / win.std()
+            xs.append(win)
+            ys.append(c)
+    return np.vstack(xs).astype(np.float64), np.array(ys)
+
+
+def test_gmm_toeplitz_separates_ar_mixture(ar_windows):
+    x, y = ar_windows
+    kw = dict(feature="spherical", threshold=0.0, seed=1)
+    toe = betula_cluster.fit_predict(x, 3, method="gmm-toeplitz", **kw)
+    diag = betula_cluster.fit_predict(x, 3, method="gmm", **kw)
+    a_toe, a_diag = ari(toe, y), ari(diag, y)
+    assert a_toe > 0.6, f"toeplitz ARI = {a_toe}"
+    assert a_toe > a_diag + 0.3, f"toeplitz {a_toe} should beat diagonal {a_diag}"
+
+
+def test_gmm_toeplitz_auto_k(ar_windows):
+    x, y = ar_windows
+    labels = betula_cluster.fit_predict(
+        x, n_clusters=0, method="gmm-toeplitz", feature="spherical", threshold=0.0, seed=1
+    )
+    assert n_labels(labels) == 3
+    assert ari(labels, y) > 0.6
+
+
 def test_directional_methods_force_normalization(sphere_blobs):
     x, y = sphere_blobs
     est = betula_cluster.Betula(method="vmf", n_clusters=3, threshold=0.05, max_leaves=300, seed=1)
