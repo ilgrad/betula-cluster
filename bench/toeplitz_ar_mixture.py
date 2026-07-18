@@ -25,7 +25,7 @@ def ar_windows(n, d, a, rng):
         buf = np.zeros(d + 256)
         e = rng.normal(size=d + 256)
         for t in range(w, d + 256):
-            buf[t] = (a * buf[t - w:t][::-1]).sum() + e[t] if w else e[t]
+            buf[t] = (a * buf[t - w : t][::-1]).sum() + e[t] if w else e[t]
         win = buf[256:]
         out[k] = (win - win.mean()) / win.std()
     return out
@@ -41,18 +41,28 @@ def make_mixture(d, per, seed):
 def main():
     per = 30
     print(f"AR-mixture: 3 components (AR(1) 0.8 · AR(2) [1.1,-0.4] · white), {per} windows each\n")
-    print(f"{'d':>5} {'N_k/d':>6} | {'betula-toeplitz':>15} {'betula-diag':>12} {'betula-full':>12} {'sk-diag':>8} {'sk-full':>8}")
+    print(
+        f"{'d':>5} {'N_k/d':>6} | {'betula-toeplitz':>15} {'betula-diag':>12} {'betula-full':>12} {'sk-diag':>8} {'sk-full':>8}"
+    )
     print("-" * 78)
     for d in (32, 64, 128, 256):
         X, y = make_mixture(d, per, seed=1)
-        toe = bc.fit_predict(X, 3, method="gmm-toeplitz", feature="spherical", threshold=0.0, seed=1)
+        toe = bc.fit_predict(
+            X, 3, method="gmm-toeplitz", feature="spherical", threshold=0.0, seed=1
+        )
         bdi = bc.fit_predict(X, 3, method="gmm", feature="diagonal", threshold=0.0, seed=1)
         bfu = bc.fit_predict(X, 3, method="gmm-full", feature="full", threshold=0.0, seed=1)
         skd = GaussianMixture(3, covariance_type="diag", n_init=8, random_state=0).fit_predict(X)
-        skf = GaussianMixture(3, covariance_type="full", reg_covar=1e-3, n_init=8, random_state=0).fit_predict(X)
+        skf = GaussianMixture(
+            3, covariance_type="full", reg_covar=1e-3, n_init=8, random_state=0
+        ).fit_predict(X)
         row = [ari(y, np.asarray(v)) for v in (toe, bdi, bfu, skd, skf)]
-        print(f"{d:>5} {per / d:>6.2f} | {row[0]:>15.3f} {row[1]:>12.3f} {row[2]:>12.3f} {row[3]:>8.3f} {row[4]:>8.3f}")
-    print("\nOnly the AR/Toeplitz head recovers the components; it improves with d (more positions to")
+        print(
+            f"{d:>5} {per / d:>6.2f} | {row[0]:>15.3f} {row[1]:>12.3f} {row[2]:>12.3f} {row[3]:>8.3f} {row[4]:>8.3f}"
+        )
+    print(
+        "\nOnly the AR/Toeplitz head recovers the components; it improves with d (more positions to"
+    )
     print("pool the autocovariance) while diagonal is blind and full is singular at N_k < d.")
 
 
