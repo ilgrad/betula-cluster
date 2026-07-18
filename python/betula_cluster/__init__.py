@@ -882,12 +882,12 @@ class Betula:
     def predict_proba(self, X):
         """Per-point soft assignment, shape ``(n, n_components)``.
 
-        The **GMM** and **vMF** heads return the true posterior responsibilities (routed via each
-        point's microcluster). **k-means / Ward / HDBSCAN** return a heuristic ``softmax(−d²/2τ²)``
+        The **GMM**, **vMF**, and **``gmm-toeplitz``** heads return the true posterior responsibilities
+        (routed via each point's microcluster). **k-means / Ward / HDBSCAN** return a heuristic ``softmax(−d²/2τ²)``
         over the cluster centroids (``τ`` = mean cluster radius) — a confidence *proxy*, **not** a
         calibrated posterior. Columns are component indices aligned with :meth:`predict`."""
         est = self._require_fit()
-        if self.method in ("gmm", "gmm-full", "vmf"):
+        if self.method in ("gmm", "gmm-full", "vmf", "gmm-toeplitz"):
             leaf_proba = est.microcluster_proba_
             leaves = np.asarray(est.assign_microclusters(X))
             return leaf_proba[leaves]

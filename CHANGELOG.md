@@ -44,11 +44,14 @@ All notable changes to this project are documented here. The format follows
 - `method="gmm-toeplitz"` — **AR / Toeplitz-structured GMM for ordered, wide-sense-stationary
   signals** (fixed-length time-series windows, trajectories, sensor / audio / vibration waveforms).
   Each component's covariance is an **AR(w)** process: the pooled autocovariance is mapped by
-  **Levinson-Durbin** to a banded whitening-filter precision `Γ = AᵀA/σ²` — **positive-definite by
-  construction**, `O(w)` parameters, order `w` chosen by BIC — so it stays well-posed in the
+  **Levinson-Durbin** to the exact **Gohberg-Semencul** precision `Γ = (1/σ²)(BBᵀ − ZZᵀ)`, evaluated by
+  the prediction-error decomposition so the `w` boundary positions are modelled exactly — **positive-
+  definite by construction** (the reflection-coefficient clamp is the GS box constraint), `O(w)`
+  parameters, order `w` chosen by BIC — so it stays well-posed in the
   `N_k ≪ d` regime where full covariance is singular and a diagonal model is blind to neighbour
   correlation. Reuses the CF scatter (no new tree machinery); a scalar stationary mean; BIC auto-`k`
-  at `n_clusters=0`. **For ordered coordinates only** — on generic embeddings the Toeplitz prior is
+  at `n_clusters=0`; a true posterior via `predict_proba`; parallel EM restarts (`parallel` feature).
+  **For ordered coordinates only** — on generic embeddings the Toeplitz prior is
   wrong (use `gmm` / `gmm-full`). Based on the Gohberg-Semencul Toeplitz-precision estimator of
   arXiv:2311.14995; design and validation in [`docs/adr/001-gmm-toeplitz.md`](docs/adr/001-gmm-toeplitz.md).
 

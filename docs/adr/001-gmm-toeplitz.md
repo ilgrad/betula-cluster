@@ -37,9 +37,12 @@ Toeplitz-structured**.
   the banded whitening filter `A` (unit diagonal, `−a_j` on the j-th sub-diagonal):
   `Γ = AᵀA / σ²`, **positive-definite by construction** (`σ² > 0`). Pick order `w` by **BIC** over a
   small bounded grid (`w ≤ ~8`).
-- **E-step, all `O(d·w)`** (no dense `d×d`): `logdet Σ = −d log σ²` (from the Levinson
-  prediction-error product), Mahalanobis `δᵀΓδ = ‖A δ‖² / σ²` (whitening-residual energy), and the
-  within-leaf correction `tr(Γ Σ_i)` from the banded `Γ` against the CF second moment.
+- **E-step, all `O(d·w)`, via the exact Gohberg-Semencul precision** (no dense `d×d`): the exact
+  finite-sample AR log-likelihood by the **prediction-error decomposition** — position `t` uses the
+  order-`min(t, w)` Levinson predictor and its own error variance, so the `w` boundary positions are
+  modelled *exactly* (the GS `−ZZᵀ` corner term) instead of dropped by a conditional likelihood.
+  Measured **+0.04 ARI at short windows** (`d = 32 / 64`) over the conditional form, identical at
+  `d ≫ w`. PD is guaranteed by Levinson's reflection-coefficient clamp (the GS box constraint).
 - **Parameters:** `O(w)` per component instead of `O(d²)` — well-posed at `N_k ≪ d`.
 - **Scope guard:** documented for ordered / stationary signals **only**; explicitly *not* for generic
   embeddings, where coordinate order is meaningless and a permutation destroys the Toeplitz structure
@@ -85,10 +88,20 @@ log-likelihood), no ground-truth used in fitting.
 2. **Reduce dimensionality first (SVD/PCA), then cluster with an existing head.** Destroys the
    neighbour correlation the prior exploits; we already measure this failure on SVD-reduced sparse text
    (`bench/RESULTS.md`). Rejected.
-3. **The paper's exact GS closed-form estimator** (general Toeplitz precision, not just AR(w)). More
-   faithful to arXiv:2311.14995 and strictly more expressive, but heavier to implement and to tune the
-   PD constraint set. **Deferred** — ship the validated AR/Levinson route first; revisit the GS
-   closed form only if AR(w) proves too restrictive on real signals.
+3. **The paper's exact GS estimator.** **Implemented** — the exact Gohberg-Semencul precision
+   `Γ = (1/σ²)(BBᵀ − ZZᵀ)` is realised via the prediction-error decomposition (see the E-step above;
+   the reflection-coefficient clamp is the paper's PD box constraint), measurably beating the initial
+   conditional likelihood on short windows. Two paper variants are *not* implemented and remain
+   deferred, both by evidence: (a) the **covariance-method** coefficient estimator
+   `â = S⁻¹_{≥1,≥1} S_{≥1,0}` (lower bias but needs the box *projection* to stay PD — the
+   autocorrelation-method Yule-Walker/Levinson estimator we use is already PD and, per the probe below,
+   sufficient); (b) a **general (non-AR) Toeplitz** precision. A probe over the cases where AR(w) is
+   intuitively suspect shows banded AR(w, BIC) is *not* restrictive for clustering: periodic signals
+   (two sinusoids of different period + white control) ARI **1.00** — a single sinusoid is an AR(2)
+   resonance, so period needs no order; MA(2) (infinite AR order) **0.93–1.00**; four-sinusoid signals
+   whose true AR order (~8) exceeds `w_max = 6` **1.00**. Clustering only needs the per-component fits
+   to *differ*, not to be exact, so the extra generality is a parameter-efficiency refinement, not a
+   capability gap; the cheap lever if a hard signal appears is to raise `w_max` (an internal constant).
 4. **Do nothing; tell time-series users to preprocess.** The weak default. This ADR records the design
    so it is ready when 0.3.0 scope is set, without blocking the 0.2.0 release.
 

@@ -1702,7 +1702,7 @@ impl Betula {
     fn microcluster_proba_<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray2<f64>>> {
         let (flat, k) = self.proba.as_ref().ok_or_else(|| {
             PyValueError::new_err(
-                "predict_proba posterior is only available after fit with method='gmm' or 'gmm-full'",
+                "predict_proba posterior is only available after fit with method='gmm', 'gmm-full', 'vmf' or 'gmm-toeplitz'",
             )
         })?;
         let rows = flat.len().checked_div(*k).unwrap_or(0);

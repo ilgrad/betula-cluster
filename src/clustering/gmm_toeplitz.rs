@@ -4,11 +4,14 @@
 //! For a stationary signal the covariance is (approximately) Toeplitz, `Σ_{ts} = c(|t − s|)`, so it
 //! is determined by an autocovariance sequence rather than a dense `d × d` matrix. Each component's
 //! covariance is modelled as an **AR(w)** process: the biased pooled autocovariance `r(0..w)` is
-//! mapped by **Levinson-Durbin** to AR coefficients `a` and innovation variance `σ²`, and the
-//! precision is the banded whitening filter `Γ = AᵀA / σ²` (unit diagonal, `−a_j` on the j-th
-//! sub-diagonal). `Γ` is **positive-definite by construction** (`σ² > 0`) and has `O(w)` parameters
-//! instead of `O(d²)` — well-posed exactly in the `N_k ≪ d` regime where full covariance is singular
-//! and a diagonal model is blind to neighbour correlation.
+//! mapped by **Levinson-Durbin** to the order-`w` predictor and innovation variance `σ²`. The precision
+//! is the **exact Gohberg-Semencul** form `Γ = (1/σ²)(BBᵀ − ZZᵀ)`, evaluated via the prediction-error
+//! decomposition so the `w` boundary positions are modelled *exactly* (the `−ZZᵀ` corner term), not
+//! dropped as in a conditional likelihood. `Γ` is **positive-definite by construction** — Levinson's
+//! reflection-coefficient clamp *is* the GS box constraint `|αᵢ/α₀| ≤ Kᵢ` — and has `O(w)` parameters
+//! instead of `O(d²)`, well-posed exactly in the `N_k ≪ d` regime where full covariance is singular
+//! and a diagonal model is blind to neighbour correlation. Estimator + PD constraint follow
+//! arXiv:2311.14995.
 //!
 //! The autocovariance is pooled from the leaf **mean deviations** `δ_i = μ_i − μ_c` (the between-leaf
 //! structure) plus the within-leaf per-dimension variance folded into the zero lag `r(0)` (so the
@@ -50,19 +53,26 @@ pub struct GmmToeplitz<R: Real> {
     pub loglik: R,
 }
 
-/// Levinson-Durbin recursion: autocovariance `r[0..=w]` → AR coefficients `[a_1 .. a_w]` and
-/// innovation variance. Reflection coefficients are clamped to keep the whitening filter stable.
-fn levinson<R: Real>(r: &[R], w: usize) -> (Vec<R>, R) {
+/// Levinson-Durbin producing **all** intermediate order-`m` predictors and prediction-error
+/// variances (`m = 0..=w`): `phi[m]` are the order-`m` AR coefficients (length `m`) and `v[m]` the
+/// step-`m` prediction-error variance. The final `(phi[w], v[w])` are the AR(w) coefficients and
+/// innovation variance; the lower orders give the **exact** boundary likelihood below. Reflection
+/// coefficients are clamped to `|k| ≤ 0.999`, keeping every predictor stable (⇒ each `v[m] > 0`),
+/// which is exactly the positive-definiteness constraint the Gohberg-Semencul parameterization needs.
+fn levinson_full<R: Real>(r: &[R], w: usize) -> (Vec<Vec<R>>, Vec<R>) {
     let tiny = R::from_f64(1e-12).unwrap();
     let lim = R::from_f64(0.999).unwrap();
+    let mut phi: Vec<Vec<R>> = Vec::with_capacity(w + 1);
+    phi.push(Vec::new()); // order 0: no predictor
+    let mut v = vec![R::zero(); w + 1];
+    v[0] = r[0].max(tiny);
     let mut a = vec![R::zero(); w];
-    let mut e = r[0].max(tiny);
     for m in 1..=w {
         let mut acc = r[m];
         for i in 0..m - 1 {
             acc = acc - a[i] * r[m - 1 - i];
         }
-        let mut k = acc / e;
+        let mut k = acc / v[m - 1];
         if k > lim {
             k = lim;
         } else if k < -lim {
@@ -73,31 +83,31 @@ fn levinson<R: Real>(r: &[R], w: usize) -> (Vec<R>, R) {
         for i in 0..m - 1 {
             a[i] = old[i] - k * old[m - 2 - i];
         }
-        e = (e * (R::one() - k * k)).max(tiny);
+        v[m] = (v[m - 1] * (R::one() - k * k)).max(tiny);
+        phi.push(a[..m].to_vec());
     }
-    (a, e)
+    (phi, v)
 }
 
-/// Whitening-residual energy `Σ_{t≥w} (δ_t − Σ_j a_j δ_{t−j})²` — the conditional AR quadratic form.
-fn ar_energy<R: Real>(delta: &[R], a: &[R]) -> R {
-    let w = a.len();
-    let mut e = R::zero();
-    for t in w..delta.len() {
-        let mut resid = delta[t];
-        for (j, &aj) in a.iter().enumerate() {
-            resid = resid - aj * delta[t - 1 - j];
-        }
-        e = e + resid * resid;
-    }
-    e
-}
-
-/// Conditional AR log-density of `delta` under `(a, σ²)` (drops the first `w` boundary positions).
-fn ar_loglik<R: Real>(delta: &[R], a: &[R], sigma2: R) -> R {
+/// **Exact** finite-sample AR (Gohberg-Semencul) log-density of `delta` via the prediction-error
+/// decomposition. Position `t` is predicted by the order-`min(t, w)` predictor with its own error
+/// variance `v[min(t,w)]`, so the first `w` boundary positions are modelled *exactly* — this is the
+/// GS `Γ = (1/σ²)(BBᵀ − ZZᵀ)` precision (the `−ZZᵀ` term is the corner/edge correction) made
+/// computational, rather than the conditional likelihood that simply drops those positions.
+fn ar_loglik_exact<R: Real>(delta: &[R], phi: &[Vec<R>], v: &[R], w: usize) -> R {
     let half = R::from_f64(0.5).unwrap();
     let two_pi = R::from_f64(std::f64::consts::TAU).unwrap();
-    let n_eff = R::from_usize(delta.len() - a.len()).unwrap();
-    -half * (n_eff * (two_pi * sigma2).ln() + ar_energy(delta, a) / sigma2)
+    let mut ll = R::zero();
+    for (t, &dt) in delta.iter().enumerate() {
+        let m = t.min(w);
+        let mut pred = R::zero();
+        for (j, &pj) in phi[m].iter().enumerate() {
+            pred = pred + pj * delta[t - 1 - j];
+        }
+        let e = dt - pred;
+        ll = ll - half * ((two_pi * v[m]).ln() + e * e / v[m]);
+    }
+    ll
 }
 
 /// Pooled biased weighted autocovariance `r[0..=w]` of a component with mean `mu_c`. `wt[i]` is the
@@ -137,14 +147,23 @@ where
     r
 }
 
-/// Fit the AR order `w ∈ [1, w_max]` by BIC for a component with weights `wt` and mean `mu_c`.
-fn fit_component<R, C>(features: &[C], wt: &[R], mu_c: R, dim: usize, w_max: usize) -> (Vec<R>, R)
+/// Fit the AR order `w ∈ [1, w_max]` by BIC for a component with weights `wt` and mean `mu_c`,
+/// returning the intermediate predictors `phi[0..=w]` and error variances `v[0..=w]` for the selected
+/// order (consumed by the exact-likelihood E-step).
+fn fit_component<R, C>(
+    features: &[C],
+    wt: &[R],
+    mu_c: R,
+    dim: usize,
+    w_max: usize,
+) -> (Vec<Vec<R>>, Vec<R>)
 where
     R: Real,
     C: ClusterFeature<R>,
 {
     let w_hi = w_max.min(dim.saturating_sub(1)).max(1);
     let r = component_autocov(features, wt, mu_c, dim, w_hi);
+    let (phi_all, v_all) = levinson_full(&r, w_hi);
     let nsum: R = wt
         .iter()
         .copied()
@@ -152,25 +171,24 @@ where
         .fold(R::zero(), |a, x| a + x);
     let n_eff = (nsum * R::from_usize(dim).unwrap()).max(R::one());
     let two = R::from_f64(2.0).unwrap();
-    let mut best = (vec![R::zero(); 1], r[0].max(R::from_f64(1e-12).unwrap()));
+    let mut best_w = 1;
     let mut best_bic = R::infinity();
     for w in 1..=w_hi {
-        let (a, e) = levinson(&r[..=w], w);
         let mut ll = R::zero();
         for (f, &wi) in features.iter().zip(wt) {
             if wi <= R::zero() {
                 continue;
             }
             let delta: Vec<R> = (0..dim).map(|t| f.mean()[t] - mu_c).collect();
-            ll = ll + wi * ar_loglik(&delta, &a, e);
+            ll = ll + wi * ar_loglik_exact(&delta, &phi_all[..=w], &v_all[..=w], w);
         }
         let bic = -two * ll + R::from_usize(w).unwrap() * n_eff.ln();
         if bic < best_bic {
             best_bic = bic;
-            best = (a, e);
+            best_w = w;
         }
     }
-    best
+    (phi_all[..=best_w].to_vec(), v_all[..=best_w].to_vec())
 }
 
 fn argmax<R: Real>(v: &[R]) -> usize {
@@ -218,8 +236,8 @@ where
 
     let mut weights = vec![R::one() / R::from_usize(k).unwrap(); k];
     let mut means = vec![R::zero(); k];
-    let mut ar: Vec<Vec<R>> = vec![vec![R::zero(); 1]; k];
-    let mut innov = vec![R::one(); k];
+    let mut phi: Vec<Vec<Vec<R>>> = vec![vec![Vec::new()]; k];
+    let mut vv: Vec<Vec<R>> = vec![vec![R::one()]; k];
     let mut loglik = R::neg_infinity();
     let tol = R::from_f64(1e-6).unwrap();
 
@@ -238,10 +256,10 @@ where
                 }
                 mc = mc / (nkc * R::from_usize(dim).unwrap());
             }
-            let (a, e) = fit_component(features, &wt, mc, dim, w_max);
+            let (p, vc) = fit_component(features, &wt, mc, dim, w_max);
             means[c] = mc;
-            ar[c] = a;
-            innov[c] = e;
+            phi[c] = p;
+            vv[c] = vc;
         }
         let ntot: R = nk.iter().copied().sum();
         for c in 0..k {
@@ -254,7 +272,8 @@ where
             let mut logr = vec![R::zero(); k];
             for c in 0..k {
                 let delta: Vec<R> = (0..dim).map(|t| mu[i][t] - means[c]).collect();
-                logr[c] = weights[c].ln() + ar_loglik(&delta, &ar[c], innov[c]);
+                logr[c] =
+                    weights[c].ln() + ar_loglik_exact(&delta, &phi[c], &vv[c], phi[c].len() - 1);
             }
             let mx = logr.iter().copied().fold(R::neg_infinity(), R::max);
             let mut s = R::zero();
@@ -275,6 +294,11 @@ where
     }
 
     let labels = resp.iter().map(|r| argmax(r)).collect();
+    let ar: Vec<Vec<R>> = phi
+        .iter()
+        .map(|p| p.last().cloned().unwrap_or_default())
+        .collect();
+    let innov: Vec<R> = vv.iter().map(|v| *v.last().unwrap()).collect();
     GmmToeplitz {
         labels,
         resp,
@@ -293,14 +317,12 @@ where
     R: Real,
     C: ClusterFeature<R>,
 {
-    let mut best: Option<GmmToeplitz<R>> = None;
-    for r in 0..TOEPLITZ_N_INIT {
-        let cand = gmm_toeplitz_once(features, k, TOEPLITZ_W_MAX, max_iter, seed.wrapping_add(r));
-        if best.as_ref().is_none_or(|b| cand.loglik > b.loglik) {
-            best = Some(cand);
-        }
-    }
-    best.unwrap()
+    crate::clustering::gmm::best_of_restarts(
+        TOEPLITZ_N_INIT,
+        seed,
+        |g: &GmmToeplitz<R>| g.loglik,
+        |s| gmm_toeplitz_once(features, k, TOEPLITZ_W_MAX, max_iter, s),
+    )
 }
 
 /// AR/Toeplitz GMM with automatic component count by BIC over `k ∈ [k_min, k_max]`.
@@ -393,8 +415,8 @@ mod tests {
         // Autocovariance of AR(1) with a=0.8: r(τ) = a^|τ| / (1 − a²). Levinson must return a≈0.8.
         let a: f64 = 0.8;
         let r: Vec<f64> = (0i32..=4).map(|t| a.powi(t) / (1.0 - a * a)).collect();
-        let (coeff, _e) = levinson(&r, 1);
-        assert!((coeff[0] - a).abs() < 1e-6, "recovered {}", coeff[0]);
+        let (phi, _v) = levinson_full(&r, 1);
+        assert!((phi[1][0] - a).abs() < 1e-6, "recovered {}", phi[1][0]);
     }
 
     #[test]

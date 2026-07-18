@@ -181,6 +181,17 @@ def test_gmm_toeplitz_auto_k(ar_windows):
     assert ari(labels, y) > 0.6
 
 
+def test_gmm_toeplitz_predict_proba(ar_windows):
+    x, y = ar_windows
+    est = betula_cluster.Betula(
+        method="gmm-toeplitz", n_clusters=3, feature="spherical", threshold=0.0, seed=1
+    ).fit(x)
+    proba = est.predict_proba(x)
+    assert proba.shape == (len(x), 3)
+    assert np.allclose(proba.sum(axis=1), 1.0, atol=1e-6)
+    assert ari(proba.argmax(axis=1), y) > 0.6
+
+
 def test_directional_methods_force_normalization(sphere_blobs):
     x, y = sphere_blobs
     est = betula_cluster.Betula(method="vmf", n_clusters=3, threshold=0.05, max_leaves=300, seed=1)

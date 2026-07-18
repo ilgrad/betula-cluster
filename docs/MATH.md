@@ -69,12 +69,16 @@ r_c(\tau) = \frac{1}{N_c\,d}\sum_i w_{ic}\Bigl[\textstyle\sum_t \delta_{it}\,\de
 $$
 
 (from the leaf mean deviations, with the within-leaf variance folded into the zero lag) is mapped by the
-**Levinson-Durbin** recursion to AR coefficients $a$ and innovation variance $\sigma^2$. The precision is
-the banded whitening filter $\Gamma = A^\top A/\sigma^2$, where $A$ has unit diagonal and $-a_j$ on the
-$j$-th sub-diagonal. It is **positive-definite by construction** ($\sigma^2 > 0$, $|A| = 1$) with $O(w)$
-parameters. The E-step is $O(d\,w)$: $\log\det\Gamma = -d\ln\sigma^2$ and the Mahalanobis term is the
-whitening-residual energy $\lVert A\delta\rVert^2/\sigma^2 = \sum_{t\ge w}(\delta_t - \sum_j a_j\delta_{t-j})^2/\sigma^2$;
-the order $w$ is chosen per component by BIC, and the mean is a single stationary scalar (one parameter,
+**Levinson-Durbin** recursion, kept at *every* intermediate order $m = 0..w$ (predictor $\phi_m$, error
+variance $v_m$). The precision is the **exact Gohberg-Semencul** form $\Gamma = (1/\sigma^2)(BB^\top - ZZ^\top)$
+($B$ lower-triangular Toeplitz from the AR coefficients; $Z$ the corner correction), evaluated by the
+**prediction-error decomposition**
+$\log p(\delta) = -\tfrac12\sum_{t=0}^{d-1}\bigl[\ln(2\pi v_{m_t}) + (\delta_t - \phi_{m_t}\!\cdot\delta_{t-1:t-m_t})^2/v_{m_t}\bigr]$,
+$m_t = \min(t, w)$ — so the first $w$ boundary positions are modelled *exactly* (the $-ZZ^\top$ term)
+rather than dropped by a conditional likelihood (measured $+0.04$ ARI at short windows). It is
+**positive-definite by construction** — the reflection-coefficient clamp $|k_m| \le 0.999$ ($\Rightarrow v_m > 0$)
+is the GS box constraint — with $O(w)$ parameters and $O(d\,w)$ cost per leaf. The order $w$ is chosen
+per component by BIC, and the mean is a single stationary scalar (one parameter,
 not $d$). This is well-posed at $N_k \ll d$, where full covariance is singular and a diagonal model is
 blind to the neighbour correlation. Ordered coordinates only — a permutation destroys the structure.
 (Gohberg-Semencul Toeplitz-precision estimation, arXiv:2311.14995; see

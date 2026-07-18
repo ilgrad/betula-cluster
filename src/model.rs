@@ -210,6 +210,16 @@ pub(crate) fn cluster_leaves_proba<R: Real, C: ClusterFeature<R>>(
             let p = flatten(&g.resp);
             (g.labels, Some(p))
         }
+        Method::GmmToeplitz if k == 0 => {
+            let g = gmm_toeplitz_auto(features, 1, auto_hi, max_iter, seed);
+            let p = flatten(&g.resp);
+            (g.labels, Some(p))
+        }
+        Method::GmmToeplitz => {
+            let g = gmm_toeplitz(features, k.min(nlv).max(1), max_iter, seed);
+            let p = flatten(&g.resp);
+            (g.labels, Some(p))
+        }
         _ => (cluster_leaves(features, k, method, max_iter, seed), None),
     }
 }
