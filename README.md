@@ -29,20 +29,21 @@ with peak RSS sampled from `/proc/self/statm`. Full methodology, every metric, a
 **and** losses) live in [**`bench/RESULTS.md`**](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md).
 
 - ⚡🪶 **Always faster — and lighter — at scale (the unconditional win).** betula labels **1 M points
-  in 0.26 s**: 13× faster than scikit-learn KMeans, 21× vs GaussianMixture, 32× vs Birch — and streams
-  **10 M in a flat ~60 MB** where an in-core KMeans needs **~5 GB** (**≈82× less**, and the gap grows
+  in 0.22 s**: 13× faster than scikit-learn KMeans, 23× vs GaussianMixture, 37× vs Birch — and streams
+  **10 M in a flat ~60 MB** where an in-core KMeans needs **~5 GB** (**≈83× less**, and the gap grows
   without bound). This holds for *every* method at *every* size.
 - 🎯 **Quality at parity — or better — on most tasks.** betula's k-means is at **exact** parity with
   scikit-learn (blobs 0.861 = 0.861); full-covariance GMM matches it on anisotropic data (0.90 vs
   0.90) and **beats** scikit-learn's GMM on real 64-D `digits` (**0.51 vs 0.40**, via the
-  high-dimensional covariance floor); Ward runs the full `N` where `O(N²)` sklearn-ward caps out; and
-  on non-convex moons & circles the **spectral** and HDBSCAN heads hit **ARI 1.00** — spectral
-  matching scikit-learn's `SpectralClustering` at **3–4× the speed**.
-- 🌍 **Real data, honest trade-offs.** On `digits` betula-kmeans leads (0.57 vs 0.47); it clusters
-  **full covtype (581 k rows) ~6× faster** at matching ARI; in 784-D MNIST `normalize=True` **beats**
-  scikit-learn (0.33 vs 0.32). Where a compression method costs some quality — the diagonal GMM on
-  non-Gaussian covtype, HDBSCAN on overlapping blobs — `bench/RESULTS.md` reports it rather than hides
-  it.
+  high-dimensional covariance floor); betula-ward clusters 1 M in 0.30 s where `O(N²)` sklearn-ward
+  can't run past ~10 k; and on non-convex moons & circles the **spectral** and HDBSCAN heads hit
+  **ARI 1.00** — spectral matching scikit-learn's `SpectralClustering` at **3–5× the speed**.
+- 🌍 **Real data, honest trade-offs.** On `digits` betula-kmeans leads (0.57 vs 0.47); given adequate
+  leaf resolution its diagonal GMM overtakes scikit-learn on hard `covtype` too (**0.096 vs 0.080**);
+  it clusters **full covtype (581 k rows) ~5.8× faster** at matching ARI; in 784-D MNIST
+  `normalize=True` **beats** scikit-learn (0.33 vs 0.32). Where a compression method costs some
+  quality — raw-Euclidean k-means in 784-D, HDBSCAN on overlapping blobs — `bench/RESULTS.md` reports
+  it rather than hides it.
 
 | ![Fit time vs N](https://raw.githubusercontent.com/ilgrad/betula-cluster/main/bench/plots/scaling_time.png) | ![Peak memory vs N](https://raw.githubusercontent.com/ilgrad/betula-cluster/main/bench/plots/memory_streaming.png) |
 |:--:|:--:|

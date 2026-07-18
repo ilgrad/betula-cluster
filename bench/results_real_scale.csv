@@ -1,3 +1,3 @@
 dataset,method,time_s,rss_mb,n_clusters,ari
-covtype,betula-kmeans,2.1199477589980233,904.17152,7,0.047
-covtype,sklearn-kmeans,13.592663235001964,921.612288,7,0.049
+covtype,betula-kmeans,1.9368590199997016,912.297984,7,0.047
+covtype,sklearn-kmeans,11.239216379000027,931.92192,7,0.049

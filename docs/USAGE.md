@@ -26,8 +26,8 @@ Keyword args: `feature ∈ {spherical, diagonal, full, fd}`, `method ∈ {kmeans
 for streaming concept drift), `normalize` (L2-normalize rows → cluster by *direction*; on the unit
 sphere squared-Euclidean is monotone in cosine, so the tree clusters by angle — this is also **the
 high-`d` fix**: at d≫100 raw Euclidean distances concentrate and the tree collapses, but direction
-stays discriminative, so `normalize=True` takes MNIST-784 from 0.04 to **0.44 ARI**, beating
-scikit-learn; leave it off for tabular data where magnitude is signal),
+stays discriminative, so `normalize=True` takes MNIST-784 from 0.20 to **0.33 ARI**, past
+scikit-learn's 0.32; leave it off for tabular data where magnitude is signal),
 `n_jobs` (parallel shard+merge tree build — `>1` gives ~4–5× on large
 `N`), `threshold`, `branching`, `leaf_cap`, `max_leaves`, `max_iter`, `min_samples`,
 `min_cluster_size`, `resolution` (Leiden γ — granularity for `method="leiden"` / `"leiden-cpm"`, higher

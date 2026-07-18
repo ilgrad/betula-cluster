@@ -5,7 +5,7 @@
 betula-cluster compresses raw data or a stream into a small set of numerically stable BETULA
 *microclusters* (a CF-tree), then runs the clustering head over the compressed summary. Cost scales
 with the compression size, not with `N` — so it labels **a million points in ~0.2 s** and streams
-**ten million in a flat ~57 MB of RAM**, at quality on par with scikit-learn.
+**ten million in a flat ~60 MB of RAM**, at quality on par with scikit-learn.
 
 ```bash
 pip install betula-cluster

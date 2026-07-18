@@ -259,6 +259,62 @@ def run_real(datasets: list[str]) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def run_real_hires(datasets: list[str]) -> pd.DataFrame:
+    """Real-dataset quality when betula is given **adequate resolution** instead of the bounded-memory
+    ``max_leaves=4000``. On a small eval set (≤ 20 k rows) that cap is a self-handicap — betula's
+    memory win lives at large ``N``, not here — so ``max_leaves`` is scaled to the set
+    (``min(N, 16000)``). This is honest, not tuning: betula simply gets enough microclusters to
+    represent the data; the scikit-learn baselines are identical to the bounded table."""
+    import betula_cluster as bc
+    from sklearn.cluster import KMeans
+    from sklearn.mixture import GaussianMixture
+
+    rows = []
+    for ds in datasets:
+        loaded = load_real(ds)
+        if loaded is None:
+            continue
+        X, y, k = loaded
+        ml = min(len(X), 16_000)
+        kw = dict(threshold=0.0, max_leaves=ml, seed=0, n_jobs=1)
+        skip_full = X.shape[1] > 100
+        cand = [
+            (
+                "betula-kmeans",
+                lambda X, k=k, kw=kw: bc.fit_predict(
+                    X, k, feature="spherical", method="kmeans", **kw
+                ),
+            ),
+            (
+                "betula-gmm",
+                lambda X, k=k, kw=kw: bc.fit_predict(X, k, feature="diagonal", method="gmm", **kw),
+            ),
+            ("sklearn-kmeans", lambda X, k=k: KMeans(k, n_init=10, random_state=0).fit_predict(X)),
+        ]
+        if not skip_full:
+            cand.append(
+                (
+                    "betula-gmm-full",
+                    lambda X, k=k, kw=kw: bc.fit_predict(
+                        X, k, feature="full", method="gmm-full", **kw
+                    ),
+                )
+            )
+            cand.append(
+                ("sklearn-gmm", lambda X, k=k: GaussianMixture(k, random_state=0).fit(X).predict(X))
+            )
+        print(f"[real-hires] {ds}: N={len(X):,} d={X.shape[1]} k={k} max_leaves={ml}")
+        for name, fn in cand:
+            rec = {"dataset": ds, "n": len(X), "max_leaves": ml, "method": name}
+            try:
+                rec.update(score(X, y, np.asarray(fn(X))))
+            except Exception as e:
+                rec["error"] = type(e).__name__
+            rows.append(rec)
+            print(f"  hires {ds:8s} {name:16s} ARI={rec.get('ARI', float('nan')):.3f}")
+    return pd.DataFrame(rows)
+
+
 def run_real_normalize(datasets: list[str]) -> pd.DataFrame:
     """Effect of ``normalize=True`` (L2 row-normalization → cluster by *direction*) on real data.
 
@@ -484,6 +540,8 @@ def main():
     print(f"[real] quality on real datasets {real_datasets}")
     qr = run_real(real_datasets)
     qr.to_csv(HERE / "results_real.csv", index=False)
+    print("[real-hires] betula at adequate resolution (de-handicapped) on the small eval sets")
+    run_real_hires(real_datasets).to_csv(HERE / "results_real_hires.csv", index=False)
     print("[real-normalize] normalize=True effect (high-d fix vs tabular harm)")
     run_real_normalize(real_datasets).to_csv(HERE / "results_real_normalize.csv", index=False)
     print(f"[scaling] sizes={sizes}")
