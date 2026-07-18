@@ -19,7 +19,7 @@ labels = betula_cluster.fit_predict(X, method="hdbscan", min_samples=10, min_clu
 # hdbscan: label -1 == noise
 ```
 
-Keyword args: `feature ∈ {spherical, diagonal, full, fd}`, `method ∈ {kmeans, gmm, gmm-full, ward, spectral, leiden, leiden-cpm, spherical-kmeans, vmf, gmm-toeplitz, gmm-toeplitz-full, hdbscan, scale-space}`,
+Keyword args: `feature ∈ {spherical, diagonal, full, fd}`, `method ∈ {kmeans, gmm, gmm-full, ward, spectral, leiden, leiden-cpm, spherical-kmeans, vmf, gmm-toeplitz, gmm-toeplitz-full, gmm-toeplitz-gs, hdbscan, scale-space}`,
 `distance ∈ {euclidean, manhattan, ward, average}` (routing measure),
 `absorb ∈ {euclidean, chi2}` (`chi2` = mass-invariant Mahalanobis gate at level `chi2_p` with
 `chi2_scale` = within-cluster variance; fixes the BIRCH size-imbalance bug), `decay` (EWMA factor
@@ -34,9 +34,9 @@ scikit-learn's 0.32; leave it off for tabular data where magnitude is signal),
 ⇒ more communities), `covariance_weight` (Leiden β — a log-Euclidean covariance/shape term in the
 affinity, `feature="full"`; `0` = off, the centroid-only default), `tangent_weight` / `tangent_rank`
 (Leiden γ — a Grassmann tangent-subspace term of rank `tangent_rank` for manifold-aware communities,
-`feature="full"`; `0` = off), `projection` / `projection_dim` (**`"weighted-nmf"`** reduces the leaf
-centroids to `projection_dim` nonnegative CF-weighted NMF codes before the head — for **nonnegative**
-data only: TF-IDF / counts / spectrograms; `"none"` = off), `seed`. `n_clusters=0` ⇒ automatic `k` for every parametric head (BIC for
+`feature="full"`; `0` = off), `projection` / `projection_dim` (**`"weighted-nmf"`**, or **`"weighted-nmf-kl"`** for count data, reduces
+the leaf centroids to `projection_dim` nonnegative CF-weighted NMF codes before the head — for
+**nonnegative** data only: TF-IDF / counts / spectrograms; `"none"` = off), `seed`. `n_clusters=0` ⇒ automatic `k` for every parametric head (BIC for
 k-means/GMM, dendrogram cut for Ward). `threshold="auto"` (dense only) drops the one knob users most
 often have to guess: a subsample pilot estimates a warm-start absorption radius, so the full fit
 starts near-converged instead of growing the threshold from zero.
@@ -54,7 +54,7 @@ starts near-converged instead of growing the threshold from zero.
 | variable-density clusters **+ noise**, unknown count | `hdbscan` | no |
 | **density peaks**, arbitrary count, no `k` *or* bandwidth to pick | `scale-space` | **no** — scale chosen by mode persistence |
 | **ordered / stationary signals** (time-series windows, trajectories, sensor waveforms), covariance *shape* | `gmm-toeplitz` | yes (or `0` = BIC) |
-| ordered signals with structure **beyond a low-order AR** (long-lag echo, narrowband) | `gmm-toeplitz-full` | yes (or `0` = BIC) |
+| ordered signals with structure **beyond a low-order AR** (long-lag echo, narrowband) | `gmm-toeplitz-full` (any lag) or `gmm-toeplitz-gs` (likelihood-optimal precision, ≤ order 16) | yes (or `0` = BIC) |
 | topological skeleton / #components / loops | [`mapper()`](FEATURES.md) | no |
 
 `n_clusters=0` auto-selects `k` for the parametric heads; `leiden` / `hdbscan` always discover it

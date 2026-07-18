@@ -132,8 +132,8 @@ zero dispatch cost; Python/CLI pick variants via enums.
 
 ## Status
 
-**Done & verified** — 182 Rust unit + 4 integration tests (default features; the `python` / `cli`
-surfaces add more) + a 210-case `pytest` suite (Python wrapper at 100 % line coverage, Rust ≥95 %
+**Done & verified** — 185 Rust unit + 4 integration tests (default features; the `python` / `cli`
+surfaces add more) + a 213-case `pytest` suite (Python wrapper at 100 % line coverage, Rust ≥95 %
 CI-enforced via `cargo llvm-cov`); `clippy -D warnings` + `fmt` clean (across `parallel`, serial,
 `persistence`, `cli`, and `python` feature sets); GitHub Actions CI (Rust gate
 + Python build/pytest on 3.11–3.14) and a multi-platform wheel-release workflow (`.github/workflows/`);
@@ -159,13 +159,16 @@ Python end-to-end + scikit-learn benchmark (`README.md`, `bench/RESULTS.md`):
   a 5-point warm-up and $\sigma_j = 0$ pass-through, leaving a valid $(n, \mu, S)$; point inserts only,
   rebuild reinserts unaffected).
 - Phase-3a `clustering::{kmeans, xmeans, gmm_diagonal, gmm_full, *_auto, ward_hac, ward_hac_auto,
-  spectral, leiden, spherical_kmeans, movmf, scale_space, gmm_toeplitz}` (**Hamerly-accelerated exact Lloyd**,
+  spectral, leiden, spherical_kmeans, movmf, scale_space, gmm_toeplitz, gmm_toeplitz_full,
+  gmm_toeplitz_gs}` (**Hamerly-accelerated exact Lloyd**,
   tested ≡ brute; variant-C E-step + NIW/MAP + a per-dimension covariance floor for high-dimensional
   stability; full-covariance GMM; self-tuning $k$-NN spectral embedding; **Leiden** modularity / CPM
   community detection over `clustering::graph`, optionally **covariance/manifold-aware** (log-Euclidean
   shape + Grassmann tangent terms, GeoBETULA); **directional** spherical k-means / von Mises–Fisher
   mixtures on the unit sphere (`clustering::vmf`); **scale-space** Morse-persistence density-mode
-  clustering (`clustering::scalespace` — no `k`, no bandwidth); auto-$k$ at `n_clusters = 0` for every
+  clustering (`clustering::scalespace` — no `k`, no bandwidth); **Toeplitz-structured** GMM for ordered
+  stationary signals — a three-rung ladder of banded AR precision / general PD Toeplitz covariance /
+  full-order Gohberg-Semencul MLE precision (`clustering::gmm_toeplitz`); auto-$k$ at `n_clusters = 0` for every
   parametric head — BIC for k-means (X-means) / GMM / vMF, dendrogram cut for Ward-HAC, default 2 for
   spectral; Leiden and scale-space discover the count from the data and ignore $k$).
 - `clustering::cop_kmeans` — **constrained** (semi-supervised) k-means (COP-KMeans, Wagstaff et al.

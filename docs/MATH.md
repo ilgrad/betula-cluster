@@ -99,6 +99,15 @@ long-lag-echo mixture ($K\in\{16,28,40\}>w_{\max}=10$) it reaches ARI $0.70\!\to
 where the AR head sits at chance, and it matches the AR head on AR-generated signals
 (`bench/toeplitz_ar_mixture.py`).
 
+A third route, `method="gmm-toeplitz-gs"`, estimates the general Toeplitz **precision** by the paper's
+**Gohberg-Semencul MLE**: a full-order (`≤ 16`) Yule-Walker (Levinson) fit refined by coordinate ascent of
+the exact log-likelihood over the reflection coefficients $k_m$, positive-definite by $|k_m| < 1$ and
+deterministic. The reflection-coefficient parameterization makes the constraint free — the step-up
+recursion maps any $|k| < 1$ to a stable predictor with $v_m > 0$ — so the MLE refines the moment
+estimator toward the likelihood optimum without leaving the PD cone. Its $O(m \cdot d \cdot p)$ E-step is
+cheaper than the dense $O(d^3)$ covariance route at large $d$; it captures structure up to its order cap
+(mid-lag echoes the banded head misses), while the covariance route covers arbitrarily long lags.
+
 ## CF-weighted NMF for nonnegative data
 
 For **nonnegative** features (TF-IDF, bag-of-words, event counts, spectrogram magnitudes, histograms) a
@@ -121,6 +130,15 @@ cross-product matrices $HH^\top$, $\tilde X H^\top$, $W^\top W$, $W^\top \tilde 
 $M$ is small the matrices are tiny, so no BLAS is needed — **the compression, not a fast NMF kernel, is the
 speed-up**. Nonnegative input only; signed data is rejected rather than shifted (a shift would destroy
 angles). For signed embeddings use the directional heads or reduce with PCA / TruncatedSVD first.
+
+For **count** data (word counts, event tallies) the Frobenius objective assumes Gaussian noise, which is
+mis-specified — counts are Poisson. `projection="weighted-nmf-kl"` minimizes the generalized-KL
+(I-divergence) $\sum_{ij} [X_{ij}\ln(X_{ij}/(WH)_{ij}) - X_{ij} + (WH)_{ij}]$ by Lee-Seung multiplicative
+updates over the raw centroids, with the shared components $H$ weighted by leaf mass $n_j$ (the per-row
+$W$ update is weight-invariant, each row minimized independently) — the Poisson maximum-likelihood fit.
+The gain is rate-dependent: largest at **sparse** counts (measured up to **+0.5 ARI** over Frobenius on a
+Poisson-count mixture at mean rate $< 0.5$), narrowing to a few points as the mean count grows past $\sim1.5$
+and the central-limit theorem pulls Poisson toward Gaussian.
 
 ## Directional clustering: spherical k-means & von Mises–Fisher
 

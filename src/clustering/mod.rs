@@ -20,7 +20,8 @@ pub mod ward;
 pub use community::{leiden, Community, Objective};
 pub use gmm::{gmm_diagonal, gmm_diagonal_auto, gmm_full, gmm_full_auto, Gmm, GmmFull};
 pub use gmm_toeplitz::{
-    gmm_toeplitz, gmm_toeplitz_auto, gmm_toeplitz_full, gmm_toeplitz_full_auto, GmmToeplitz,
+    gmm_toeplitz, gmm_toeplitz_auto, gmm_toeplitz_full, gmm_toeplitz_full_auto, gmm_toeplitz_gs,
+    gmm_toeplitz_gs_auto, GmmToeplitz,
 };
 pub use hdbscan::{hdbscan, Hdbscan};
 pub use kmeans::{cop_kmeans, kmeans, xmeans, ConstraintError, KMeans};

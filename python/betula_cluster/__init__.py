@@ -524,7 +524,7 @@ class Betula:
     def _check_projection_input(self, X, csr):
         # CF-weighted NMF is defined only for nonnegative data; reject signed input rather than
         # silently shifting it (a shift changes angles / cosine geometry). Dense input only here.
-        if self.projection != "weighted-nmf":
+        if not str(self.projection).startswith("weighted-nmf"):
             return
         if csr is not None:
             raise ValueError(
@@ -908,13 +908,20 @@ class Betula:
     def predict_proba(self, X):
         """Per-point soft assignment, shape ``(n, n_components)``.
 
-        The **GMM**, **vMF**, and **``gmm-toeplitz``** / **``gmm-toeplitz-full``** heads return the
-        true posterior responsibilities (routed via each point's microcluster). **k-means / Ward /
-        HDBSCAN** return a heuristic ``softmax(−d²/2τ²)`` over the cluster centroids (``τ`` = mean
-        cluster radius) — a confidence *proxy*, **not** a calibrated posterior. Columns are
-        component indices aligned with :meth:`predict`."""
+        The **GMM**, **vMF**, and **Toeplitz** (``gmm-toeplitz`` / ``-full`` / ``-gs``) heads return
+        the true posterior responsibilities (routed via each point's microcluster).
+        **k-means / Ward / HDBSCAN** return a heuristic ``softmax(−d²/2τ²)`` over the cluster
+        centroids (``τ`` = mean cluster radius) — a confidence *proxy*, **not** a calibrated
+        posterior. Columns are component indices aligned with :meth:`predict`."""
         est = self._require_fit()
-        if self.method in ("gmm", "gmm-full", "vmf", "gmm-toeplitz", "gmm-toeplitz-full"):
+        if self.method in (
+            "gmm",
+            "gmm-full",
+            "vmf",
+            "gmm-toeplitz",
+            "gmm-toeplitz-full",
+            "gmm-toeplitz-gs",
+        ):
             leaf_proba = est.microcluster_proba_
             leaves = np.asarray(est.assign_microclusters(X))
             return leaf_proba[leaves]

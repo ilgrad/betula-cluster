@@ -235,14 +235,69 @@ plt.show()
 etbl
 
 # %% [markdown]
+# ## The third rung — `method="gmm-toeplitz-gs"` (likelihood-optimal precision)
+#
+# Between the banded AR head and the dense-covariance one sits **`gmm-toeplitz-gs`**: the paper's full
+# **Gohberg-Semencul MLE**. It fits a positive-definite Toeplitz *precision* by maximizing the exact AR
+# log-likelihood — a Yule-Walker (Levinson) warm start refined by coordinate ascent over the reflection
+# coefficients (PD guaranteed by `|k| < 1`, deterministic). On a **mid-lag echo** (lags `11–15`, *beyond*
+# the banded head's `w_max = 10` but within the GS order cap) it recovers the structure the AR head
+# misses, at a **precision** E-step that is cheaper than the dense `O(d³)` covariance of `-full` at large
+# `d`. The covariance-route `-full` head still wins on *arbitrarily* long lags (the order cap is the
+# trade-off) — the three routes are complementary.
+
+# %%
+GS_ECHO = (11, 13, 15)  # mid-lag echoes: beyond w_max=10, within the GS order cap
+
+
+def gs_echo_mixture(d, per, seed):
+    rng = np.random.default_rng(seed)
+    xs = [echo_windows(per, d, k, rng) for k in GS_ECHO]
+    y = np.concatenate([np.full(per, c) for c in range(len(GS_ECHO))])
+    return np.ascontiguousarray(np.vstack(xs), dtype=np.float64), y
+
+
+dg = 96
+Xg, yg = gs_echo_mixture(dg, per=30, seed=1)
+gs_rows = [
+    ("betula gmm-toeplitz-gs", betula_cluster.fit_predict(Xg, 3, method="gmm-toeplitz-gs", **kw)),
+    ("betula gmm-toeplitz-full", betula_cluster.fit_predict(Xg, 3, method="gmm-toeplitz-full", **kw)),
+    ("betula gmm-toeplitz (AR)", betula_cluster.fit_predict(Xg, 3, method="gmm-toeplitz", **kw)),
+]
+gtbl = pd.DataFrame(
+    {
+        "method": [r[0] for r in gs_rows],
+        "ARI": [round(ari(yg, np.asarray(r[1])), 3) for r in gs_rows],
+    }
+).set_index("method")
+
+fig, ax = plt.subplots(figsize=(6.4, 2.6))
+ax.barh(range(len(gtbl)), gtbl["ARI"], color=["#264653", "#8ab6b0", "#bbb"])
+ax.set(
+    yticks=range(len(gtbl)),
+    xlabel="ARI",
+    xlim=(min(0, gtbl["ARI"].min()) - 0.05, 1.05),
+    title=f"mid-lag echo, lags {GS_ECHO} > w_max=10  (d={dg})",
+)
+ax.set_yticklabels(gtbl.index)
+ax.invert_yaxis()
+for i, v in enumerate(gtbl["ARI"]):
+    ax.text(v + 0.02, i, f"{v:.2f}", va="center", fontsize=8)
+fig.tight_layout()
+plt.show()
+gtbl
+
+# %% [markdown]
 # **Takeaway.** For **ordered, stationary** signals — time-series windows, trajectories, sensor
 # waveforms — the neighbour correlation is the signal, and the Toeplitz heads are the ones that model
-# it. **`method="gmm-toeplitz"`** fits an AR(w) / Toeplitz precision (positive-definite by construction,
-# `O(w)` parameters, order by BIC) that stays well-posed exactly where diagonal is blind and full
-# covariance is singular; **`method="gmm-toeplitz-full"`** drops the AR order cap for a general
-# positive-definite Toeplitz covariance (`O(d³)`) when the structure lives beyond a low order (the echo
-# above). Use `feature="spherical"` or `"diagonal"`; both run over the CF microclusters like every other
-# head, so they inherit betula's scale and bounded memory. **For ordered coordinates only** — on generic
-# embeddings a coordinate permutation would destroy the Toeplitz structure, so reach for `gmm` /
-# `gmm-full` there. See the [Usage guide](../docs/USAGE.md) and
+# it, in a **three-rung ladder**. **`method="gmm-toeplitz"`** fits an AR(w) / Toeplitz precision
+# (positive-definite by construction, `O(w)` parameters, order by BIC) that stays well-posed exactly
+# where diagonal is blind and full covariance is singular; **`method="gmm-toeplitz-full"`** drops the AR
+# order cap for a general positive-definite Toeplitz *covariance* (`O(d³)`) when the structure lives
+# beyond a low order (the long-lag echo); **`method="gmm-toeplitz-gs"`** fits a likelihood-optimal
+# Gohberg-Semencul *precision* (mid-lag structure, cheaper E-step than full at large `d`). Use
+# `feature="spherical"` or `"diagonal"`; all run over the CF microclusters like every other head, so they
+# inherit betula's scale and bounded memory. **For ordered coordinates only** — on generic embeddings a
+# coordinate permutation would destroy the Toeplitz structure, so reach for `gmm` / `gmm-full` there. See
+# the [Usage guide](../docs/USAGE.md) and
 # [`docs/MATH.md`](../docs/MATH.md#toeplitz--ar-covariance-for-stationary-signals).

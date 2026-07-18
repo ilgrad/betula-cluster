@@ -1,8 +1,9 @@
 # ADR 001 — Toeplitz / AR-structured GMM covariance head (`gmm-toeplitz`)
 
 **Status:** Accepted · **implemented** (experimental, off by default). The **AR(w)** head
-(`method="gmm-toeplitz"`) ships in **0.2.0**; the general (non-AR) **`gmm-toeplitz-full`** head ships in
-**0.3.0**. Validated in Rust (`clustering::gmm_toeplitz`) and Python.
+(`method="gmm-toeplitz"`) ships in **0.2.0**; the general (non-AR) **`gmm-toeplitz-full`** head in
+**0.3.0**; the full-order **Gohberg-Semencul MLE** head (`method="gmm-toeplitz-gs"`) in **0.5.0** — the
+three-rung ladder is complete. Validated in Rust (`clustering::gmm_toeplitz`) and Python.
 
 ## Context
 
@@ -119,10 +120,16 @@ log-likelihood), no ground-truth used in fitting.
    the general `gmm-toeplitz-full` head, a dense PD Toeplitz covariance from the **biased** autocovariance
    (PSD by construction — simpler *and* cheaper than the alternating {Toeplitz} ∩ {PSD} projection first
    sketched, with no numerical optimizer), which recovers a long-lag-echo mixture (lag `K > w_max`) that
-   AR cannot (ARI 0.70 → 0.97 vs chance); (3) **deferred** — the full paper **GS-MLE** (per-component
-   non-convex optimization over the two Gohberg-Semencul generators) only if a real signal measurably
-   beats (2). Rung (3) trades the head's determinism for a gain the biased-Toeplitz estimator already
-   captures on every case tested, so it stays gated behind that evidence.
+   AR cannot (ARI 0.70 → 0.97 vs chance); (3) **done (0.5.0)** — `method="gmm-toeplitz-gs"`, the full-order
+   exact-GS **MLE** precision: a Yule-Walker (Levinson) warm start at order ≤ 16, refined by coordinate
+   ascent of the exact log-likelihood over the reflection coefficients (PD by `|k| < 1`, deterministic) —
+   faithful to the paper's likelihood-based estimator, made cheap by warm-starting from the moment
+   estimator rather than optimizing the GS generators from scratch. Measured: competitive with the AR head
+   on AR signals, and recovers mid-lag echo (lags 11–16 > `w_max`) the banded head misses, while the
+   covariance-route `gmm-toeplitz-full` still covers arbitrarily long lags (the order cap is the trade-off
+   for the `O(m·d·p)` precision E-step). The three routes are complementary: banded AR (cheapest, short
+   memory), dense-covariance full (any lag), MLE precision (likelihood-optimal, cheaper E-step than full
+   at large `d`).
 4. **Do nothing; tell time-series users to preprocess.** The weak default, rejected: the head is a
    genuine capability no preprocessing recovers. This ADR records the design and the measured evidence
    alongside the 0.2.0 implementation.

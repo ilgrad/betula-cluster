@@ -32,7 +32,7 @@ __version__: str
 
 _FloatArray = NDArray[np.float64] | NDArray[np.float32]
 _Feature = Literal["spherical", "diagonal", "full", "fd"]
-_Projection = Literal["none", "weighted-nmf"]
+_Projection = Literal["none", "weighted-nmf", "weighted-nmf-kl"]
 _Method = Literal[
     "kmeans",
     "gmm",
@@ -45,6 +45,7 @@ _Method = Literal[
     "vmf",
     "gmm-toeplitz",
     "gmm-toeplitz-full",
+    "gmm-toeplitz-gs",
     "hdbscan",
     "scale-space",
 ]

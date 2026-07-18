@@ -35,16 +35,30 @@ const TOEPLITZ_N_INIT: u64 = 8;
 /// precision as `w` grows (Wold), and BIC keeps the smallest sufficient order, so a generous cap adds
 /// headroom for higher-order / MA-like signals at no cost on the easy ones (it self-limits at `d − 1`).
 const TOEPLITZ_W_MAX: usize = 10;
+/// Order cap for the full-order Gohberg-Semencul MLE head (`gmm-toeplitz-gs`); it fits up to this order
+/// (self-limited at `d − 1`), a general (non-banded) precision that captures autocovariance structure
+/// beyond the banded AR head. `O(m·d·p)` per likelihood eval, so kept moderate.
+const GS_ORDER_MAX: usize = 16;
+/// Coordinate-ascent sweeps refining the reflection coefficients toward the exact-likelihood optimum —
+/// the MLE step on top of the Yule-Walker (Levinson) warm start.
+const GS_REFINE_SWEEPS: usize = 1;
+/// EM restarts for the GS-MLE head — fewer than the cheaper heads because each fit is `O(m·d·p)` per
+/// M-step (the full-order likelihood refinement); still deterministic for a `seed`.
+const GS_N_INIT: u64 = 4;
 
 /// Which per-component covariance model the EM fits: the banded **AR(w)** precision (few parameters,
-/// well-posed at `N_k ≪ d`) or a **general positive-definite Toeplitz** covariance (the full
-/// autocovariance sequence, for signals whose structure a low-order AR cannot capture).
+/// well-posed at `N_k ≪ d`), a **general positive-definite Toeplitz** covariance (the full
+/// autocovariance sequence), or the full-order **Gohberg-Semencul MLE** precision.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum CovKind {
     /// Banded AR(`w`) precision via Levinson-Durbin + the exact Gohberg-Semencul decomposition.
     Ar,
     /// Dense general Toeplitz covariance from the biased (periodogram-consistent) autocovariance.
     ToeplitzFull,
+    /// Full-order **Gohberg-Semencul MLE** precision: Yule-Walker warm start refined by coordinate
+    /// ascent of the exact log-likelihood over the reflection coefficients (positive-definite by the
+    /// `|k| < 1` constraint). The likelihood-optimal general precision; see arXiv:2311.14995.
+    GsMle,
 }
 
 /// A fitted per-component covariance: either the AR(`w`) predictor bank or a dense Toeplitz Cholesky.
@@ -269,6 +283,92 @@ where
     CompCov::Toeplitz { chol, logdet }
 }
 
+/// Levinson step-up: build the order-`m` predictors `phi[0..=p]` and error variances `v[0..=p]` from
+/// reflection coefficients `refl[1..=p]` and the zero-lag variance `r0` — the inverse of the reflection
+/// extraction. `|refl_m| < 1` keeps every `v[m] > 0`, i.e. the Gohberg-Semencul precision PD.
+fn step_up<R: Real>(refl: &[R], r0: R, p: usize) -> (Vec<Vec<R>>, Vec<R>) {
+    let tiny = R::from_f64(1e-12).unwrap();
+    let mut phi: Vec<Vec<R>> = Vec::with_capacity(p + 1);
+    phi.push(Vec::new());
+    let mut v = vec![R::zero(); p + 1];
+    v[0] = r0.max(tiny);
+    let mut a = vec![R::zero(); p];
+    for m in 1..=p {
+        let km = refl[m];
+        let old = a.clone();
+        a[m - 1] = km;
+        for i in 0..m - 1 {
+            a[i] = old[i] - km * old[m - 2 - i];
+        }
+        v[m] = (v[m - 1] * (R::one() - km * km)).max(tiny);
+        phi.push(a[..m].to_vec());
+    }
+    (phi, v)
+}
+
+/// Fit the full-order **Gohberg-Semencul MLE** precision for a component: a Yule-Walker (Levinson) warm
+/// start at order `min(d−1, GS_ORDER_MAX)`, then coordinate ascent of the exact weighted log-likelihood
+/// over the reflection coefficients (the MLE refinement; `|k| < 1` keeps it positive-definite). Returns
+/// the refined predictor bank as an `Ar` covariance — the E-step consumes the same exact GS precision.
+fn fit_component_gs<R, C>(features: &[C], wt: &[R], mu_c: R, dim: usize) -> CompCov<R>
+where
+    R: Real,
+    C: ClusterFeature<R>,
+{
+    let p = GS_ORDER_MAX.min(dim.saturating_sub(1)).max(1);
+    let r = component_autocov(features, wt, mu_c, dim, p);
+    let (phi0, _v0) = levinson_full(&r, p);
+    // reflection coefficient at order m is the last coefficient of the order-m predictor.
+    let mut refl = vec![R::zero(); p + 1];
+    for (m, item) in refl.iter_mut().enumerate().take(p + 1).skip(1) {
+        *item = *phi0[m].last().unwrap();
+    }
+    let lim = R::from_f64(0.999).unwrap();
+
+    let deltas: Vec<(R, Vec<R>)> = features
+        .iter()
+        .zip(wt)
+        .filter(|(_, &w)| w > R::zero())
+        .map(|(f, &w)| (w, (0..dim).map(|t| f.mean()[t] - mu_c).collect()))
+        .collect();
+    let r0 = r[0];
+    let eval = |refl: &[R]| -> R {
+        let (phi, v) = step_up(refl, r0, p);
+        deltas
+            .iter()
+            .map(|(w, d)| *w * ar_loglik_exact(d, &phi, &v, p))
+            .fold(R::zero(), |a, b| a + b)
+    };
+
+    // Coordinate ascent: a local pattern search per reflection coefficient (best of a few step sizes),
+    // warm-started from Yule-Walker so a couple of sweeps suffice.
+    let steps = [R::from_f64(0.15).unwrap(), R::from_f64(0.05).unwrap()];
+    let mut cur = eval(&refl);
+    for _ in 0..GS_REFINE_SWEEPS {
+        for m in 1..=p {
+            let (mut best_k, mut best_l) = (refl[m], cur);
+            for &s in &steps {
+                for &dir in &[R::one(), -R::one()] {
+                    let cand = (refl[m] + dir * s).max(-lim).min(lim);
+                    let saved = refl[m];
+                    refl[m] = cand;
+                    let l = eval(&refl);
+                    refl[m] = saved;
+                    if l > best_l {
+                        best_l = l;
+                        best_k = cand;
+                    }
+                }
+            }
+            refl[m] = best_k;
+            cur = best_l;
+        }
+    }
+
+    let (phi, v) = step_up(&refl, r0, p);
+    CompCov::Ar { phi, v }
+}
+
 /// Fit the AR order `w ∈ [1, w_max]` by BIC for a component with weights `wt` and mean `mu_c`,
 /// returning the intermediate predictors `phi[0..=w]` and error variances `v[0..=w]` for the selected
 /// order (consumed by the exact-likelihood E-step).
@@ -390,6 +490,7 @@ where
                     CompCov::Ar { phi, v }
                 }
                 CovKind::ToeplitzFull => fit_toeplitz_full(features, &wt, mc, dim),
+                CovKind::GsMle => fit_component_gs(features, &wt, mc, dim),
             };
         }
         let ntot: R = nk.iter().copied().sum();
@@ -450,8 +551,12 @@ where
     R: Real,
     C: ClusterFeature<R>,
 {
+    let n_init = match kind {
+        CovKind::GsMle => GS_N_INIT,
+        _ => TOEPLITZ_N_INIT,
+    };
     crate::clustering::gmm::best_of_restarts(
-        TOEPLITZ_N_INIT,
+        n_init,
         seed,
         |g: &GmmToeplitz<R>| g.loglik,
         |s| gmm_toeplitz_once(features, k, TOEPLITZ_W_MAX, kind, max_iter, s),
@@ -488,6 +593,7 @@ where
         let cov_p = match kind {
             CovKind::Ar => 1 + TOEPLITZ_W_MAX,
             CovKind::ToeplitzFull => dim,
+            CovKind::GsMle => 1 + GS_ORDER_MAX,
         };
         let p = k * (1 + cov_p) + (k - 1);
         let bic = -two * g.loglik + R::from_usize(p).unwrap() * ntot.ln();
@@ -560,6 +666,32 @@ where
         max_iter,
         seed,
     )
+}
+
+/// Fit a `k`-component **Gohberg-Semencul MLE** Toeplitz GMM — a full-order (`≤ GS_ORDER_MAX`) precision,
+/// Yule-Walker-warm-started and refined by exact-likelihood coordinate ascent (PD by `|k| < 1`). The
+/// likelihood-optimal general precision; see [ADR 001](../docs/adr/001-gmm-toeplitz.md).
+pub fn gmm_toeplitz_gs<R, C>(features: &[C], k: usize, max_iter: usize, seed: u64) -> GmmToeplitz<R>
+where
+    R: Real,
+    C: ClusterFeature<R>,
+{
+    gmm_toeplitz_kind(features, k, CovKind::GsMle, max_iter, seed)
+}
+
+/// Gohberg-Semencul MLE Toeplitz GMM with automatic component count by BIC over `k ∈ [k_min, k_max]`.
+pub fn gmm_toeplitz_gs_auto<R, C>(
+    features: &[C],
+    k_min: usize,
+    k_max: usize,
+    max_iter: usize,
+    seed: u64,
+) -> GmmToeplitz<R>
+where
+    R: Real,
+    C: ClusterFeature<R>,
+{
+    gmm_toeplitz_auto_kind(features, k_min, k_max, CovKind::GsMle, max_iter, seed)
 }
 
 #[cfg(test)]
@@ -679,5 +811,70 @@ mod tests {
         assert!(g.loglik.is_finite(), "loglik = {}", g.loglik);
         assert!(g.resp.iter().flatten().all(|r| r.is_finite()));
         assert!(!g.means.is_empty());
+    }
+
+    /// One length-`d` window of a single-echo MA process `x_t = e_t + 0.7·e_{t−lag}`, unit variance.
+    fn echo_window(rng: &mut SplitMix64, d: usize, lag: usize) -> Vec<f64> {
+        let mut e = vec![0.0; d + lag];
+        for v in e.iter_mut() {
+            *v = rng.gauss();
+        }
+        let mut win: Vec<f64> = (0..d).map(|t| e[t + lag] + 0.7 * e[t]).collect();
+        let mean = win.iter().sum::<f64>() / d as f64;
+        let var = win.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / d as f64;
+        let sd = var.sqrt().max(1e-9);
+        for v in &mut win {
+            *v = (*v - mean) / sd;
+        }
+        win
+    }
+
+    fn echo_mixture(
+        d: usize,
+        per: usize,
+        lags: &[usize],
+        seed: u64,
+    ) -> (Vec<Spherical<f64>>, Vec<usize>) {
+        let mut rng = SplitMix64::new(seed);
+        let mut feats = Vec::new();
+        let mut truth = Vec::new();
+        for (c, &lag) in lags.iter().enumerate() {
+            for _ in 0..per {
+                let win = echo_window(&mut rng, d, lag);
+                let mut f = Spherical::new(d);
+                f.push(&win, 1.0);
+                feats.push(f);
+                truth.push(c);
+            }
+        }
+        (feats, truth)
+    }
+
+    #[test]
+    fn gs_mle_clusters_ar_mixture() {
+        let specs: &[&[f64]] = &[&[0.8], &[1.1, -0.4], &[]];
+        let (feats, truth) = ar_mixture(64, 40, specs, 1);
+        let g = gmm_toeplitz_gs(&feats, 3, 200, 1);
+        assert!(g.loglik.is_finite());
+        assert!(
+            ari(&g.labels, &truth) > 0.6,
+            "gs ARI {}",
+            ari(&g.labels, &truth)
+        );
+    }
+
+    #[test]
+    fn gs_mle_recovers_long_lag_echo() {
+        // Echoes at lags {11,13,15}, all beyond the banded AR cap w_max=10 but within GS_ORDER_MAX: the
+        // full-order GS precision captures them where the banded AR head is structurally blind.
+        let (feats, truth) = echo_mixture(64, 40, &[11, 13, 15], 1);
+        let gs = gmm_toeplitz_gs(&feats, 3, 200, 1);
+        let ar = gmm_toeplitz(&feats, 3, 200, 1);
+        let (a_gs, a_ar) = (ari(&gs.labels, &truth), ari(&ar.labels, &truth));
+        assert!(a_gs > 0.5, "gs echo ARI {a_gs} (banded AR {a_ar})");
+        assert!(
+            a_gs > a_ar + 0.2,
+            "gs {a_gs} should beat banded AR {a_ar} on a long-lag echo"
+        );
     }
 }

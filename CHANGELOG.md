@@ -4,6 +4,30 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] — 2026-07-18
+
+### Added
+- `method="gmm-toeplitz-gs"` — **full-order Gohberg-Semencul MLE** Toeplitz-precision GMM for ordered
+  stationary signals: a Yule-Walker (Levinson) warm start at order ≤ 16, then coordinate ascent of the
+  exact log-likelihood over the reflection coefficients (positive-definite by the `|k| < 1` constraint) —
+  the likelihood-optimal general precision (arXiv:2311.14995), completing the three-rung Toeplitz ladder
+  of [`docs/adr/001-gmm-toeplitz.md`](docs/adr/001-gmm-toeplitz.md). Reuses the exact GS precision E-step;
+  BIC auto-`k`; a true `predict_proba`. Measured: competitive with the AR head on AR signals and recovers
+  mid-lag echo structure (lags 11–16, beyond the banded cap `w_max = 10`) the banded head is blind to,
+  while the dense-covariance `gmm-toeplitz-full` covers arbitrarily long lags (`bench/toeplitz_ar_mixture.py`).
+- `projection="weighted-nmf-kl"` — **KL-divergence (I-divergence) CF-weighted NMF** for **count** data
+  (word counts / event tallies / Poisson observations), where the Frobenius objective (Gaussian noise) is
+  mis-specified. Lee-Seung multiplicative updates with the shared components weighted by leaf mass — the
+  Poisson maximum-likelihood fit. The advantage is largest where counts are **sparse**: measured **up to
+  +0.5 ARI over Frobenius** on a Poisson-count mixture at mean rate < 0.5 (0.83 vs 0.24), narrowing to a
+  few points as counts grow and Poisson → Gaussian (`examples/17_nmf_topics.ipynb`).
+
+### Notes
+- NMF Phase-2 warm-start / randomized range-finder were assessed and **deferred** (see
+  `plans/nmf-cf-weighted.md`): in the CF-compressed regime the factorization already runs over the
+  `M ≪ N` leaves, so the compression — not these — is the speedup; they would add API/state for a marginal
+  gain and are not shipped.
+
 ## [0.4.0] — 2026-07-18
 
 ### Added

@@ -24,7 +24,10 @@ A capability-by-capability reference. For runnable code see [`USAGE.md`](USAGE.m
   arXiv:2311.14995, see [`docs/adr/001-gmm-toeplitz.md`](adr/001-gmm-toeplitz.md)) plus a general
   (non-AR) **`gmm-toeplitz-full`** head — a dense positive-definite Toeplitz covariance from the biased
   autocovariance — for signals whose autocovariance a low-order AR cannot represent (e.g. a long-lag
-  echo: it recovers such a mixture where the banded AR head sits at chance),
+  echo: it recovers such a mixture where the banded AR head sits at chance), and a **`gmm-toeplitz-gs`**
+  head — the full-order **Gohberg-Semencul MLE** precision (Yule-Walker warm start + exact-likelihood
+  coordinate ascent, PD by `|k| < 1`), the likelihood-optimal general precision with a cheaper `O(m·d·p)`
+  E-step than the dense route,
   **Ward agglomerative HAC** (exact, via nearest-neighbour chain; dendrogram-cut auto-k),
   **spectral clustering** (self-tuning k-NN affinity + normalized Laplacian embedding via the
   in-house Jacobi eigensolver, k-means-landmark-reduced above 256 microclusters — separates
@@ -86,7 +89,11 @@ A capability-by-capability reference. For runnable code see [`USAGE.md`](USAGE.m
   König-Huygens the weighted-centroid NMF equals the full-data NMF up to the within-leaf scatter
   constant, so it runs NMF at BETULA scale and bounded memory (something point-level NMF cannot), then
   any head clusters the nonnegative codes. Dependency-free weighted **HALS** (no BLAS — the matrices are
-  small because $M \ll N$). Signed input is rejected, not shifted; dense only. See [`MATH.md`](MATH.md).
+  small because $M \ll N$); `projection="weighted-nmf-kl"` switches to the **KL-divergence** variant
+  (Lee-Seung multiplicative updates) — the Poisson maximum-likelihood objective for **count** data. The
+  advantage is largest where counts are **sparse** (measured up to **+0.5 ARI** over Frobenius on
+  Poisson counts at mean rate < 0.5), converging to Frobenius as counts grow and Poisson → Gaussian.
+  Signed input is rejected, not shifted; dense only. See [`MATH.md`](MATH.md).
 - **Robust insertion** (`huber_k`) — optional Huber/winsorized point updates: each incoming point is
   clamped to within `huber_k` per-dimension standard deviations of its target microcluster *before*
   it is folded in, so a single extreme value cannot stretch a centroid or inflate a radius. Off by

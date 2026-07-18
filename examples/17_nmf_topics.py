@@ -28,6 +28,7 @@
 # %%
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 import seaborn as sns
 from sklearn.metrics import adjusted_rand_score as ari
 
@@ -126,6 +127,56 @@ fig.tight_layout()
 plt.show()
 
 # %% [markdown]
+# ## Count data — `projection="weighted-nmf-kl"` matches the Poisson noise model
+#
+# Frobenius NMF minimizes squared error — the right objective when the noise is Gaussian (TF-IDF,
+# magnitudes). But **raw counts** (word tallies, event counts) are **Poisson**, whose variance grows
+# with the mean, so squared error over-weights the large entries. The **KL-divergence** objective
+# (`projection="weighted-nmf-kl"`, Lee-Seung multiplicative updates, leaf mass folded into the `H`
+# update) is the maximum-likelihood fit under Poisson noise.
+#
+# The advantage is **largest where the counts are sparsest** — low rates are where Poisson noise
+# departs most from Gaussian. As the mean count grows, the central-limit theorem pulls Poisson toward
+# Gaussian and Frobenius catches up. The sweep below draws the same topic mixture at rising intensities.
+
+# %%
+def poisson_corpus(n_per, d, k, seed, scale):
+    """`k` nonnegative topics; each document is a Poisson draw from its topic-mixture rate."""
+    rng = np.random.default_rng(seed)
+    parts = np.abs(rng.normal(size=(k, d))) * (rng.random((k, d)) < 0.35)
+    xs, ys = [], []
+    for c in range(k):
+        w = rng.random((n_per, k)) * 0.15
+        w[:, c] += 1.0 + rng.random(n_per)
+        rate = scale * (w @ parts)  # nonnegative intensity
+        xs.append(rng.poisson(rate).astype(np.float64))
+        ys += [c] * n_per
+    return np.ascontiguousarray(np.vstack(xs)), np.array(ys)
+
+
+scales = [0.5, 1.0, 2.0, 4.0]
+mean_counts, frob, kl_ = [], [], []
+for sc in scales:
+    Xc, yc = poisson_corpus(600, d, k, seed=0, scale=sc)
+    mean_counts.append(Xc.mean())
+    frob.append(ari(yc, np.asarray(betula_cluster.fit_predict(
+        Xc, k, method="kmeans", projection="weighted-nmf", projection_dim=8, **kw))))
+    kl_.append(ari(yc, np.asarray(betula_cluster.fit_predict(
+        Xc, k, method="kmeans", projection="weighted-nmf-kl", projection_dim=8, **kw))))
+
+fig, ax = plt.subplots(figsize=(6.4, 3.4))
+ax.plot(mean_counts, frob, "o-", lw=2, color="#bbb", label="weighted-nmf (Frobenius)")
+ax.plot(mean_counts, kl_, "o-", lw=2, color="#e76f51", label="weighted-nmf-kl (Poisson)")
+ax.set(xlabel="mean count per entry (sparser ←)", ylabel="ARI vs ground-truth topics",
+       title="KL wins most on sparse counts; the gap closes as counts grow", ylim=(0, 1.05))
+ax.set_xscale("log")
+ax.legend()
+fig.tight_layout()
+plt.show()
+pd.DataFrame({"mean_count": np.round(mean_counts, 2), "Frobenius": np.round(frob, 3),
+              "KL": np.round(kl_, 3), "delta": np.round(np.array(kl_) - np.array(frob), 3)})
+
+# %% [markdown]
 # ## Nonnegative only — signed input is rejected, not shifted
 #
 # NMF is undefined for signed values, and shifting `X - X.min()` would change angles and the cosine
@@ -142,7 +193,9 @@ except ValueError as e:
 # %% [markdown]
 # **Takeaway.** For **nonnegative, additive** data, `projection="weighted-nmf"` learns interpretable
 # nonnegative parts and clusters their codes — but factorizes the `M ≪ N` leaf centroids, so NMF runs at
-# BETULA scale and bounded memory (point-level NMF cannot stream). It is an **opt-in reducer** for
-# nonnegative data only; for signed embeddings reach for `vmf` / `spherical-kmeans` or PCA / TruncatedSVD.
-# See the [Usage guide](../docs/USAGE.md) and
+# BETULA scale and bounded memory (point-level NMF cannot stream). The default Frobenius objective fits
+# Gaussian-ish magnitudes (TF-IDF); **`projection="weighted-nmf-kl"`** switches to the KL divergence, the
+# Poisson maximum-likelihood fit for raw **counts** — a large win on sparse counts, converging to
+# Frobenius as counts grow. It is an **opt-in reducer** for nonnegative data only; for signed embeddings
+# reach for `vmf` / `spherical-kmeans` or PCA / TruncatedSVD. See the [Usage guide](../docs/USAGE.md) and
 # [`docs/MATH.md`](../docs/MATH.md#cf-weighted-nmf-for-nonnegative-data).

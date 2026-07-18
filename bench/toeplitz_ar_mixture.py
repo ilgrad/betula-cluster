@@ -66,22 +66,23 @@ def fit(method, feature, x, k=3):
 def main():
     per = 30
     print(f"AR-mixture: 3 components (AR(1) 0.8 · AR(2) [1.1,-0.4] · white), {per} windows each\n")
-    hdr = f"{'d':>5} {'N_k/d':>6} | {'toeplitz-AR':>11} {'toeplitz-full':>13} {'betula-diag':>11} {'betula-full':>11} {'sk-diag':>8} {'sk-full':>8}"
+    hdr = f"{'d':>5} {'N_k/d':>6} | {'toe-AR':>8} {'toe-full':>8} {'toe-gs':>8} {'b-diag':>8} {'b-full':>8} {'sk-diag':>8} {'sk-full':>8}"
     print(hdr)
     print("-" * len(hdr))
     for d in (32, 64, 128, 256):
         x, y = make_mixture(ar_windows, SPECS, d, per, seed=1)
         toe = fit("gmm-toeplitz", "spherical", x)
         tof = fit("gmm-toeplitz-full", "spherical", x)
+        tgs = fit("gmm-toeplitz-gs", "spherical", x)
         bdi = fit("gmm", "diagonal", x)
         bfu = fit("gmm-full", "full", x)
         skd = GaussianMixture(3, covariance_type="diag", n_init=8, random_state=0).fit_predict(x)
         skf = GaussianMixture(
             3, covariance_type="full", reg_covar=1e-3, n_init=8, random_state=0
         ).fit_predict(x)
-        row = [ari(y, v) for v in (toe, tof, bdi, bfu, skd, skf)]
+        row = [ari(y, v) for v in (toe, tof, tgs, bdi, bfu, skd, skf)]
         print(
-            f"{d:>5} {per / d:>6.2f} | {row[0]:>11.3f} {row[1]:>13.3f} {row[2]:>11.3f} {row[3]:>11.3f} {row[4]:>8.3f} {row[5]:>8.3f}"
+            f"{d:>5} {per / d:>6.2f} | {row[0]:>8.3f} {row[1]:>8.3f} {row[2]:>8.3f} {row[3]:>8.3f} {row[4]:>8.3f} {row[5]:>8.3f} {row[6]:>8.3f}"
         )
     print(
         "\nBoth Toeplitz heads recover the components (improving with d); the general 'full' head tracks"
@@ -93,20 +94,26 @@ def main():
     print(
         f"Long-lag echo: 3 components, echo lag K ∈ {ECHO_LAGS} (all > w_max=10), {per} windows each\n"
     )
-    hdr2 = f"{'d':>5} {'N_k/d':>6} | {'toeplitz-AR':>11} {'toeplitz-full':>13} {'betula-diag':>11}"
+    hdr2 = f"{'d':>5} {'N_k/d':>6} | {'toeplitz-AR':>11} {'toeplitz-full':>13} {'toeplitz-gs':>11} {'betula-diag':>11}"
     print(hdr2)
     print("-" * len(hdr2))
     for d in (64, 96, 128, 192):
         x, y = make_mixture(echo_windows, ECHO_LAGS, d, per, seed=1)
         toe = fit("gmm-toeplitz", "spherical", x)
         tof = fit("gmm-toeplitz-full", "spherical", x)
+        tgs = fit("gmm-toeplitz-gs", "spherical", x)
         bdi = fit("gmm", "diagonal", x)
-        row = [ari(y, v) for v in (toe, tof, bdi)]
-        print(f"{d:>5} {per / d:>6.2f} | {row[0]:>11.3f} {row[1]:>13.3f} {row[2]:>11.3f}")
+        row = [ari(y, v) for v in (toe, tof, tgs, bdi)]
+        print(
+            f"{d:>5} {per / d:>6.2f} | {row[0]:>11.3f} {row[1]:>13.3f} {row[2]:>11.3f} {row[3]:>11.3f}"
+        )
     print(
-        "\nAR(w≤10) is structurally blind to a lag-K>10 autocovariance spike (≈ chance); only the general"
+        "\nAR(w≤10) is blind to a lag-K>10 spike (≈ chance). The general 'full' (dense covariance) head"
     )
-    print("gmm-toeplitz-full head captures it — the non-AR rung of the Toeplitz ladder.")
+    print(
+        "captures all lags; 'gs' (GS-MLE precision) captures lags within its order cap (≤16) — the two"
+    )
+    print("non-AR rungs of the Toeplitz ladder.")
 
 
 if __name__ == "__main__":

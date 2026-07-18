@@ -199,11 +199,113 @@ fn weighted_nmf<R: Real>(
     (codes, h)
 }
 
-/// Project leaf microclusters to `rank`-dimensional CF-weighted NMF codes, returned as single-point
-/// `Spherical` features (mean = code, weight = original mass) for a downstream Phase-3 head to cluster.
+/// Weighted **KL-divergence** NMF `X ≈ W H` with `X` = the raw nonnegative centroids `μ` (`M×d`), by
+/// Lee-Seung multiplicative updates. The generalized-KL (I-divergence) objective is the right noise
+/// model for **count** data (Poisson), where the Frobenius (Gaussian) HALS is mis-specified. Row weights
+/// `n_j` scale the shared-component (`H`) update — heavier leaves shape the parts more — while the
+/// per-row `W` update is weight-invariant (each row's divergence is minimized independently). Returns
+/// codes `W` (`M×r`) and components `H` (`r×d`).
+fn weighted_nmf_kl<R: Real>(
+    centroids: &[Vec<R>],
+    weights: &[R],
+    rank: usize,
+    max_iter: usize,
+    seed: u64,
+) -> (Vec<Vec<R>>, Vec<Vec<R>>) {
+    let m = centroids.len();
+    let d = centroids[0].len();
+    let r = rank.min(d).max(1);
+    let eps = R::from_f64(1e-10).unwrap();
+    let x: Vec<Vec<R>> = centroids
+        .iter()
+        .map(|row| row.iter().map(|&v| v.max(R::zero())).collect())
+        .collect();
+
+    let mut total = R::zero();
+    let mut cnt = 0usize;
+    for row in &x {
+        for &v in row {
+            total = total + v;
+            cnt += 1;
+        }
+    }
+    let mean = total / R::from_usize(cnt.max(1)).unwrap();
+    let scale = (mean / R::from_usize(r).unwrap())
+        .max(R::from_f64(1e-6).unwrap())
+        .sqrt();
+    let mut rng = SplitMix64::new(seed);
+    let mut w = vec![vec![R::zero(); r]; m];
+    for row in w.iter_mut() {
+        for v in row.iter_mut() {
+            *v = R::from_f64(rng.next_f64()).unwrap() * scale + eps;
+        }
+    }
+    let mut h = vec![vec![R::zero(); d]; r];
+    for row in h.iter_mut() {
+        for v in row.iter_mut() {
+            *v = R::from_f64(rng.next_f64()).unwrap() * scale + eps;
+        }
+    }
+
+    let wh_of = |w: &[Vec<R>], h: &[Vec<R>]| -> Vec<Vec<R>> {
+        build_rows(m, |i| {
+            (0..d)
+                .map(|j| {
+                    (0..r)
+                        .map(|k| w[i][k] * h[k][j])
+                        .fold(R::zero(), |a, b| a + b)
+                })
+                .collect()
+        })
+    };
+    for _ in 0..max_iter {
+        // W_ik *= [Σ_j (X_ij/WH_ij) H_kj] / [Σ_j H_kj]
+        let wh = wh_of(&w, &h);
+        let colsum_h: Vec<R> = (0..r)
+            .map(|k| (0..d).map(|j| h[k][j]).fold(R::zero(), |a, b| a + b))
+            .collect();
+        w = build_rows(m, |i| {
+            (0..r)
+                .map(|k| {
+                    let num: R = (0..d)
+                        .map(|j| (x[i][j] / wh[i][j].max(eps)) * h[k][j])
+                        .fold(R::zero(), |a, b| a + b);
+                    w[i][k] * num / colsum_h[k].max(eps)
+                })
+                .collect()
+        });
+        // H_kj *= [Σ_i n_i (X_ij/WH_ij) W_ik] / [Σ_i n_i W_ik]
+        let wh = wh_of(&w, &h);
+        let wsum: Vec<R> = (0..r)
+            .map(|k| {
+                (0..m)
+                    .map(|i| weights[i].max(R::zero()) * w[i][k])
+                    .fold(R::zero(), |a, b| a + b)
+            })
+            .collect();
+        h = build_rows(r, |k| {
+            (0..d)
+                .map(|j| {
+                    let num: R = (0..m)
+                        .map(|i| {
+                            weights[i].max(R::zero()) * (x[i][j] / wh[i][j].max(eps)) * w[i][k]
+                        })
+                        .fold(R::zero(), |a, b| a + b);
+                    h[k][j] * num / wsum[k].max(eps)
+                })
+                .collect()
+        });
+    }
+    (w, h)
+}
+
+/// Project leaf microclusters to `rank`-dimensional CF-weighted NMF codes (Frobenius HALS, or the
+/// KL-divergence multiplicative variant for count data when `kl`), returned as single-point `Spherical`
+/// features (mean = code, weight = original mass) for a downstream Phase-3 head to cluster.
 pub(crate) fn project_features<R, C>(
     feats: &[C],
     rank: usize,
+    kl: bool,
     max_iter: usize,
     seed: u64,
 ) -> Vec<Spherical<R>>
@@ -216,7 +318,11 @@ where
     }
     let centroids: Vec<Vec<R>> = feats.iter().map(|f| f.mean().to_vec()).collect();
     let weights: Vec<R> = feats.iter().map(|f| f.weight()).collect();
-    let (codes, _components) = weighted_nmf(&centroids, &weights, rank, max_iter.max(1), seed);
+    let (codes, _components) = if kl {
+        weighted_nmf_kl(&centroids, &weights, rank, max_iter.max(1), seed)
+    } else {
+        weighted_nmf(&centroids, &weights, rank, max_iter.max(1), seed)
+    };
     codes
         .into_iter()
         .zip(&weights)
@@ -276,7 +382,7 @@ mod tests {
             vec![2.0, 1.0, 1.0],
         ];
         let feats = leaves(&cents);
-        let coded = project_features(&feats, 2, 100, 3);
+        let coded = project_features(&feats, 2, false, 100, 3);
         assert_eq!(coded.len(), 3);
         assert!(coded.iter().all(|f| f.dim() == 2));
         assert!(coded.iter().all(|f| f.weight() == 1.0));
@@ -306,5 +412,33 @@ mod tests {
             })
             .sum();
         assert!(recon0 < 1.0, "heavy centroid poorly fit: {recon0}");
+    }
+
+    #[test]
+    fn kl_recovers_nonnegative_parts() {
+        // The KL multiplicative variant reconstructs nonnegative mixtures and keeps codes nonnegative.
+        let base = [[3.0, 0.0, 1.0, 0.0], [0.0, 2.0, 0.0, 4.0]];
+        let mut cents = Vec::new();
+        let mut rng = SplitMix64::new(2);
+        for _ in 0..40 {
+            let (a, b) = (rng.next_f64() + 0.1, rng.next_f64() + 0.1);
+            cents.push(
+                (0..4)
+                    .map(|c| a * base[0][c] + b * base[1][c])
+                    .collect::<Vec<_>>(),
+            );
+        }
+        let (codes, h) = weighted_nmf_kl(&cents, &vec![1.0; cents.len()], 2, 200, 7);
+        assert!(codes.iter().flatten().all(|&v| v >= 0.0 && v.is_finite()));
+        assert!(h.iter().flatten().all(|&v| v >= 0.0 && v.is_finite()));
+        let (mut err, mut energy) = (0.0, 0.0);
+        for (i, row) in cents.iter().enumerate() {
+            for (j, &xij) in row.iter().enumerate() {
+                let wh: f64 = (0..2).map(|kk| codes[i][kk] * h[kk][j]).sum();
+                err += (xij - wh).powi(2);
+                energy += xij * xij;
+            }
+        }
+        assert!(err / energy < 0.05, "relative residual {}", err / energy);
     }
 }

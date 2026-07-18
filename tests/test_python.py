@@ -212,6 +212,25 @@ def test_gmm_toeplitz_full_auto_k_and_proba(ar_windows):
     assert np.allclose(proba.sum(axis=1), 1.0, atol=1e-6)
 
 
+def test_gmm_toeplitz_gs_clusters_ar_mixture(ar_windows):
+    x, y = ar_windows
+    kw = dict(feature="spherical", threshold=0.0, seed=1)
+    gs = betula_cluster.fit_predict(x, 3, method="gmm-toeplitz-gs", **kw)
+    diag = betula_cluster.fit_predict(x, 3, method="gmm", feature="diagonal", threshold=0.0, seed=1)
+    assert ari(gs, y) > 0.5, f"gs ARI {ari(gs, y)} (diag {ari(diag, y)})"
+    assert ari(gs, y) > ari(diag, y) + 0.2
+
+
+def test_gmm_toeplitz_gs_predict_proba(ar_windows):
+    x, _ = ar_windows
+    est = betula_cluster.Betula(
+        method="gmm-toeplitz-gs", n_clusters=3, feature="spherical", threshold=0.0, seed=1
+    ).fit(x)
+    proba = est.predict_proba(x)
+    assert proba.shape == (len(x), 3)
+    assert np.allclose(proba.sum(axis=1), 1.0, atol=1e-6)
+
+
 @pytest.fixture
 def nmf_topics():
     """Nonnegative documents: each a nonnegative mix of one of 3 latent parts (NMF's setting)."""
@@ -241,6 +260,37 @@ def test_projection_weighted_nmf_module(nmf_topics):
     )
     assert n_labels(labels) == 3
     assert ari(labels, y) > 0.9
+
+
+def test_projection_weighted_nmf_kl(nmf_topics):
+    x, y = nmf_topics
+    labels = betula_cluster.fit_predict(
+        x,
+        3,
+        method="kmeans",
+        feature="spherical",
+        threshold=0.0,
+        seed=0,
+        projection="weighted-nmf-kl",
+        projection_dim=6,
+    )
+    assert n_labels(labels) == 3
+    assert ari(labels, y) > 0.8
+    # the KL variant is honoured through the streaming estimator too, and rejects signed input
+    est = betula_cluster.Betula(
+        method="kmeans",
+        n_clusters=3,
+        feature="spherical",
+        threshold=0.0,
+        seed=0,
+        projection="weighted-nmf-kl",
+        projection_dim=6,
+    )
+    assert ari(est.fit_predict(x), y) > 0.8
+    xneg = x.copy()
+    xneg[0, 0] = -1.0
+    with pytest.raises(ValueError, match="nonnegative"):
+        est.fit_predict(xneg)
 
 
 def test_projection_weighted_nmf_estimator(nmf_topics):

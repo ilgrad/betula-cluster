@@ -80,6 +80,7 @@ fn parse_method(
         "vmf" => Ok(Kind::Parametric(Method::Movmf)),
         "gmm-toeplitz" => Ok(Kind::Parametric(Method::GmmToeplitz)),
         "gmm-toeplitz-full" => Ok(Kind::Parametric(Method::GmmToeplitzFull)),
+        "gmm-toeplitz-gs" => Ok(Kind::Parametric(Method::GmmToeplitzGs)),
         "hdbscan" => Ok(Kind::Hdbscan {
             min_samples,
             min_cluster_size,
@@ -88,7 +89,7 @@ fn parse_method(
         _ => Err(PyValueError::new_err(
             "method must be 'kmeans', 'gmm', 'gmm-full', 'ward', 'spectral', 'leiden', \
              'leiden-cpm', 'spherical-kmeans', 'vmf', 'gmm-toeplitz', 'gmm-toeplitz-full', \
-             'hdbscan' or 'scale-space'",
+             'gmm-toeplitz-gs', 'hdbscan' or 'scale-space'",
         )),
     }
 }
@@ -98,22 +99,25 @@ fn parse_method(
 /// true posterior without recomputing the E-step. HDBSCAN keeps `-1` for noise; parametric labels are
 /// cast to `i64`. Generic over the element type so it serves both the `f64` and `f32` trees.
 #[allow(clippy::type_complexity)]
-/// Resolve the optional Phase-3 projection: `"weighted-nmf"` → `Some(dim)`, `"none"`/`""` → `None`.
-fn parse_projection(projection: &str, projection_dim: usize) -> PyResult<Option<usize>> {
-    match projection {
-        "none" | "" => Ok(None),
-        "weighted-nmf" => {
-            if projection_dim == 0 {
-                return Err(PyValueError::new_err(
-                    "projection_dim must be > 0 for projection='weighted-nmf'",
-                ));
-            }
-            Ok(Some(projection_dim))
+/// Resolve the optional Phase-3 projection to `Some((dim, kl))` (`kl` selects the KL-divergence variant
+/// for count data), or `None`. `"weighted-nmf"` = Frobenius, `"weighted-nmf-kl"` = KL, `"none"`/`""` off.
+fn parse_projection(projection: &str, projection_dim: usize) -> PyResult<Option<(usize, bool)>> {
+    let kl = match projection {
+        "none" | "" => return Ok(None),
+        "weighted-nmf" => false,
+        "weighted-nmf-kl" => true,
+        _ => {
+            return Err(PyValueError::new_err(
+                "projection must be 'none', 'weighted-nmf' or 'weighted-nmf-kl'",
+            ))
         }
-        _ => Err(PyValueError::new_err(
-            "projection must be 'none' or 'weighted-nmf'",
-        )),
+    };
+    if projection_dim == 0 {
+        return Err(PyValueError::new_err(
+            "projection_dim must be > 0 for a 'weighted-nmf' projection",
+        ));
     }
+    Ok(Some((projection_dim, kl)))
 }
 
 /// NMF is defined only for nonnegative data; reject signed input rather than silently shifting it
@@ -165,11 +169,11 @@ fn label_features_proba<R: Real, C: ClusterFeature<R>>(
     k: usize,
     max_iter: usize,
     seed: u64,
-    nmf_dim: Option<usize>,
+    nmf_dim: Option<(usize, bool)>,
 ) -> (Vec<i64>, Option<(Vec<f64>, usize)>) {
     match nmf_dim {
-        Some(r) => {
-            let coded = crate::clustering::nmf::project_features(feats, r, max_iter, seed);
+        Some((r, kl)) => {
+            let coded = crate::clustering::nmf::project_features(feats, r, kl, max_iter, seed);
             dispatch_kind(&coded, kind, k, max_iter, seed)
         }
         None => dispatch_kind(feats, kind, k, max_iter, seed),
@@ -475,18 +479,19 @@ fn cluster<R: Real, C: ClusterFeature<R>>(
     max_iter: usize,
     seed: u64,
     n_jobs: usize,
-    nmf_dim: Option<usize>,
+    nmf_dim: Option<(usize, bool)>,
 ) -> Vec<i64> {
     let tree = build_tree::<R, C>(
         dim, branching, leaf_cap, threshold, max_leaves, route, absorb, flat, n, n_jobs,
     );
     match kind {
         Kind::Parametric(method) => match nmf_dim {
-            Some(r) => {
+            Some((r, kl)) => {
                 // Reduce leaf centroids to CF-weighted NMF codes, cluster those; labels stay per-leaf.
                 let coded = crate::clustering::nmf::project_features(
                     tree.leaf_features(),
                     r,
+                    kl,
                     max_iter,
                     seed,
                 );
@@ -539,7 +544,7 @@ fn run_oneshot<R: Real + Element>(
     seed: u64,
     n_jobs: usize,
     normalize: bool,
-    nmf_dim: Option<usize>,
+    nmf_dim: Option<(usize, bool)>,
 ) -> PyResult<Vec<i64>> {
     let (mut flat, n, dim) = to_flat(&data)?;
     if nmf_dim.is_some() {
@@ -794,7 +799,7 @@ impl<R: Real> TreeState<R> {
         k: usize,
         max_iter: usize,
         seed: u64,
-        nmf_dim: Option<usize>,
+        nmf_dim: Option<(usize, bool)>,
     ) -> (Vec<i64>, Option<(Vec<f64>, usize)>) {
         match self {
             TreeState::Spherical(t) => {
@@ -1173,6 +1178,9 @@ struct Betula {
     /// Phase-3 CF-weighted NMF reduction dim (`projection="weighted-nmf"`); `None` = no projection.
     #[serde(default)]
     nmf_dim: Option<usize>,
+    /// Use the KL-divergence NMF variant (`projection="weighted-nmf-kl"`, for count data) over Frobenius.
+    #[serde(default)]
+    nmf_kl: bool,
     dim: usize,
     // The estimator holds an f64 *or* an f32 tree (chosen by the first input's dtype) — at most one
     // is ever `Some`. f32 halves the resident tree memory on high-d embeddings.
@@ -1365,7 +1373,7 @@ impl Betula {
             self.n_clusters,
             self.max_iter,
             self.seed,
-            self.nmf_dim,
+            self.nmf_dim.map(|d| (d, self.nmf_kl)),
         );
         let result = if let Some(t) = &self.state64 {
             Some(t.label_proba(kind, k, mi, seed, nmf))
@@ -1517,7 +1525,9 @@ impl Betula {
             tangent_weight,
             tangent_rank,
         )?;
-        let nmf_dim = parse_projection(projection, projection_dim)?;
+        let proj = parse_projection(projection, projection_dim)?;
+        let nmf_dim = proj.map(|(d, _)| d);
+        let nmf_kl = proj.is_some_and(|(_, kl)| kl);
         let route = parse_route(distance)?;
         if !matches!(feature, "spherical" | "diagonal" | "full" | "fd") {
             return Err(PyValueError::new_err(
@@ -1567,6 +1577,7 @@ impl Betula {
             tangent_weight,
             tangent_rank,
             nmf_dim,
+            nmf_kl,
             dim: 0,
             state64: None,
             state32: None,
@@ -1797,7 +1808,7 @@ impl Betula {
     fn microcluster_proba_<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray2<f64>>> {
         let (flat, k) = self.proba.as_ref().ok_or_else(|| {
             PyValueError::new_err(
-                "predict_proba posterior is only available after fit with method='gmm', 'gmm-full', 'vmf', 'gmm-toeplitz' or 'gmm-toeplitz-full'",
+                "predict_proba posterior is only available after fit with method='gmm', 'gmm-full', 'vmf', 'gmm-toeplitz', 'gmm-toeplitz-full' or 'gmm-toeplitz-gs'",
             )
         })?;
         let rows = flat.len().checked_div(*k).unwrap_or(0);

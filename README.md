@@ -20,7 +20,7 @@
 pip install betula-cluster
 ```
 
-**Verified:** a **210-case** Python suite at **100% wrapper coverage** + **182** Rust tests,
+**Verified:** a **213-case** Python suite at **100% wrapper coverage** + **185** Rust tests,
 `clippy -D warnings` + `fmt` clean across all feature sets, CI on CPython 3.11–3.14 (one abi3 wheel).
 
 ## At a glance — honest benchmarks
@@ -136,7 +136,8 @@ res.mean_confidence  # scalar robustness summary
 Memory-aware hyperparameter tuning (`tune`, optional Optuna), Mapper topology (`mapper`),
 semi-supervised constraints (COP-KMeans), mixed numeric+categorical (`KPrototypes`), streaming
 density (`DenStream` / `DbStream`), the `O(nnz)` sparse-native path (`fit_predict_sparse`),
-CF-weighted NMF for nonnegative data (`projection="weighted-nmf"`), quantile
+CF-weighted NMF for nonnegative data (`projection="weighted-nmf"`, or `"weighted-nmf-kl"` for counts),
+quantile
 sketches, `scipy.sparse` input, `threshold="auto"`, soft assignment / coresets / diagnostics / drift
 snapshots / active-learning batches, the Rust API, and the CLI — all in the
 [**usage guide**](https://github.com/ilgrad/betula-cluster/blob/main/docs/USAGE.md).
@@ -165,11 +166,13 @@ snapshots / active-learning batches, the Rust API, and the CLI — all in the
 - **Density & topology** — HDBSCAN-CF (density over microclusters), **scale-space** Morse-persistence
   density-mode clustering (`method="scale-space"` — no `k`, no bandwidth), and a Mapper topological
   skeleton (`mapper` / `mapper_stability`).
-- **Structured-covariance GMM** — **`method="gmm-toeplitz"`** (banded AR) and
-  **`"gmm-toeplitz-full"`** (general positive-definite Toeplitz): covariance-*shape* clustering for
-  **ordered, stationary signals** (time-series windows, trajectories, sensor waveforms), well-posed where
-  full covariance is singular (`N_k ≪ d`) and a diagonal model ignores neighbour correlation; the general
-  head also captures structure beyond a low-order AR (e.g. a long-lag echo).
+- **Structured-covariance GMM** — a three-rung Toeplitz ladder: **`method="gmm-toeplitz"`** (banded AR),
+  **`"gmm-toeplitz-full"`** (general positive-definite Toeplitz covariance), and **`"gmm-toeplitz-gs"`**
+  (full-order Gohberg–Semencul **MLE** precision): covariance-*shape* clustering for **ordered, stationary
+  signals** (time-series windows, trajectories, sensor waveforms), well-posed where full covariance is
+  singular (`N_k ≪ d`) and a diagonal model ignores neighbour correlation; the `-full` head captures
+  structure beyond a low-order AR (e.g. a long-lag echo), the `-gs` head fits a likelihood-optimal
+  precision with a cheaper E-step than full at large `d`.
 - **More heads & data** — `DenStream` / `DbStream` evolving-stream density, mergeable `KllSketch` /
   `DdSketch` quantiles, `scipy.sparse` (`O(nnz)`, never densified), mixed numeric+categorical
   (`KPrototypes`), COP-KMeans constraints, robust (Huber) insertion, drift snapshots, dependency-free CLI.
@@ -217,7 +220,7 @@ And six **end-to-end use cases** (each scored against ground truth):
 - [**Benchmarks**](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md) — methodology, every metric, all tables, honest wins & losses.
 - [**Design**](https://github.com/ilgrad/betula-cluster/blob/main/DESIGN.md) — internal design, invariants, and testing strategy.
 
-Verified: **182** Rust unit + 4 integration tests + a **210-case** Python suite at **100%** wrapper
+Verified: **185** Rust unit + 4 integration tests + a **213-case** Python suite at **100%** wrapper
 coverage (Rust ≥95%, CI-enforced), `clippy -D warnings` + `fmt` clean across all feature sets, on
 Python 3.11–3.14 (single abi3 wheel).
 
@@ -249,7 +252,7 @@ algorithms** it implements. Machine-readable metadata (including the method refe
   author  = {Gradina, Ilia},
   title   = {betula-cluster: numerically stable {BETULA} clustering with a {Rust} core},
   year    = {2026},
-  version = {0.2.0},
+  version = {0.5.0},
   doi     = {10.5281/zenodo.21427331},
   license = {MIT},
   url     = {https://github.com/ilgrad/betula-cluster}
