@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.0] — 2026-07-18
 
 ### Added
 - `method="spherical-kmeans"` / `method="vmf"` — **directional clustering on the unit hypersphere**
@@ -303,7 +303,8 @@ First public release.
   far below `max_leaves`), and rebuilds reinsert in reverse-DFS leaf order. The CF-tree build is now
   byte-for-byte the reference (`betulars`) tree shape and at speed parity with matched build flags.
 
-[Unreleased]: https://github.com/ilgrad/betula-cluster/compare/v0.1.5...HEAD
+[Unreleased]: https://github.com/ilgrad/betula-cluster/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/ilgrad/betula-cluster/compare/v0.1.5...v0.2.0
 [0.1.5]: https://github.com/ilgrad/betula-cluster/releases/tag/v0.1.5
 [0.1.4]: https://github.com/ilgrad/betula-cluster/releases/tag/v0.1.4
 [0.1.3]: https://github.com/ilgrad/betula-cluster/releases/tag/v0.1.3

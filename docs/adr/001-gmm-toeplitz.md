@@ -1,6 +1,6 @@
 # ADR 001 — Toeplitz / AR-structured GMM covariance head (`gmm-toeplitz`)
 
-**Status:** Accepted · **implemented** (experimental, off by default), ships in 0.3.0 · validated in
+**Status:** Accepted · **implemented** (experimental, off by default), ships in **0.2.0** · validated in
 Rust (`clustering::gmm_toeplitz`) and Python (`method="gmm-toeplitz"`).
 
 ## Context
@@ -103,8 +103,9 @@ log-likelihood), no ground-truth used in fitting.
    `w_max = 6` **1.00**. Clustering only needs the per-component fits to *differ*, not to be exact, so
    the extra generality is a parameter-efficiency refinement, not a
    capability gap; the cheap lever if a hard signal appears is to raise `w_max` (an internal constant).
-4. **Do nothing; tell time-series users to preprocess.** The weak default. This ADR records the design
-   so it is ready when 0.3.0 scope is set, without blocking the 0.2.0 release.
+4. **Do nothing; tell time-series users to preprocess.** The weak default, rejected: the head is a
+   genuine capability no preprocessing recovers. This ADR records the design and the measured evidence
+   alongside the 0.2.0 implementation.
 
 ## References
 

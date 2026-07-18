@@ -19,7 +19,7 @@
 pip install betula-cluster
 ```
 
-**Verified:** a **199-case** Python suite at **100% wrapper coverage** + **174** Rust tests,
+**Verified:** a **202-case** Python suite at **100% wrapper coverage** + **177** Rust tests,
 `clippy -D warnings` + `fmt` clean across all feature sets, CI on CPython 3.11–3.14 (one abi3 wheel).
 
 ## At a glance — honest benchmarks
@@ -206,7 +206,7 @@ And five **end-to-end use cases** (each scored against ground truth):
 - [**Benchmarks**](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md) — methodology, every metric, all tables, honest wins & losses.
 - [**Design**](https://github.com/ilgrad/betula-cluster/blob/main/DESIGN.md) — internal design, invariants, and testing strategy.
 
-Verified: **174** Rust unit + 4 integration tests + a **199-case** Python suite at **100%** wrapper
+Verified: **177** Rust unit + 4 integration tests + a **202-case** Python suite at **100%** wrapper
 coverage (Rust ≥95%, CI-enforced), `clippy -D warnings` + `fmt` clean across all feature sets, on
 Python 3.11–3.14 (single abi3 wheel).
 
@@ -238,7 +238,7 @@ algorithms** it implements. Machine-readable metadata (including the method refe
   author  = {Gradina, Ilia},
   title   = {betula-cluster: numerically stable {BETULA} clustering with a {Rust} core},
   year    = {2026},
-  version = {0.1.5},
+  version = {0.2.0},
   license = {MIT},
   url     = {https://github.com/ilgrad/betula-cluster}
 }
