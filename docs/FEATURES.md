@@ -93,7 +93,15 @@ A capability-by-capability reference. For runnable code see [`USAGE.md`](USAGE.m
   (Lee-Seung multiplicative updates) — the Poisson maximum-likelihood objective for **count** data. The
   advantage is largest where counts are **sparse** (measured up to **+0.5 ARI** over Frobenius on
   Poisson counts at mean rate < 0.5), converging to Frobenius as counts grow and Poisson → Gaussian.
-  Signed input is rejected, not shifted; dense only. See [`MATH.md`](MATH.md).
+  Both solvers start from a deterministic **NNDSVDar** initialization (a randomized range finder, so no
+  LAPACK; rank-deficient triplets cut at the numerical-rank threshold rather than amplified) and return a
+  **canonical** factorization — component rows unit-L2, ordered by descending
+  energy. That last part is load-bearing, not cosmetic: NMF is invariant to `(W D, D⁻¹H)`, so an
+  unpinned split lets one component's arbitrary scale dominate the Euclidean geometry the head then
+  clusters (measured: median ARI 0.63 → 1.00, seed spread 0.37 → 0.00 across 8 seeds). `components_`
+  and `reconstruction_err_` expose the parts and the fit; `projection_max_iter` is the solver's own
+  budget, independent of the head's `max_iter`. Dense **and** sparse CSR input; signed input is
+  rejected, not shifted. See [`MATH.md`](MATH.md).
 - **Robust insertion** (`huber_k`) — optional Huber/winsorized point updates: each incoming point is
   clamped to within `huber_k` per-dimension standard deviations of its target microcluster *before*
   it is folded in, so a single extreme value cannot stretch a centroid or inflate a radius. Off by

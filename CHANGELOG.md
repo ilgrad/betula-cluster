@@ -4,6 +4,76 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **CF-weighted NMF: the solver stopped after 5 sweeps regardless of `max_iter`.** The convergence test
+  compared `|prev − err|` against `tol · prev` with `prev` seeded at `+inf`; IEEE-754 says `inf <= inf`,
+  so the first check always fired and the iteration budget was dead code. Every other EM loop in the
+  crate guards this with `it > 0`; `nmf.rs` was the only one that did not. The budget is now honoured,
+  and a regression test asserts the residual keeps falling as the budget grows.
+- **CF-weighted NMF: most components collapsed to zero and never recovered.** Two independent causes,
+  both fatal because zero is an absorbing state for HALS and for the multiplicative updates. (1) The
+  randomized SVD recovers the right vector as `v = Bᵀu/σ`; below the noise floor that division amplified
+  round-off into a vector of arbitrary magnitude, so a rank-deficient triplet seeded a component wildly
+  out of scale. Such triplets are now cut at the LAPACK numerical-rank threshold and reported as exact
+  zeros. (2) NNDSVD's zero-fill used `mean(X)`, but a filled component is a rank-1 block of constant
+  magnitude and `r` of them add up, so the fill swamped the data as the rank grew. The init now uses the
+  `ar` fill, `mean(X)·U(0,1)/100` — small enough to stay a perturbation, random enough to break the
+  degeneracy a constant fill creates. Measured on a rank-12 matrix at rank 32: initial relative residual
+  **13.5 → 1.2**, dead components **28/32 → 3/32** (3 is the honest count — the data is rank 12), and the
+  converged residual **270×** lower. On `digits` at rank 24: **15/24 → 0** dead, reconstruction error
+  **0.33 → 0.20**, downstream ARI **0.54 → 0.61**. The reconstruction error now matches `scikit-learn`'s
+  own NMF to three decimals at every rank tested (10, 16, 24, 32), against being **2.3× worse** before.
+- **CF-weighted NMF: an arbitrary per-component scale reweighted the downstream clustering.** NMF is
+  invariant to `(W D, D⁻¹H)`, so the optimizer left whatever split it landed on — measured spreads of
+  70× between component scales on a converged fit. Because the codes are consumed as a Euclidean
+  feature vector by the Phase-3 head, that scale acts as a per-dimension weight and the head clustered
+  along whichever component drew the largest number. The factorization is now canonical (component rows
+  unit-L2, scale absorbed into the codes, components ordered by descending energy). Measured on a
+  4-topic nonnegative mixture over 8 seeds: median ARI **0.63 → 1.00**, seed spread **0.37 → 0.00**;
+  against the shipped 0.5.0 behaviour, median **0.92–1.00 → 1.00** with spread **0.31 → 0.00** at
+  N = 160 000. `scikit-learn`'s own `NMF` shows the same 0.37 spread on this data, unfixed.
+
+### Added
+- **NNDSVDar initialization** for both NMF solvers (Boutsidis & Gallopoulos, 2008), built on a
+  self-contained randomized range finder (Halko-Martinsson-Tropp) — deterministic given the seed and far
+  better conditioned than the previous random start, which decided the basin a non-convex coordinate
+  descent lands in.
+- `Betula.components_` — the NMF parts `H` as `(projection_dim, dim)`, unit-L2 rows ordered by
+  descending energy, so a row reads directly as a topic over the input features.
+- `Betula.reconstruction_err_` — relative reconstruction error `‖X̃ − W H‖_F / ‖X̃‖_F` of the projection
+  over the leaf centroid matrix.
+- `projection_max_iter` (default 100) — the factorizer's own sweep budget, independent of the head's
+  `max_iter`. Previously the two shared one number, so raising the clustering budget silently paid for
+  NMF sweeps too.
+- `projection="weighted-nmf"` / `"weighted-nmf-kl"` now accept **sparse CSR** input; only the stored
+  values are checked for negativity (implicit zeros are already nonnegative). Measured ARI 1.00 on a
+  sparse topic mixture, matching the dense path.
+- A convergence check for the KL solver (it previously always burned the full `max_iter`). The Frobenius
+  solver's check now follows the **size of the update** rather than the size of the objective, compared
+  against the first sweep's — sklearn's rule. A relative test on the residual provably never fired: HALS
+  converges sublinearly and keeps buying more than `tol` of relative improvement for hundreds of sweeps,
+  so `max_iter` was the only brake (measured: a 4× budget cost 6× the time). The movement falls out of
+  the sweep for free, so the check is also cheaper than the residual it replaced.
+
+### Changed
+- **`WᵀX`, the NMF sweep's hot loop, restructured for locality: measured 2.4-3.4× faster.** Evaluating
+  it per output cell (`Σ_j w[j][k]·x[j][c]`) walks a whole column of `X` for each of the `r·d` cells,
+  striding `d` floats per step through a matrix far larger than L2. Accumulating into the small,
+  cache-resident `r×d` output while reading each row of `X` once, sequentially, computes the same
+  product with the access pattern the hardware wants (verified equal to 1e-9 by a unit test).
+- The NMF rank is capped by both centroid-matrix dimensions (`min(rank, d, M)`): `rank > M` makes the
+  factorization rank-deficient by construction and leaves whole components with nothing to fit.
+
+### Notes
+- **A-HALS extrapolation (Ang & Gillis, 2019) was implemented, measured and rejected.** It lost to plain
+  HALS at every sweep budget on two planted problems (up to 445× worse residual at 200 sweeps): the
+  accept/reject test for the extrapolation parameter has to judge the objective at the *feasible*
+  iterate, but the Gram factors on hand belong to the extrapolated point, so making it honest costs the
+  extra `O(Mdr)` product the acceleration was meant to save. The cheap exact convergence check that came
+  out of the attempt was kept.
+
 ## [0.5.0] — 2026-07-18
 
 ### Added

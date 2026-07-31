@@ -18,6 +18,7 @@ use pyo3::prelude::*;
 use rayon::prelude::*;
 
 use crate::clustering::hdbscan::hdbscan;
+use crate::clustering::nmf::NmfSpec;
 use crate::clustering::scalespace::scale_space;
 use crate::clustering::{
     cop_kmeans, kprototypes, nearest_micro, summarize_mixed, ConstraintError, MixedCf,
@@ -98,10 +99,13 @@ fn parse_method(
 /// soft responsibility matrix flattened `(resp, k)` (`None` otherwise) so `predict_proba` can read a
 /// true posterior without recomputing the E-step. HDBSCAN keeps `-1` for noise; parametric labels are
 /// cast to `i64`. Generic over the element type so it serves both the `f64` and `f32` trees.
-#[allow(clippy::type_complexity)]
-/// Resolve the optional Phase-3 projection to `Some((dim, kl))` (`kl` selects the KL-divergence variant
-/// for count data), or `None`. `"weighted-nmf"` = Frobenius, `"weighted-nmf-kl"` = KL, `"none"`/`""` off.
-fn parse_projection(projection: &str, projection_dim: usize) -> PyResult<Option<(usize, bool)>> {
+/// Resolve the optional Phase-3 projection to an `NmfSpec`, or `None`. `"weighted-nmf"` = Frobenius,
+/// `"weighted-nmf-kl"` = KL (count data), `"none"`/`""` off.
+fn parse_projection(
+    projection: &str,
+    projection_dim: usize,
+    projection_max_iter: usize,
+) -> PyResult<Option<NmfSpec>> {
     let kl = match projection {
         "none" | "" => return Ok(None),
         "weighted-nmf" => false,
@@ -117,7 +121,16 @@ fn parse_projection(projection: &str, projection_dim: usize) -> PyResult<Option<
             "projection_dim must be > 0 for a 'weighted-nmf' projection",
         ));
     }
-    Ok(Some((projection_dim, kl)))
+    if projection_max_iter == 0 {
+        return Err(PyValueError::new_err(
+            "projection_max_iter must be > 0 for a 'weighted-nmf' projection",
+        ));
+    }
+    Ok(Some(NmfSpec {
+        rank: projection_dim,
+        kl,
+        max_iter: projection_max_iter,
+    }))
 }
 
 /// NMF is defined only for nonnegative data; reject signed input rather than silently shifting it
@@ -160,6 +173,15 @@ fn dispatch_kind<R: Real, C: ClusterFeature<R>>(
     }
 }
 
+/// What one Phase-3 labelling pass produced.
+struct Labelling {
+    labels: Vec<i64>,
+    /// Flattened `n_leaves × k` responsibilities and `k`, for the probabilistic heads.
+    proba: Option<(Vec<f64>, usize)>,
+    /// The shared NMF parts (`r×d`) and the relative reconstruction error, when a projection ran.
+    parts: Option<(Vec<Vec<f64>>, f64)>,
+}
+
 /// Label leaf features, optionally projecting them to `nmf_dim`-dimensional CF-weighted NMF codes
 /// first (for nonnegative data). The head then clusters the codes; labels stay per-leaf so `predict`
 /// (point → leaf → label) is unchanged.
@@ -169,14 +191,35 @@ fn label_features_proba<R: Real, C: ClusterFeature<R>>(
     k: usize,
     max_iter: usize,
     seed: u64,
-    nmf_dim: Option<(usize, bool)>,
-) -> (Vec<i64>, Option<(Vec<f64>, usize)>) {
+    nmf_dim: Option<NmfSpec>,
+) -> Labelling {
     match nmf_dim {
-        Some((r, kl)) => {
-            let coded = crate::clustering::nmf::project_features(feats, r, kl, max_iter, seed);
-            dispatch_kind(&coded, kind, k, max_iter, seed)
+        Some(spec) => {
+            let p = crate::clustering::nmf::project(feats, spec, seed);
+            let (labels, proba) = dispatch_kind(&p.coded, kind, k, max_iter, seed);
+            let parts = p
+                .components
+                .iter()
+                .map(|row| {
+                    row.iter()
+                        .map(|&v| v.to_f64().unwrap_or(f64::NAN))
+                        .collect()
+                })
+                .collect();
+            Labelling {
+                labels,
+                proba,
+                parts: Some((parts, p.reconstruction_err.to_f64().unwrap_or(f64::NAN))),
+            }
         }
-        None => dispatch_kind(feats, kind, k, max_iter, seed),
+        None => {
+            let (labels, proba) = dispatch_kind(feats, kind, k, max_iter, seed);
+            Labelling {
+                labels,
+                proba,
+                parts: None,
+            }
+        }
     }
 }
 
@@ -479,22 +522,16 @@ fn cluster<R: Real, C: ClusterFeature<R>>(
     max_iter: usize,
     seed: u64,
     n_jobs: usize,
-    nmf_dim: Option<(usize, bool)>,
+    nmf_dim: Option<NmfSpec>,
 ) -> Vec<i64> {
     let tree = build_tree::<R, C>(
         dim, branching, leaf_cap, threshold, max_leaves, route, absorb, flat, n, n_jobs,
     );
     match kind {
         Kind::Parametric(method) => match nmf_dim {
-            Some((r, kl)) => {
+            Some(spec) => {
                 // Reduce leaf centroids to CF-weighted NMF codes, cluster those; labels stay per-leaf.
-                let coded = crate::clustering::nmf::project_features(
-                    tree.leaf_features(),
-                    r,
-                    kl,
-                    max_iter,
-                    seed,
-                );
+                let coded = crate::clustering::nmf::project(tree.leaf_features(), spec, seed).coded;
                 let entry_labels = cluster_leaves(&coded, k, method, max_iter, seed);
                 map_rows(n, |i| {
                     entry_labels[tree.nearest_entry(&flat[i * dim..(i + 1) * dim])] as i64
@@ -544,7 +581,7 @@ fn run_oneshot<R: Real + Element>(
     seed: u64,
     n_jobs: usize,
     normalize: bool,
-    nmf_dim: Option<(usize, bool)>,
+    nmf_dim: Option<NmfSpec>,
 ) -> PyResult<Vec<i64>> {
     let (mut flat, n, dim) = to_flat(&data)?;
     if nmf_dim.is_some() {
@@ -617,7 +654,7 @@ fn run_oneshot<R: Real + Element>(
     min_samples = 5, min_cluster_size = 5, seed = 0, distance = "euclidean",
     absorb = "euclidean", chi2_p = 0.95, chi2_scale = 0.0, n_jobs = 1, normalize = false,
     resolution = 1.0, covariance_weight = 0.0, tangent_weight = 0.0, tangent_rank = 2,
-    projection = "none", projection_dim = 64
+    projection = "none", projection_dim = 64, projection_max_iter = 100
 ))]
 #[allow(clippy::too_many_arguments)]
 fn fit_predict<'py>(
@@ -646,6 +683,7 @@ fn fit_predict<'py>(
     tangent_rank: usize,
     projection: &str,
     projection_dim: usize,
+    projection_max_iter: usize,
 ) -> PyResult<Bound<'py, PyArray1<i64>>> {
     let kind = parse_method(
         method,
@@ -656,7 +694,7 @@ fn fit_predict<'py>(
         tangent_weight,
         tangent_rank,
     )?;
-    let nmf_dim = parse_projection(projection, projection_dim)?;
+    let nmf_dim = parse_projection(projection, projection_dim, projection_max_iter)?;
     let labels = if let Ok(a) = data.extract::<PyReadonlyArray2<'py, f64>>() {
         run_oneshot::<f64>(
             py, a, n_clusters, feature, kind, distance, absorb, chi2_p, chi2_scale, threshold,
@@ -792,15 +830,14 @@ impl<R: Real> TreeState<R> {
         }
     }
 
-    #[allow(clippy::type_complexity)]
     fn label_proba(
         &self,
         kind: Kind,
         k: usize,
         max_iter: usize,
         seed: u64,
-        nmf_dim: Option<(usize, bool)>,
-    ) -> (Vec<i64>, Option<(Vec<f64>, usize)>) {
+        nmf_dim: Option<NmfSpec>,
+    ) -> Labelling {
         match self {
             TreeState::Spherical(t) => {
                 label_features_proba(t.leaf_features(), kind, k, max_iter, seed, nmf_dim)
@@ -1135,6 +1172,10 @@ fn default_tangent_rank() -> usize {
     2
 }
 
+fn default_projection_max_iter() -> usize {
+    100
+}
+
 #[pyclass(name = "Betula", module = "betula_cluster._core")]
 #[derive(serde::Serialize, serde::Deserialize)]
 struct Betula {
@@ -1181,6 +1222,9 @@ struct Betula {
     /// Use the KL-divergence NMF variant (`projection="weighted-nmf-kl"`, for count data) over Frobenius.
     #[serde(default)]
     nmf_kl: bool,
+    /// NMF solver sweeps, independent of the head's `max_iter`; kept for `get_params`.
+    #[serde(default = "default_projection_max_iter")]
+    nmf_max_iter: usize,
     dim: usize,
     // The estimator holds an f64 *or* an f32 tree (chosen by the first input's dtype) — at most one
     // is ever `Some`. f32 halves the resident tree memory on high-d embeddings.
@@ -1191,6 +1235,12 @@ struct Betula {
     /// GMM heads; `None` for other heads. Backs `microcluster_proba_` / `predict_proba`.
     #[serde(default)]
     proba: Option<(Vec<f64>, usize)>,
+    /// The NMF parts `H` (`r×d`) shared by every leaf, set at finalize when a projection ran.
+    #[serde(default)]
+    nmf_components: Option<Vec<Vec<f64>>>,
+    /// Relative reconstruction error of the projection, `‖X̃ − W H‖_F / ‖X̃‖_F`.
+    #[serde(default)]
+    nmf_reconstruction_err: Option<f64>,
 }
 
 /// Copy a 2-D array into a flat row-major `Vec<R>`, casting from the other float dtype if needed
@@ -1373,7 +1423,11 @@ impl Betula {
             self.n_clusters,
             self.max_iter,
             self.seed,
-            self.nmf_dim.map(|d| (d, self.nmf_kl)),
+            self.nmf_dim.map(|rank| NmfSpec {
+                rank,
+                kl: self.nmf_kl,
+                max_iter: self.nmf_max_iter,
+            }),
         );
         let result = if let Some(t) = &self.state64 {
             Some(t.label_proba(kind, k, mi, seed, nmf))
@@ -1383,13 +1437,18 @@ impl Betula {
                 .map(|t| t.label_proba(kind, k, mi, seed, nmf))
         };
         match result {
-            Some((labels, proba)) => {
-                self.labels = Some(labels);
-                self.proba = proba;
+            Some(out) => {
+                self.labels = Some(out.labels);
+                self.proba = out.proba;
+                let (components, err) = out.parts.unzip();
+                self.nmf_components = components;
+                self.nmf_reconstruction_err = err;
             }
             None => {
                 self.labels = None;
                 self.proba = None;
+                self.nmf_components = None;
+                self.nmf_reconstruction_err = None;
             }
         }
     }
@@ -1487,7 +1546,7 @@ impl Betula {
         min_samples = 5, min_cluster_size = 5, seed = 0,
         distance = "euclidean", absorb = "euclidean", chi2_p = 0.95, chi2_scale = 0.0, decay = 1.0,
         normalize = false, huber_k = None, resolution = 1.0, covariance_weight = 0.0,
-        tangent_weight = 0.0, tangent_rank = 2, projection = "none", projection_dim = 64
+        tangent_weight = 0.0, tangent_rank = 2, projection = "none", projection_dim = 64, projection_max_iter = 100
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -1515,6 +1574,7 @@ impl Betula {
         tangent_rank: usize,
         projection: &str,
         projection_dim: usize,
+        projection_max_iter: usize,
     ) -> PyResult<Self> {
         let kind = parse_method(
             method,
@@ -1525,9 +1585,10 @@ impl Betula {
             tangent_weight,
             tangent_rank,
         )?;
-        let proj = parse_projection(projection, projection_dim)?;
-        let nmf_dim = proj.map(|(d, _)| d);
-        let nmf_kl = proj.is_some_and(|(_, kl)| kl);
+        let proj = parse_projection(projection, projection_dim, projection_max_iter)?;
+        let nmf_dim = proj.map(|p| p.rank);
+        let nmf_kl = proj.is_some_and(|p| p.kl);
+        let nmf_max_iter = proj.map_or(default_projection_max_iter(), |p| p.max_iter);
         let route = parse_route(distance)?;
         if !matches!(feature, "spherical" | "diagonal" | "full" | "fd") {
             return Err(PyValueError::new_err(
@@ -1578,11 +1639,14 @@ impl Betula {
             tangent_rank,
             nmf_dim,
             nmf_kl,
+            nmf_max_iter,
             dim: 0,
             state64: None,
             state32: None,
             labels: None,
             proba: None,
+            nmf_components: None,
+            nmf_reconstruction_err: None,
         })
     }
 
@@ -1815,6 +1879,35 @@ impl Betula {
         Ok(Array2::from_shape_vec((rows, *k), flat.clone())
             .expect("proba length is n_leaves*k")
             .into_pyarray(py))
+    }
+
+    /// The NMF parts `H` — `(rank, dim)`, rows unit-L2 and ordered by descending energy. Every leaf
+    /// code is a nonnegative combination of these, so a row reads directly as a "topic" over features.
+    /// Requires `projection="weighted-nmf"` / `"weighted-nmf-kl"`.
+    #[getter]
+    fn components_<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray2<f64>>> {
+        let h = self.nmf_components.as_ref().ok_or_else(|| {
+            PyValueError::new_err(
+                "components_ is only available after fit with projection='weighted-nmf' or 'weighted-nmf-kl'",
+            )
+        })?;
+        let (r, d) = (h.len(), h.first().map_or(0, |row| row.len()));
+        Ok(
+            Array2::from_shape_vec((r, d), h.iter().flatten().copied().collect())
+                .expect("components are r rows of d")
+                .into_pyarray(py),
+        )
+    }
+
+    /// Relative reconstruction error of the projection, `‖X̃ − W H‖_F / ‖X̃‖_F` over the leaf centroid
+    /// matrix — how much of the compressed data the `rank` parts actually explain. Requires a projection.
+    #[getter]
+    fn reconstruction_err_(&self) -> PyResult<f64> {
+        self.nmf_reconstruction_err.ok_or_else(|| {
+            PyValueError::new_err(
+                "reconstruction_err_ is only available after fit with projection='weighted-nmf' or 'weighted-nmf-kl'",
+            )
+        })
     }
 
     /// Macro-cluster centroids — `(n_clusters, dim)`; requires a finalized clustering.

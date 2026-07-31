@@ -349,6 +349,7 @@ _DEFAULTS = {
     "tangent_rank": 2,
     "projection": "none",
     "projection_dim": 64,
+    "projection_max_iter": 100,
     "memory_budget_mb": None,
 }
 _PARAM_NAMES = tuple(_DEFAULTS)
@@ -402,6 +403,7 @@ class Betula:
         tangent_rank=2,
         projection="none",
         projection_dim=64,
+        projection_max_iter=100,
         memory_budget_mb=None,
     ):
         self.n_clusters = n_clusters
@@ -442,6 +444,10 @@ class Betula:
         # M ≪ N microclusters, then the head clusters the codes; "none" disables it.
         self.projection = projection
         self.projection_dim = projection_dim
+        # The factorizer's own sweep budget. Separate from `max_iter` (the clustering head's): the
+        # two converge at different rates, and one shared number made a larger head budget silently
+        # pay for NMF sweeps too.
+        self.projection_max_iter = projection_max_iter
         # When set, max_leaves is derived from this budget (+ dim + feature) at fit time: a target
         # for the CF-tree resident size (MiB), not total RSS. Most useful for streaming.
         self.memory_budget_mb = memory_budget_mb
@@ -523,14 +529,13 @@ class Betula:
 
     def _check_projection_input(self, X, csr):
         # CF-weighted NMF is defined only for nonnegative data; reject signed input rather than
-        # silently shifting it (a shift changes angles / cosine geometry). Dense input only here.
+        # silently shifting it (a shift changes angles / cosine geometry). The factorization runs on
+        # the leaf centroids, which the sparse path builds the same way, so CSR is accepted too —
+        # only the stored values can be negative, implicit zeros are already nonnegative.
         if not str(self.projection).startswith("weighted-nmf"):
             return
-        if csr is not None:
-            raise ValueError(
-                "projection='weighted-nmf' requires a dense nonnegative array, not a sparse matrix"
-            )
-        if bool((np.asarray(X) < 0).any()):
+        values = csr[0] if csr is not None else np.asarray(X)
+        if bool((values < 0).any()):
             raise ValueError(
                 "projection='weighted-nmf' requires nonnegative data (X >= 0). For signed "
                 "embeddings use method='vmf'/'spherical-kmeans' or reduce with PCA/TruncatedSVD."
@@ -681,6 +686,25 @@ class Betula:
     def microcluster_radii_(self):
         """Leaf RMS radius — ``(n_microclusters,)``."""
         return self._require_fit().microcluster_radii_
+
+    @property
+    def components_(self):
+        """NMF parts ``H`` — ``(projection_dim, dim)``, rows unit-L2, ordered by descending energy.
+
+        Every leaf code is a nonnegative combination of these rows, so a row reads directly as a
+        "topic" over the input features. Requires a ``"weighted-nmf"`` / ``"weighted-nmf-kl"``
+        ``projection``.
+        """
+        return self._require_fit().components_
+
+    @property
+    def reconstruction_err_(self):
+        """Relative reconstruction error of the projection, ``‖X̃ − W H‖_F / ‖X̃‖_F``.
+
+        Measured over the leaf centroid matrix the factorizer actually fits — how much of the
+        compressed data ``projection_dim`` parts explain. Requires a projection.
+        """
+        return self._require_fit().reconstruction_err_
 
     @property
     def cluster_centers_(self):

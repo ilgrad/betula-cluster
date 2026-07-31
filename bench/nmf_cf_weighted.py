@@ -9,6 +9,7 @@ memory. At matching cluster quality the CF-weighted path pulls ahead in time as 
 Run: `.venv/bin/python bench/nmf_cf_weighted.py`
 """
 
+import statistics as st
 import time
 
 import betula_cluster as bc
@@ -30,41 +31,68 @@ def topics(n_per, d, k, seed):
     return np.ascontiguousarray(np.vstack(xs)), np.array(ys)
 
 
+SEEDS = range(8)
+
+
 def main():
-    print("Nonnegative topic mixtures (d=60, k=4); NMF rank 8 → k-means.\n")
-    print(f"{'N':>9} | {'sklearn NMF→km':>22} | {'cf-weighted-nmf':>22} | {'speedup':>8}")
-    print("-" * 72)
+    print("Nonnegative topic mixtures (d=60, k=4); NMF rank 8 → k-means. Median over 8 seeds.\n")
+    print(f"{'N':>9} | {'sklearn NMF→km':>28} | {'cf-weighted-nmf':>28} | {'speedup':>8}")
+    print("-" * 88)
     for n_per in (2_000, 10_000, 40_000):
         x, y = topics(n_per, 60, 4, 0)
         n = len(x)
 
-        t = time.perf_counter()
-        codes = NMF(8, init="nndsvda", tol=1e-3, max_iter=100, random_state=0).fit_transform(x)
-        sk = bc.fit_predict(codes, 4, method="kmeans", feature="spherical", threshold=0.0, seed=0)
-        t_sk = time.perf_counter() - t
+        sk, t_sk = [], time.perf_counter()
+        for s in SEEDS:
+            codes = NMF(8, init="nndsvda", tol=1e-3, max_iter=100, random_state=s).fit_transform(x)
+            sk.append(
+                ari(
+                    y,
+                    bc.fit_predict(
+                        codes, 4, method="kmeans", feature="spherical", threshold=0.0, seed=s
+                    ),
+                )
+            )
+        t_sk = (time.perf_counter() - t_sk) / len(sk)
 
-        t = time.perf_counter()
-        cf = bc.fit_predict(
-            x,
-            4,
-            method="kmeans",
-            feature="spherical",
-            threshold=0.0,
-            seed=0,
-            max_leaves=4000,
-            projection="weighted-nmf",
-            projection_dim=8,
-        )
-        t_cf = time.perf_counter() - t
+        cf, t_cf = [], time.perf_counter()
+        for s in SEEDS:
+            cf.append(
+                ari(
+                    y,
+                    bc.fit_predict(
+                        x,
+                        4,
+                        method="kmeans",
+                        feature="spherical",
+                        threshold=0.0,
+                        seed=s,
+                        max_leaves=4000,
+                        projection="weighted-nmf",
+                        projection_dim=8,
+                    ),
+                )
+            )
+        t_cf = (time.perf_counter() - t_cf) / len(cf)
 
         print(
-            f"{n:>9} | ARI {ari(y, sk):>5.3f}  {t_sk:>7.2f}s | "
-            f"ARI {ari(y, cf):>5.3f}  {t_cf:>7.2f}s | {t_sk / max(t_cf, 1e-9):>6.1f}×"
+            f"{n:>9} | ARI {st.median(sk):>5.3f} ±{max(sk) - min(sk):>5.3f}  {t_sk:>7.2f}s | "
+            f"ARI {st.median(cf):>5.3f} ±{max(cf) - min(cf):>5.3f}  {t_cf:>7.2f}s | "
+            f"{t_sk / max(t_cf, 1e-9):>6.1f}×"
         )
     print(
         "\nsklearn NMF factorizes all N points; the CF-weighted path factorizes the ≤4000 leaf centroids,"
     )
     print("so it stays fast + memory-bounded as N grows, at matching cluster quality.")
+    print(
+        "The ± column is the seed spread. NMF is invariant to (W D, D^-1 H), so an unpinned split lets"
+    )
+    print(
+        "one component's arbitrary scale dominate the Euclidean geometry the head clusters; betula"
+    )
+    print(
+        "returns a canonical factorization (unit-L2 parts, energy-ordered), sklearn's NMF does not."
+    )
 
 
 if __name__ == "__main__":

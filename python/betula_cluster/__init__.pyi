@@ -134,6 +134,7 @@ def fit_predict(
     tangent_rank: int = ...,
     projection: _Projection = ...,
     projection_dim: int = ...,
+    projection_max_iter: int = ...,
 ) -> NDArray[np.int64]:
     """Cluster ``data`` in one shot and return per-point integer labels (``-1`` = noise)."""
 
@@ -177,6 +178,7 @@ class Betula:
         tangent_rank: int = ...,
         projection: _Projection = ...,
         projection_dim: int = ...,
+        projection_max_iter: int = ...,
         memory_budget_mb: float | None = ...,
     ) -> None: ...
     def get_params(self, deep: bool = ...) -> dict[str, Any]: ...
@@ -211,6 +213,10 @@ class Betula:
     def microcluster_weights_(self) -> NDArray[np.float64]: ...
     @property
     def microcluster_radii_(self) -> NDArray[np.float64]: ...
+    @property
+    def components_(self) -> NDArray[np.float64]: ...
+    @property
+    def reconstruction_err_(self) -> float: ...
     @property
     def cluster_centers_(self) -> NDArray[np.float64]: ...
     @property

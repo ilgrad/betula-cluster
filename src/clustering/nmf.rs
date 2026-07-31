@@ -20,6 +20,7 @@
 
 use crate::clustering::rng::SplitMix64;
 use crate::feature::{ClusterFeature, Spherical};
+use crate::linalg::jacobi_eigen;
 use crate::types::Real;
 
 /// Build `n` output rows, in parallel over rows when the `parallel` feature is on.
@@ -66,6 +67,307 @@ fn gram_cols<R: Real>(w: &[Vec<R>], r: usize) -> Vec<Vec<R>> {
     g
 }
 
+/// Rank-`r` truncated SVD of `x` (`m×d`) by a randomized range finder (Halko-Martinsson-Tropp):
+/// sketch `Y = XΩ` with a Gaussian `Ω`, two power iterations with re-orthonormalization, then a small
+/// eigendecomposition of `BBᵀ` where `B = QᵀX`. Cost is `O(m·d·l)` with `l = r + oversampling`, versus
+/// `O(min(m,d)³)` for a dense factorization — and the crate has no LAPACK to call anyway.
+///
+/// Returns `(σ, U, V)` with `σ` descending, `U[k]` the `k`-th left vector (length `m`) and `V[k]` the
+/// `k`-th right vector (length `d`). Vectors are unit-norm; signs are arbitrary (as always for an SVD).
+fn randomized_svd<R: Real>(
+    x: &[Vec<R>],
+    r: usize,
+    seed: u64,
+) -> (Vec<R>, Vec<Vec<R>>, Vec<Vec<R>>) {
+    let m = x.len();
+    let d = x[0].len();
+    let l = (r + 10).min(m).min(d);
+    let mut rng = SplitMix64::new(seed ^ 0x5eed_05bd_u64);
+
+    // Y = X Ω  (m×l), Ω ~ N(0,1) (d×l), then two power iterations Y ← X(XᵀY) for spectral decay.
+    let omega: Vec<Vec<R>> = (0..d)
+        .map(|_| (0..l).map(|_| R::from_f64(rng.gauss()).unwrap()).collect())
+        .collect();
+    let mut q: Vec<Vec<R>> = build_rows(m, |j| {
+        (0..l)
+            .map(|c| {
+                (0..d)
+                    .map(|t| x[j][t] * omega[t][c])
+                    .fold(R::zero(), |a, b| a + b)
+            })
+            .collect()
+    });
+    for _ in 0..2 {
+        orthonormalize(&mut q, l);
+        let xtq: Vec<Vec<R>> = build_rows(d, |t| {
+            (0..l)
+                .map(|c| {
+                    (0..m)
+                        .map(|j| x[j][t] * q[j][c])
+                        .fold(R::zero(), |a, b| a + b)
+                })
+                .collect()
+        });
+        q = build_rows(m, |j| {
+            (0..l)
+                .map(|c| {
+                    (0..d)
+                        .map(|t| x[j][t] * xtq[t][c])
+                        .fold(R::zero(), |a, b| a + b)
+                })
+                .collect()
+        });
+    }
+    orthonormalize(&mut q, l);
+
+    // B = Qᵀ X (l×d); the SVD of B lifts back through Q.
+    let b: Vec<Vec<R>> = build_rows(l, |c| {
+        (0..d)
+            .map(|t| {
+                (0..m)
+                    .map(|j| q[j][c] * x[j][t])
+                    .fold(R::zero(), |a, b| a + b)
+            })
+            .collect()
+    });
+    let (eigvals, eigvecs) = jacobi_eigen(&gram_rows(&b));
+    let mut order: Vec<usize> = (0..l).collect();
+    order.sort_by(|&i, &j| eigvals[j].partial_cmp(&eigvals[i]).unwrap());
+
+    // Numerical-rank cutoff (LAPACK convention). `v = Bᵀu/σ` is only meaningful while `σ` is above the
+    // noise floor: past it the division amplifies round-off into a vector of arbitrary magnitude, which
+    // then seeds a component so far out of scale that the first HALS sweep annihilates it — measured 28
+    // of 32 components dead on a rank-12 matrix. Below the cutoff the triplet carries no information, so
+    // report an honest zero and let NNDSVDar's fill seed that component instead.
+    let sigma_max = order
+        .first()
+        .map_or(R::zero(), |&i| eigvals[i].max(R::zero()).sqrt());
+    let cutoff = sigma_max * R::from_usize(m.max(d)).unwrap() * R::epsilon();
+    let mut sigma = Vec::with_capacity(r);
+    let mut u = Vec::with_capacity(r);
+    let mut v = Vec::with_capacity(r);
+    for &idx in order.iter().take(r.min(l)) {
+        let s = eigvals[idx].max(R::zero()).sqrt();
+        if s <= cutoff {
+            sigma.push(R::zero());
+            u.push(vec![R::zero(); m]);
+            v.push(vec![R::zero(); d]);
+            continue;
+        }
+        // left vector in the sketch basis → lift to R^m through Q
+        let ub: Vec<R> = (0..l).map(|i| eigvecs[i][idx]).collect();
+        let uk: Vec<R> = (0..m)
+            .map(|j| {
+                (0..l)
+                    .map(|c| q[j][c] * ub[c])
+                    .fold(R::zero(), |a, b| a + b)
+            })
+            .collect();
+        // right vector: v = Bᵀ u_B / σ
+        let vk: Vec<R> = (0..d)
+            .map(|t| {
+                (0..l)
+                    .map(|c| b[c][t] * ub[c])
+                    .fold(R::zero(), |a, b| a + b)
+                    / s
+            })
+            .collect();
+        sigma.push(s);
+        u.push(uk);
+        v.push(vk);
+    }
+    (sigma, u, v)
+}
+
+/// `WᵀX` (`r×d`) accumulated row-by-row over `X`.
+///
+/// The transpose-product is the sweep's hot loop, and the obvious expression of it —
+/// `wtx[k][c] = Σ_j w[j][k]·x[j][c]` evaluated per output cell — walks a whole column of `X` for each
+/// of the `r·d` cells, striding `d` floats per step through a matrix far larger than L2. Accumulating
+/// into the (small, cache-resident) `r×d` output while reading each row of `X` once, sequentially,
+/// computes the same product with the access pattern the hardware wants.
+fn wt_x<R: Real>(w: &[Vec<R>], x: &[Vec<R>], r: usize, d: usize) -> Vec<Vec<R>> {
+    let fold = |mut acc: Vec<Vec<R>>, (wj, xj): (&Vec<R>, &Vec<R>)| {
+        for k in 0..r {
+            let wjk = wj[k];
+            if wjk != R::zero() {
+                for (a, &v) in acc[k].iter_mut().zip(xj.iter()) {
+                    *a = *a + wjk * v;
+                }
+            }
+        }
+        acc
+    };
+    let zero = || vec![vec![R::zero(); d]; r];
+    let merge = |mut a: Vec<Vec<R>>, b: Vec<Vec<R>>| {
+        for (ra, rb) in a.iter_mut().zip(b) {
+            for (va, vb) in ra.iter_mut().zip(rb) {
+                *va = *va + vb;
+            }
+        }
+        a
+    };
+    #[cfg(feature = "parallel")]
+    {
+        use rayon::prelude::*;
+        w.par_iter()
+            .zip(x.par_iter())
+            .fold(zero, fold)
+            .reduce(zero, merge)
+    }
+    #[cfg(not(feature = "parallel"))]
+    {
+        let _ = merge;
+        w.iter().zip(x.iter()).fold(zero(), fold)
+    }
+}
+
+/// Modified Gram-Schmidt orthonormalization of the `cols` columns of `a` (`m×cols`), in place.
+fn orthonormalize<R: Real>(a: &mut [Vec<R>], cols: usize) {
+    let eps = R::from_f64(1e-12).unwrap();
+    for c in 0..cols {
+        for prev in 0..c {
+            let dot = a
+                .iter()
+                .map(|row| row[c] * row[prev])
+                .fold(R::zero(), |x, y| x + y);
+            for row in a.iter_mut() {
+                row[c] = row[c] - dot * row[prev];
+            }
+        }
+        let norm = a
+            .iter()
+            .map(|row| row[c] * row[c])
+            .fold(R::zero(), |x, y| x + y)
+            .sqrt();
+        if norm > eps {
+            for row in a.iter_mut() {
+                row[c] = row[c] / norm;
+            }
+        } else {
+            // Rank-deficient sketch column: zero it rather than amplify noise.
+            for row in a.iter_mut() {
+                row[c] = R::zero();
+            }
+        }
+    }
+}
+
+/// NNDSVDar initialization (Boutsidis & Gallopoulos 2008): take the rank-`r` SVD and build a
+/// nonnegative pair from each singular triplet by keeping whichever of the positive / negative parts
+/// carries more energy. Deterministic given the seed, and far better conditioned than a random start —
+/// HALS is a non-convex coordinate descent, so the basin it lands in is decided here.
+///
+/// Plain NNDSVD leaves the resulting zeros at zero, where both HALS and the multiplicative updates lock
+/// them forever (zero is a fixed point of both), so the zeros must be filled. The **`ar`** variant fills
+/// them with `mean(X)·U(0,1)/100` rather than the `a` variant's `mean(X)`, and both halves of that matter
+/// here:
+///
+/// * **Scale.** A filled component is a rank-1 block of constant magnitude `f²` per entry, and `r` of them
+///   stack additively against data entries of size `mean(X)`. At `f = mean(X)` the fill dominates the data
+///   — measured on a rank-12 matrix at `r = 32`: initial relative residual 13.5, and the first HALS sweep
+///   annihilated 28 of the 32 components (zero being absorbing, they never returned). Dividing by 100 puts
+///   the fill back in the perturbation regime: 0 components dead, converged residual 212× lower, and on
+///   `digits` at `r = 24` the downstream ARI rose 0.54 → 0.63 with the reconstruction error 0.33 → 0.20.
+/// * **Randomness.** A constant fill gives every zero-seeded component the *same* column, so they are
+///   linearly dependent and no coordinate descent can pull them apart. `U(0,1)` breaks that degeneracy.
+///
+/// Rank-deficient triplets (`σ` below the numerical-rank cutoff) arrive as exact zeros from the SVD and
+/// are seeded entirely by this fill — which is the intended path, not a fallback.
+fn nndsvdar<R: Real>(x: &[Vec<R>], r: usize, seed: u64) -> (Vec<Vec<R>>, Vec<Vec<R>>) {
+    let m = x.len();
+    let d = x[0].len();
+    let (sigma, u, v) = randomized_svd(x, r, seed);
+    let mut w = vec![vec![R::zero(); r]; m];
+    let mut h = vec![vec![R::zero(); d]; r];
+    let eps = R::from_f64(1e-12).unwrap();
+
+    for k in 0..sigma.len() {
+        let (uk, vk, s) = (&u[k], &v[k], sigma[k]);
+        let (wk, hk) = if k == 0 {
+            // The leading pair is sign-definite for a nonnegative X (Perron-Frobenius), so |·| is exact.
+            let root = s.sqrt();
+            (
+                uk.iter().map(|&t| root * t.abs()).collect::<Vec<R>>(),
+                vk.iter().map(|&t| root * t.abs()).collect::<Vec<R>>(),
+            )
+        } else {
+            let split = |z: &[R]| -> (Vec<R>, Vec<R>, R, R) {
+                let p: Vec<R> = z.iter().map(|&t| t.max(R::zero())).collect();
+                let n: Vec<R> = z.iter().map(|&t| (-t).max(R::zero())).collect();
+                let pn = p
+                    .iter()
+                    .map(|&t| t * t)
+                    .fold(R::zero(), |a, b| a + b)
+                    .sqrt();
+                let nn = n
+                    .iter()
+                    .map(|&t| t * t)
+                    .fold(R::zero(), |a, b| a + b)
+                    .sqrt();
+                (p, n, pn, nn)
+            };
+            let (up, un, upn, unn) = split(uk);
+            let (vp, vn, vpn, vnn) = split(vk);
+            // Keep whichever signed half carries more energy, and normalize by *its own* norms.
+            let (uu, vv, un_norm, vn_norm, mu) = if upn * vpn >= unn * vnn {
+                (up, vp, upn, vpn, upn * vpn)
+            } else {
+                (un, vn, unn, vnn, unn * vnn)
+            };
+            let lbd = (s * mu).sqrt();
+            (
+                uu.iter().map(|&t| lbd * t / un_norm.max(eps)).collect(),
+                vv.iter().map(|&t| lbd * t / vn_norm.max(eps)).collect(),
+            )
+        };
+        for j in 0..m {
+            w[j][k] = wk[j];
+        }
+        h[k][..d].copy_from_slice(&hk[..d]);
+    }
+
+    let total = x
+        .iter()
+        .map(|row| row.iter().fold(R::zero(), |a, &b| a + b))
+        .fold(R::zero(), |a, b| a + b);
+    let avg = (total / R::from_usize((m * d).max(1)).unwrap()).max(R::from_f64(1e-8).unwrap())
+        * R::from_f64(0.01).unwrap();
+    let mut fill = SplitMix64::new(seed ^ 0x00f1_115c_a1e0_u64);
+    for row in w.iter_mut().chain(h.iter_mut()) {
+        for t in row.iter_mut() {
+            if *t <= R::zero() {
+                *t = avg * R::from_f64(fill.next_f64()).unwrap();
+            }
+        }
+    }
+    (w, h)
+}
+
+/// Generalized KL divergence `Σ_ij [x log(x/wh) − x + wh]` (I-divergence), the objective the
+/// multiplicative updates minimize. `0·log 0` is taken as `0`, as the limit requires.
+fn kl_divergence<R: Real>(x: &[Vec<R>], w: &[Vec<R>], h: &[Vec<R>], d: usize) -> R {
+    let r = h.len();
+    let eps = R::from_f64(1e-10).unwrap();
+    let per: Vec<Vec<R>> = build_rows(x.len(), |i| {
+        let mut s = R::zero();
+        for c in 0..d {
+            let mut wh = R::zero();
+            for k in 0..r {
+                wh = wh + w[i][k] * h[k][c];
+            }
+            let xv = x[i][c];
+            if xv > eps {
+                s = s + xv * (xv / wh.max(eps)).ln() - xv + wh;
+            } else {
+                s = s + wh;
+            }
+        }
+        vec![s]
+    });
+    per.iter().map(|v| v[0]).fold(R::zero(), |a, b| a + b)
+}
+
 /// `‖X − W H‖²_F` (residual sum of squares), summed over rows.
 fn residual<R: Real>(x: &[Vec<R>], w: &[Vec<R>], h: &[Vec<R>], d: usize) -> R {
     let r = h.len();
@@ -84,6 +386,55 @@ fn residual<R: Real>(x: &[Vec<R>], w: &[Vec<R>], h: &[Vec<R>], d: usize) -> R {
     per.iter().map(|v| v[0]).fold(R::zero(), |a, b| a + b)
 }
 
+/// Resolve the `(W D, D⁻¹H)` scale indeterminacy every NMF objective has: normalize each component row
+/// of `H` to unit L2 norm, pushing the scale into the matching column of `W`, then order components by
+/// descending energy `‖W_k‖`.
+///
+/// This is not cosmetic. The reconstruction `W H` is invariant to `D`, so the optimizer leaves whatever
+/// split it happened to land on — measured spreads of 70× between component scales on a converged fit.
+/// But `W` leaves this module as a **Euclidean feature vector** for a Phase-3 head, where a per-component
+/// scale is a per-dimension weight: without this the head silently clusters along whichever component
+/// drew the largest number. Canonicalizing also makes `H` comparable across runs and ranks.
+///
+/// L2 (rather than L1, which would make the KL components read as distributions) because both solvers'
+/// output is consumed as a Euclidean feature — one invariant for both.
+fn canonicalize<R: Real>(w: &mut [Vec<R>], h: &mut [Vec<R>]) {
+    let r = h.len();
+    let eps = R::from_f64(1e-12).unwrap();
+    for k in 0..r {
+        let hn = h[k]
+            .iter()
+            .map(|&t| t * t)
+            .fold(R::zero(), |a, b| a + b)
+            .sqrt();
+        if hn > eps {
+            for t in h[k].iter_mut() {
+                *t = *t / hn;
+            }
+            for row in w.iter_mut() {
+                row[k] = row[k] * hn;
+            }
+        }
+    }
+    let energy: Vec<R> = (0..r)
+        .map(|k| {
+            w.iter()
+                .map(|row| row[k] * row[k])
+                .fold(R::zero(), |a, b| a + b)
+        })
+        .collect();
+    let mut order: Vec<usize> = (0..r).collect();
+    order.sort_by(|&a, &b| energy[b].partial_cmp(&energy[a]).unwrap());
+    if order.iter().enumerate().any(|(i, &k)| i != k) {
+        for row in w.iter_mut() {
+            let permuted: Vec<R> = order.iter().map(|&k| row[k]).collect();
+            row.copy_from_slice(&permuted);
+        }
+        let permuted: Vec<Vec<R>> = order.iter().map(|&k| h[k].clone()).collect();
+        h.clone_from_slice(&permuted);
+    }
+}
+
 /// Weighted NMF `X̃ ≈ W H` with `X̃_j = √w_j·μ_j` (`m×d`), `W ≥ 0` (`m×r`), `H ≥ 0` (`r×d`), by weighted
 /// HALS. Returns per-microcluster codes `z_j = W_j / √w_j` (`m×r`) and components `H` (`r×d`).
 fn weighted_nmf<R: Real>(
@@ -95,7 +446,9 @@ fn weighted_nmf<R: Real>(
 ) -> (Vec<Vec<R>>, Vec<Vec<R>>) {
     let m = centroids.len();
     let d = centroids[0].len();
-    let r = rank.min(d).max(1);
+    // Rank is bounded by both matrix dimensions: r > m makes the factorization rank-deficient by
+    // construction and leaves whole components with nothing to fit.
+    let r = rank.min(d).min(m).max(1);
     let eps = R::from_f64(1e-10).unwrap();
 
     // X̃ = √w · μ (row-scaled); clamp tiny negatives from float error (no data shifting).
@@ -108,36 +461,20 @@ fn weighted_nmf<R: Real>(
         })
         .collect();
 
-    // Scale-aware random nonnegative init (deterministic per seed).
-    let mut total = R::zero();
-    let mut cnt = 0usize;
-    for row in &x {
-        for &v in row {
-            total = total + v;
-            cnt += 1;
-        }
-    }
-    let mean = total / R::from_usize(cnt.max(1)).unwrap();
-    let scale = (mean / R::from_usize(r).unwrap())
-        .max(R::from_f64(1e-6).unwrap())
-        .sqrt();
-    let mut rng = SplitMix64::new(seed);
-    let mut w = vec![vec![R::zero(); r]; m];
-    for row in w.iter_mut() {
-        for v in row.iter_mut() {
-            *v = R::from_f64(rng.next_f64()).unwrap() * scale;
-        }
-    }
-    let mut h = vec![vec![R::zero(); d]; r];
-    for row in h.iter_mut() {
-        for v in row.iter_mut() {
-            *v = R::from_f64(rng.next_f64()).unwrap() * scale;
-        }
-    }
+    let (mut w, mut h) = nndsvdar(&x, r, seed);
 
     let tol = R::from_f64(1e-4).unwrap();
-    let mut prev = R::infinity();
+    let mut first_movement = R::zero();
+
     for it in 0..max_iter {
+        // Stopping rule follows the size of the update, not the size of the objective. A relative test
+        // on the residual never fires: HALS converges sublinearly, so it keeps buying more than `tol`
+        // of relative improvement for hundreds of sweeps and `max_iter` ends up the only brake
+        // (measured: a 4x budget cost 6x the time, so the check had never once triggered). The total
+        // coordinate movement, compared against the first sweep's, is scale-free and does converge —
+        // and it falls out of the sweep for free, with no extra pass over the data.
+        let mut movement = R::zero();
+
         // ── update W (columns): A = X Hᵀ (m×r), B = H Hᵀ (r×r) ──
         let hht = gram_rows(&h);
         let xht = build_rows(m, |j| {
@@ -152,20 +489,14 @@ fn weighted_nmf<R: Real>(
                     s = s - w[j][l] * hht[l][k];
                 }
                 s = s + w[j][k] * hht[k][k];
-                w[j][k] = (s / hht[k][k].max(eps)).max(R::zero());
+                let next = (s / hht[k][k].max(eps)).max(R::zero());
+                movement = movement + (next - w[j][k]).abs();
+                w[j][k] = next;
             }
         }
         // ── update H (rows): C = Wᵀ X (r×d), G = Wᵀ W (r×r) ──
         let wtw = gram_cols(&w, r);
-        let wtx = build_rows(r, |k| {
-            (0..d)
-                .map(|c| {
-                    (0..m)
-                        .map(|j| w[j][k] * x[j][c])
-                        .fold(R::zero(), |a, b| a + b)
-                })
-                .collect()
-        });
+        let wtx = wt_x(&w, &x, r, d);
         for k in 0..r {
             for c in 0..d {
                 let mut s = wtx[k][c];
@@ -173,19 +504,20 @@ fn weighted_nmf<R: Real>(
                     s = s - wtw[k][l] * h[l][c];
                 }
                 s = s + wtw[k][k] * h[k][c];
-                h[k][c] = (s / wtw[k][k].max(eps)).max(R::zero());
+                let next = (s / wtw[k][k].max(eps)).max(R::zero());
+                movement = movement + (next - h[k][c]).abs();
+                h[k][c] = next;
             }
         }
-        // ── convergence check every few sweeps ──
-        if it % 5 == 4 {
-            let err = residual(&x, &w, &h, d);
-            if (prev - err).abs() <= tol * prev.max(R::one()) {
-                break;
-            }
-            prev = err;
+
+        if it == 0 {
+            first_movement = movement;
+        } else if movement <= tol * first_movement {
+            break;
         }
     }
 
+    canonicalize(&mut w, &mut h);
     let codes: Vec<Vec<R>> = (0..m)
         .map(|j| {
             let inv = if sw[j] > eps {
@@ -214,38 +546,16 @@ fn weighted_nmf_kl<R: Real>(
 ) -> (Vec<Vec<R>>, Vec<Vec<R>>) {
     let m = centroids.len();
     let d = centroids[0].len();
-    let r = rank.min(d).max(1);
+    let r = rank.min(d).min(m).max(1);
     let eps = R::from_f64(1e-10).unwrap();
     let x: Vec<Vec<R>> = centroids
         .iter()
         .map(|row| row.iter().map(|&v| v.max(R::zero())).collect())
         .collect();
 
-    let mut total = R::zero();
-    let mut cnt = 0usize;
-    for row in &x {
-        for &v in row {
-            total = total + v;
-            cnt += 1;
-        }
-    }
-    let mean = total / R::from_usize(cnt.max(1)).unwrap();
-    let scale = (mean / R::from_usize(r).unwrap())
-        .max(R::from_f64(1e-6).unwrap())
-        .sqrt();
-    let mut rng = SplitMix64::new(seed);
-    let mut w = vec![vec![R::zero(); r]; m];
-    for row in w.iter_mut() {
-        for v in row.iter_mut() {
-            *v = R::from_f64(rng.next_f64()).unwrap() * scale + eps;
-        }
-    }
-    let mut h = vec![vec![R::zero(); d]; r];
-    for row in h.iter_mut() {
-        for v in row.iter_mut() {
-            *v = R::from_f64(rng.next_f64()).unwrap() * scale + eps;
-        }
-    }
+    // Same NNDSVDar start as the Frobenius solver. Zero is a fixed point of the multiplicative updates
+    // too — more starkly, since they are purely multiplicative — so the fill is not optional here.
+    let (mut w, mut h) = nndsvdar(&x, r, seed);
 
     let wh_of = |w: &[Vec<R>], h: &[Vec<R>]| -> Vec<Vec<R>> {
         build_rows(m, |i| {
@@ -258,7 +568,9 @@ fn weighted_nmf_kl<R: Real>(
                 .collect()
         })
     };
-    for _ in 0..max_iter {
+    let tol = R::from_f64(1e-4).unwrap();
+    let mut prev = kl_divergence(&x, &w, &h, d);
+    for it in 0..max_iter {
         // W_ik *= [Σ_j (X_ij/WH_ij) H_kj] / [Σ_j H_kj]
         let wh = wh_of(&w, &h);
         let colsum_h: Vec<R> = (0..r)
@@ -295,39 +607,109 @@ fn weighted_nmf_kl<R: Real>(
                 })
                 .collect()
         });
+        // ── convergence check every few sweeps ──
+        if it % 5 == 4 {
+            let err = kl_divergence(&x, &w, &h, d);
+            if (prev - err).abs() <= tol * prev.max(R::one()) {
+                break;
+            }
+            prev = err;
+        }
     }
+    canonicalize(&mut w, &mut h);
     (w, h)
 }
 
-/// Project leaf microclusters to `rank`-dimensional CF-weighted NMF codes (Frobenius HALS, or the
-/// KL-divergence multiplicative variant for count data when `kl`), returned as single-point `Spherical`
-/// features (mean = code, weight = original mass) for a downstream Phase-3 head to cluster.
-pub(crate) fn project_features<R, C>(
-    feats: &[C],
-    rank: usize,
-    kl: bool,
-    max_iter: usize,
-    seed: u64,
-) -> Vec<Spherical<R>>
+/// How to run the optional Phase-3 NMF projection. A value object rather than a tuple: the settings are
+/// threaded through every dispatch signature, and a bare `(usize, bool, usize)` at those call sites says
+/// nothing about which number is which.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct NmfSpec {
+    /// Target rank. Capped by the centroid matrix's own dimensions inside the solvers.
+    pub rank: usize,
+    /// Minimize the generalized KL divergence (the Poisson model for counts) instead of Frobenius.
+    pub kl: bool,
+    /// Solver sweeps. Separate from the clustering head's budget — the two converge at different rates,
+    /// and sharing one number made a larger `max_iter` for the head silently pay for NMF sweeps too.
+    pub max_iter: usize,
+}
+
+/// The factorization of a set of leaf microclusters: per-leaf codes as single-point `Spherical` features
+/// (mean = code, weight = original mass) for a downstream Phase-3 head, plus the shared parts.
+pub(crate) struct Projection<R: Real> {
+    pub coded: Vec<Spherical<R>>,
+    pub components: Vec<Vec<R>>,
+    /// Relative reconstruction error `‖X̃ − W H‖_F / ‖X̃‖_F` of the weighted centroid matrix.
+    pub reconstruction_err: R,
+}
+
+/// Project leaf microclusters to `spec.rank`-dimensional CF-weighted NMF codes (Frobenius HALS, or the
+/// KL-divergence multiplicative variant for count data).
+pub(crate) fn project<R, C>(feats: &[C], spec: NmfSpec, seed: u64) -> Projection<R>
 where
     R: Real,
     C: ClusterFeature<R>,
 {
     if feats.is_empty() {
-        return Vec::new();
+        return Projection {
+            coded: Vec::new(),
+            components: Vec::new(),
+            reconstruction_err: R::zero(),
+        };
     }
     let centroids: Vec<Vec<R>> = feats.iter().map(|f| f.mean().to_vec()).collect();
     let weights: Vec<R> = feats.iter().map(|f| f.weight()).collect();
-    let (codes, _components) = if kl {
-        weighted_nmf_kl(&centroids, &weights, rank, max_iter.max(1), seed)
+    let iters = spec.max_iter.max(1);
+    let (codes, components) = if spec.kl {
+        weighted_nmf_kl(&centroids, &weights, spec.rank, iters, seed)
     } else {
-        weighted_nmf(&centroids, &weights, rank, max_iter.max(1), seed)
+        weighted_nmf(&centroids, &weights, spec.rank, iters, seed)
     };
-    codes
-        .into_iter()
-        .zip(&weights)
-        .map(|(code, &w)| Spherical::from_moments(w, code, R::zero()))
-        .collect()
+
+    // Scored on the matrix each solver actually fits: √n·μ for Frobenius, raw μ for KL.
+    let d = centroids[0].len();
+    let x: Vec<Vec<R>> = (0..centroids.len())
+        .map(|j| {
+            let s = if spec.kl {
+                R::one()
+            } else {
+                weights[j].max(R::zero()).sqrt()
+            };
+            centroids[j].iter().map(|&v| s * v.max(R::zero())).collect()
+        })
+        .collect();
+    let w: Vec<Vec<R>> = (0..codes.len())
+        .map(|j| {
+            let s = if spec.kl {
+                R::one()
+            } else {
+                weights[j].max(R::zero()).sqrt()
+            };
+            codes[j].iter().map(|&v| s * v).collect()
+        })
+        .collect();
+    let energy = x
+        .iter()
+        .flatten()
+        .map(|&v| v * v)
+        .fold(R::zero(), |a, b| a + b);
+    let reconstruction_err = if energy > R::zero() {
+        (residual(&x, &w, &components, d) / energy)
+            .max(R::zero())
+            .sqrt()
+    } else {
+        R::zero()
+    };
+
+    Projection {
+        coded: codes
+            .into_iter()
+            .zip(&weights)
+            .map(|(code, &w)| Spherical::from_moments(w, code, R::zero()))
+            .collect(),
+        components,
+        reconstruction_err,
+    }
 }
 
 #[cfg(test)]
@@ -382,13 +764,200 @@ mod tests {
             vec![2.0, 1.0, 1.0],
         ];
         let feats = leaves(&cents);
-        let coded = project_features(&feats, 2, false, 100, 3);
+        let out = project(
+            &feats,
+            NmfSpec {
+                rank: 2,
+                kl: false,
+                max_iter: 100,
+            },
+            3,
+        );
+        let coded = out.coded;
         assert_eq!(coded.len(), 3);
+        assert_eq!(out.components.len(), 2);
+        assert!((0.0..=1.0).contains(&out.reconstruction_err));
         assert!(coded.iter().all(|f| f.dim() == 2));
         assert!(coded.iter().all(|f| f.weight() == 1.0));
         assert!(coded
             .iter()
             .all(|f| f.mean().iter().all(|&v| v >= 0.0 && v.is_finite())));
+    }
+
+    #[test]
+    fn more_sweeps_never_worsen_the_fit() {
+        // The convergence test compares `|prev − err|` against `tol · prev`. Seeding `prev` with
+        // `+inf` makes both sides infinite and IEEE-754 says `inf <= inf`, so the solver breaks at
+        // its first check and `max_iter` becomes dead code — a bug that shipped once and was
+        // reintroduced once. A residual that keeps falling as the budget grows is what catches it.
+        for (m, d, r, seed) in [(400usize, 60usize, 8usize, 3u64), (800, 40, 12, 9)] {
+            let mut rng = SplitMix64::new(seed);
+            let base: Vec<Vec<f64>> = (0..r)
+                .map(|_| {
+                    (0..d)
+                        .map(|_| {
+                            if rng.next_f64() < 0.3 {
+                                rng.next_f64()
+                            } else {
+                                0.0
+                            }
+                        })
+                        .collect()
+                })
+                .collect();
+            let x: Vec<Vec<f64>> = (0..m)
+                .map(|_| {
+                    let c: Vec<f64> = (0..r).map(|_| rng.next_f64()).collect();
+                    (0..d)
+                        .map(|j| {
+                            (0..r).map(|k| c[k] * base[k][j]).sum::<f64>() + 0.02 * rng.next_f64()
+                        })
+                        .collect()
+                })
+                .collect();
+            let wts = vec![1.0f64; m];
+            let energy: f64 = x.iter().flatten().map(|v| v * v).sum();
+
+            let curve: Vec<f64> = [5usize, 20, 80]
+                .iter()
+                .map(|&it| {
+                    let (codes, h) = weighted_nmf(&x, &wts, r, it, 7);
+                    residual(&x, &codes, &h, d) / energy
+                })
+                .collect();
+            assert!(
+                curve.windows(2).all(|p| p[1] <= p[0]),
+                "residual must not grow with the sweep budget: {curve:?}"
+            );
+            assert!(
+                curve[2] < curve[0] * 0.5,
+                "80 sweeps should clearly beat 5, got {curve:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn overcomplete_rank_keeps_components_alive() {
+        // Two ways a component gets seeded so far out of scale that the first HALS sweep annihilates
+        // it — and zero is absorbing, so it never returns. (1) A rank-deficient singular triplet:
+        // `v = Bᵀu/σ` divided by a clamped near-zero `σ` amplifies round-off into a huge vector.
+        // (2) The NNDSVD zero-fill: `r` filled components are rank-1 blocks of constant magnitude that
+        // stack additively, so a fill at `mean(X)` swamps the data. Together these left 28 of 32
+        // components dead on this matrix and the residual stuck 270× above where it converges now.
+        let (m, d, r, true_rank) = (600usize, 64usize, 32usize, 12usize);
+        let mut rng = SplitMix64::new(5);
+        let parts: Vec<Vec<f64>> = (0..true_rank)
+            .map(|_| {
+                (0..d)
+                    .map(|_| {
+                        if rng.next_f64() < 0.4 {
+                            rng.next_f64()
+                        } else {
+                            0.0
+                        }
+                    })
+                    .collect()
+            })
+            .collect();
+        let x: Vec<Vec<f64>> = (0..m)
+            .map(|_| {
+                let c: Vec<f64> = (0..true_rank).map(|_| rng.next_f64().powi(3)).collect();
+                (0..d)
+                    .map(|j| (0..true_rank).map(|k| c[k] * parts[k][j]).sum::<f64>())
+                    .collect()
+            })
+            .collect();
+        let energy: f64 = x.iter().flatten().map(|v| v * v).sum();
+
+        let (w0, h0) = nndsvdar(&x, r, 7);
+        let init = (residual(&x, &w0, &h0, d) / energy).sqrt();
+        assert!(
+            init < 2.0,
+            "initialization must not swamp the data: rel resid {init}"
+        );
+
+        let (codes, h) = weighted_nmf(&x, &vec![1.0; m], r, 200, 7);
+        let dead = h
+            .iter()
+            .filter(|row| row.iter().all(|&v| v.abs() < 1e-12))
+            .count();
+        assert!(
+            dead <= r - true_rank,
+            "{dead}/{r} components collapsed; at most {} may, since the data is rank {true_rank}",
+            r - true_rank
+        );
+        let err = (residual(&x, &codes, &h, d) / energy).sqrt();
+        assert!(
+            err < 0.01,
+            "overcomplete fit should be near-exact, got {err}"
+        );
+    }
+
+    #[test]
+    fn transpose_product_matches_the_direct_form() {
+        // `wt_x` accumulates into the small `r×d` output while reading `X` row-sequentially, rather
+        // than walking a column of `X` per output cell. Measured 2.4-3.4x faster; this pins that it
+        // still computes `WᵀX`.
+        let (m, d, r) = (500usize, 48usize, 9usize);
+        let mut rng = SplitMix64::new(3);
+        let x: Vec<Vec<f64>> = (0..m)
+            .map(|_| (0..d).map(|_| rng.next_f64()).collect())
+            .collect();
+        let w: Vec<Vec<f64>> = (0..m)
+            .map(|_| {
+                (0..r)
+                    .map(|_| {
+                        if rng.next_f64() < 0.3 {
+                            0.0
+                        } else {
+                            rng.next_f64()
+                        }
+                    })
+                    .collect()
+            })
+            .collect();
+        let got = wt_x(&w, &x, r, d);
+        for k in 0..r {
+            for c in 0..d {
+                let want: f64 = (0..m).map(|j| w[j][k] * x[j][c]).sum();
+                assert!(
+                    (got[k][c] - want).abs() <= 1e-9 * want.abs().max(1.0),
+                    "WᵀX[{k}][{c}]: {} vs {want}",
+                    got[k][c]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn components_are_canonical() {
+        // NMF is invariant to `(W D, D⁻¹H)`, so the split is arbitrary unless it is pinned down. The
+        // codes leave as a Euclidean feature vector, where a per-component scale is a per-dimension
+        // weight — an unnormalized `H` silently reweights the downstream clustering.
+        let mut rng = SplitMix64::new(11);
+        let base: Vec<Vec<f64>> = (0..3)
+            .map(|_| (0..12).map(|_| rng.next_f64()).collect())
+            .collect();
+        let x: Vec<Vec<f64>> = (0..90)
+            .map(|_| {
+                let c: Vec<f64> = (0..3).map(|_| rng.next_f64()).collect();
+                (0..12)
+                    .map(|j| (0..3).map(|k| c[k] * base[k][j]).sum::<f64>())
+                    .collect()
+            })
+            .collect();
+        let (codes, h) = weighted_nmf(&x, &vec![1.0; 90], 3, 100, 4);
+        for row in &h {
+            let n: f64 = row.iter().map(|v| v * v).sum::<f64>().sqrt();
+            assert!((n - 1.0).abs() < 1e-9, "component row norm {n}");
+        }
+        let energy: Vec<f64> = (0..3)
+            .map(|k| codes.iter().map(|row| row[k] * row[k]).sum())
+            .collect();
+        assert!(
+            energy.windows(2).all(|p| p[1] <= p[0] + 1e-12),
+            "components must be ordered by descending energy: {energy:?}"
+        );
     }
 
     #[test]

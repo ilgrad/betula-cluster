@@ -34,9 +34,11 @@ scikit-learn's 0.32; leave it off for tabular data where magnitude is signal),
 ⇒ more communities), `covariance_weight` (Leiden β — a log-Euclidean covariance/shape term in the
 affinity, `feature="full"`; `0` = off, the centroid-only default), `tangent_weight` / `tangent_rank`
 (Leiden γ — a Grassmann tangent-subspace term of rank `tangent_rank` for manifold-aware communities,
-`feature="full"`; `0` = off), `projection` / `projection_dim` (**`"weighted-nmf"`**, or **`"weighted-nmf-kl"`** for count data, reduces
+`feature="full"`; `0` = off), `projection` / `projection_dim` / `projection_max_iter` (**`"weighted-nmf"`**, or **`"weighted-nmf-kl"`** for count data, reduces
 the leaf centroids to `projection_dim` nonnegative CF-weighted NMF codes before the head — for
-**nonnegative** data only: TF-IDF / counts / spectrograms; `"none"` = off), `seed`. `n_clusters=0` ⇒ automatic `k` for every parametric head (BIC for
+**nonnegative** data only: TF-IDF / counts / spectrograms, dense or CSR; `"none"` = off. After a fit,
+`components_` gives the `(projection_dim, dim)` parts and `reconstruction_err_` the relative fit
+error), `seed`. `n_clusters=0` ⇒ automatic `k` for every parametric head (BIC for
 k-means/GMM, dendrogram cut for Ward). `threshold="auto"` (dense only) drops the one knob users most
 often have to guess: a subsample pilot estimates a warm-start absorption radius, so the full fit
 starts near-converged instead of growing the threshold from zero.

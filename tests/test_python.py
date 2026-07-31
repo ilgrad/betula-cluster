@@ -313,6 +313,7 @@ def test_projection_get_params_roundtrip():
     est = betula_cluster.Betula(projection="weighted-nmf", projection_dim=6)
     assert est.get_params()["projection"] == "weighted-nmf"
     assert est.get_params()["projection_dim"] == 6
+    assert est.get_params()["projection_max_iter"] == 100
     est.set_params(projection="none")
     assert est.get_params()["projection"] == "none"
 
@@ -329,18 +330,88 @@ def test_projection_rejects_negative(nmf_topics):
         betula_cluster.Betula(projection="weighted-nmf", method="kmeans").fit_predict(xneg)
 
 
-def test_projection_rejects_sparse():
+def test_projection_accepts_sparse(nmf_topics):
+    sp = pytest.importorskip("scipy.sparse")
+    x, y = nmf_topics
+    csr = sp.csr_matrix(x)
+    est = betula_cluster.Betula(
+        n_clusters=3,
+        method="kmeans",
+        feature="spherical",
+        threshold=0.0,
+        seed=0,
+        projection="weighted-nmf",
+        projection_dim=6,
+    )
+    assert ari(est.fit_predict(csr), y) > 0.9
+    assert est.components_.shape == (6, x.shape[1])
+
+
+def test_projection_rejects_sparse_with_negative_values():
     sp = pytest.importorskip("scipy.sparse")
     csr = sp.random(60, 20, density=0.3, format="csr", random_state=0)
-    csr.data = np.abs(csr.data)
-    with pytest.raises(ValueError, match="dense"):
+    csr.data = -np.abs(csr.data)
+    with pytest.raises(ValueError, match="nonnegative"):
         betula_cluster.Betula(projection="weighted-nmf", method="kmeans").fit_predict(csr)
+
+
+def test_projection_components_are_canonical(nmf_topics):
+    x, _ = nmf_topics
+    est = betula_cluster.Betula(
+        n_clusters=3,
+        method="kmeans",
+        feature="spherical",
+        threshold=0.0,
+        seed=0,
+        projection="weighted-nmf",
+        projection_dim=6,
+    ).fit(x)
+    h = est.components_
+    assert h.shape == (6, x.shape[1])
+    assert (h >= 0).all()
+    # NMF is invariant to (W D, D^-1 H); the codes are consumed as Euclidean features, so the split
+    # is pinned down: unit-L2 component rows, ordered by descending energy.
+    assert np.allclose(np.linalg.norm(h, axis=1), 1.0)
+    assert 0.0 <= est.reconstruction_err_ <= 1.0
+
+
+def test_projection_max_iter_is_independent_of_head_budget(nmf_topics):
+    x, y = nmf_topics
+    kw = dict(
+        n_clusters=3,
+        method="kmeans",
+        feature="spherical",
+        threshold=0.0,
+        seed=0,
+        projection="weighted-nmf",
+        projection_dim=6,
+    )
+    # A bigger factorization budget fits the leaf centroids at least as well, whatever the head does
+    coarse = betula_cluster.Betula(**kw, max_iter=100, projection_max_iter=3).fit(x)
+    fine = betula_cluster.Betula(**kw, max_iter=100, projection_max_iter=100).fit(x)
+    assert fine.reconstruction_err_ <= coarse.reconstruction_err_
+    assert ari(fine.fit_predict(x), y) > 0.9
+
+
+def test_projection_accessors_require_a_projection(nmf_topics):
+    x, _ = nmf_topics
+    est = betula_cluster.Betula(
+        n_clusters=3, method="kmeans", feature="spherical", threshold=0.0, seed=0
+    ).fit(x)
+    with pytest.raises(ValueError, match="components_ is only available"):
+        _ = est.components_
+    with pytest.raises(ValueError, match="reconstruction_err_ is only available"):
+        _ = est.reconstruction_err_
 
 
 def test_projection_invalid_args():
     x = np.abs(np.random.default_rng(0).normal(size=(60, 8)))
     with pytest.raises(ValueError, match="projection must be"):
         betula_cluster.fit_predict(x, 3, method="kmeans", projection="bogus")
+    with pytest.raises(ValueError, match="projection_max_iter must be"):
+        betula_cluster.fit_predict(
+            x, 3, method="kmeans", projection="weighted-nmf", projection_max_iter=0
+        )
     with pytest.raises(ValueError, match="projection_dim must be"):
         betula_cluster.fit_predict(
             x, 3, method="kmeans", projection="weighted-nmf", projection_dim=0

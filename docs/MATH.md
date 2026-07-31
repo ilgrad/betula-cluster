@@ -140,6 +140,43 @@ The gain is rate-dependent: largest at **sparse** counts (measured up to **+0.5 
 Poisson-count mixture at mean rate $< 0.5$), narrowing to a few points as the mean count grows past $\sim1.5$
 and the central-limit theorem pulls Poisson toward Gaussian.
 
+**Initialization and the scale gauge.** Both solvers start from **NNDSVDar** (Boutsidis & Gallopoulos,
+2008): a rank-$r$ truncated SVD — obtained from a randomized range finder (Halko-Martinsson-Tropp:
+Gaussian sketch, two power iterations, then a small eigendecomposition of $BB^\top$, so no LAPACK is
+needed) — whose $k$-th singular triplet yields a nonnegative pair by keeping whichever of its positive
+/ negative parts carries more energy. The resulting zeros must be filled: zero is a fixed point of both
+HALS and the multiplicative updates, so an entry left at zero could never recover.
+
+Two details of that fill decide whether the factorization is usable at all, because **zero is absorbing**
+— a component driven to zero on one sweep is gone permanently:
+
+* *Rank-deficient triplets.* The right vector is recovered as $v = B^\top u / \sigma$, so once $\sigma$
+  falls to the noise floor the division amplifies round-off into a vector of arbitrary magnitude. Such
+  triplets are cut at the LAPACK numerical-rank threshold $\sigma \le \sigma_{\max}\,\max(M,d)\,\varepsilon$
+  and reported as exact zeros, to be seeded by the fill instead.
+* *Fill scale.* A filled component is a rank-1 block of constant magnitude $f^2$ per entry, and $r$ of
+  them add up against data entries of size $\operatorname{mean}(X)$. The plain `a` variant's
+  $f = \operatorname{mean}(X)$ therefore swamps the data as $r$ grows — measured on a rank-12 matrix at
+  $r = 32$: initial relative residual **13.5**, and the first sweep annihilated **28 of 32** components.
+  The `ar` variant's $f = \operatorname{mean}(X)\cdot U(0,1)/100$ keeps the fill a perturbation, and the
+  randomness breaks the degeneracy a constant fill would create (identical, linearly dependent columns
+  that no coordinate descent can separate). Measured effect: 0 components dead, converged residual
+  **270×** lower, and on `digits` at $r = 24$ the reconstruction error drops **0.33 → 0.20** — matching
+  `scikit-learn`'s own NMF to three decimals at every rank tested ($r = 10, 16, 24, 32$).
+
+Both objectives are invariant to $(WD, D^{-1}H)$ for any positive diagonal $D$ — the optimizer therefore
+leaves an arbitrary per-component scale (measured spreads of $70\times$ between components on a converged
+fit). That gauge freedom is harmless for the reconstruction but not for us: $W$ leaves the factorizer as a
+**Euclidean feature vector** for the Phase-3 head, where a per-component scale is a per-dimension weight,
+so the head silently clusters along whichever component drew the largest number. The returned
+factorization is therefore canonical — $\lVert H_k \rVert_2 = 1$ with the scale absorbed into $W$, and
+components ordered by descending energy. Measured on a 4-topic nonnegative mixture over 8 seeds: median
+ARI **0.63 → 1.00** and seed spread **0.37 → 0.00**. Convergence is tested on the **size of the update** — the total coordinate movement of a sweep, against
+the first sweep's — not on the size of the objective. A relative test on the residual never fires here:
+HALS converges sublinearly, so it keeps buying more than $\texttt{tol}$ of relative improvement for
+hundreds of sweeps and the iteration budget ends up the only brake. The movement is scale-free, does
+converge, and falls out of the sweep at no extra cost.
+
 ## Directional clustering: spherical k-means & von Mises–Fisher
 
 On L2-normalized data every point lies on the unit sphere `S^{d-1}`, where cosine — not Euclidean —
