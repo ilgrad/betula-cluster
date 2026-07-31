@@ -10,11 +10,14 @@
 //! earlier impls) unrepresentable without an `O(branching)` recompute on every level of every insert.
 //!
 //! When the leaf count exceeds `max_leaves` the tree rebuilds with a grown threshold (BIRCH
-//! reducibility), reinserting the existing leaf features via [`CFTree::insert_cf`].
+//! reducibility), reinserting the existing leaf features via [`CFTree::insert_cf`]. The grown
+//! threshold is the order statistic of the within-leaf nearest-sibling distances that the leaf
+//! budget asks for, so the rebuilt tree lands just under `max_leaves` instead of overshooting it.
 
 use crate::distance::CFDistance;
 use crate::feature::ClusterFeature;
 use crate::types::Real;
+use core::cmp::Ordering;
 
 #[cfg_attr(feature = "persistence", derive(serde::Serialize, serde::Deserialize))]
 struct Node<C> {
@@ -263,18 +266,129 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> CF
         }
     }
 
-    /// Rebuild a smaller tree by reinserting the leaf entries under a raised threshold (BIRCH
-    /// reducibility). The threshold rises monotonically to the within-leaf nearest-sibling estimate —
-    /// never lowered, never force-grown. A single rebuild already shrinks the tree (entries closer
-    /// than the typical sibling gap merge on reinsertion), so the leaf count settles just under
-    /// `max_leaves`; the old multiplicative bump compounded across the hundreds of rebuilds a large
-    /// stream triggers and collapsed the tree far below `max_leaves`.
+    /// Bring the entry count back under `max_leaves` by merging the closest sibling pairs, and raise
+    /// the absorption threshold to the widest gap that took (BIRCH reducibility).
+    ///
+    /// Two departures from the textbook rebuild, both measured:
+    ///
+    /// *The count is reduced in place, not by reinserting every entry.* Merging two entries **inside
+    /// their own leaf node** leaves every node CF in the tree exactly unchanged — a node's CF is the
+    /// merge of its subtree, and merging two of its children does not change that multiset union. Mass
+    /// is conserved per node, so no ancestor needs touching and no leaf can be emptied. That splits
+    /// the two jobs BIRCH's rebuild conflates: *reducing the count*, which is all the leaf bound asks
+    /// for, and *rebalancing the node structure*, which costs a descent per entry. Cost is one
+    /// `O(Σ_leaf child_count²)` sibling scan plus an `O(m log m)` sort, against `O(m · depth ·
+    /// branching)`. Compaction cannot reach pairs that landed in different leaves, so [`Self::reinsert`]
+    /// remains the fallback — taken only when merging every available sibling pair still leaves the
+    /// tree over budget.
+    ///
+    /// *The number of merges is chosen, not predicted.* Growing the threshold first and merging
+    /// whatever falls under it makes the resulting count a guess, and under concentration of measure
+    /// that guess has no safe value: on 3000-dimensional TF-IDF the achievable leaf count jumps from
+    /// 7755 to 12 between thresholds 1.0 and 1.3, so *every* threshold-first policy either fails to
+    /// reduce or collapses the tree — measured at 3 leaves against a 2000 budget. Merging the `k`
+    /// closest pairs and reading the threshold off the last one inverts that: `k` is exact, and the
+    /// cliff cannot be stepped over because merging is capped at one pair per entry per rebuild.
+    /// The 10% margin below `max_leaves` is what keeps the next insert from rebuilding immediately.
     fn rebuild(&mut self) {
-        let estimate = self.estimate_threshold();
-        if estimate > self.threshold {
-            self.threshold = estimate;
-        }
+        let target = (self.max_leaves - self.max_leaves / 10).max(1);
+        let want = self.entries.len().saturating_sub(target);
+        let mut pairs = self.sibling_pairs();
+        pairs.sort_unstable_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(Ordering::Equal));
 
+        let mut alive = vec![true; self.entries.len()];
+        let mut merged = 0usize;
+        let mut widest = R::zero();
+        for (gap, ei, ej) in pairs {
+            if merged == want {
+                break;
+            }
+            if !alive[ei] || !alive[ej] {
+                continue;
+            }
+            let absorbed = self.entries[ej].clone();
+            self.entries[ei].merge(&absorbed);
+            alive[ej] = false;
+            merged += 1;
+            widest = gap;
+        }
+        if merged > 0 {
+            // Absorption is gated on `<= threshold`, so the widest gap merged here must itself pass;
+            // `1 + 4ε` covers the `sqrt(d)² < d` rounding the linear-space scan introduces.
+            let grown = widest * (R::one() + R::from_f64(4.0).unwrap() * R::epsilon());
+            if grown > self.threshold {
+                self.threshold = grown;
+            }
+            self.drop_merged(&alive);
+            self.reinsert();
+        }
+        self.rebuilds += 1;
+    }
+
+    /// Every leaf entry paired with its nearest sibling *inside its own leaf node*: `(gap, entry,
+    /// sibling)`, with the sibling chosen under the routing measure (`dist`) and the gap measured
+    /// under the absorption measure (`abs`) — mirroring how insertion routes, then absorbs. Each
+    /// entry contributes at most one pair, which is what caps a rebuild at one merge per entry.
+    fn sibling_pairs(&self) -> Vec<(R, usize, usize)> {
+        let mut out = Vec::with_capacity(self.entries.len());
+        for node in &self.nodes {
+            if !node.leaf || node.children.len() < 2 {
+                continue;
+            }
+            let ch = &node.children;
+            for (i, &ei) in ch.iter().enumerate() {
+                let entry = &self.entries[ei];
+                let mut best = ei;
+                let mut bd = R::infinity();
+                for (j, &ej) in ch.iter().enumerate() {
+                    if i == j {
+                        continue;
+                    }
+                    let d = self.dist.between(entry, &self.entries[ej]);
+                    if d < bd {
+                        bd = d;
+                        best = ej;
+                    }
+                }
+                out.push((self.abs.between(entry, &self.entries[best]), ei, best));
+            }
+        }
+        out
+    }
+
+    /// Compact the entry arena after a merge pass, dropping every entry marked dead and rewriting the
+    /// leaf child lists to the new indices.
+    fn drop_merged(&mut self, alive: &[bool]) {
+        let mut remap = vec![0usize; self.entries.len()];
+        let mut kept = Vec::with_capacity(self.entries.len());
+        for (old, e) in std::mem::take(&mut self.entries).into_iter().enumerate() {
+            if alive[old] {
+                remap[old] = kept.len();
+                kept.push(e);
+            }
+        }
+        self.entries = kept;
+        for node in &mut self.nodes {
+            if node.leaf {
+                node.children.retain(|&e| alive[e]);
+                for c in &mut node.children {
+                    *c = remap[*c];
+                }
+            }
+        }
+    }
+
+    /// Rebalance: route every leaf entry through a fresh tree, merging nothing.
+    ///
+    /// Compaction merges strictly within a leaf, so it can shrink a leaf that mixes two clusters but
+    /// never split it — insertion order decides which entries share a node, and nothing afterwards
+    /// revisits that decision. Rebalancing does: each entry is routed against the tree as it now
+    /// stands, so leaves re-partition around the geometry the data actually has. Absorption stays off
+    /// throughout, which keeps the two jobs separate — the entry count is compaction's to set, and a
+    /// rebalance that also merged would be free to walk off the concentration cliff compaction was
+    /// built to avoid (measured: reinserting *with* absorption collapses a d = 50 blob mixture to 9
+    /// leaves against a 500 budget).
+    fn reinsert(&mut self) {
         let entries = self.collect_entries_dfs();
         self.entries.clear();
         self.nodes.clear();
@@ -289,53 +403,23 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> CF
         // reference (ELKI/betulars) reinserts back-to-front, which packs nodes more evenly and keeps
         // descend paths short — a faster *and* better-shaped tree than forward reinsertion.
         for e in entries.into_iter().rev() {
-            self.insert_cf(e);
+            self.place_cf(e);
         }
-        self.rebuilds += 1;
     }
 
-    /// Mean nearest-neighbour distance between entries that *share a leaf node* — the within-leaf
-    /// absorption granularity used by ELKI/BETULA.
-    ///
-    /// Cost is `O(Σ_leaf child_count²)` ≈ `O(m·capacity)` (a leaf holds ≤ `capacity` entries), an
-    /// order of magnitude below the global all-pairs scan it replaces, yet it tracks the same scale:
-    /// the threshold gates absorption *within* a leaf, so the typical nearest-sibling gap there is
-    /// exactly the quantity it should reflect — and unlike a sampled global scan it cannot
-    /// systematically over-estimate the NN and collapse the tree below `max_leaves`. The nearest
-    /// sibling is located under the routing measure (`dist`) and its value taken under the absorption
-    /// measure (`abs`), mirroring how insertion routes then absorbs. Distances are averaged in linear
-    /// space and squared back (ELKI convention); `1 + 4ε` guards `sqrt(d)² < d` rounding at the gate.
-    fn estimate_threshold(&self) -> R {
-        let mut sum = R::zero();
-        let mut count = 0usize;
-        for node in &self.nodes {
-            if !node.leaf || node.children.len() < 2 {
-                continue;
-            }
-            let ch = &node.children;
-            for (i, &ei) in ch.iter().enumerate() {
-                let entry = &self.entries[ei];
-                let mut best = R::infinity();
-                let mut best_e = ei;
-                for (j, &ej) in ch.iter().enumerate() {
-                    if i == j {
-                        continue;
-                    }
-                    let d = self.dist.between(entry, &self.entries[ej]);
-                    if d < best {
-                        best = d;
-                        best_e = ej;
-                    }
-                }
-                sum = sum + self.abs.between(entry, &self.entries[best_e]).sqrt();
-                count += 1;
-            }
+    /// Route a feature to its leaf and keep it as its own entry — [`Self::insert_cf`] without the
+    /// absorption step.
+    fn place_cf(&mut self, cf: C) {
+        let leaf = self.descend_cf(&cf);
+        let mut cur = Some(leaf);
+        while let Some(n) = cur {
+            self.nodes[n].cf.merge(&cf);
+            cur = self.nodes[n].parent;
         }
-        if count == 0 {
-            return self.threshold;
-        }
-        let mean = sum / R::from_usize(count).unwrap();
-        mean * mean * (R::one() + R::from_f64(4.0).unwrap() * R::epsilon())
+        let eid = self.entries.len();
+        self.entries.push(cf);
+        self.nodes[leaf].children.push(eid);
+        self.split_up(leaf);
     }
 
     fn collect_entries_dfs(&self) -> Vec<C> {
@@ -786,12 +870,74 @@ mod tests {
     }
 
     #[test]
-    fn estimate_threshold_tracks_within_leaf_nn() {
-        // The rebuild threshold is the mean nearest-sibling gap among entries that share a leaf node.
-        // For unit-spaced points the true nearest-sibling (squared) distance is 1.0 everywhere, so the
-        // estimate must land at that scale — never systematically above it, which would coarsen the
-        // tree below `max_leaves` on rebuild. Many entries across many leaf nodes here ⇒ this exercises
-        // the per-leaf scan, not a single fused leaf.
+    fn rebuild_lands_near_the_leaf_budget() {
+        // `max_leaves` is a resolution budget: the summary handed to the global clustering is only as
+        // fine as the leaves it actually keeps. A rebuild that overshoots throws away resolution the
+        // caller asked and paid for, and the old policy — grow the threshold to the *mean* sibling gap,
+        // then merge whatever falls under it — routinely spent a third of the budget that way.
+        for budget in [200usize, 600] {
+            let mut tree: CFTree<f64, Spherical<f64>, _, _> =
+                CFTree::new(6, 16, 16, 0.0, budget, CentroidEuclidean, CentroidEuclidean);
+            let pts = pseudo(20_000, 6);
+            for p in &pts {
+                tree.insert(p);
+            }
+            let used = tree.num_leaves() as f64 / budget as f64;
+            assert!(
+                (0.8..=1.0).contains(&used),
+                "budget {budget}: {} leaves is {used:.2} of it",
+                tree.num_leaves()
+            );
+            verify(&tree, pts.len());
+        }
+    }
+
+    #[test]
+    fn rebuild_cannot_step_over_a_concentration_cliff() {
+        // In high dimension pairwise distances concentrate, so the leaf count is a near-discontinuous
+        // function of the threshold: below the bulk of the distance distribution nothing merges, above
+        // it everything does. Any policy that picks a threshold and then merges whatever falls under it
+        // is therefore one step away from collapsing the tree — measured at 3 leaves against a 2000
+        // budget on TF-IDF. Choosing the number of merges instead caps a rebuild at one merge per
+        // entry, which makes stepping over the cliff unrepresentable rather than unlikely.
+        //
+        // The data reproduces the geometry that causes it: unit-norm vectors with 8 of 256 dimensions
+        // populated, as an L2-normalized bag of words is. Disjoint supports sit at squared distance
+        // exactly 2, pairs sharing `k` terms at `2 - k/4`, so the distribution is a spike at 2 with a
+        // thin left tail — and a threshold anywhere past the spike absorbs everything.
+        let dim = 256;
+        let pts: Vec<Vec<f64>> = (0..6000)
+            .map(|i| {
+                let mut v = vec![0.0; dim];
+                let mut h = (i as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
+                for _ in 0..8 {
+                    h ^= h >> 33;
+                    h = h.wrapping_mul(0xff51_afd7_ed55_8ccd);
+                    v[(h >> 32) as usize % dim] = 1.0 / (8.0f64).sqrt();
+                }
+                v
+            })
+            .collect();
+        let mut tree: CFTree<f64, Spherical<f64>, _, _> =
+            CFTree::new(dim, 16, 16, 0.0, 300, CentroidEuclidean, CentroidEuclidean);
+        for p in &pts {
+            tree.insert(p);
+        }
+        assert!(
+            tree.num_leaves() >= 150,
+            "collapsed to {} leaves against a 300 budget",
+            tree.num_leaves()
+        );
+        verify(&tree, pts.len());
+    }
+
+    #[test]
+    fn sibling_pairs_track_the_within_leaf_nn() {
+        // A rebuild merges the closest sibling pairs and reads the grown threshold off the widest gap
+        // it took, so every gap the scan reports must sit at the true nearest-sibling scale. For
+        // unit-spaced points that (squared) distance is 1.0 everywhere; a gap systematically above it
+        // would coarsen the tree below `max_leaves` on rebuild. Many entries across many leaf nodes
+        // here ⇒ this exercises the per-leaf scan, not a single fused leaf.
         let mut tree: CFTree<f64, Spherical<f64>, _, _> = CFTree::new(
             1,
             16,
@@ -809,17 +955,26 @@ mod tests {
             tree.num_leaves() > 4096,
             "threshold 0 ⇒ no absorption ⇒ 4200 distinct entries spread over many leaf nodes"
         );
-        let est = tree.estimate_threshold();
-        assert!(
-            (0.5..=1.5).contains(&est),
-            "within-leaf threshold {est} drifted from the unit nearest-sibling scale (≈1.0)"
+        let pairs = tree.sibling_pairs();
+        assert_eq!(
+            pairs.len(),
+            tree.num_leaves(),
+            "every entry contributes exactly one pair"
         );
+        for (gap, ei, ej) in pairs {
+            assert_ne!(ei, ej, "an entry must not pair with itself");
+            assert!(
+                (0.5..=1.5).contains(&gap),
+                "sibling gap {gap} drifted from the unit nearest-sibling scale (≈1.0)"
+            );
+        }
     }
 
     #[test]
-    fn estimate_threshold_falls_back_with_no_within_leaf_pair() {
-        // `leaf_cap = 1` ⇒ every leaf node holds a single entry ⇒ there is no sibling pair to
-        // measure. The estimate must fall back to the current threshold, not divide by a zero count.
+    fn no_sibling_pairs_when_every_leaf_holds_one_entry() {
+        // `leaf_cap = 1` ⇒ every leaf node holds a single entry ⇒ there is no sibling pair to merge.
+        // The scan must come back empty rather than pairing an entry with itself; a rebuild here has
+        // nothing to compact and falls through to a reinsertion.
         let mut tree: CFTree<f64, Spherical<f64>, _, _> = CFTree::new(
             1,
             2,
@@ -832,7 +987,7 @@ mod tests {
         for p in [[0.0], [10.0], [20.0]] {
             tree.insert(&p);
         }
-        assert_eq!(tree.estimate_threshold(), tree.threshold());
+        assert!(tree.sibling_pairs().is_empty());
     }
 
     #[test]

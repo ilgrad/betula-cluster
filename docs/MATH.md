@@ -246,8 +246,15 @@ clusters). This is parameter-free and non-convex-aware.
 - **Frequent-Directions sketch** (high $d$): the full-cov GMM consumes it in **low-rank** form —
   $\mathrm{tr}(\Sigma_k^{-1}\Sigma_i) = \sum_r \|L_k^{-1} f_r\|^2$ — so it never materializes a $d \times d$ matrix per leaf and keeps
   $O(\ell d)$ memory through clustering. Identical math to the dense path.
-- **Rebuild threshold** is the within-leaf mean nearest-sibling gap (ELKI/BETULA-standard,
-  $O(M \cdot \text{capacity})$), raised monotonically — no global all-pairs scan, no over-growth collapse.
+- **Rebuild** merges the $k$ closest within-leaf sibling pairs, where $k$ is what the leaf budget asks
+  for, and raises the threshold to the widest gap it took (monotone, $O(M \cdot \text{capacity})$ scan,
+  no global all-pairs). Two consequences. *In place*: merging two entries inside one leaf node leaves
+  every node CF exactly equal to the merge of its subtree, so no ancestor is touched; the reinsertion
+  that follows merges nothing and only re-routes, which is the one thing compaction cannot do (shrink a
+  mixed leaf, yes; split it, no). *Cliff-safe*: in high dimension distances
+  concentrate, so the leaf count is near-discontinuous in the threshold (measured on 3000-d TF-IDF:
+  7755 leaves at $\tau = 1.0$, 12 at $\tau = 1.3$) and any threshold-first policy either fails to reduce
+  or collapses the tree; choosing $k$ instead caps a rebuild at one merge per entry.
 - **Robust insertion** (`huber_k = k`, optional): before a point $x$ is folded into its target
   microcluster $(n, \mu, S)$, each coordinate is winsorized to the cluster's own scale,
 

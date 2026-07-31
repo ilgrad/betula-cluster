@@ -7,6 +7,40 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Fixed
+- **CF-tree: the rebuild spent a third of the leaf budget, and collapsed the tree outright in high
+  dimension.** `max_leaves` is a resolution budget — the summary handed to the global clustering is
+  only as fine as the leaves actually kept — but the rebuild grew the threshold to the *mean*
+  within-leaf nearest-sibling gap and then merged whatever fell under it, which is a prediction, not a
+  target. Measured utilization of the budget: **65.6–96.2%** (mean 80.6%) across digits, blobs at
+  n = 20 000/100 000 and d = 10/50, and uniform d = 20. On 3000-dimensional TF-IDF it failed
+  catastrophically instead — **3 leaves against a 2000 budget**, one of them holding 85.7% of the mass,
+  ARI 0.0 for every method and every seed. The cause is concentration of measure: the achievable leaf
+  count is near-discontinuous in the threshold (7755 leaves at `threshold=1.0`, **12** at `1.3`), so no
+  threshold-first policy has a safe value there. The rebuild now merges the `k` closest sibling pairs
+  with `k` set by the budget and reads the grown threshold off the widest gap it took — `k` is exact,
+  and merging is capped at one pair per entry, so the cliff cannot be stepped over. Utilization is now
+  **90.0–99.0%** (mean 93.5%) on the same datasets and **90.0/94.1%** on TF-IDF (was 0.6/0.2%), where
+  ARI goes 0.0 → 0.071 with the `spherical-kmeans` head.
+- **CF-tree: the rebuild conflated reducing the entry count with rebalancing the node structure.**
+  Merging two entries *inside their own leaf node* leaves every node CF in the tree exactly unchanged —
+  a node's CF is the merge of its subtree, and merging two of its children does not change that
+  multiset union — so mass is conserved per node, no ancestor needs touching, and no leaf can be
+  emptied. The count reduction is therefore done in place, in one `O(Σ_leaf child_count²)` scan plus an
+  `O(m log m)` sort, and the reinsertion pass that follows now merges **nothing**: it only re-routes
+  entries so that leaves re-partition around the geometry the data actually has, which compaction
+  alone cannot do (it can shrink a leaf that mixes two clusters but never split it). Keeping absorption
+  on during that pass is what walks off the concentration cliff — measured, it collapses a d = 50 blob
+  mixture to **9 leaves against a 500 budget**. Rebuilds became more frequent (each shaves 10% rather
+  than overshooting) and individually cheaper; end-to-end build time moved **−6% to +98%** across the
+  eight configurations, with the two largest (blobs n = 100 000, d = 50) essentially unchanged at
+  +1% and +3%. `n_rebuilds_` counts a different, cheaper unit of work than before and is not comparable
+  across the change.
+
+  Quality follows the head, not the leaf count, and the finer summary is not uniformly better: on
+  digits (5 seeds, median) the `kmeans` head goes **0.646 → 0.667** while the `gmm` head goes
+  **0.593 → 0.458** at `max_leaves=500` — the diagonal-covariance head degrades as leaves get smaller
+  and is best on that dataset at ~230 leaves, which is now a `max_leaves` choice rather than something
+  the rebuild does behind the caller's back. Blob mixtures stay at ARI 1.000 throughout.
 - **CF-weighted NMF: the solver stopped after 5 sweeps regardless of `max_iter`.** The convergence test
   compared `|prev − err|` against `tol · prev` with `prev` seeded at `+inf`; IEEE-754 says `inf <= inf`,
   so the first check always fired and the iteration budget was dead code. Every other EM loop in the
