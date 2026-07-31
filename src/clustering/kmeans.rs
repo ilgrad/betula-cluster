@@ -405,6 +405,38 @@ fn update_centers<R: Real>(
             }
         }
     }
+
+    // Reseed an empty cluster from the worst-served leaf, as the spherical head does. A cluster that
+    // loses its last member is otherwise stranded: nothing moves its centre again, it keeps losing the
+    // assignment race, and the run silently returns fewer than `k` clusters while reporting success.
+    // Measured on 20-newsgroups TF-IDF at `n_clusters=20`: **14 non-empty clusters** and ARI 0.017,
+    // against 20 and 0.085 once the stranded centres are restarted. Reseeding on the leaf currently
+    // furthest from its own centre is the choice that buys the most inertia per relocation.
+    if wsum.iter().any(|w| *w <= R::zero()) {
+        let mut served: Vec<R> = means
+            .iter()
+            .enumerate()
+            .map(|(i, m)| weights[i] * sq_euclidean(m, &centers[labels[i]]))
+            .collect();
+        for c in 0..k {
+            if wsum[c] > R::zero() {
+                continue;
+            }
+            let worst = argmax(&served);
+            centers[c].copy_from_slice(&means[worst]);
+            served[worst] = R::neg_infinity(); // don't reseed two clusters onto the same leaf
+        }
+    }
+}
+
+fn argmax<R: Real>(v: &[R]) -> usize {
+    let mut best = 0;
+    for (i, x) in v.iter().enumerate().skip(1) {
+        if *x > v[best] {
+            best = i;
+        }
+    }
+    best
 }
 
 /// Hamerly-accelerated **exact** Lloyd: per-point upper/lower distance bounds skip the full centre

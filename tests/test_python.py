@@ -355,6 +355,27 @@ def test_projection_rejects_sparse_with_negative_values():
         betula_cluster.Betula(projection="weighted-nmf", method="kmeans").fit_predict(csr)
 
 
+@pytest.mark.parametrize("method", ["kmeans", "spherical-kmeans"])
+def test_kmeans_labels_are_the_nearest_centre(method):
+    """k-means assigns a point to its nearest centre; `predict` must return that partition.
+
+    Reading the label off the leaf the point routes to instead is an approximate
+    nearest-microcluster search, and the tree descent is greedy: in high dimension it lands on the
+    wrong leaf often enough to disagree with the model on a fifth of the points.
+    """
+    rng = np.random.default_rng(3)
+    x = rng.normal(size=(4000, 64)) + rng.integers(0, 6, 4000)[:, None] * 3.0
+    x /= np.linalg.norm(x, axis=1, keepdims=True)
+    est = betula_cluster.Betula(n_clusters=6, method=method, max_leaves=400, normalize=True, seed=1)
+    labels = est.fit_predict(x)
+    centers = np.asarray(est.cluster_centers_, dtype=np.float64)
+    live = np.flatnonzero((centers != 0).any(axis=1))
+    if method == "spherical-kmeans":
+        centers = centers / np.maximum(np.linalg.norm(centers, axis=1, keepdims=True), 1e-12)
+    d = (x**2).sum(1)[:, None] - 2 * x @ centers[live].T + (centers[live] ** 2).sum(1)[None, :]
+    assert np.array_equal(labels, live[d.argmin(1)])
+
+
 def test_projection_components_are_canonical(nmf_topics):
     x, _ = nmf_topics
     est = betula_cluster.Betula(

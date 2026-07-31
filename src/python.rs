@@ -266,6 +266,56 @@ fn cluster_count_for_centers(labels: &[i64]) -> usize {
         .map_or(0, |&m| m as usize + 1)
 }
 
+/// Label each of `n` rows by its nearest cluster centre — the partition a centroid head *is*, and
+/// the labelling `Model::predict` gives for the one-shot path. `rows` is flat `ids.len() × dim`.
+fn assign_rows<R: Real>(ids: &[i64], rows: &[f64], dim: usize, flat: &[R], n: usize) -> Vec<i64> {
+    map_rows(n, |i| {
+        nearest_center(ids, rows, dim, &flat[i * dim..(i + 1) * dim])
+    })
+}
+
+/// [`assign_rows`] for CSR input: each row is expanded into a reused dense buffer, so the dense
+/// `n × dim` matrix is never materialized (serial — the shared buffer precludes the parallel path).
+fn assign_csr(
+    ids: &[i64],
+    rows: &[f64],
+    dim: usize,
+    data: &[f64],
+    indices: &[i64],
+    indptr: &[i64],
+) -> Vec<i64> {
+    let mut buf = vec![0.0f64; dim];
+    let mut out = Vec::with_capacity(indptr.len().saturating_sub(1));
+    for w in indptr.windows(2) {
+        let (lo, hi) = (w[0] as usize, w[1] as usize);
+        for k in lo..hi {
+            buf[indices[k] as usize] = data[k];
+        }
+        out.push(nearest_center(ids, rows, dim, &buf));
+        for k in lo..hi {
+            buf[indices[k] as usize] = 0.0;
+        }
+    }
+    out
+}
+
+fn nearest_center<R: Real>(ids: &[i64], rows: &[f64], dim: usize, x: &[R]) -> i64 {
+    let mut best = ids[0];
+    let mut bd = f64::INFINITY;
+    for (c, &id) in ids.iter().enumerate() {
+        let mut d = 0.0;
+        for (j, &m) in rows[c * dim..(c + 1) * dim].iter().enumerate() {
+            let t = x[j].to_f64().unwrap_or(0.0) - m;
+            d += t * t;
+        }
+        if d < bd {
+            bd = d;
+            best = id;
+        }
+    }
+    best
+}
+
 /// Per-leaf (microcluster) statistics as `f64`, regardless of the tree's element type: flat
 /// row-major `centers` (`n_leaves × dim`), `weights` (effective point mass), and `radii` — the RMS
 /// distance from the centroid, `sqrt(ssd / weight)`.
@@ -1241,6 +1291,10 @@ struct Betula {
     /// Relative reconstruction error of the projection, `‖X̃ − W H‖_F / ‖X̃‖_F`.
     #[serde(default)]
     nmf_reconstruction_err: Option<f64>,
+    /// `(label, centre)` per non-empty cluster, set at finalize for heads whose model is a partition
+    /// by nearest centre. Backs `predict`; `None` keeps the microcluster route (see [`Model`]).
+    #[serde(default)]
+    centers: Option<(Vec<i64>, Vec<f64>)>,
 }
 
 /// Copy a 2-D array into a flat row-major `Vec<R>`, casting from the other float dtype if needed
@@ -1404,7 +1458,10 @@ impl Betula {
             .state64
             .as_ref()
             .ok_or_else(|| PyValueError::new_err("no fitted float64 tree for sparse predict"))?;
-        Ok(t.route_csr(labels, data, indices, indptr, n_features))
+        match self.centers.as_ref() {
+            Some((ids, rows)) => Ok(assign_csr(ids, rows, n_features, data, indices, indptr)),
+            None => Ok(t.route_csr(labels, data, indices, indptr, n_features)),
+        }
     }
 
     fn check_dim(&self, dim: usize) -> PyResult<()> {
@@ -1414,6 +1471,43 @@ impl Betula {
             ));
         }
         Ok(())
+    }
+
+    /// The `(label, centre)` partition a centroid head defines, or `None` when the head assigns by
+    /// something other than nearest centre, or a projection replaced the feature space the rows live
+    /// in — in both cases the microcluster route is the only defined labelling. Constrained runs
+    /// never take this path: COP-KMeans labels satisfy pairwise constraints that a Voronoi rule is
+    /// free to violate.
+    fn centroid_partition(&self) -> Option<(Vec<i64>, Vec<f64>)> {
+        let Kind::Parametric(method) = self.kind else {
+            return None;
+        };
+        let unit = crate::model::is_centroid_model(method)?;
+        if self.nmf_dim.is_some() {
+            return None;
+        }
+        let (centers, weights, _radii, dim) = self.cluster_stats_any().ok()?;
+        let mut labels = Vec::new();
+        let mut rows = Vec::new();
+        for (c, &w) in weights.iter().enumerate() {
+            if w <= 0.0 {
+                continue;
+            }
+            let row = &centers[c * dim..(c + 1) * dim];
+            let scale = if unit {
+                let norm = row.iter().map(|v| v * v).sum::<f64>().sqrt();
+                if norm > 0.0 {
+                    1.0 / norm
+                } else {
+                    1.0
+                }
+            } else {
+                1.0
+            };
+            labels.push(c as i64);
+            rows.extend(row.iter().map(|v| v * scale));
+        }
+        (!labels.is_empty()).then_some((labels, rows))
     }
 
     /// Cluster the current leaf features (whichever dtype tree exists) and cache the labels.
@@ -1443,12 +1537,14 @@ impl Betula {
                 let (components, err) = out.parts.unzip();
                 self.nmf_components = components;
                 self.nmf_reconstruction_err = err;
+                self.centers = self.centroid_partition();
             }
             None => {
                 self.labels = None;
                 self.proba = None;
                 self.nmf_components = None;
                 self.nmf_reconstruction_err = None;
+                self.centers = None;
             }
         }
     }
@@ -1487,17 +1583,24 @@ impl Betula {
                 "call fit(), fit_predict(), or partial_fit() (no args, to finalize) before predict()",
             )
         })?;
+        let part = self.centers.as_ref();
         if let Some(t) = &self.state64 {
             let (flat, n, dim) = flat_as::<f64>(data, self.normalize)?;
             self.check_dim(dim)?;
             Ok(py
-                .detach(|| t.route(labels, &flat, n, dim))
+                .detach(|| match part {
+                    Some((ids, rows)) => assign_rows(ids, rows, dim, &flat, n),
+                    None => t.route(labels, &flat, n, dim),
+                })
                 .into_pyarray(py))
         } else if let Some(t) = &self.state32 {
             let (flat, n, dim) = flat_as::<f32>(data, self.normalize)?;
             self.check_dim(dim)?;
             Ok(py
-                .detach(|| t.route(labels, &flat, n, dim))
+                .detach(|| match part {
+                    Some((ids, rows)) => assign_rows(ids, rows, dim, &flat, n),
+                    None => t.route(labels, &flat, n, dim),
+                })
                 .into_pyarray(py))
         } else {
             Err(PyValueError::new_err(
@@ -1647,6 +1750,7 @@ impl Betula {
             proba: None,
             nmf_components: None,
             nmf_reconstruction_err: None,
+            centers: None,
         })
     }
 

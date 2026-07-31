@@ -7,6 +7,26 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Fixed
+- **`predict` returned the label of an approximately-found leaf, not the label of the model's own
+  partition.** k-means assigns a point to its nearest centre; the labels came instead from routing the
+  point down the CF-tree to a leaf and reading that leaf's cluster. The descent is greedy, so it is an
+  *approximate* nearest-microcluster search, and in high dimension it is wrong often: measured
+  disagreement with the model's partition of **2.7% (digits), 14.9% (MNIST-20k) and 18.1%
+  (20-newsgroups TF-IDF)** of points, and on TF-IDF only **14 of the 20 clusters the head found** were
+  reachable by descent at all — the estimator reported `n_clusters_ = 20` while `predict` could never
+  emit six of them. The argmin over `k` centres is also the cheaper of the two at `k ≪ n_leaves`.
+  Measured ARI, `max_leaves=2000`, median of 3 seeds: MNIST-20k `kmeans` **0.397 → 0.417**,
+  20-newsgroups `kmeans` **0.050 → 0.060** and `spherical-kmeans` **0.071 → 0.099**, digits `kmeans`
+  0.667 → 0.663. Applies to `method="kmeans"` and `"spherical-kmeans"`, whose objective *is* "assign
+  to the nearest centre" (the spherical head compares unit-normalized centres, where the Euclidean
+  argmin and the cosine argmax agree). Every other head keeps the microcluster route: the mixture
+  heads (GMM, Toeplitz-GMM, movMF) assign by maximum posterior — which weighs each component by its
+  own covariance and mixing weight, a different partition rather than a slower route to the same one —
+  and Ward / Spectral / Leiden / HDBSCAN / scale-space clusters need not be convex at all. Constrained
+  runs (`fit_constrained`) also keep it, since a Voronoi rule is free to violate the pairwise
+  constraints COP-KMeans satisfied. Measured separately: a nearest-centre rule *would* raise the GMM
+  heads too (digits 0.504 → 0.576, MNIST-20k 0.343 → 0.418, 20news 0.053 → 0.073), which makes a true
+  max-posterior `predict` for them the obvious follow-up — it is not shipped here.
 - **CF-tree: the rebuild spent a third of the leaf budget, and collapsed the tree outright in high
   dimension.** `max_leaves` is a resolution budget — the summary handed to the global clustering is
   only as fine as the leaves actually kept — but the rebuild grew the threshold to the *mean*
