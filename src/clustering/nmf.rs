@@ -1021,7 +1021,7 @@ mod tests {
         rank: usize,
         max_iter: usize,
         seed: u64,
-    ) -> (Vec<Vec<f64>>, Vec<Vec<f64>>) {
+    ) -> (Vec<Vec<f64>>, Vec<Vec<f64>>, usize) {
         let m = centroids.len();
         let d = centroids[0].len();
         let r = rank.min(d).min(m).max(1);
@@ -1033,6 +1033,7 @@ mod tests {
         let (mut w, mut h) = nndsvdar(&x, r, seed);
 
         let mut first_movement = 0.0;
+        let mut ran = 0usize;
         for it in 0..max_iter {
             let mut movement = 0.0;
             for j in 0..m {
@@ -1061,6 +1062,7 @@ mod tests {
                     h[k][c] = next;
                 }
             }
+            ran = it + 1;
             if it == 0 {
                 first_movement = movement;
             } else if movement <= 1e-4 * first_movement {
@@ -1074,7 +1076,7 @@ mod tests {
                 w[j].iter().map(|&v| v * inv).collect()
             })
             .collect();
-        (codes, h)
+        (codes, h, ran)
     }
 
     fn hals_fixture() -> (Vec<Vec<f64>>, Vec<f64>) {
@@ -1099,7 +1101,7 @@ mod tests {
         let (cents, ws) = hals_fixture();
         for iters in [1usize, 3, 40] {
             let (codes, h) = weighted_nmf(&cents, &ws, 2, iters, 4);
-            let (rcodes, rh) = reference_hals(&cents, &ws, 2, iters, 4);
+            let (rcodes, rh, _) = reference_hals(&cents, &ws, 2, iters, 4);
             for (j, (a, b)) in codes.iter().zip(&rcodes).enumerate() {
                 for (k, (&x, &y)) in a.iter().zip(b).enumerate() {
                     assert!(
@@ -1237,6 +1239,462 @@ mod tests {
             (out.reconstruction_err - want).abs() < 1e-9,
             "got {}, want {want}",
             out.reconstruction_err
+        );
+    }
+
+    /// `Σ_k σ_k u_k v_kᵀ`, the matrix the triplets claim to reconstruct.
+    fn from_triplets(
+        sigma: &[f64],
+        u: &[Vec<f64>],
+        v: &[Vec<f64>],
+        m: usize,
+        d: usize,
+    ) -> Vec<Vec<f64>> {
+        let mut out = vec![vec![0.0; d]; m];
+        for ((&s, uk), vk) in sigma.iter().zip(u).zip(v) {
+            for (j, row) in out.iter_mut().enumerate() {
+                for (t, cell) in row.iter_mut().enumerate() {
+                    *cell += s * uk[j] * vk[t];
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn the_randomized_svd_recovers_an_exactly_low_rank_matrix() {
+        // X = A Bᵀ has rank 3 by construction, so asking for 6 triplets exercises both halves of
+        // the numerical-rank cutoff: three carry the whole matrix, three must come back as zeros.
+        let mut rng = SplitMix64::new(101);
+        let a: Vec<Vec<f64>> = (0..14)
+            .map(|_| (0..3).map(|_| rng.next_f64()).collect())
+            .collect();
+        let b: Vec<Vec<f64>> = (0..9)
+            .map(|_| (0..3).map(|_| rng.next_f64()).collect())
+            .collect();
+        let x: Vec<Vec<f64>> = a
+            .iter()
+            .map(|ar| {
+                b.iter()
+                    .map(|br| ar.iter().zip(br).map(|(p, q)| p * q).sum())
+                    .collect()
+            })
+            .collect();
+
+        let (sigma, u, v) = randomized_svd(&x, 6, 3);
+        assert_eq!(sigma.len(), 6);
+        for w in sigma.windows(2) {
+            assert!(
+                w[0] >= w[1],
+                "singular values are not descending: {sigma:?}"
+            );
+        }
+        for (k, &s) in sigma.iter().enumerate().skip(3) {
+            assert!(s == 0.0, "sigma[{k}] = {s} past the numerical rank");
+            assert!(u[k].iter().all(|&t| t == 0.0) && v[k].iter().all(|&t| t == 0.0));
+        }
+        for p in 0..3 {
+            for q in 0..3 {
+                let want = if p == q { 1.0 } else { 0.0 };
+                let du: f64 = u[p].iter().zip(&u[q]).map(|(a, b)| a * b).sum();
+                let dv: f64 = v[p].iter().zip(&v[q]).map(|(a, b)| a * b).sum();
+                assert!((du - want).abs() < 1e-8, "UᵀU[{p}][{q}] = {du}");
+                assert!((dv - want).abs() < 1e-8, "VᵀV[{p}][{q}] = {dv}");
+            }
+        }
+        let recon = from_triplets(&sigma, &u, &v, 14, 9);
+        for (rr, xr) in recon.iter().zip(&x) {
+            for (&got, &want) in rr.iter().zip(xr) {
+                assert!((got - want).abs() < 1e-8, "{got} vs {want}");
+            }
+        }
+    }
+
+    #[test]
+    fn orthonormalize_returns_an_orthonormal_basis_of_the_same_span() {
+        let a0 = [
+            [1.0, 1.0, 2.0],
+            [0.0, 2.0, -1.0],
+            [3.0, 1.0, 0.5],
+            [-1.0, 0.5, 1.0],
+        ];
+        let mut a: Vec<Vec<f64>> = a0.iter().map(|r| r.to_vec()).collect();
+        orthonormalize(&mut a, 3);
+        for p in 0..3 {
+            for q in 0..3 {
+                let want = if p == q { 1.0 } else { 0.0 };
+                let dot: f64 = a.iter().map(|row| row[p] * row[q]).sum();
+                assert!((dot - want).abs() < 1e-12, "QᵀQ[{p}][{q}] = {dot}");
+            }
+        }
+        // Q Qᵀ is the projector onto the original span, so it fixes every original column.
+        for c in 0..3 {
+            let orig: Vec<f64> = a0.iter().map(|r| r[c]).collect();
+            let coef: Vec<f64> = (0..3)
+                .map(|k| a.iter().zip(&orig).map(|(row, o)| row[k] * o).sum())
+                .collect();
+            for (j, &o) in orig.iter().enumerate() {
+                let back: f64 = (0..3).map(|k| a[j][k] * coef[k]).sum();
+                assert!(
+                    (back - o).abs() < 1e-12,
+                    "column {c} row {j}: {back} vs {o}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn orthonormalize_zeroes_a_column_that_adds_no_rank() {
+        // The third column repeats the first, so Gram-Schmidt leaves it at round-off; amplifying
+        // that back to unit length would hand the sketch a direction the data never had.
+        let mut a = vec![
+            vec![1.0, 0.0, 1.0],
+            vec![0.0, 1.0, 0.0],
+            vec![0.0, 0.0, 0.0],
+        ];
+        orthonormalize(&mut a, 3);
+        assert!(a.iter().all(|row| row[2] == 0.0), "{a:?}");
+        // A column whose norm lands exactly on the threshold is below it: the test is `>`.
+        let mut tiny: Vec<Vec<f64>> = vec![vec![1e-12]];
+        orthonormalize(&mut tiny, 1);
+        assert_eq!(tiny[0][0], 0.0);
+        let mut above: Vec<Vec<f64>> = vec![vec![2e-12]];
+        orthonormalize(&mut above, 1);
+        assert!((above[0][0] - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn the_kl_divergence_matches_its_closed_form_term_by_term() {
+        // Two rows so the outer sum is visible, and a zero entry so the `x ≤ eps` branch is too.
+        let x = vec![vec![2.0, 0.0], vec![1.0, 3.0]];
+        let w = vec![vec![1.0, 0.5], vec![0.25, 2.0]];
+        let h = vec![vec![1.5, 0.5], vec![0.5, 1.0]];
+        let mut want = 0.0;
+        for i in 0..2 {
+            for c in 0..2 {
+                let wh: f64 = (0..2).map(|k| w[i][k] * h[k][c]).sum();
+                want += if x[i][c] > 1e-10 {
+                    x[i][c] * (x[i][c] / wh).ln() - x[i][c] + wh
+                } else {
+                    wh
+                };
+            }
+        }
+        let got = kl_divergence(&x, &w, &h, 2);
+        assert!((got - want).abs() < 1e-12, "{got} vs {want}");
+
+        // An exact fit is the divergence's zero, and it is zero from above everywhere else.
+        let exact: Vec<Vec<f64>> = (0..2)
+            .map(|i| {
+                (0..2)
+                    .map(|c| (0..2).map(|k| w[i][k] * h[k][c]).sum())
+                    .collect()
+            })
+            .collect();
+        assert!(kl_divergence(&exact, &w, &h, 2).abs() < 1e-12);
+        assert!(got > 0.0, "divergence {got} is not positive off the fit");
+    }
+
+    #[test]
+    fn the_kl_divergence_treats_the_epsilon_entry_as_present() {
+        // `x > eps` decides between the full term and the `wh` shortcut; at exactly eps the entry
+        // is absent, and the two branches differ by `x·ln(x/wh) − x`, which is not round-off.
+        let w: Vec<Vec<f64>> = vec![vec![1.0]];
+        let h = vec![vec![1.0]];
+        let got = kl_divergence(&[vec![1e-10]], &w, &h, 1);
+        assert!((got - 1.0).abs() < 1e-15, "{got}");
+    }
+
+    #[test]
+    fn canonicalize_orders_components_by_squared_energy() {
+        // Column 0 sums higher, column 1 has the larger sum of squares; only the second ordering
+        // is the energy the docstring names, and the two disagree here on purpose.
+        let mut w = vec![vec![2.0, 0.0], vec![2.0, 0.0], vec![0.0, 3.5]];
+        let mut h = vec![vec![1.0, 0.0], vec![0.0, 1.0]];
+        canonicalize(&mut w, &mut h);
+        assert!(
+            w[2][0] > 0.0,
+            "the heavier-in-square column did not lead: {w:?}"
+        );
+        assert_eq!(w[0][0], 0.0);
+    }
+
+    #[test]
+    fn an_all_zero_matrix_projects_without_dividing_by_its_energy() {
+        let feats: Vec<Spherical<f64>> = (0..4)
+            .map(|_| Spherical::from_moments(1.0, vec![0.0; 3], 0.0))
+            .collect();
+        let spec = NmfSpec {
+            rank: 2,
+            max_iter: 20,
+            kl: false,
+        };
+        let out: Projection<f64> = project(&feats, spec, 7);
+        assert!(
+            out.reconstruction_err.is_finite(),
+            "error = {}",
+            out.reconstruction_err
+        );
+        assert_eq!(out.reconstruction_err, 0.0);
+    }
+
+    /// NNDSVDar re-derived from Boutsidis & Gallopoulos (2008) and the `ar` fill this module
+    /// documents: the leading triplet is sign-definite, so `√σ·|u|` is exact; every later triplet
+    /// keeps whichever signed half carries more energy, rescaled to unit norm and re-weighted by
+    /// `√(σ·‖u±‖·‖v±‖)`; whatever is still non-positive is filled with `mean(X)/100 · U(0,1)`.
+    fn reference_nndsvdar(x: &[Vec<f64>], r: usize, seed: u64) -> (Vec<Vec<f64>>, Vec<Vec<f64>>) {
+        let m = x.len();
+        let d = x[0].len();
+        let (sigma, u, v) = randomized_svd(x, r, seed);
+        let mut w = vec![vec![0.0; r]; m];
+        let mut h = vec![vec![0.0; d]; r];
+        let eps = 1e-12;
+        let nrm = |z: &[f64]| z.iter().map(|t| t * t).sum::<f64>().sqrt();
+        for (k, &s) in sigma.iter().enumerate() {
+            let (wk, hk): (Vec<f64>, Vec<f64>) = if k == 0 {
+                let root = s.sqrt();
+                (
+                    u[0].iter().map(|t| root * t.abs()).collect(),
+                    v[0].iter().map(|t| root * t.abs()).collect(),
+                )
+            } else {
+                let pos = |z: &[f64]| -> Vec<f64> { z.iter().map(|&t| t.max(0.0)).collect() };
+                let neg = |z: &[f64]| -> Vec<f64> { z.iter().map(|&t| (-t).max(0.0)).collect() };
+                let (up, un) = (pos(&u[k]), neg(&u[k]));
+                let (vp, vn) = (pos(&v[k]), neg(&v[k]));
+                let (upn, unn, vpn, vnn) = (nrm(&up), nrm(&un), nrm(&vp), nrm(&vn));
+                let (uu, vv, unorm, vnorm, mu) = if upn * vpn >= unn * vnn {
+                    (up, vp, upn, vpn, upn * vpn)
+                } else {
+                    (un, vn, unn, vnn, unn * vnn)
+                };
+                let lbd = (s * mu).sqrt();
+                (
+                    uu.iter().map(|t| lbd * t / unorm.max(eps)).collect(),
+                    vv.iter().map(|t| lbd * t / vnorm.max(eps)).collect(),
+                )
+            };
+            for (j, row) in w.iter_mut().enumerate() {
+                row[k] = wk[j];
+            }
+            h[k].copy_from_slice(&hk);
+        }
+        let total: f64 = x.iter().flatten().sum();
+        let avg = (total / (m * d).max(1) as f64).max(1e-8) * 0.01;
+        let mut fill = SplitMix64::new(seed ^ 0x00f1_115c_a1e0_u64);
+        for row in w.iter_mut().chain(h.iter_mut()) {
+            for t in row.iter_mut() {
+                if *t <= 0.0 {
+                    *t = avg * fill.next_f64();
+                }
+            }
+        }
+        (w, h)
+    }
+
+    /// A nonnegative matrix of exact rank 4 — enough structure that the trailing triplets are
+    /// rank-deficient at `r = 7`, and enough sign variation that the split branch decides both ways.
+    fn svd_fixture() -> Vec<Vec<f64>> {
+        let mut rng = SplitMix64::new(64);
+        let base: Vec<Vec<f64>> = (0..4)
+            .map(|_| (0..10).map(|_| rng.next_f64()).collect())
+            .collect();
+        (0..16)
+            .map(|_| {
+                let co: Vec<f64> = (0..4).map(|_| rng.next_f64()).collect();
+                (0..10)
+                    .map(|c| (0..4).map(|k| co[k] * base[k][c]).sum())
+                    .collect()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn nndsvdar_matches_the_published_construction() {
+        let x = svd_fixture();
+        for (r, seed) in [(2usize, 1u64), (4, 5), (7, 9)] {
+            let (w, h) = nndsvdar(&x, r, seed);
+            let (rw, rh) = reference_nndsvdar(&x, r, seed);
+            for (j, (a, b)) in w.iter().zip(&rw).enumerate() {
+                for (k, (&p, &q)) in a.iter().zip(b).enumerate() {
+                    assert!(
+                        (p - q).abs() <= 1e-12 * p.abs().max(q.abs()).max(1.0),
+                        "r {r} w[{j}][{k}]: {p} vs {q}"
+                    );
+                }
+            }
+            for (k, (a, b)) in h.iter().zip(&rh).enumerate() {
+                for (c, (&p, &q)) in a.iter().zip(b).enumerate() {
+                    assert!(
+                        (p - q).abs() <= 1e-12 * p.abs().max(q.abs()).max(1.0),
+                        "r {r} h[{k}][{c}]: {p} vs {q}"
+                    );
+                }
+            }
+            // Zero is absorbing for both solvers, so the fill must leave nothing at zero.
+            assert!(w.iter().flatten().all(|&t| t > 0.0), "r {r}: zero in W");
+            assert!(h.iter().flatten().all(|&t| t > 0.0), "r {r}: zero in H");
+        }
+    }
+
+    /// Rank-5 structure asked for at rank 3, with enough noise that the coordinate descent keeps
+    /// moving for hundreds of sweeps — the two-sweep fixtures cannot see a stopping rule at all.
+    fn slow_fixture() -> (Vec<Vec<f64>>, Vec<f64>) {
+        let mut rng = SplitMix64::new(88);
+        let base: Vec<Vec<f64>> = (0..5)
+            .map(|_| (0..9).map(|_| rng.next_f64()).collect())
+            .collect();
+        let mut cents = Vec::new();
+        let mut ws = Vec::new();
+        for _ in 0..30 {
+            let co: Vec<f64> = (0..5).map(|_| rng.next_f64()).collect();
+            cents.push(
+                (0..9)
+                    .map(|c| (0..5).map(|k| co[k] * base[k][c]).sum::<f64>() + 0.3 * rng.next_f64())
+                    .collect::<Vec<f64>>(),
+            );
+            ws.push(1.0 + 4.0 * rng.next_f64());
+        }
+        (cents, ws)
+    }
+
+    fn max_abs_diff(a: &[Vec<f64>], b: &[Vec<f64>]) -> f64 {
+        a.iter()
+            .flatten()
+            .zip(b.iter().flatten())
+            .map(|(p, q)| (p - q).abs())
+            .fold(0.0, f64::max)
+    }
+
+    #[test]
+    fn the_hals_sweep_stops_where_the_movement_rule_says_it_does() {
+        // The sweep count is invisible in the output, so derive it from the reference's own
+        // movement trace and demand the solver land on exactly that sweep — not one either side.
+        let (cents, ws) = slow_fixture();
+        let (_, _, ran) = reference_hals(&cents, &ws, 3, 2000, 6);
+        assert!(
+            (2..2000).contains(&ran),
+            "the movement rule never fired within the budget: {ran}"
+        );
+        let (codes, h) = weighted_nmf(&cents, &ws, 3, 2000, 6);
+        let (rc, rh, _) = reference_hals(&cents, &ws, 3, ran, 6);
+        assert!(
+            max_abs_diff(&codes, &rc) < 1e-9,
+            "stopped on a different sweep"
+        );
+        assert!(max_abs_diff(&h, &rh) < 1e-9, "stopped on a different sweep");
+        let (rc_early, _, _) = reference_hals(&cents, &ws, 3, ran - 1, 6);
+        assert!(
+            max_abs_diff(&codes, &rc_early) > 1e-9,
+            "sweep {ran} is indistinguishable from {}; the fixture cannot see the rule",
+            ran - 1
+        );
+    }
+
+    /// Weighted KL-NMF re-derived from Lee–Seung: `W_ik ← W_ik · [Σ_j (X_ij/(WH)_ij)·H_kj] /
+    /// [Σ_j H_kj]`, then the same for `H` with the row weights `n_i` carried through, recomputing
+    /// `WH` between the two half-steps. Reports the sweep count so the stopping rule is visible.
+    fn reference_kl(
+        centroids: &[Vec<f64>],
+        weights: &[f64],
+        rank: usize,
+        max_iter: usize,
+        seed: u64,
+    ) -> (Vec<Vec<f64>>, Vec<Vec<f64>>, usize) {
+        let m = centroids.len();
+        let d = centroids[0].len();
+        let r = rank.min(d).min(m).max(1);
+        let eps = 1e-10;
+        let x: Vec<Vec<f64>> = centroids
+            .iter()
+            .map(|row| row.iter().map(|&v| v.max(0.0)).collect())
+            .collect();
+        let (mut w, mut h) = nndsvdar(&x, r, seed);
+        let wh_of = |w: &[Vec<f64>], h: &[Vec<f64>]| -> Vec<Vec<f64>> {
+            (0..m)
+                .map(|i| {
+                    (0..d)
+                        .map(|j| (0..r).map(|k| w[i][k] * h[k][j]).sum())
+                        .collect()
+                })
+                .collect()
+        };
+        let mut prev = kl_divergence(&x, &w, &h, d);
+        let mut ran = 0usize;
+        for it in 0..max_iter {
+            ran = it + 1;
+            let wh = wh_of(&w, &h);
+            let colsum_h: Vec<f64> = (0..r).map(|k| h[k].iter().sum()).collect();
+            w = (0..m)
+                .map(|i| {
+                    (0..r)
+                        .map(|k| {
+                            let num: f64 = (0..d)
+                                .map(|j| (x[i][j] / wh[i][j].max(eps)) * h[k][j])
+                                .sum();
+                            w[i][k] * num / colsum_h[k].max(eps)
+                        })
+                        .collect()
+                })
+                .collect();
+            let wh = wh_of(&w, &h);
+            let wsum: Vec<f64> = (0..r)
+                .map(|k| (0..m).map(|i| weights[i].max(0.0) * w[i][k]).sum())
+                .collect();
+            h = (0..r)
+                .map(|k| {
+                    (0..d)
+                        .map(|j| {
+                            let num: f64 = (0..m)
+                                .map(|i| {
+                                    weights[i].max(0.0) * (x[i][j] / wh[i][j].max(eps)) * w[i][k]
+                                })
+                                .sum();
+                            h[k][j] * num / wsum[k].max(eps)
+                        })
+                        .collect()
+                })
+                .collect();
+            if it % 5 == 4 {
+                let err = kl_divergence(&x, &w, &h, d);
+                if (prev - err).abs() <= 1e-4 * prev.max(1.0) {
+                    break;
+                }
+                prev = err;
+            }
+        }
+        canonicalize(&mut w, &mut h);
+        (w, h, ran)
+    }
+
+    #[test]
+    fn kl_sweeps_match_an_independent_multiplicative_reference() {
+        let (cents, ws) = slow_fixture();
+        for iters in [1usize, 2, 4] {
+            let (w, h) = weighted_nmf_kl(&cents, &ws, 3, iters, 6);
+            let (rw, rh, _) = reference_kl(&cents, &ws, 3, iters, 6);
+            assert!(max_abs_diff(&w, &rw) < 1e-9, "iters {iters}: W diverged");
+            assert!(max_abs_diff(&h, &rh) < 1e-9, "iters {iters}: H diverged");
+        }
+    }
+
+    #[test]
+    fn the_kl_solver_stops_where_the_relative_divergence_test_says_it_does() {
+        let (cents, ws) = slow_fixture();
+        let (_, _, ran) = reference_kl(&cents, &ws, 3, 2000, 6);
+        assert!(
+            (5..2000).contains(&ran),
+            "the divergence test never fired within the budget: {ran}"
+        );
+        let (w, h) = weighted_nmf_kl(&cents, &ws, 3, 2000, 6);
+        let (rw, rh, _) = reference_kl(&cents, &ws, 3, ran, 6);
+        assert!(max_abs_diff(&w, &rw) < 1e-9, "stopped on a different sweep");
+        assert!(max_abs_diff(&h, &rh) < 1e-9, "stopped on a different sweep");
+        let (rw_early, _, _) = reference_kl(&cents, &ws, 3, ran - 1, 6);
+        assert!(
+            max_abs_diff(&w, &rw_early) > 1e-9,
+            "sweep {ran} is indistinguishable from {}; the fixture cannot see the rule",
+            ran - 1
         );
     }
 }
