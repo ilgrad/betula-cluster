@@ -313,7 +313,7 @@ impl<R: Real> Full<R> {
     /// Row `i` starts at `i·dim − T(i)` with the triangular number `T(i) = i(i-1)/2`; the
     /// element is `+ (j - i)` further. This is the single source of truth for indexing — the
     /// reference implementation duplicated it and used `dim` instead of `i` in `T`, silently
-    /// corrupting cross-products for `dim >= 4` (see `../../math_improove/09-vvv-bug`).
+    /// corrupting cross-products for `dim >= 4` (see `math_improove/09-vvv-bug`, local-only notes).
     #[inline]
     fn idx(&self, i: usize, j: usize) -> usize {
         i * self.dim - i * i.saturating_sub(1) / 2 + (j - i)

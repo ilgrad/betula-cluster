@@ -1,5 +1,16 @@
 # Benchmark: betula-cluster vs scikit-learn — quality · speed · memory
 
+> **Provenance — read before quoting a number.** Every table, CSV and plot on this page comes from a
+> single run of **2026-07-18** against a **0.2.0** build (see the environment table below). Release
+> **0.6.0** then changed the rule by which every head labels a point — the centroid heads assign to the
+> nearest centre, the mixture heads to the maximum posterior — and made the CF-tree rebuild target its
+> leaf budget. The **quality columns and the build-time column therefore no longer describe the current
+> release**; the speed and memory *ratios*, which are set by clustering `M ≪ N` microclusters rather
+> than `N` points, are the least affected. The measured 0.6.0 deltas — including the one regression
+> (MNIST-20k `gmm` 0.340 → 0.185 at the default budget) — are written up in
+> [`CHANGELOG.md`](../CHANGELOG.md) § 0.6.0 and [`docs/MATH.md`](../docs/MATH.md) § *Labelling a raw
+> point*. This page is re-measured as a whole, not patched cell by cell.
+
 Reproduce: `.venv/bin/python bench/comprehensive.py` (writes `results_{quality,scaling,memory,real,
 real_hires,real_normalize,real_scale,sparse}.csv` and `plots/*.png`) plus `bench/spectral_nonconvex.py`
 (spectral timing), `bench/toeplitz_ar_mixture.py` (the `gmm-toeplitz` showcase) and

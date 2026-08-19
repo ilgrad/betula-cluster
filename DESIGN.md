@@ -5,7 +5,9 @@ built on the BIRCH/BETULA Clustering-Feature (CF) tree. Rust core + Python (PyO3
 Goal: best-in-class clustering — correct, numerically stable, and fast with minimal memory.
 
 All formulas below are verified (symbolically in Maxima and/or numerically against an
-mpmath/Julia ground truth) in `../../math_improove/` and `research/`. Key empirical result:
+mpmath/Julia ground truth). The verification artifacts live in `local/notes/math_improove/` —
+**local-only, not shipped**; the `math_improove/NN` labels used below refer to it. What *is* in the
+repository: `research/` and the `proptest` suites in `src/**`. Key empirical result:
 `research/RESULTS-estep.md` (the GMM E-step choice).
 
 ## Design principles
@@ -74,7 +76,7 @@ radius $R = \sqrt{S/n}$. Mahalanobis-$\chi^2$ as an absorption option (`distance
   (`"leiden-cpm"`, resolution-limit-free). `resolution` $\gamma$ is the granularity knob; pair with a
   moderate `threshold`.
 
-### Phase-3b density/topological head (`../../plans/topology-tda.md`)
+### Phase-3b density/topological head
 **HDBSCAN-on-CF** (done): mutual-reachability (`min_samples` core distance) + mass-weighted
 stability → non-convex / variable-density clusters, noise, automatic count. Its 0D persistence *is*
 single-linkage-with-persistence-pruning, so this is the density-topological head.
@@ -99,7 +101,11 @@ src/
   distance.rs    CFDistance trait + measures; uses simd kernels
   kernels.rs     auto-vectorized distance kernels (inline reductions)
   tree.rs        arena CF-tree (insert/split/rebuild)
-  clustering/    kmeans.rs, gmm.rs, ward.rs, spectral.rs, community.rs, graph.rs, hdbscan.rs (Phase 3)
+  clustering/    kmeans.rs, gmm.rs, gmm_toeplitz.rs, ward.rs, spectral.rs, community.rs, graph.rs,
+                 vmf.rs, scalespace.rs, hdbscan.rs, kprototypes.rs, nmf.rs, rng.rs (Phase 3)
+  mixture.rs     fitted-mixture kernels (diagonal / full-Cholesky / stationary / vMF) that score a
+                 raw point — the density `predict` / `predict_proba` label by
+  model.rs       end-to-end Model::fit / predict; Method enum; per-head assignment rule
   stream.rs      DenStream + DbStream streaming density heads (fading micro-clusters)
   sparse.rs      O(nnz) sparse-native spherical summarisation (fit_predict_sparse)
   sketch/        KLL + DDSketch streaming quantile sketches (betula-sketch)
@@ -132,8 +138,8 @@ zero dispatch cost; Python/CLI pick variants via enums.
 
 ## Status
 
-**Done & verified** — 185 Rust unit + 4 integration tests (default features; the `python` / `cli`
-surfaces add more) + a 213-case `pytest` suite (Python wrapper at 100 % line coverage, Rust ≥95 %
+**Done & verified** — 200 Rust unit + 4 integration tests (default features; the `cli` binary adds
+8 more, and 199 + 4 run with `--no-default-features`) + a 228-case `pytest` suite (Python wrapper at 100 % line coverage, Rust ≥95 %
 CI-enforced via `cargo llvm-cov`); `clippy -D warnings` + `fmt` clean (across `parallel`, serial,
 `persistence`, `cli`, and `python` feature sets); GitHub Actions CI (Rust gate
 + Python build/pytest on 3.11–3.14) and a multi-platform wheel-release workflow (`.github/workflows/`);
@@ -150,7 +156,13 @@ Python end-to-end + scikit-learn benchmark (`README.md`, `bench/RESULTS.md`):
 - `distance` + `kernels` (inline auto-vectorized distance reductions).
 - `tree` (insert/split/rebuild — `estimate_threshold` is the within-leaf mean nearest-sibling gap,
   ELKI/BETULA-standard, $O(M \cdot \text{capacity})$, threshold raised monotonically; reverse-DFS-order reinsert
-  matches the reference tree shape; per-feature EWMA `decay`; runtime-selectable routing; **parallel
+  matches the reference tree shape; the rebuild **targets the leaf budget** rather than predicting it —
+  it merges the `k` closest sibling pairs with `k` set by the budget and reads the grown threshold off
+  the widest gap it took, because the achievable leaf count is near-discontinuous in the threshold in
+  high dimension and no threshold-first policy has a safe value there; **compaction is separated from
+  rebalancing** — merging entries inside their own leaf node leaves every node CF unchanged, so it is
+  done in place, and the reinsertion pass that follows only re-routes (absorption off, which is what
+  walked off the concentration cliff); per-feature EWMA `decay`; runtime-selectable routing; **parallel
   shard+merge build**
   `build_parallel` / `n_jobs` — each shard summarises to `max_leaves/shards` leaves so the merge
   stays ~`max_leaves` CFs, giving ~4–5× on large `N` at equal granularity; opt-in, default serial;
@@ -202,9 +214,12 @@ Python end-to-end + scikit-learn benchmark (`README.md`, `bench/RESULTS.md`):
   cluster radius, `+inf` for HDBSCAN noise), `assign_microclusters(X)`, and the Python-side `summary`
   / `find_outliers` / `find_near_duplicates` / `sample_representatives` for embedding dataset cleaning
   and deduplication. No extra data passes; the row-mapping helper (`map_rows`) runs them in parallel.
-- Soft assignment & summaries: `predict_proba` (true GMM posterior via the per-leaf responsibility
-  matrix `microcluster_proba_`, threaded out of the E-step; a documented centroid-distance softmax
-  *heuristic* for k-means / Ward / HDBSCAN), `assignment_confidence`, `export_coreset` (leaves as
+- Soft assignment & summaries: `predict_proba` (the point's *own* posterior under the fitted mixture
+  for the GMM, vMF and Toeplitz heads — `mixture::Mixture` scores the row, not its leaf, so
+  `predict_proba(X).argmax(1) == predict(X)` by construction; a documented centroid-distance softmax
+  *heuristic* for k-means / Ward / spectral / Leiden / HDBSCAN), `microcluster_proba_` (the per-leaf
+  responsibility matrix threaded out of the E-step, GMM heads only),
+  `assignment_confidence`, `export_coreset` (leaves as
   weighted points — a streaming coreset), `diagnostics`, `representatives(method=…)`,
   `cluster_profile`; plus the **`topology::mapper`** Mapper graph (`Betula.mapper() → MapperGraph`).
 - Parallelism (`parallel` feature, default-on): rayon over point labeling and `estimate_threshold`
@@ -308,4 +323,5 @@ abi3 wheel). Add a dependency only when a concrete string-indexing API exists to
 BETULA: Lang & Schubert, SISAP 2020 / Information Systems 2022. BIRCH: Zhang et al., SIGMOD 1996.
 k-means accel: Elkan 2003, Hamerly 2010, Ding 2015 (Yinyang). Init: Arthur–Vassilvitskii 2007.
 HDBSCAN: Campello–Moulavi–Sander 2013. Stable moments: Schubert–Gertz 2018; Chan–Golub–LeVeque.
-Frequent Directions: Liberty 2013. Full proofs/tests: `../../math_improove/`, `research/`.
+Frequent Directions: Liberty 2013. Full proofs/tests: `research/`, the `proptest` suites in
+`src/**`, and the local-only `local/notes/math_improove/`.

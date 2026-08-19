@@ -3,7 +3,7 @@
 //! Each measure exposes `point(cf, x)` (feature vs raw point — the absorption criterion) and
 //! `between(a, b)` (feature vs feature — tree routing). Values are squared (no sqrt in the hot
 //! path). All forms are derived from `(n, μ, S)` and were verified algebraically against the
-//! classic BIRCH forms in `../../math_improove/02-distance-equivalence`.
+//! classic BIRCH forms in `math_improove/02-distance-equivalence` (local-only working notes).
 
 use crate::feature::{ClusterFeature, Full};
 use crate::kernels;

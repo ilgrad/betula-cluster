@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-The latest published `0.1.x` release on [PyPI](https://pypi.org/project/betula-cluster/) receives
+The latest published `0.6.x` release on [PyPI](https://pypi.org/project/betula-cluster/) receives
 security fixes. Older versions are not maintained.
 
 ## Reporting a vulnerability

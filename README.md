@@ -20,7 +20,7 @@
 pip install betula-cluster
 ```
 
-**Verified:** a **213-case** Python suite at **100% wrapper coverage** + **185** Rust tests,
+**Verified:** a **228-case** Python suite at **100% wrapper coverage** + **204** Rust tests,
 `clippy -D warnings` + `fmt` clean across all feature sets, CI on CPython 3.11–3.14 (one abi3 wheel).
 
 ## At a glance — honest benchmarks
@@ -28,6 +28,11 @@ pip install betula-cluster
 Measured against scikit-learn on `StandardScaler`-normalized data, each method in its own subprocess
 with peak RSS sampled from `/proc/self/statm`. Full methodology, every metric, and all tables (wins
 **and** losses) live in [**`bench/RESULTS.md`**](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md).
+
+> **These numbers were measured on 2026-07-18 against a 0.2.0 build.** 0.6.0 changed how every head
+> labels a point, so the **quality** figures below are pending re-measurement; the speed and memory
+> ratios are set by clustering `M ≪ N` microclusters and are the least affected. The measured 0.6.0
+> deltas are in [`CHANGELOG.md`](https://github.com/ilgrad/betula-cluster/blob/main/CHANGELOG.md) § 0.6.0.
 
 - ⚡🪶 **Always faster — and lighter — at scale (the unconditional win).** betula labels **1 M points
   in 0.22 s**: 13× faster than scikit-learn KMeans, 23× vs GaussianMixture, 37× vs Birch — and streams
@@ -220,9 +225,9 @@ And six **end-to-end use cases** (each scored against ground truth):
 - [**Benchmarks**](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md) — methodology, every metric, all tables, honest wins & losses.
 - [**Design**](https://github.com/ilgrad/betula-cluster/blob/main/DESIGN.md) — internal design, invariants, and testing strategy.
 
-Verified: **185** Rust unit + 4 integration tests + a **213-case** Python suite at **100%** wrapper
-coverage (Rust ≥95%, CI-enforced), `clippy -D warnings` + `fmt` clean across all feature sets, on
-Python 3.11–3.14 (single abi3 wheel).
+Verified: **200** Rust unit + 4 integration tests (plus 8 for the CLI binary) + a **228-case**
+Python suite at **100%** wrapper coverage (Rust ≥95%, CI-enforced), `clippy -D warnings` + `fmt`
+clean across all feature sets, on Python 3.11–3.14 (single abi3 wheel).
 
 ## Known limitations
 
@@ -239,6 +244,13 @@ Honest scope — inherent to a CF-compression + streaming design, not bugs:
 5. **The expected-log GMM optimizes a CF-level objective**, not pointwise EM (a deliberate, measured
    choice for coarse CFs).
 6. **Frequent-Directions is an approximate low-rank covariance** (exact only up to its rank `ℓ`).
+7. **A diagonal Gaussian is a weak model for raw image pixels.** Since 0.6.0 the mixture heads label a
+   point by its own posterior under the fitted mixture, which is the model's own rule — but on raw
+   pixels the model itself is the limit: `gmm` scores ARI 0.185 on MNIST-20k at the default leaf budget
+   where a nearest-centre rule scores 0.378, because a diagonal covariance sums 784 independent
+   per-dimension penalties for 784 correlated pixels. At a coarser budget (`max_leaves=300`) the
+   posterior wins for both GMM heads. For raw images prefer `kmeans` or a `projection`; the full
+   derivation is in [`docs/MATH.md`](https://github.com/ilgrad/betula-cluster/blob/main/docs/MATH.md).
 
 ## How to cite
 

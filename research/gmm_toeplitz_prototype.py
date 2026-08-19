@@ -1,7 +1,9 @@
 """Prototype: Toeplitz / AR-structured GMM covariance for clustering ordered signals.
 
-Validates the `gmm-toeplitz` head proposed for betula-cluster 0.3.0 (see
-`docs/adr/001-gmm-toeplitz.md`). Claim: when each row is an ordered, wide-sense
+Validates the `gmm-toeplitz` head at proposal time (see `docs/adr/001-gmm-toeplitz.md`).
+The ladder that ADR describes is now complete: banded AR (`gmm-toeplitz`) shipped in
+0.2.0, the general dense-Toeplitz `gmm-toeplitz-full` in 0.3.0, and the full-order
+Gohberg-Semencul MLE `gmm-toeplitz-gs` in 0.5.0. Claim: when each row is an ordered, wide-sense
 stationary signal and the number of samples per component `N_k` is small relative to
 the window length `d`, a Toeplitz / AR(w)-structured covariance clusters better than
 both **diagonal** (blind to neighbour correlation) and **full** covariance

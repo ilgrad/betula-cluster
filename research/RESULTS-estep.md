@@ -1,5 +1,9 @@
 # Best GMM E-step for clustering on CF summaries (measured)
 
+> Decision record, measured **2026-06-26** on a pre-0.1.0 prototype. It is the evidence for the
+> expected-log E-step the library ships (`docs/MATH.md` § *GMM E-step*), not a current benchmark —
+> the table has not been re-run since, and every later release changed the surrounding code.
+
 Experiment: `research/gmm_cf_estep.py`. Data — a GMM with known labels (K=4, N=20000, d=2),
 compressed into `m` micro-clusters → CF `(n_i, μ_i, Σ_i)`, then GMM-EM on the CFs with three
 different E-steps (identical init and M-step, so only the E-step varies). Metric — ARI of the

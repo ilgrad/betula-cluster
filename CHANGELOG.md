@@ -6,6 +6,23 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- **Documentation shipped with 0.6.0 still described 0.5.0.** The verified-suite line in `README.md`
+  and `DESIGN.md` claimed 185 Rust + a 213-case Python suite; the release actually carries **200 Rust
+  unit + 4 integration tests** (199 + 4 with `--no-default-features`, 8 more for the `cli` binary) and
+  a **228-case** Python suite (227 passed / 1 skipped without the optional `scipy` / `networkx` test
+  dependencies). `DESIGN.md` also still described `predict_proba` as the per-leaf responsibility
+  matrix, which 0.6.0 replaced with scoring the row itself under the fitted mixture, and its crate
+  layout predated `src/mixture.rs`. `docs/api.md` omitted `consensus` / `ConsensusResult` although
+  both are exported from `__all__`; `SECURITY.md` still named `0.1.x` as the supported line.
+- **Benchmark and notebook outputs are now stamped with the build they were measured on.**
+  `bench/RESULTS.md`, every `bench/results_*.csv`, the four plots and the 23 notebooks are a single
+  run of 2026-07-18 against a 0.2.0 build, taken before 0.6.0 changed how each head labels a point.
+  No number was altered — the pages now say what they are, and point at the 0.6.0 deltas recorded
+  below. Re-measurement is pending.
+- References to `../../math_improove/` in `DESIGN.md`, `src/distance.rs`, `src/feature.rs` and
+  `src/stats.rs` pointed outside the repository; they now say the working notes are local-only.
+
 ## [0.6.0] — 2026-08-19
 
 ### Fixed

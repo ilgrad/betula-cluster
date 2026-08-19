@@ -3,7 +3,7 @@
 //! The χ² quantile is the threshold for a Mahalanobis absorption gate: a point is absorbed into a
 //! cluster only if its squared Mahalanobis distance is below `chi2_quantile(d, p)` — a mass- and
 //! scale-invariant criterion that fixes the BIRCH size-imbalance bug (scikit-learn #22854,
-//! `../../math_improove/05`). Computed from the regularized lower incomplete gamma via
+//! `math_improove/05`, local-only notes). Computed from the regularized lower incomplete gamma via
 //! `χ²_d CDF(x) = P(d/2, x/2)` (DLMF 8.2.4); the inverse uses the Numerical-Recipes `invgammp`
 //! scheme. All math is done in `f64` (this is config-time work, run once per tree).
 

@@ -170,9 +170,14 @@ A capability-by-capability reference. For runnable code see [`USAGE.md`](USAGE.m
 | `feature` | clustering features: `Spherical` / `Diagonal` / `Full` / `FdSketch` (high-d) |
 | `kernels` | auto-vectorized distance kernels (inline reductions) |
 | `distance` | D0–D4, radius, Mahalanobis (stable forms) |
-| `tree` | arena CF-tree + auto-rebuild |
-| `clustering` | `kmeans`, `gmm_diagonal`, `gmm_full`, `ward_hac`, `spectral`, `leiden`, `spherical_kmeans`, `movmf`, `scale_space`, `hdbscan` |
-| `model` | end-to-end `Model::fit` / `predict` |
+| `tree` | arena CF-tree + budget-targeting auto-rebuild |
+| `clustering` | `kmeans` / `cop_kmeans`, `gmm_diagonal`, `gmm_full`, `gmm_toeplitz{,_full,_gs}`, `ward_hac`, `spectral`, `leiden`, `spherical_kmeans`, `movmf`, `scale_space`, `hdbscan`, `kprototypes`, `nmf` (the `projection` reducer) |
+| `mixture` | fitted-mixture kernels (diagonal / full-Cholesky / stationary / vMF) that score a raw point — what `predict` / `predict_proba` label by |
+| `stream` | `DenStream` + `DbStream` fading-microcluster density heads |
+| `sparse` | `O(nnz)` sparse-native summarisation (`fit_predict_sparse`) |
+| `sketch` | KLL + DDSketch mergeable quantile sketches |
+| `topology` | Mapper nerve + 0-D persistence |
+| `model` | end-to-end `Model::fit` / `predict`; the `Method` enum and the per-head assignment rule |
 | `python` | PyO3 bindings: one-shot `fit_predict` + streaming `Betula` estimator |
 
 See [`DESIGN.md`](https://github.com/ilgrad/betula-cluster/blob/main/DESIGN.md) for the full design and the verified mathematical foundation.

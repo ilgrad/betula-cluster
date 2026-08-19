@@ -35,8 +35,14 @@ The complete typed public surface. Everything below is re-exported from the top-
 
 ::: betula_cluster.DdSketch
 
+## Robustness
+
+::: betula_cluster.consensus
+
 ## Result types
 
 ::: betula_cluster.MapperGraph
 
 ::: betula_cluster.TuneResult
+
+::: betula_cluster.ConsensusResult

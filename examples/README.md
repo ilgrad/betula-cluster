@@ -4,6 +4,10 @@ Executed Jupyter notebooks (with plots, tables, and graphs) demonstrating **ever
 `betula-cluster`. Each notebook is paired with a [jupytext](https://jupytext.readthedocs.io/) `.py`
 source (the diff-friendly form); the `.ipynb` is the rendered, executed output you can read on GitHub.
 
+> **The stored outputs were executed on 2026-07-18, against a pre-0.6.0 build.** The code cells are
+> current; the *printed* ARIs and plots predate 0.6.0's change to how every head labels a point, so
+> re-executing a notebook will move its scores. See [`CHANGELOG.md`](../CHANGELOG.md) § 0.6.0.
+
 | notebook | what it covers |
 |----------|----------------|
 | [`01_quickstart`](01_quickstart.ipynb) | one-shot `fit_predict`, every head (k-means / GMM / full-cov GMM / Ward / HDBSCAN), automatic `k`, the scikit-learn-style estimator |
