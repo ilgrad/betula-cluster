@@ -27,12 +27,20 @@ All notable changes to this project are documented here. The format follows
   repo-wide 3.14 pin present, a bare `uv run` no longer accepts that environment, recreates it, and
   discards the tools — `error: Failed to spawn: maturin`. Both `uv run` calls there, and the two in
   the `mutmut` job that would have hit the same wall on its next schedule, now pass `--no-sync`.
-- **Mutation testing had never once produced a result.** All seven scheduled runs since 2026-07-06
-  were killed by the 90-minute cap: measured on the last of them, 90 minutes at `-j2` completed
-  **98 of 1011 mutants (9.7%)**. The job is now a 12-way shard matrix at `-j4` (~115 mutants each)
-  with a summary job that collates every shard and fails loudly on a survivor. Scope grew to include
-  `src/tree.rs`, `src/mixture.rs` and `src/model.rs`; `.cargo/mutants.toml` records the measured
-  mutant counts so the next widening can be sized rather than guessed.
+- **Mutation testing had never once produced a result, and covered a third of the crate.** All seven
+  scheduled runs since 2026-07-06 were killed by the 90-minute cap: measured on the last of them, 90
+  minutes at `-j2` completed **98 of 1011 mutants (9.7%)**. Sharding alone does not fix it — a
+  12-way split still leaves ~115 mutants per job against a suite where a single
+  method-dispatch test costs 25 of its 27 seconds, and every mutant pays it in full.
+  `--test-tool nextest` does, because it stops at the first failing test: measured A/B over the 13
+  mutants of `src/kernels.rs` at `-j4`, `cargo test` took **525 s** and reported 8 caught with 2
+  timeouts, `nextest` took **144 s** and reported 10 caught with none — **3.6× faster and more
+  accurate**, since both former timeouts resolve to caught. That makes full coverage affordable, so
+  `examine_globs` is gone: the scope is now the **whole crate, 4310 mutants** (still excluding
+  `python.rs` and `bin/`, which have no Rust-level tests and would only yield false survivors),
+  split 24 ways at ~180 mutants per job. A summary job collates every shard and fails loudly on a
+  survivor. `.cargo/mutants.toml` records the per-module mutant counts and the measured throughput
+  so the matrix can be resized from numbers rather than guesses.
 - **Four mutants had been surviving in `src/distance.rs` unread inside a cancelled run's artifact.**
   `Radius::between` was pinned only by a case where `na·nb` and `na/nb` coincide (2·1) and where one
   scatter was zero, so `*`→`/` and `+`→`-` both went unnoticed; `MahalanobisChi2::maha_sq` was only

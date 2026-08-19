@@ -13,26 +13,34 @@ jobs:
   cargo-mutants:
     # Sharded because a single job never finished: measured on the 2026-08-17 run, 90 minutes at
     # -j2 completed 98 of 1011 mutants (9.7%) and was killed by the timeout -- as were all seven
-    # scheduled runs since 2026-07-06, so this workflow had produced no signal at all. At ~110
-    # worker-seconds per mutant, 12 shards x 4 workers puts each job around 115 mutants, well
-    # inside the cap. Shards are 0-indexed and the mutant list order is deterministic, so shard k
-    # covers the same mutants every week.
-    name: cargo-mutants ${{ matrix.shard }}/12
+    # scheduled runs since 2026-07-06, so this workflow had produced no signal at all.
+    #
+    # Scope is now the whole crate (4310 mutants) rather than eight hand-picked files, which is
+    # affordable because of --test-tool nextest. Measured A/B on the 13 mutants of src/kernels.rs,
+    # -j4, same machine: cargo test 525 s with 8 caught and 2 timeouts; nextest 144 s with 10
+    # caught and none. 3.6x faster *and* more accurate -- nextest stops at the first failing test,
+    # so a mutant caught by a fast test no longer waits out the 25 s method-dispatch test that
+    # dominates the suite, and two mutants that had been recorded as timeouts resolve to caught.
+    #
+    # 24 shards puts each job near 180 mutants. Shards are 0-indexed and the mutant list order is
+    # deterministic, so shard k covers the same mutants every week.
+    name: cargo-mutants ${{ matrix.shard }}/24
     runs-on: ubuntu-latest
     timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11,
+                12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-mutants
-      - name: cargo mutants (scope in .cargo/mutants.toml)
-        run: cargo mutants --shard ${{ matrix.shard }}/12 -j4
+          tool: cargo-mutants,cargo-nextest
+      - name: cargo mutants (whole crate, scope in .cargo/mutants.toml)
+        run: cargo mutants --shard ${{ matrix.shard }}/24 -j4 --test-tool nextest
       - uses: actions/upload-artifact@v7
         if: always()
         with:
