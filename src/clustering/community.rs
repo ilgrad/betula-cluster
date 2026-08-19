@@ -446,4 +446,141 @@ mod tests {
             vec![0]
         );
     }
+
+    /// Two triangles joined by a single edge: the modularity-optimal partition is the two triangles,
+    /// and the join is the one edge a refinement step must not swallow.
+    fn two_triangles() -> Vec<Vec<(usize, f64)>> {
+        vec![
+            vec![(1, 1.0), (2, 1.0)],
+            vec![(0, 1.0), (2, 1.0)],
+            vec![(0, 1.0), (1, 1.0), (3, 1.0)],
+            vec![(2, 1.0), (4, 1.0), (5, 1.0)],
+            vec![(3, 1.0), (5, 1.0)],
+            vec![(3, 1.0), (4, 1.0)],
+        ]
+    }
+
+    #[test]
+    fn gain_is_the_objective_specific_null_model_correction() {
+        // Modularity: w_to − γ·tot_deg·k_i / 2m = 3 − 1·5·4/10 = 1.
+        let m = gain(Objective::Modularity, 1.0, 10.0, 3.0, 4.0, 9.0, 5.0, 7.0);
+        assert!((m - 1.0).abs() < 1e-12, "modularity gain = {m}");
+        // The CPM branch must ignore degree and 2m entirely: w_to − γ·tot_size·s_i = 3 − 0.5·2·2 = 1.
+        // `ki`, `tot_deg` and `two_m` are deliberately set to values that would move a modularity
+        // score, so a branch that reaches for them is caught rather than silently agreeing.
+        let c = gain(Objective::Cpm, 0.5, 10.0, 3.0, 9.0, 2.0, 7.0, 2.0);
+        assert!((c - 1.0).abs() < 1e-12, "CPM gain = {c}");
+        // Resolution scales only the penalty.
+        let m2 = gain(Objective::Modularity, 2.0, 10.0, 3.0, 4.0, 9.0, 5.0, 7.0);
+        assert!((m2 - (-1.0)).abs() < 1e-12, "doubled resolution = {m2}");
+    }
+
+    #[test]
+    fn shuffled_is_a_permutation_that_depends_on_the_seed() {
+        for n in [0usize, 1, 2, 9, 64] {
+            let o = shuffled(n, 42);
+            assert_eq!(o.len(), n);
+            let mut sorted = o.clone();
+            sorted.sort_unstable();
+            assert_eq!(
+                sorted,
+                (0..n).collect::<Vec<_>>(),
+                "n = {n} is not a permutation"
+            );
+        }
+        assert_eq!(shuffled(32, 7), shuffled(32, 7), "not deterministic");
+        assert_ne!(shuffled(32, 7), shuffled(32, 8), "seed is ignored");
+        assert_ne!(
+            shuffled(32, 7),
+            (0..32).collect::<Vec<_>>(),
+            "nothing was shuffled"
+        );
+    }
+
+    #[test]
+    fn relabel_compacts_ids_in_first_seen_order() {
+        assert_eq!(relabel(&[7, 7, 3, 7, 3, 9]), vec![0, 0, 1, 0, 1, 2]);
+        assert_eq!(relabel(&[]), Vec::<usize>::new());
+        assert_eq!(relabel(&[5]), vec![0]);
+    }
+
+    #[test]
+    fn one_level_finds_the_two_triangles_and_beats_the_trivial_partitions() {
+        let base = two_triangles();
+        let g = Graph::from_adj(base.clone());
+        let init: Vec<usize> = (0..6).collect();
+        let part = one_level(&g, Objective::Modularity, 1.0, 3, &init);
+        assert_eq!(
+            relabel(&part),
+            vec![0, 0, 0, 1, 1, 1],
+            "partition = {part:?}"
+        );
+
+        // Independently scored: the recovered partition must beat both degenerate ones.
+        let q = modularity(&base, &part, 1.0);
+        assert!(q > modularity(&base, &[0; 6], 1.0), "lost to one community");
+        assert!(q > modularity(&base, &init, 1.0), "lost to all-singletons");
+    }
+
+    #[test]
+    fn refine_never_crosses_a_community_boundary() {
+        // The defining property of Leiden's refinement: every refined sub-community lies inside
+        // exactly one community of the input partition. Violating it silently lets the aggregation
+        // step merge nodes the local move had separated.
+        let g = Graph::from_adj(two_triangles());
+        let part = vec![0, 0, 0, 1, 1, 1];
+        for seed in 0..16u64 {
+            let refined = refine(&g, &part, Objective::Modularity, 1.0, seed);
+            assert_eq!(refined.len(), 6);
+            let mut owner: HashMap<usize, usize> = HashMap::new();
+            for (i, &r) in refined.iter().enumerate() {
+                match owner.get(&r) {
+                    Some(&c) => assert_eq!(
+                        c, part[i],
+                        "seed {seed}: sub-community {r} spans two communities"
+                    ),
+                    None => {
+                        owner.insert(r, part[i]);
+                    }
+                }
+            }
+            assert!(
+                n_distinct(&refined) >= 2,
+                "seed {seed}: refinement collapsed both communities into one"
+            );
+        }
+    }
+
+    #[test]
+    fn aggregate_preserves_total_mass_and_drops_self_loops() {
+        let g = Graph::from_adj(two_triangles());
+        let part = vec![0, 0, 0, 1, 1, 1];
+        let refined = vec![0, 0, 0, 1, 1, 1];
+        let (next, coarse) = aggregate(&g, &part, &refined, 2);
+
+        assert_eq!(next.len(), 2, "one super-node per refined sub-community");
+        assert_eq!(coarse.len(), 2, "one seed community per super-node");
+        assert_eq!(
+            coarse,
+            vec![0, 1],
+            "super-nodes lost their coarse community"
+        );
+
+        let before: f64 = g.degree.iter().sum();
+        let after: f64 = next.degree.iter().sum();
+        assert!((before - after).abs() < 1e-12, "degree {before} -> {after}");
+        assert!((next.two_m - g.two_m).abs() < 1e-12, "2m changed");
+        let size_before: f64 = g.size.iter().sum();
+        assert!(
+            (next.size.iter().sum::<f64>() - size_before).abs() < 1e-12,
+            "node count changed"
+        );
+
+        // Only the single joining edge survives as an inter-super-node edge, once per direction.
+        for (i, row) in next.adj.iter().enumerate() {
+            assert!(row.iter().all(|&(j, _)| j != i), "self-loop at {i}");
+        }
+        assert_eq!(next.adj[0], vec![(1, 1.0)]);
+        assert_eq!(next.adj[1], vec![(0, 1.0)]);
+    }
 }
