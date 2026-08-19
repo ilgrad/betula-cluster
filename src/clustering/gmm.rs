@@ -1469,4 +1469,176 @@ mod tests {
             "full BIC"
         );
     }
+
+    /// The BIC each auto-`k` head minimises, with the parameter count re-derived rather than read
+    /// off: a diagonal mixture fits `k·d` means, `k·d` variances and `k−1` free mixing weights; a
+    /// full-covariance one replaces the variances with `k·d(d+1)/2` lower-triangular entries.
+    fn reference_auto_k(
+        features: &[Diagonal<f64>],
+        k_lo: usize,
+        k_hi: usize,
+        max_iter: usize,
+        seed: u64,
+        full: bool,
+    ) -> (usize, f64) {
+        let d = features[0].dim();
+        let ntot: f64 = features.iter().map(|f| f.weight()).sum();
+        let mut best = (0usize, f64::INFINITY, f64::NAN);
+        for k in k_lo..=k_hi {
+            let (loglik, p) = if full {
+                (
+                    gmm_full_once(features, k, max_iter, seed).loglik,
+                    k * d + k * d * (d + 1) / 2 + (k - 1),
+                )
+            } else {
+                (
+                    gmm_diagonal_once(features, k, max_iter, seed).loglik,
+                    k * d + k * d + (k - 1),
+                )
+            };
+            let score = -2.0 * loglik + p as f64 * ntot.ln();
+            if score < best.1 {
+                best = (k, score, loglik);
+            }
+        }
+        (best.0, best.2)
+    }
+
+    /// Three components in `dim` dimensions, separated in the first two and pure noise in the rest
+    /// — extra dimensions cost a full covariance `d(d+1)/2` parameters each and buy nothing, which
+    /// is what makes the penalty, and not the likelihood, decide the answer.
+    fn auto_k_fixture(dim: usize, seed: u64) -> Vec<Diagonal<f64>> {
+        let mut rng = SplitMix64::new(seed);
+        let centers = [[0.0, 0.0], [5.0, 0.6], [2.2, 4.8]];
+        let mut out = Vec::new();
+        for c in &centers {
+            for _ in 0..30 {
+                let mut f = <Diagonal<f64> as ClusterFeature<f64>>::new(dim);
+                let mut p = vec![0.0; dim];
+                p[0] = c[0] + 0.7 * rng.gauss();
+                p[1] = c[1] + 0.7 * rng.gauss();
+                for v in p.iter_mut().skip(2) {
+                    *v = 0.4 * rng.gauss();
+                }
+                f.push(&p, 1.0);
+                out.push(f);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn auto_k_minimises_an_independently_counted_bic() {
+        // Sweeping the dimension is what makes the count visible: `k·d(d+1)/2` and `2·k·d` grow
+        // apart fast, so a penalty that miscounts moves the argmin at one width even when it
+        // happens to agree at another.
+        for dim in [2usize, 4, 6] {
+            let feats = auto_k_fixture(dim, 31 + dim as u64);
+            for full in [false, true] {
+                let (want_k, want_ll) = reference_auto_k(&feats, 1, 6, 60, 3, full);
+                assert!(
+                    (2..6).contains(&want_k),
+                    "dim {dim} full {full}: the reference chose {want_k}, an endpoint, so the \
+                     penalty is not what decided it"
+                );
+                let got_ll = if full {
+                    gmm_full_auto(&feats, 1, 6, 60, 3).loglik
+                } else {
+                    gmm_diagonal_auto(&feats, 1, 6, 60, 3).loglik
+                };
+                assert!(
+                    (got_ll - want_ll).abs() <= 1e-9 * want_ll.abs().max(1.0),
+                    "dim {dim} full {full}: selected k is not the argmin (k = {want_k})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_global_covariance_is_the_within_plus_between_decomposition() {
+        // Two features, one carrying spread of its own: the total covariance of the underlying
+        // points is `Σ n_i Σ_i / N` plus the scatter of the means about the pooled mean.
+        let mut a = <Diagonal<f64> as ClusterFeature<f64>>::new(2);
+        a.push(&[0.0, 0.0], 1.0);
+        a.push(&[2.0, 0.0], 1.0);
+        a.push(&[1.0, 3.0], 1.0);
+        let mut b = <Diagonal<f64> as ClusterFeature<f64>>::new(2);
+        b.push(&[9.0, 1.0], 3.0);
+
+        let feats = [a, b];
+        let mu: Vec<Vec<f64>> = feats.iter().map(|f| f.mean().to_vec()).collect();
+        let n: Vec<f64> = feats.iter().map(|f| f.weight()).collect();
+        let sig: Vec<SecondMoment<f64>> = feats.iter().map(|f| f.second_moment()).collect();
+        let g = global_cov(&mu, &n, &sig, 2);
+
+        let wtot: f64 = n.iter().sum();
+        let mut mean = [0.0; 2];
+        for (mi, &ni) in mu.iter().zip(&n) {
+            for (m, &v) in mean.iter_mut().zip(mi) {
+                *m += ni * v;
+            }
+        }
+        for m in mean.iter_mut() {
+            *m /= wtot;
+        }
+        let mut want = vec![vec![0.0; 2]; 2];
+        for (i, mi) in mu.iter().enumerate() {
+            sig[i].add_scaled(&mut want, n[i]);
+            for x in 0..2 {
+                for y in 0..2 {
+                    want[x][y] += n[i] * (mi[x] - mean[x]) * (mi[y] - mean[y]);
+                }
+            }
+        }
+        for row in want.iter_mut() {
+            for v in row.iter_mut() {
+                *v /= wtot;
+            }
+        }
+        for (x, (gr, wr)) in g.iter().zip(&want).enumerate() {
+            for (y, (&got, &wnt)) in gr.iter().zip(wr).enumerate() {
+                assert!((got - wnt).abs() < 1e-12, "g[{x}][{y}] = {got} vs {wnt}");
+            }
+        }
+        // Ignoring the within-feature spread would make the first feature a point mass, so the
+        // decomposition has to beat the between-only scatter on the dimension it spreads in.
+        assert!(g[1][1] > 0.75, "the within-feature term is missing: {g:?}");
+        // No mass at all: the identity, not a matrix of zeros to divide by.
+        let empty = global_cov::<f64>(&[], &[], &[], 2);
+        assert_eq!(empty, vec![vec![1.0, 0.0], vec![0.0, 1.0]]);
+    }
+
+    #[test]
+    fn the_regularized_cholesky_grows_its_ridge_by_decades_until_it_factors() {
+        // Positive definite already: the ridge is exactly `ridge0 · scale`, once.
+        let cov: Vec<Vec<f64>> = vec![vec![4.0, 1.0], vec![1.0, 3.0]];
+        let (l, ld) = chol_regularized(&cov, 2.0, 0.5);
+        let mut recon = vec![vec![0.0; 2]; 2];
+        for x in 0..2 {
+            for y in 0..2 {
+                recon[x][y] = (0..2).map(|k| l[x][k] * l[y][k]).sum();
+            }
+        }
+        for x in 0..2 {
+            for y in 0..2 {
+                let want = cov[x][y] + if x == y { 1.0 } else { 0.0 };
+                assert!((recon[x][y] - want).abs() < 1e-12, "{recon:?}");
+            }
+        }
+        assert!((ld - 19.0f64.ln()).abs() < 1e-12, "log|·| = {ld}");
+
+        // Indefinite: the ridge has to climb two decades before the factorization exists, and it
+        // must climb by tens -- adding a decade instead would stop at 3 and still be indefinite.
+        let bad: Vec<Vec<f64>> = vec![vec![1.0, 0.0], vec![0.0, -50.0]];
+        let (lb, ldb) = chol_regularized(&bad, 1.0, 1.0);
+        let d0: f64 = lb[0][0] * lb[0][0];
+        let d1: f64 = lb[1][1] * lb[1][1];
+        assert!((d0 - 101.0).abs() < 1e-9, "ridge did not reach 100: {d0}");
+        assert!((d1 - 50.0).abs() < 1e-9, "{d1}");
+        assert!((ldb - (d0 * d1).ln()).abs() < 1e-9);
+
+        // Shrinking the ridge instead of growing it never reaches a factorization at all, and the
+        // identity fallback that would catch it returns a unit diagonal, not this one.
+        assert!(d0 > 1.0 && d1 > 1.0, "the fallback was taken: {lb:?}");
+    }
 }
