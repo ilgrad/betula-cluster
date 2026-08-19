@@ -2207,3 +2207,70 @@ def test_consensus_parallel_matches_serial(blobs):
         # each run is seeded independently, so threading changes nothing but wall-clock
         np.testing.assert_array_equal(serial.labels, par.labels)
         np.testing.assert_array_equal(serial.confidence, par.confidence)
+
+
+@pytest.mark.parametrize(
+    "method", ["gmm", "gmm-full", "vmf", "gmm-toeplitz", "gmm-toeplitz-full", "gmm-toeplitz-gs"]
+)
+def test_mixture_labels_are_the_maximum_posterior(method):
+    """A mixture head assigns by maximum posterior; `predict` must return that partition.
+
+    The columns of `predict_proba` are the same components `predict` chooses between, so the two
+    agree by construction. Reading the label off the leaf a point routes to instead answers a
+    different question — nearest microcluster — and does not weigh a component by its own
+    covariance / concentration and mixing weight.
+    """
+    rng = np.random.default_rng(11)
+    n, d = 900, 24
+    t = np.arange(d)
+    x = np.vstack(
+        [
+            rng.normal(scale=s, size=(n // 3, d)) + np.sin(t * f)[None, :] * 2.0
+            for s, f in [(0.4, 0.3), (0.9, 0.8), (0.6, 1.4)]
+        ]
+    )
+    est = betula_cluster.Betula(n_clusters=3, method=method, max_leaves=120, seed=4)
+    labels = est.fit_predict(x)
+    proba = est.predict_proba(x)
+    assert proba.shape[0] == x.shape[0]
+    assert np.allclose(proba.sum(axis=1), 1.0)
+    assert np.array_equal(labels, proba.argmax(axis=1))
+    # A silenced component is unreachable: every label predicted is one a microcluster claims, so
+    # `cluster_centers_[label]` is always a real centre.
+    assert np.unique(labels).max() < est.cluster_centers_.shape[0]
+
+
+def test_mixture_predict_beats_the_tree_descent_on_overlapping_scales():
+    """Two concentric Gaussians of very different width: a nearest-microcluster route cannot tell
+    them apart (both share the same centre), while the posterior can."""
+    rng = np.random.default_rng(5)
+    d = 8
+    tight = rng.normal(scale=0.35, size=(700, d))
+    wide = rng.normal(scale=3.0, size=(700, d))
+    x = np.vstack([tight, wide])
+    truth = np.r_[np.zeros(700, int), np.ones(700, int)]
+    from betula_cluster.tuning import adjusted_rand
+
+    est = betula_cluster.Betula(n_clusters=2, method="gmm", max_leaves=200, seed=2).fit(x)
+    assert adjusted_rand(truth, est.predict(x)) > 0.4
+
+
+def test_projected_fit_still_reports_a_leaf_level_posterior():
+    """With a projection the head clusters NMF codes, so it cannot score a raw row; `predict_proba`
+    falls back to the row's microcluster responsibilities rather than raising."""
+    rng = np.random.default_rng(7)
+    x = np.abs(rng.normal(size=(600, 30))) + rng.integers(0, 3, 600)[:, None] * 2.0
+    est = betula_cluster.Betula(
+        n_clusters=3, method="gmm", projection="weighted-nmf", projection_dim=5, seed=0
+    ).fit(x)
+    proba = est.predict_proba(x)
+    assert proba.shape == (600, est.microcluster_proba_.shape[1])
+    assert np.allclose(proba.sum(axis=1), 1.0)
+
+
+def test_predict_proba_raises_without_a_posterior():
+    rng = np.random.default_rng(1)
+    x = rng.normal(size=(200, 5))
+    est = betula_cluster.Betula(n_clusters=3, method="ward", seed=0).fit(x)
+    with pytest.raises(ValueError, match="predict_proba is only available"):
+        est._est.predict_proba(x)

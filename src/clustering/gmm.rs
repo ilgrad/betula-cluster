@@ -14,6 +14,7 @@
 
 use crate::clustering::kmeans::kmeans;
 use crate::feature::{ClusterFeature, SecondMoment};
+use crate::mixture::Mixture;
 use crate::types::Real;
 
 /// Result of a GMM-EM run over features.
@@ -30,6 +31,8 @@ pub struct Gmm<R: Real> {
     pub vars: Vec<Vec<R>>,
     /// Weighted data log-likelihood at convergence.
     pub loglik: R,
+    /// The fitted density, for scoring raw points.
+    pub mixture: Mixture,
 }
 
 /// Fit a `k`-component diagonal GMM to `features`, warm-started from k-means.
@@ -54,14 +57,18 @@ fn gmm_diagonal_once<R: Real, C: ClusterFeature<R>>(
     let two_pi = R::from_f64(std::f64::consts::TAU).unwrap();
     let reg = R::from_f64(1e-3).unwrap();
     let tiny = R::from_f64(1e-12).unwrap();
-    let gvar = global_variance(&mu, &n, dim);
-    // Variance floor. The relative part (`1e-3·gvar_d`) keeps per-dimension variances from collapsing
-    // toward zero on high-dimensional data — a collapsed diagonal variance makes the E-step wildly
-    // over-confident on one dimension and the mixture over-fits away from the (good) k-means warm start
-    // (e.g. `digits`, 64-D). The absolute `tiny` keeps constant dimensions (`gvar_d = 0`) finite.
+    let gvar = global_variance(&mu, &n, &var, dim);
+    // Variance floor, in two parts. The per-dimension part (`1e-3·gvar_d`) keeps a variance from
+    // collapsing relative to the spread that dimension actually has — a collapsed diagonal variance
+    // makes the E-step wildly over-confident on one dimension and the mixture over-fits away from the
+    // (good) k-means warm start (e.g. `digits`, 64-D). On its own it cannot floor a dimension that has
+    // *no* spread, since `1e-3 · 0 = 0`; the global part (`VAR_FLOOR_REL · mean_d gvar_d`) is what
+    // bounds `1/σ²_cd` there, and mirrors the full head's `ridge = 1e-6 · tr(gcov)/d`.
+    let scale = gvar.iter().copied().sum::<R>() / R::from_usize(dim.max(1)).unwrap();
+    let abs_floor = scale * R::from_f64(VAR_FLOOR_REL).unwrap();
     let floor: Vec<R> = gvar
         .iter()
-        .map(|&g| g * R::from_f64(1e-3).unwrap() + tiny)
+        .map(|&g| (g * R::from_f64(1e-3).unwrap()).max(abs_floor) + tiny)
         .collect();
 
     // warm start from k-means
@@ -160,6 +167,7 @@ fn gmm_diagonal_once<R: Real, C: ClusterFeature<R>>(
     }
 
     let labels = resp.iter().map(|r| argmax(r)).collect();
+    let mixture = Mixture::diagonal(&weights, &means, &vars);
     Gmm {
         labels,
         resp,
@@ -167,6 +175,7 @@ fn gmm_diagonal_once<R: Real, C: ClusterFeature<R>>(
         means,
         vars,
         loglik,
+        mixture,
     }
 }
 
@@ -175,6 +184,14 @@ fn gmm_diagonal_once<R: Real, C: ClusterFeature<R>>(
 /// optimum (most visible for full covariance); a few seed-derived restarts make the result robust and
 /// still fully deterministic for a given `seed`.
 const GMM_N_INIT: u64 = 4;
+
+/// Floor on every diagonal variance as a fraction of the mean per-dimension variance — the global
+/// counterpart of the per-dimension `1e-3·gvar_d` floor, and the same value the full-covariance head
+/// uses for its Cholesky ridge. It bounds `1/σ²_cd` at `1/(VAR_FLOOR_REL·scale)` in a dimension whose
+/// own variance is (near) zero, which is where an unbounded precision does its damage: a leaf mean is
+/// a local average and sits close to any component mean there, but a raw point need not, so the
+/// unfloored term can dominate the whole log-density when such a point is scored.
+const VAR_FLOOR_REL: f64 = 1e-6;
 
 /// Best of `n_init` EM restarts (seeds `seed, seed+1, …`) by data log-likelihood. The restarts are
 /// independent, so they run in parallel when the `parallel` feature is on; ties are broken by the
@@ -229,9 +246,11 @@ pub fn gmm_diagonal<R: Real, C: ClusterFeature<R>>(
     )
 }
 
-/// Total per-dimension variance of the underlying points (between-feature + within-feature),
-/// used as a prior scale and variance floor.
-fn global_variance<R: Real>(mu: &[Vec<R>], n: &[R], dim: usize) -> Vec<R> {
+/// Total per-dimension variance of the underlying points (between-feature + within-feature), used as
+/// a prior scale and variance floor. The within-feature term is what makes this a variance of
+/// *points* rather than of leaf means — [`global_cov`] carries the same term for the full-covariance
+/// head, and without it the scale shrinks with every unit of tree compression.
+fn global_variance<R: Real>(mu: &[Vec<R>], n: &[R], var: &[Vec<R>], dim: usize) -> Vec<R> {
     let wtot: R = n.iter().copied().sum();
     if wtot <= R::zero() {
         return vec![R::one(); dim];
@@ -246,10 +265,10 @@ fn global_variance<R: Real>(mu: &[Vec<R>], n: &[R], dim: usize) -> Vec<R> {
         *m = *m / wtot;
     }
     let mut g = vec![R::zero(); dim];
-    for (mi, &ni) in mu.iter().zip(n) {
+    for ((mi, vi), &ni) in mu.iter().zip(var).zip(n) {
         for d in 0..dim {
             let diff = mi[d] - mean[d];
-            g[d] = g[d] + ni * diff * diff;
+            g[d] = g[d] + ni * (diff * diff + vi[d]);
         }
     }
     for v in &mut g {
@@ -282,6 +301,8 @@ pub struct GmmFull<R: Real> {
     pub covs: Vec<Vec<Vec<R>>>,
     /// Weighted data log-likelihood at convergence.
     pub loglik: R,
+    /// The fitted density, for scoring raw points.
+    pub mixture: Mixture,
 }
 
 /// Fit a `k`-component full-covariance GMM, warm-started from k-means. Captures rotated /
@@ -426,6 +447,13 @@ fn gmm_full_once<R: Real, C: ClusterFeature<R>>(
     }
 
     let labels = resp.iter().map(|r| argmax(r)).collect();
+    // Factor the converged covariances once more, with the ridge policy the E-step used, so the
+    // point density and the last E-step speak of the same `Σ_k`.
+    let (chols, logdets): (Vec<Vec<Vec<R>>>, Vec<R>) = covs
+        .iter()
+        .map(|cov| chol_regularized(cov, scale, ridge))
+        .unzip();
+    let mixture = Mixture::full(&weights, &means, &chols, &logdets);
     GmmFull {
         labels,
         resp,
@@ -433,6 +461,7 @@ fn gmm_full_once<R: Real, C: ClusterFeature<R>>(
         means,
         covs,
         loglik,
+        mixture,
     }
 }
 
@@ -785,5 +814,51 @@ mod tests {
         let g = gmm_diagonal(&feats, 3, 200, 1);
         let score = ari(&g.labels, &truth);
         assert!(score > 0.9, "constant-dim collapse: ARI = {score}");
+    }
+
+    #[test]
+    fn no_dimension_gets_an_unbounded_precision() {
+        // A dimension with (near) no spread of its own gets no floor from the `1e-3·gvar_d` term, so
+        // `1/σ²_cd` is free to reach 1e12. That never showed while the density only ever scored leaf
+        // means — a local average sits close to any component mean — and dominates the whole
+        // log-density the moment a raw point is scored (MNIST: ~70 always-zero pixels).
+        use crate::feature::{ClusterFeature, Diagonal};
+        let mut rng = SplitMix64::new(9);
+        let (pts, _) = blobs(&mut rng, 300, &[[0.0, 0.0], [7.0, 0.0], [0.0, 7.0]], 0.6);
+        let dead = 10;
+        let feats: Vec<Diagonal<f64>> = pts
+            .iter()
+            .map(|p| {
+                let mut row = vec![0.0; 2 + dead];
+                row[0] = p[0];
+                row[1] = p[1];
+                let mut f = <Diagonal<f64> as ClusterFeature<f64>>::new(2 + dead);
+                f.push(&row, 1.0);
+                f
+            })
+            .collect();
+        let g = gmm_diagonal(&feats, 3, 200, 1);
+        let scale: f64 = {
+            let gv = global_variance(
+                &feats.iter().map(|f| f.mean().to_vec()).collect::<Vec<_>>(),
+                &feats.iter().map(|f| f.weight()).collect::<Vec<_>>(),
+                &feats
+                    .iter()
+                    .map(|f| (0..2 + dead).map(|d| f.variance(d)).collect())
+                    .collect::<Vec<Vec<f64>>>(),
+                2 + dead,
+            );
+            gv.iter().sum::<f64>() / (2 + dead) as f64
+        };
+        let cap = 1.0 / (VAR_FLOOR_REL * scale);
+        for (c, v) in g.vars.iter().enumerate() {
+            for (d, &s2) in v.iter().enumerate() {
+                assert!(
+                    1.0 / s2 <= cap,
+                    "component {c} dim {d}: 1/σ² = {:e} exceeds the floor's cap {cap:e}",
+                    1.0 / s2
+                );
+            }
+        }
     }
 }

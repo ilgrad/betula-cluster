@@ -28,7 +28,8 @@ use crate::distance::{
     VarianceIncrease,
 };
 use crate::feature::{ClusterFeature, Diagonal, FdSketch, Full, Spherical};
-use crate::model::{cluster_leaves, cluster_leaves_proba, Method, Model};
+use crate::mixture::Mixture;
+use crate::model::{assignment_rule, fit_head, Method, Model, Rule};
 use crate::sparse::{nearest_sparse, summarize_sparse};
 use crate::stats::chi2_quantile;
 use crate::stream::{DbStream, DenStream};
@@ -146,28 +147,46 @@ fn require_nonnegative<R: Real>(flat: &[R]) -> PyResult<()> {
     Ok(())
 }
 
+#[allow(clippy::type_complexity)]
 fn dispatch_kind<R: Real, C: ClusterFeature<R>>(
     feats: &[C],
     kind: Kind,
     k: usize,
     max_iter: usize,
     seed: u64,
-) -> (Vec<i64>, Option<(Vec<f64>, usize)>) {
+) -> (Vec<i64>, Option<(Vec<f64>, usize)>, Option<Mixture>) {
     match kind {
         Kind::Parametric(method) => {
-            let (labels, proba) = cluster_leaves_proba(feats, k, method, max_iter, seed);
-            (labels.into_iter().map(|l| l as i64).collect(), proba)
+            let fit = fit_head(feats, k, method, max_iter, seed);
+            let proba = fit.resp.map(|r| {
+                let kk = r.first().map_or(0, |row| row.len());
+                let flat = r
+                    .iter()
+                    .flat_map(|row| row.iter().map(|v| v.to_f64().unwrap()))
+                    .collect();
+                (flat, kk)
+            });
+            (
+                fit.labels.into_iter().map(|l| l as i64).collect(),
+                proba,
+                fit.mixture,
+            )
         }
         Kind::Hdbscan {
             min_samples,
             min_cluster_size,
-        } => (hdbscan(feats, min_samples, min_cluster_size).labels, None),
+        } => (
+            hdbscan(feats, min_samples, min_cluster_size).labels,
+            None,
+            None,
+        ),
         Kind::ScaleSpace => (
             scale_space(feats, 0, max_iter)
                 .labels
                 .into_iter()
                 .map(|l| l as i64)
                 .collect(),
+            None,
             None,
         ),
     }
@@ -180,6 +199,8 @@ struct Labelling {
     proba: Option<(Vec<f64>, usize)>,
     /// The shared NMF parts (`r×d`) and the relative reconstruction error, when a projection ran.
     parts: Option<(Vec<Vec<f64>>, f64)>,
+    /// The head's point-level density, for the generative heads.
+    mixture: Option<Mixture>,
 }
 
 /// Label leaf features, optionally projecting them to `nmf_dim`-dimensional CF-weighted NMF codes
@@ -196,7 +217,9 @@ fn label_features_proba<R: Real, C: ClusterFeature<R>>(
     match nmf_dim {
         Some(spec) => {
             let p = crate::clustering::nmf::project(feats, spec, seed);
-            let (labels, proba) = dispatch_kind(&p.coded, kind, k, max_iter, seed);
+            // The head clustered NMF *codes*; its density lives in code space and cannot score a raw
+            // row, so the microcluster route stays the defined labelling on this path.
+            let (labels, proba, _) = dispatch_kind(&p.coded, kind, k, max_iter, seed);
             let parts = p
                 .components
                 .iter()
@@ -210,14 +233,16 @@ fn label_features_proba<R: Real, C: ClusterFeature<R>>(
                 labels,
                 proba,
                 parts: Some((parts, p.reconstruction_err.to_f64().unwrap_or(f64::NAN))),
+                mixture: None,
             }
         }
         None => {
-            let (labels, proba) = dispatch_kind(feats, kind, k, max_iter, seed);
+            let (labels, proba, mixture) = dispatch_kind(feats, kind, k, max_iter, seed);
             Labelling {
                 labels,
                 proba,
                 parts: None,
+                mixture,
             }
         }
     }
@@ -266,54 +291,85 @@ fn cluster_count_for_centers(labels: &[i64]) -> usize {
         .map_or(0, |&m| m as usize + 1)
 }
 
-/// Label each of `n` rows by its nearest cluster centre — the partition a centroid head *is*, and
-/// the labelling `Model::predict` gives for the one-shot path. `rows` is flat `ids.len() × dim`.
-fn assign_rows<R: Real>(ids: &[i64], rows: &[f64], dim: usize, flat: &[R], n: usize) -> Vec<i64> {
-    map_rows(n, |i| {
-        nearest_center(ids, rows, dim, &flat[i * dim..(i + 1) * dim])
-    })
+/// The point-level model a finalized head left behind — [`Rule`] made concrete, with the parameters
+/// attached. `None` on the estimator means the head has no such model (or a projection replaced the
+/// space the rows live in), and the microcluster route is the defined labelling.
+#[derive(serde::Serialize, serde::Deserialize)]
+enum PointRule {
+    /// `(label, centre)` per non-empty cluster; `rows` is flat `labels.len() × dim`.
+    Centers { labels: Vec<i64>, rows: Vec<f64> },
+    /// The fitted mixture; the label is its maximum-posterior component.
+    Posterior(Mixture),
 }
 
-/// [`assign_rows`] for CSR input: each row is expanded into a reused dense buffer, so the dense
-/// `n × dim` matrix is never materialized (serial — the shared buffer precludes the parallel path).
-fn assign_csr(
-    ids: &[i64],
-    rows: &[f64],
-    dim: usize,
-    data: &[f64],
-    indices: &[i64],
-    indptr: &[i64],
-) -> Vec<i64> {
-    let mut buf = vec![0.0f64; dim];
-    let mut out = Vec::with_capacity(indptr.len().saturating_sub(1));
-    for w in indptr.windows(2) {
-        let (lo, hi) = (w[0] as usize, w[1] as usize);
-        for k in lo..hi {
-            buf[indices[k] as usize] = data[k];
-        }
-        out.push(nearest_center(ids, rows, dim, &buf));
-        for k in lo..hi {
-            buf[indices[k] as usize] = 0.0;
+impl PointRule {
+    /// Label one dense row. `scratch` is a reusable buffer for the posterior path.
+    fn label_of<R: Real>(&self, x: &[R], scratch: &mut Vec<f64>) -> i64 {
+        match self {
+            PointRule::Centers { labels, rows } => {
+                let dim = x.len();
+                let mut best = labels[0];
+                let mut bd = f64::INFINITY;
+                for (c, &id) in labels.iter().enumerate() {
+                    let mut d = 0.0;
+                    for (j, &m) in rows[c * dim..(c + 1) * dim].iter().enumerate() {
+                        let t = x[j].to_f64().unwrap_or(0.0) - m;
+                        d += t * t;
+                    }
+                    if d < bd {
+                        bd = d;
+                        best = id;
+                    }
+                }
+                best
+            }
+            PointRule::Posterior(m) => m.assign_into(x, scratch) as i64,
         }
     }
-    out
-}
 
-fn nearest_center<R: Real>(ids: &[i64], rows: &[f64], dim: usize, x: &[R]) -> i64 {
-    let mut best = ids[0];
-    let mut bd = f64::INFINITY;
-    for (c, &id) in ids.iter().enumerate() {
-        let mut d = 0.0;
-        for (j, &m) in rows[c * dim..(c + 1) * dim].iter().enumerate() {
-            let t = x[j].to_f64().unwrap_or(0.0) - m;
-            d += t * t;
-        }
-        if d < bd {
-            bd = d;
-            best = id;
-        }
+    /// Label each of `n` dense rows — the partition the head *is*, rather than a tree descent.
+    fn label_rows<R: Real>(&self, flat: &[R], n: usize, dim: usize) -> Vec<i64> {
+        map_rows(n, |i| {
+            let mut scratch = Vec::new();
+            self.label_of(&flat[i * dim..(i + 1) * dim], &mut scratch)
+        })
     }
-    best
+
+    /// [`PointRule::label_rows`] for CSR input: each row is expanded into a reused dense buffer, so
+    /// the dense `n × dim` matrix is never materialized (serial — the shared buffer precludes the
+    /// parallel path).
+    fn label_csr(&self, data: &[f64], indices: &[i64], indptr: &[i64], dim: usize) -> Vec<i64> {
+        let mut buf = vec![0.0f64; dim];
+        let mut scratch = Vec::new();
+        let mut out = Vec::with_capacity(indptr.len().saturating_sub(1));
+        for w in indptr.windows(2) {
+            let (lo, hi) = (w[0] as usize, w[1] as usize);
+            for k in lo..hi {
+                buf[indices[k] as usize] = data[k];
+            }
+            out.push(self.label_of(&buf, &mut scratch));
+            for k in lo..hi {
+                buf[indices[k] as usize] = 0.0;
+            }
+        }
+        out
+    }
+
+    /// Per-row posterior `p(c | x)` flattened `n × k`, or `None` for a centroid rule, which has no
+    /// calibrated posterior to report.
+    fn proba_rows<R: Real>(&self, flat: &[R], n: usize, dim: usize) -> Option<(Vec<f64>, usize)> {
+        let PointRule::Posterior(m) = self else {
+            return None;
+        };
+        let k = m.n_components();
+        let mut out = Vec::with_capacity(n * k);
+        let mut scratch = Vec::with_capacity(k);
+        for i in 0..n {
+            m.responsibilities(&flat[i * dim..(i + 1) * dim], &mut scratch);
+            out.extend_from_slice(&scratch);
+        }
+        Some((out, k))
+    }
 }
 
 /// Per-leaf (microcluster) statistics as `f64`, regardless of the tree's element type: flat
@@ -582,7 +638,7 @@ fn cluster<R: Real, C: ClusterFeature<R>>(
             Some(spec) => {
                 // Reduce leaf centroids to CF-weighted NMF codes, cluster those; labels stay per-leaf.
                 let coded = crate::clustering::nmf::project(tree.leaf_features(), spec, seed).coded;
-                let entry_labels = cluster_leaves(&coded, k, method, max_iter, seed);
+                let entry_labels = fit_head(&coded, k, method, max_iter, seed).labels;
                 map_rows(n, |i| {
                     entry_labels[tree.nearest_entry(&flat[i * dim..(i + 1) * dim])] as i64
                 })
@@ -1291,10 +1347,10 @@ struct Betula {
     /// Relative reconstruction error of the projection, `‖X̃ − W H‖_F / ‖X̃‖_F`.
     #[serde(default)]
     nmf_reconstruction_err: Option<f64>,
-    /// `(label, centre)` per non-empty cluster, set at finalize for heads whose model is a partition
-    /// by nearest centre. Backs `predict`; `None` keeps the microcluster route (see [`Model`]).
+    /// The head's own model of a point, set at finalize. Backs `predict` / `predict_proba`; `None`
+    /// keeps the microcluster route (see [`Model`]).
     #[serde(default)]
-    centers: Option<(Vec<i64>, Vec<f64>)>,
+    rule: Option<PointRule>,
 }
 
 /// Copy a 2-D array into a flat row-major `Vec<R>`, casting from the other float dtype if needed
@@ -1353,6 +1409,7 @@ impl Betula {
         self.state32 = None;
         self.labels = None;
         self.proba = None;
+        self.rule = None;
         self.dim = 0;
     }
 
@@ -1458,8 +1515,8 @@ impl Betula {
             .state64
             .as_ref()
             .ok_or_else(|| PyValueError::new_err("no fitted float64 tree for sparse predict"))?;
-        match self.centers.as_ref() {
-            Some((ids, rows)) => Ok(assign_csr(ids, rows, n_features, data, indices, indptr)),
+        match self.rule.as_ref() {
+            Some(rule) => Ok(rule.label_csr(data, indices, indptr, n_features)),
             None => Ok(t.route_csr(labels, data, indices, indptr, n_features)),
         }
     }
@@ -1473,19 +1530,22 @@ impl Betula {
         Ok(())
     }
 
-    /// The `(label, centre)` partition a centroid head defines, or `None` when the head assigns by
-    /// something other than nearest centre, or a projection replaced the feature space the rows live
-    /// in — in both cases the microcluster route is the only defined labelling. Constrained runs
-    /// never take this path: COP-KMeans labels satisfy pairwise constraints that a Voronoi rule is
-    /// free to violate.
-    fn centroid_partition(&self) -> Option<(Vec<i64>, Vec<f64>)> {
+    /// The point model the finalized head defines, or `None` when it has none, or when a projection
+    /// replaced the feature space the rows live in — in both cases the microcluster route is the only
+    /// defined labelling. Constrained runs never take this path: COP-KMeans labels satisfy pairwise
+    /// constraints that a Voronoi rule is free to violate.
+    fn point_rule(&self, mixture: Option<Mixture>) -> Option<PointRule> {
         let Kind::Parametric(method) = self.kind else {
             return None;
         };
-        let unit = crate::model::is_centroid_model(method)?;
         if self.nmf_dim.is_some() {
             return None;
         }
+        let unit = match assignment_rule(method) {
+            Rule::Centroid { unit } => unit,
+            Rule::Posterior => return mixture.map(PointRule::Posterior),
+            Rule::Microcluster => return None,
+        };
         let (centers, weights, _radii, dim) = self.cluster_stats_any().ok()?;
         let mut labels = Vec::new();
         let mut rows = Vec::new();
@@ -1507,7 +1567,7 @@ impl Betula {
             labels.push(c as i64);
             rows.extend(row.iter().map(|v| v * scale));
         }
-        (!labels.is_empty()).then_some((labels, rows))
+        (!labels.is_empty()).then_some(PointRule::Centers { labels, rows })
     }
 
     /// Cluster the current leaf features (whichever dtype tree exists) and cache the labels.
@@ -1537,14 +1597,14 @@ impl Betula {
                 let (components, err) = out.parts.unzip();
                 self.nmf_components = components;
                 self.nmf_reconstruction_err = err;
-                self.centers = self.centroid_partition();
+                self.rule = self.point_rule(out.mixture);
             }
             None => {
                 self.labels = None;
                 self.proba = None;
                 self.nmf_components = None;
                 self.nmf_reconstruction_err = None;
-                self.centers = None;
+                self.rule = None;
             }
         }
     }
@@ -1583,13 +1643,13 @@ impl Betula {
                 "call fit(), fit_predict(), or partial_fit() (no args, to finalize) before predict()",
             )
         })?;
-        let part = self.centers.as_ref();
+        let rule = self.rule.as_ref();
         if let Some(t) = &self.state64 {
             let (flat, n, dim) = flat_as::<f64>(data, self.normalize)?;
             self.check_dim(dim)?;
             Ok(py
-                .detach(|| match part {
-                    Some((ids, rows)) => assign_rows(ids, rows, dim, &flat, n),
+                .detach(|| match rule {
+                    Some(r) => r.label_rows(&flat, n, dim),
                     None => t.route(labels, &flat, n, dim),
                 })
                 .into_pyarray(py))
@@ -1597,8 +1657,8 @@ impl Betula {
             let (flat, n, dim) = flat_as::<f32>(data, self.normalize)?;
             self.check_dim(dim)?;
             Ok(py
-                .detach(|| match part {
-                    Some((ids, rows)) => assign_rows(ids, rows, dim, &flat, n),
+                .detach(|| match rule {
+                    Some(r) => r.label_rows(&flat, n, dim),
                     None => t.route(labels, &flat, n, dim),
                 })
                 .into_pyarray(py))
@@ -1607,6 +1667,35 @@ impl Betula {
                 "call fit() or fit_predict() before predict()",
             ))
         }
+    }
+
+    /// Point posteriors for one dtype: the fitted mixture's own if the head has one, else the row's
+    /// microcluster responsibilities (all a projected fit can offer, since the head clustered codes).
+    fn proba_of<R: Real + Element>(
+        &self,
+        py: Python<'_>,
+        tree: &TreeState<R>,
+        flat: &[R],
+        n: usize,
+        dim: usize,
+    ) -> PyResult<(Vec<f64>, usize)> {
+        if let Some(rule) = self.rule.as_ref() {
+            if let Some(out) = py.detach(|| rule.proba_rows(flat, n, dim)) {
+                return Ok(out);
+            }
+        }
+        let (leaf, k) = self.proba.as_ref().ok_or_else(|| {
+            PyValueError::new_err(
+                "predict_proba is only available after fit with method='gmm', 'gmm-full', 'vmf', 'gmm-toeplitz', 'gmm-toeplitz-full' or 'gmm-toeplitz-gs'",
+            )
+        })?;
+        let idx = py.detach(|| tree.assign_microclusters(flat, n, dim));
+        let mut out = Vec::with_capacity(n * k);
+        for &i in &idx {
+            let lo = i as usize * k;
+            out.extend_from_slice(&leaf[lo..lo + k]);
+        }
+        Ok((out, *k))
     }
 
     /// Per-leaf stats from whichever dtype tree exists; errors if no data has been fitted.
@@ -1750,7 +1839,7 @@ impl Betula {
             proba: None,
             nmf_components: None,
             nmf_reconstruction_err: None,
-            centers: None,
+            rule: None,
         })
     }
 
@@ -1794,6 +1883,34 @@ impl Betula {
         data: &Bound<'py, PyAny>,
     ) -> PyResult<Bound<'py, PyArray1<i64>>> {
         self.route_data(py, data)
+    }
+
+    /// Per-row posterior `p(c | x)` — `(n, k)`, columns aligned with `predict`, so
+    /// `predict_proba(X).argmax(1) == predict(X)`. A mixture head scores the point itself; when a
+    /// projection replaced the space the head clustered, the row's microcluster responsibilities are
+    /// the closest defined answer. Raises for a head with no posterior at all.
+    fn predict_proba<'py>(
+        &self,
+        py: Python<'py>,
+        data: &Bound<'py, PyAny>,
+    ) -> PyResult<Bound<'py, PyArray2<f64>>> {
+        let (flat, k) = if let Some(t) = &self.state64 {
+            let (rows, n, dim) = flat_as::<f64>(data, self.normalize)?;
+            self.check_dim(dim)?;
+            self.proba_of(py, t, &rows, n, dim)?
+        } else if let Some(t) = &self.state32 {
+            let (rows, n, dim) = flat_as::<f32>(data, self.normalize)?;
+            self.check_dim(dim)?;
+            self.proba_of(py, t, &rows, n, dim)?
+        } else {
+            return Err(PyValueError::new_err(
+                "call fit() or fit_predict() before predict_proba()",
+            ));
+        };
+        let rows = flat.len().checked_div(k).unwrap_or(0);
+        Ok(Array2::from_shape_vec((rows, k), flat)
+            .expect("proba length is rows*k")
+            .into_pyarray(py))
     }
 
     /// Reset, fit on `data`, and return the training labels in one call.
@@ -1971,7 +2088,8 @@ impl Betula {
     }
 
     /// Per-microcluster GMM soft responsibilities — `(n_microclusters, k)`. Only the GMM heads have a
-    /// posterior; raises otherwise. Backs `predict_proba` (route a point to its leaf, read its row).
+    /// posterior; raises otherwise. This is a *leaf-level* quantity: `predict_proba` scores the point
+    /// itself, and only falls back to these rows when a projection replaced the head's feature space.
     #[getter]
     fn microcluster_proba_<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray2<f64>>> {
         let (flat, k) = self.proba.as_ref().ok_or_else(|| {
@@ -3135,7 +3253,7 @@ fn fit_predict_sparse<'py>(
             threshold,
             max_leaves.max(1),
         );
-        let micro_labels = cluster_leaves(&micros, n_clusters, m, max_iter, seed);
+        let micro_labels = fit_head(&micros, n_clusters, m, max_iter, seed).labels;
         let means: Vec<Vec<f64>> = micros.iter().map(|c| c.mean().to_vec()).collect();
         let musq: Vec<f64> = means
             .iter()

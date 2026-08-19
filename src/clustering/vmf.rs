@@ -16,6 +16,7 @@
 
 use crate::clustering::rng::SplitMix64;
 use crate::feature::ClusterFeature;
+use crate::mixture::Mixture;
 use crate::types::Real;
 
 /// Concentration is capped for numerical stability: `κ·(d_i·μ_c)` stays representable, and the
@@ -317,6 +318,8 @@ pub struct Movmf<R: Real> {
     pub kappas: Vec<R>,
     /// Weighted data log-likelihood at convergence.
     pub loglik: R,
+    /// The fitted density, for scoring raw points.
+    pub mixture: Mixture,
 }
 
 /// Fit a `k`-component vMF mixture, keeping the best of [`MOVMF_N_INIT`] EM restarts by
@@ -438,6 +441,11 @@ fn movmf_once<R: Real, C: ClusterFeature<R>>(
     }
 
     let labels = resp.iter().map(|r| argmax(r)).collect();
+    let logc: Vec<f64> = kappas
+        .iter()
+        .map(|&kap| log_vmf_norm(dim, kap.to_f64().unwrap_or(0.0).max(1e-8)))
+        .collect();
+    let mixture = Mixture::vmf(&weights, &means, &kappas, &logc);
     Movmf {
         labels,
         resp,
@@ -445,6 +453,7 @@ fn movmf_once<R: Real, C: ClusterFeature<R>>(
         means,
         kappas,
         loglik,
+        mixture,
     }
 }
 

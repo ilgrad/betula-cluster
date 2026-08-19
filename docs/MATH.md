@@ -205,6 +205,41 @@ spread-out leaf contributes proportionally weaker evidence — the directional a
 full-covariance GMM's within-leaf `−½ tr(Σ_c⁻¹ Σ_i)` correction. `predict_proba` returns this true
 posterior; `n_clusters=0` selects the component count by BIC.
 
+## Labelling a raw point
+
+The CF-tree is a *summary*, not the model. A head fits its parameters to the leaves, and the label of
+a new point follows from that head's own objective — not from where the tree happens to route it:
+
+| head | rule |
+|---|---|
+| `kmeans`, `spherical-kmeans` | $\arg\min_c \lVert x - c \rVert^2$ over the cluster centres (spherical compares unit-normalized centres, where the Euclidean argmin and the cosine argmax agree) |
+| `gmm`, `gmm-full`, `vmf`, `gmm-toeplitz{,-full,-gs}` | $\arg\max_c\ \ln \pi_c + \ln p(x \mid \theta_c)$ |
+| `ward`, `spectral`, `leiden`, `hdbscan`, `scale-space` | nearest leaf entry, then that entry's label |
+
+The third row is not a fallback but the only defined answer: those clusters need not be convex, so any
+centre or density rule would impose a partition the head exists to avoid. The first two rows *were*
+computed that way until they were fixed, and the tree descent is greedy — an approximate
+nearest-microcluster search that disagreed with the model on 3–28% of points.
+
+The mixture densities are the plain component log-densities: the E-step's within-leaf correction
+$-\tfrac{1}{2}\operatorname{tr}(\Sigma_c^{-1}\Sigma_i)$ exists because a *leaf* has scatter, and a single
+observation has none. Each head keeps the exact numbers its own EM converged to — the floored diagonal
+variances, the ridge-regularized Cholesky, the AR predictor bank or Toeplitz factor — so the point rule
+cannot drift from the fit. `predict_proba` normalizes the same scores, which makes
+`predict_proba(X).argmax(1)` equal to `predict(X)` by construction. A component that ends up claiming
+no leaf is silenced, so `predict` can only name a label the fitted partition actually uses.
+
+**Where the diagonal head is weak.** Being the model's own rule is not the same as being the most
+accurate one, and the gap shows up wherever the model is a poor fit. `method="gmm"` treats every
+dimension as independent, so scoring a raw point sums `d` separate penalties and a per-dimension
+modelling error accumulates across all of them; the leaf-level score damps this through the
+$-\tfrac{1}{2}\operatorname{tr}(\Sigma_c^{-1}\Sigma_i)$ term, which a single observation does not have.
+On raw image pixels — strongly correlated, and exactly what a diagonal covariance cannot represent —
+that costs accuracy: MNIST-20k ARI **0.340** by leaf descent against **0.176** by posterior. The
+full-covariance head on the same data moves the other way (**0.177 → 0.224** at `max_leaves=300`, where
+both fit in memory), as does TF-IDF text (20-newsgroups `gmm` **0.027 → 0.059**) and `digits`
+(**0.479 → 0.496**). For raw images prefer `gmm-full`, a `projection`, or `kmeans`.
+
 ## Geometry-aware graph (GeoBETULA) and scale-space modes
 
 Two heads exploit the geometry *within* each microcluster, on the `M ≪ N` leaves.

@@ -54,7 +54,8 @@ A capability-by-capability reference. For runnable code see [`USAGE.md`](USAGE.m
   **scale-space (Morse-persistence) density-mode clustering** (`method="scale-space"` — mean-shift over
   the microcluster KDE, with the bandwidth *and* the cluster count chosen by **mode persistence** across
   scale, so no `k` or bandwidth is required; non-convex, arbitrary count).
-- **Soft assignment & confidence**: `predict_proba` (true posterior for the GMM and **vMF** heads; a
+- **Soft assignment & confidence**: `predict_proba` (the point's own posterior under the fitted
+  mixture for the GMM, **vMF** and Toeplitz heads, so `predict_proba(X).argmax(1) == predict(X)`; a
   documented centroid-distance softmax *heuristic* for k-means / Ward / spectral / Leiden / HDBSCAN),
   `assignment_confidence`,
   `microcluster_proba_` (per-microcluster GMM responsibilities, GMM heads only), `export_coreset` (the

@@ -932,11 +932,11 @@ class Betula:
     def predict_proba(self, X):
         """Per-point soft assignment, shape ``(n, n_components)``.
 
-        The **GMM**, **vMF**, and **Toeplitz** (``gmm-toeplitz`` / ``-full`` / ``-gs``) heads return
-        the true posterior responsibilities (routed via each point's microcluster).
-        **k-means / Ward / HDBSCAN** return a heuristic ``softmax(−d²/2τ²)`` over the cluster
-        centroids (``τ`` = mean cluster radius) — a confidence *proxy*, **not** a calibrated
-        posterior. Columns are component indices aligned with :meth:`predict`."""
+        The **GMM**, **vMF**, and **Toeplitz** (``gmm-toeplitz`` / ``-full`` / ``-gs``) heads score
+        the point under the fitted mixture, so ``predict_proba(X).argmax(1)`` is exactly
+        :meth:`predict`. **k-means / Ward / HDBSCAN** return a heuristic ``softmax(−d²/2τ²)`` over
+        the cluster centroids (``τ`` = mean cluster radius) — a confidence *proxy*, **not** a
+        calibrated posterior. Columns are component indices aligned with :meth:`predict`."""
         est = self._require_fit()
         if self.method in (
             "gmm",
@@ -946,9 +946,7 @@ class Betula:
             "gmm-toeplitz-full",
             "gmm-toeplitz-gs",
         ):
-            leaf_proba = est.microcluster_proba_
-            leaves = np.asarray(est.assign_microclusters(X))
-            return leaf_proba[leaves]
+            return est.predict_proba(X)
         centers = np.asarray(est.cluster_centers_, dtype=np.float64)
         rows = np.asarray(X, dtype=np.float64)
         d2 = (

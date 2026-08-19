@@ -26,6 +26,7 @@
 
 use crate::clustering::rng::SplitMix64;
 use crate::feature::ClusterFeature;
+use crate::mixture::{ar_loglik_exact, Mixture, StationaryCov};
 use crate::types::Real;
 
 /// Random EM restarts kept by data log-likelihood (EM is non-convex; covariance-only clustering is
@@ -61,44 +62,6 @@ pub enum CovKind {
     GsMle,
 }
 
-/// A fitted per-component covariance: either the AR(`w`) predictor bank or a dense Toeplitz Cholesky.
-enum CompCov<R: Real> {
-    /// `phi[m]` / `v[m]` are the order-`m` predictors and error variances (`m = 0..=w`).
-    Ar { phi: Vec<Vec<R>>, v: Vec<R> },
-    /// Lower-Cholesky factor of a positive-definite Toeplitz covariance and its `log|Σ|`.
-    Toeplitz { chol: Vec<Vec<R>>, logdet: R },
-}
-
-impl<R: Real> CompCov<R> {
-    /// Log-density of a length-`d` mean-deviation vector under this component covariance.
-    fn loglik(&self, delta: &[R]) -> R {
-        match self {
-            CompCov::Ar { phi, v } => ar_loglik_exact(delta, phi, v, phi.len() - 1),
-            CompCov::Toeplitz { chol, logdet } => {
-                let half = R::from_f64(0.5).unwrap();
-                let log_two_pi = R::from_f64(std::f64::consts::TAU).unwrap().ln();
-                let d = R::from_usize(delta.len()).unwrap();
-                let quad = crate::linalg::mahalanobis_sq_from_chol(chol, delta);
-                -half * (d * log_two_pi + *logdet + quad)
-            }
-        }
-    }
-    /// AR coefficients for reporting (empty for the general Toeplitz model).
-    fn ar_coeffs(&self) -> Vec<R> {
-        match self {
-            CompCov::Ar { phi, .. } => phi.last().cloned().unwrap_or_default(),
-            CompCov::Toeplitz { .. } => Vec::new(),
-        }
-    }
-    /// Innovation variance for reporting (`Σ_{00}` for the Toeplitz model).
-    fn innov(&self) -> R {
-        match self {
-            CompCov::Ar { v, .. } => *v.last().unwrap(),
-            CompCov::Toeplitz { chol, .. } => chol[0][0] * chol[0][0],
-        }
-    }
-}
-
 /// Result of an AR/Toeplitz GMM-EM run.
 pub struct GmmToeplitz<R: Real> {
     /// Hard label (argmax responsibility) per feature.
@@ -116,6 +79,8 @@ pub struct GmmToeplitz<R: Real> {
     pub innov: Vec<R>,
     /// Weighted data log-likelihood at convergence.
     pub loglik: R,
+    /// The fitted density, for scoring raw points (`ar` / `innov` are its reporting projection).
+    pub mixture: Mixture,
 }
 
 /// Levinson-Durbin producing **all** intermediate order-`m` predictors and prediction-error
@@ -152,27 +117,6 @@ fn levinson_full<R: Real>(r: &[R], w: usize) -> (Vec<Vec<R>>, Vec<R>) {
         phi.push(a[..m].to_vec());
     }
     (phi, v)
-}
-
-/// **Exact** finite-sample AR (Gohberg-Semencul) log-density of `delta` via the prediction-error
-/// decomposition. Position `t` is predicted by the order-`min(t, w)` predictor with its own error
-/// variance `v[min(t,w)]`, so the first `w` boundary positions are modelled *exactly* — this is the
-/// GS `Γ = (1/σ²)(BBᵀ − ZZᵀ)` precision (the `−ZZᵀ` term is the corner/edge correction) made
-/// computational, rather than the conditional likelihood that simply drops those positions.
-fn ar_loglik_exact<R: Real>(delta: &[R], phi: &[Vec<R>], v: &[R], w: usize) -> R {
-    let half = R::from_f64(0.5).unwrap();
-    let two_pi = R::from_f64(std::f64::consts::TAU).unwrap();
-    let mut ll = R::zero();
-    for (t, &dt) in delta.iter().enumerate() {
-        let m = t.min(w);
-        let mut pred = R::zero();
-        for (j, &pj) in phi[m].iter().enumerate() {
-            pred = pred + pj * delta[t - 1 - j];
-        }
-        let e = dt - pred;
-        ll = ll - half * ((two_pi * v[m]).ln() + e * e / v[m]);
-    }
-    ll
 }
 
 /// Pooled unbiased (covariance-method) weighted autocovariance `r[0..=w]` of a component with mean
@@ -265,7 +209,7 @@ where
 /// Cholesky. Captures autocovariance structure a low-order AR cannot (broadband / high-order signals),
 /// at `O(d²)` parameters and an `O(d³)` factorization per component — the general (non-AR) rung of the
 /// Toeplitz ladder (`docs/adr/001-gmm-toeplitz.md`).
-fn fit_toeplitz_full<R, C>(features: &[C], wt: &[R], mu_c: R, dim: usize) -> CompCov<R>
+fn fit_toeplitz_full<R, C>(features: &[C], wt: &[R], mu_c: R, dim: usize) -> StationaryCov<R>
 where
     R: Real,
     C: ClusterFeature<R>,
@@ -280,7 +224,7 @@ where
     let scale = rb[0].max(R::from_f64(1e-12).unwrap());
     let (chol, logdet) =
         crate::clustering::gmm::chol_regularized(&cov, scale, R::from_f64(1e-6).unwrap());
-    CompCov::Toeplitz { chol, logdet }
+    StationaryCov::Toeplitz { chol, logdet }
 }
 
 /// Levinson step-up: build the order-`m` predictors `phi[0..=p]` and error variances `v[0..=p]` from
@@ -310,7 +254,7 @@ fn step_up<R: Real>(refl: &[R], r0: R, p: usize) -> (Vec<Vec<R>>, Vec<R>) {
 /// start at order `min(d−1, GS_ORDER_MAX)`, then coordinate ascent of the exact weighted log-likelihood
 /// over the reflection coefficients (the MLE refinement; `|k| < 1` keeps it positive-definite). Returns
 /// the refined predictor bank as an `Ar` covariance — the E-step consumes the same exact GS precision.
-fn fit_component_gs<R, C>(features: &[C], wt: &[R], mu_c: R, dim: usize) -> CompCov<R>
+fn fit_component_gs<R, C>(features: &[C], wt: &[R], mu_c: R, dim: usize) -> StationaryCov<R>
 where
     R: Real,
     C: ClusterFeature<R>,
@@ -366,7 +310,7 @@ where
     }
 
     let (phi, v) = step_up(&refl, r0, p);
-    CompCov::Ar { phi, v }
+    StationaryCov::Ar { phi, v }
 }
 
 /// Fit the AR order `w ∈ [1, w_max]` by BIC for a component with weights `wt` and mean `mu_c`,
@@ -459,8 +403,8 @@ where
 
     let mut weights = vec![R::one() / R::from_usize(k).unwrap(); k];
     let mut means = vec![R::zero(); k];
-    let mut covs: Vec<CompCov<R>> = (0..k)
-        .map(|_| CompCov::Ar {
+    let mut covs: Vec<StationaryCov<R>> = (0..k)
+        .map(|_| StationaryCov::Ar {
             phi: vec![Vec::new()],
             v: vec![R::one()],
         })
@@ -487,7 +431,7 @@ where
             covs[c] = match kind {
                 CovKind::Ar => {
                     let (phi, v) = fit_component(features, &wt, mc, dim, w_max);
-                    CompCov::Ar { phi, v }
+                    StationaryCov::Ar { phi, v }
                 }
                 CovKind::ToeplitzFull => fit_toeplitz_full(features, &wt, mc, dim),
                 CovKind::GsMle => fit_component_gs(features, &wt, mc, dim),
@@ -527,6 +471,7 @@ where
     let labels = resp.iter().map(|r| argmax(r)).collect();
     let ar: Vec<Vec<R>> = covs.iter().map(|c| c.ar_coeffs()).collect();
     let innov: Vec<R> = covs.iter().map(|c| c.innov()).collect();
+    let mixture = Mixture::stationary(&weights, &means, &covs);
     GmmToeplitz {
         labels,
         resp,
@@ -535,6 +480,7 @@ where
         ar,
         innov,
         loglik,
+        mixture,
     }
 }
 

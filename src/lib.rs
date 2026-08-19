@@ -10,6 +10,7 @@ pub mod distance;
 pub mod feature;
 pub mod kernels;
 pub mod linalg;
+pub mod mixture;
 pub mod model;
 pub mod sketch;
 pub mod sparse;

@@ -26,7 +26,44 @@ All notable changes to this project are documented here. The format follows
   runs (`fit_constrained`) also keep it, since a Voronoi rule is free to violate the pairwise
   constraints COP-KMeans satisfied. Measured separately: a nearest-centre rule *would* raise the GMM
   heads too (digits 0.504 → 0.576, MNIST-20k 0.343 → 0.418, 20news 0.053 → 0.073), which makes a true
-  max-posterior `predict` for them the obvious follow-up — it is not shipped here.
+  max-posterior `predict` for them the obvious follow-up — see the next entry, which ships it.
+- **The mixture heads now label a point by maximum posterior instead of by tree descent.** `gmm`,
+  `gmm-full`, `vmf` and `gmm-toeplitz{,-full,-gs}` score the point itself under the mixture they
+  converged to — `argmax_c [ln π_c + ln p(x | θ_c)]` — rather than routing it to a leaf and copying that
+  leaf's label. Each head hands its converged parameters to a `Mixture` (diagonal / full-Cholesky /
+  stationary / vMF kernels), so the density that labels a point is the density that was fitted: the
+  floored diagonal variances, the ridge-regularized Cholesky, the AR predictor bank. `predict_proba`
+  normalizes the same scores, so `predict_proba(X).argmax(1) == predict(X)` by construction, and it now
+  scores the row rather than the row's microcluster. A component that no leaf claims is silenced, so
+  `predict` can only emit a label the fitted partition uses. Measured ARI, median of 3 seeds, defaults
+  (`max_leaves=2000`), old rule → new rule: 20-newsgroups TF-IDF `gmm` **0.027 → 0.059** (71.8%
+  relabelled) and `vmf` 0.021 → 0.026, digits `gmm` 0.479 → 0.496, `gmm-full` 0.739 → 0.777, `vmf`
+  0.643 → 0.631, blobs `gmm` 1.000 → 1.000.
+  **It costs accuracy on raw image pixels, and that is not hidden here:** MNIST-20k `gmm` **0.340 →
+  0.176** (52.1% relabelled). The cause is the model, not the rule. A diagonal covariance treats 784
+  correlated pixels as independent, so scoring a raw point sums 784 separate penalties and the
+  per-dimension modelling error accumulates; the leaf-level score damps this through the
+  `−½ tr(Σ_c⁻¹ Σ_i)` term, which a single observation genuinely does not have. Two measurements pin it
+  on the diagonal parameterization rather than on the new rule: on the same data a *nearest-centre* rule,
+  which ignores the covariance entirely, scores **0.379** — above both — and the full-covariance head
+  moves the other way, 0.177 → **0.224** at `max_leaves=300` (the budget at which both heads fit in
+  memory; the full head holds 1962 leaf covariances of 784×784 at the default budget). For raw images
+  prefer `gmm-full`, a `projection`, or `kmeans`.
+- **The diagonal GMM could drive `1/σ²` to `1e12` in a dimension with no spread.** The variance floor
+  was expressed purely relative to the spread of the dimension itself (`1e-3 · gvar_d + 1e-12`), so a
+  constant or near-constant dimension — an always-zero border pixel, a term absent from every document —
+  got a floor of essentially zero and its precision was bounded only by `1e-12`. Compounding it,
+  `global_variance` summed only the between-leaf term while its own doc comment claimed between + within,
+  so the scale feeding both the floor and the NIG prior was under-estimated in proportion to how hard the
+  tree had compressed. Neither showed while the density was only ever evaluated at leaf means, which sit
+  close to any component mean; a raw observation does not. The floor now also carries a global term
+  (`VAR_FLOOR_REL · mean_d gvar_d`, mirroring the full head's `ridge = 1e-6 · tr(gcov)/d`) and
+  `global_variance` adds the per-leaf term, as `global_cov` always did. Measured ARI, median of 3 seeds,
+  before → after, as leaf-descent / max-posterior: MNIST-20k `gmm` 0.317 → 0.340 / **0.135 → 0.176**,
+  20-newsgroups `gmm` 0.029 → 0.027 / **0.051 → 0.059**, digits `gmm` 0.471 → 0.479 / 0.484 → 0.496.
+  `gmm-full`, `vmf` and blobs are byte-identical, as they must be — they never used this floor. The fix
+  is real but partial: it lifts the MNIST point-level ARI by 30% relative and still leaves it below leaf
+  descent, for the modelling reason given in the entry above.
 - **CF-tree: the rebuild spent a third of the leaf budget, and collapsed the tree outright in high
   dimension.** `max_leaves` is a resolution budget — the summary handed to the global clustering is
   only as fine as the leaves actually kept — but the rebuild grew the threshold to the *mean*

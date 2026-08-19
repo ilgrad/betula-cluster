@@ -85,7 +85,7 @@ labels = est.predict(X_query)         # est.n_clusters_ / est.n_leaves_ / est.ef
 All over the microclusters the tree already holds (no extra data passes):
 
 ```python
-proba = est.predict_proba(X_query)            # (n, k): GMM posterior; centroid-softmax heuristic for other heads
+proba = est.predict_proba(X_query)            # (n, k): the point's own mixture posterior (argmax == predict); centroid-softmax heuristic for the non-generative heads
 conf  = est.assignment_confidence(X_query)    # (n,) in [0, 1] — low flags boundary / ambiguous points
 coreset = est.export_coreset()                # coreset.centers / .weights / .radii — fit any weighted model on these
 report  = est.diagnostics()                   # compression_ratio, radius p50/p90/p99, cluster mass spread, n_rebuilds

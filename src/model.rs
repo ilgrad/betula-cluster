@@ -3,12 +3,13 @@
 use crate::clustering::{
     gmm_diagonal, gmm_diagonal_auto, gmm_full, gmm_full_auto, gmm_toeplitz, gmm_toeplitz_auto,
     gmm_toeplitz_full, gmm_toeplitz_full_auto, gmm_toeplitz_gs, gmm_toeplitz_gs_auto, kmeans,
-    leiden, movmf, movmf_auto, spectral, spherical_kmeans, ward_hac, ward_hac_auto, xmeans,
-    Objective,
+    leiden, movmf, movmf_auto, spectral, spherical_kmeans, ward_hac, ward_hac_auto, xmeans, Gmm,
+    GmmFull, GmmToeplitz, Movmf, Objective,
 };
 use crate::distance::CFDistance;
 use crate::feature::ClusterFeature;
 use crate::kernels::sq_euclidean;
+use crate::mixture::Mixture;
 use crate::tree::CFTree;
 use crate::types::Real;
 
@@ -56,29 +57,35 @@ pub enum Method {
     GmmToeplitzGs,
 }
 
-/// Whether the head's own objective *is* "assign to the nearest centre", in which case labelling a
-/// point is an argmin over `k` centres rather than a lookup through its microcluster. `Some(true)`
-/// means the centres are compared as unit vectors, where the Euclidean argmin and the cosine argmax
-/// agree.
+/// How a head labels a raw point — by its own objective, not by a routing shortcut.
 ///
-/// Only k-means and its spherical twin qualify. The mixture heads (GMM, Toeplitz-GMM, movMF) assign
-/// by maximum posterior, which weighs each component by its own covariance / concentration and its
-/// mixing weight — a nearest-centre rule is a different partition, not a faster route to the same
-/// one. Ward, Spectral and Leiden are excluded more strongly still: their clusters need not be
-/// convex, so a nearest-centre rule would impose exactly the Voronoi partition they exist to avoid.
-pub(crate) fn is_centroid_model(method: Method) -> Option<bool> {
+/// Only k-means and its spherical twin are *centroid* models: "assign to the nearest centre" is
+/// literally what they optimise. The mixture heads assign by maximum posterior, which weighs each
+/// component by its own covariance / concentration and its mixing weight — a nearest-centre rule is
+/// a different partition, not a faster route to the same one. Ward, Spectral and Leiden have neither:
+/// their clusters need not be convex, so any centre rule would impose exactly the Voronoi partition
+/// they exist to avoid, and the microcluster route is the only thing defined for them.
+pub(crate) enum Rule {
+    /// Argmin over the cluster centres. `unit` compares them as unit vectors, where the Euclidean
+    /// argmin and the cosine argmax agree.
+    Centroid { unit: bool },
+    /// Argmax of `ln π_c + ln p(x | θ_c)` under the fitted mixture.
+    Posterior,
+    /// Route down the tree to a leaf and read its label.
+    Microcluster,
+}
+
+pub(crate) fn assignment_rule(method: Method) -> Rule {
     match method {
-        Method::KMeans => Some(false),
-        Method::SphericalKMeans => Some(true),
+        Method::KMeans => Rule::Centroid { unit: false },
+        Method::SphericalKMeans => Rule::Centroid { unit: true },
         Method::Gmm
         | Method::GmmFull
         | Method::GmmToeplitz
         | Method::GmmToeplitzFull
         | Method::GmmToeplitzGs
-        | Method::Movmf
-        | Method::Ward
-        | Method::Spectral
-        | Method::Leiden { .. } => None,
+        | Method::Movmf => Rule::Posterior,
+        Method::Ward | Method::Spectral | Method::Leiden { .. } => Rule::Microcluster,
     }
 }
 
@@ -120,21 +127,30 @@ fn cluster_centroids<R: Real, C: ClusterFeature<R>>(
     out
 }
 
+/// What a fitted head does with a raw point. The three cases are mutually exclusive by
+/// construction, so no combination of them can be represented.
+enum Assignment<R: Real> {
+    /// Nearest of the `(label, centre)` pairs — the partition a centroid head *is*.
+    Centers(Vec<(usize, Vec<R>)>),
+    /// Maximum posterior under the fitted mixture.
+    Posterior(Mixture),
+    /// Nearest leaf entry, then that entry's label.
+    Microcluster,
+}
+
 /// A fitted model: a CF-tree plus a cluster label per leaf entry.
 ///
-/// For a head whose model is a partition by nearest centre, a point is labelled by that partition —
-/// an argmin over the `k` cluster centres. The alternative, routing the point down the tree to a leaf
-/// and reading that leaf's label, is an *approximate* nearest-microcluster search: the descent is
-/// greedy, so in high dimension it lands on the wrong leaf often enough to matter. Measured, it
-/// disagrees with the model's own partition on 3-28% of points, and on 20-newsgroups TF-IDF it
-/// delivered only **14 of the 20 clusters** the head actually found — the rest were unreachable by
-/// descent. The argmin is also the cheaper of the two at `k ≪ M`. Heads without a centre model keep
-/// the microcluster route, which is the only thing defined for them.
+/// A point is labelled by the head's own model of a point (see [`Rule`]). The alternative, routing
+/// the point down the tree to a leaf and reading that leaf's label, answers a different question —
+/// *which cluster owns the nearest microcluster* — and answers it approximately, since the descent is
+/// greedy. Measured on 20-newsgroups TF-IDF it relabels 18% of points for `kmeans` and 43% for `gmm`,
+/// and it could reach only 14 of the 20 clusters the `kmeans` head found: the rest were unreachable
+/// by descent at any point. Heads with no point model keep the microcluster route, which is all they
+/// define.
 pub struct Model<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> {
     tree: CFTree<R, C, D, A>,
     entry_labels: Vec<usize>,
-    /// `(label, centre)` per non-empty cluster; empty for heads with no centre model.
-    centers: Vec<(usize, Vec<R>)>,
+    assign: Assignment<R>,
     n_clusters: usize,
 }
 
@@ -150,35 +166,30 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> Mo
         max_iter: usize,
         seed: u64,
     ) -> Self {
-        let entry_labels = cluster_leaves(tree.leaf_features(), k, method, max_iter, seed);
-        let n_clusters = distinct_count(&entry_labels);
-        let centers = is_centroid_model(method)
-            .map(|unit| cluster_centroids(tree.leaf_features(), &entry_labels, unit))
-            .unwrap_or_default();
+        let fit = fit_head(tree.leaf_features(), k, method, max_iter, seed);
+        let n_clusters = distinct_count(&fit.labels);
+        let assign = match (assignment_rule(method), fit.mixture) {
+            (Rule::Centroid { unit }, _) => {
+                Assignment::Centers(cluster_centroids(tree.leaf_features(), &fit.labels, unit))
+            }
+            (Rule::Posterior, Some(m)) => Assignment::Posterior(m),
+            _ => Assignment::Microcluster,
+        };
         Self {
             tree,
-            entry_labels,
-            centers,
+            entry_labels: fit.labels,
+            assign,
             n_clusters,
         }
     }
 
-    /// Cluster label of point `x`: the nearest cluster centre, or — for a head with no centre model —
-    /// the label of the leaf entry `x` routes to.
+    /// Cluster label of point `x` under the head's own assignment rule.
     pub fn predict(&self, x: &[R]) -> usize {
-        let Some(((first, head), rest)) = self.centers.split_first() else {
-            return self.entry_labels[self.tree.nearest_entry(x)];
-        };
-        let mut best = *first;
-        let mut bd = sq_euclidean(x, head);
-        for (label, c) in rest {
-            let d = sq_euclidean(x, c);
-            if d < bd {
-                bd = d;
-                best = *label;
-            }
+        match &self.assign {
+            Assignment::Centers(centers) => nearest_center(centers, x),
+            Assignment::Posterior(mixture) => mixture.assign(x),
+            Assignment::Microcluster => self.entry_labels[self.tree.nearest_entry(x)],
         }
-        best
     }
 
     /// Number of clusters.
@@ -192,29 +203,107 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> Mo
     }
 }
 
+/// Label of the nearest `(label, centre)` pair. `centers` is never empty on this path: a fitted
+/// partition has at least one non-empty cluster.
+fn nearest_center<R: Real>(centers: &[(usize, Vec<R>)], x: &[R]) -> usize {
+    let mut best = 0;
+    let mut bd = R::infinity();
+    for (i, (_, c)) in centers.iter().enumerate() {
+        let d = sq_euclidean(x, c);
+        if d < bd {
+            bd = d;
+            best = i;
+        }
+    }
+    centers[best].0
+}
+
+/// The three things a mixture head returns that outlive the fit.
+trait MixtureFit<R: Real> {
+    fn parts(self) -> (Vec<usize>, Vec<Vec<R>>, Mixture);
+}
+
+macro_rules! mixture_fit {
+    ($t:ident) => {
+        impl<R: Real> MixtureFit<R> for $t<R> {
+            fn parts(self) -> (Vec<usize>, Vec<Vec<R>>, Mixture) {
+                (self.labels, self.resp, self.mixture)
+            }
+        }
+    };
+}
+
+mixture_fit!(Gmm);
+mixture_fit!(GmmFull);
+mixture_fit!(GmmToeplitz);
+mixture_fit!(Movmf);
+
+/// What one Phase-3 head fit produced.
+pub(crate) struct HeadFit<R: Real> {
+    /// One cluster label per leaf feature.
+    pub labels: Vec<usize>,
+    /// Per-leaf soft responsibilities `[leaf][component]`, for the heads that have a posterior.
+    /// Read by the Python estimator's `microcluster_proba_`; the core [`Model`] has no use for it.
+    #[cfg_attr(not(feature = "python"), allow(dead_code))]
+    pub resp: Option<Vec<Vec<R>>>,
+    /// The point-level density, for the heads that are generative.
+    pub mixture: Option<Mixture>,
+}
+
+impl<R: Real> HeadFit<R> {
+    /// A head with no point-level model.
+    fn hard(labels: Vec<usize>) -> Self {
+        Self {
+            labels,
+            resp: None,
+            mixture: None,
+        }
+    }
+
+    /// A mixture head. Components that no leaf claims are silenced here — the single place that can
+    /// forget to, so it does not.
+    fn soft(fit: impl MixtureFit<R>) -> Self {
+        let (labels, resp, mut mixture) = fit.parts();
+        mixture.restrict_to(&labels);
+        Self {
+            labels,
+            resp: Some(resp),
+            mixture: Some(mixture),
+        }
+    }
+}
+
 /// Label leaf features with a parametric head. `k == 0` requests BIC auto-selection of the
 /// component count for the GMM heads; k-means clamps to `[1, n_features]`. Shared by [`Model::fit`]
-/// and the streaming Python estimator so both honour the same `k`/auto semantics.
-pub(crate) fn cluster_leaves<R: Real, C: ClusterFeature<R>>(
+/// and the streaming Python estimator so both honour the same `k`/auto semantics — and so both get
+/// the same point-level model out of it.
+pub(crate) fn fit_head<R: Real, C: ClusterFeature<R>>(
     features: &[C],
     k: usize,
     method: Method,
     max_iter: usize,
     seed: u64,
-) -> Vec<usize> {
+) -> HeadFit<R> {
     let nlv = features.len();
     let auto_hi = nlv.min(AUTO_K_MAX);
+    let kk = k.min(nlv).max(1);
     match method {
-        Method::KMeans if k == 0 => xmeans(features, 1, auto_hi, max_iter, seed).labels,
-        Method::KMeans => kmeans(features, k.min(nlv).max(1), max_iter, 4, seed).labels,
-        Method::Gmm if k == 0 => gmm_diagonal_auto(features, 1, auto_hi, max_iter, seed).labels,
-        Method::Gmm => gmm_diagonal(features, k.min(nlv).max(1), max_iter, seed).labels,
-        Method::GmmFull if k == 0 => gmm_full_auto(features, 1, auto_hi, max_iter, seed).labels,
-        Method::GmmFull => gmm_full(features, k.min(nlv).max(1), max_iter, seed).labels,
-        Method::Ward if k == 0 => ward_hac_auto(features, 2, auto_hi).labels,
-        Method::Ward => ward_hac(features, k.min(nlv).max(1)).labels,
+        Method::KMeans if k == 0 => {
+            HeadFit::hard(xmeans(features, 1, auto_hi, max_iter, seed).labels)
+        }
+        Method::KMeans => HeadFit::hard(kmeans(features, kk, max_iter, 4, seed).labels),
+        Method::Gmm if k == 0 => {
+            HeadFit::soft(gmm_diagonal_auto(features, 1, auto_hi, max_iter, seed))
+        }
+        Method::Gmm => HeadFit::soft(gmm_diagonal(features, kk, max_iter, seed)),
+        Method::GmmFull if k == 0 => {
+            HeadFit::soft(gmm_full_auto(features, 1, auto_hi, max_iter, seed))
+        }
+        Method::GmmFull => HeadFit::soft(gmm_full(features, kk, max_iter, seed)),
+        Method::Ward if k == 0 => HeadFit::hard(ward_hac_auto(features, 2, auto_hi).labels),
+        Method::Ward => HeadFit::hard(ward_hac(features, kk).labels),
         // Spectral resolves `k == 0` (eigengap) and clamps internally, so one arm covers both.
-        Method::Spectral => spectral(features, k, max_iter, seed).labels,
+        Method::Spectral => HeadFit::hard(spectral(features, k, max_iter, seed).labels),
         // Leiden discovers the community count from the graph; `k` is ignored (like HDBSCAN).
         Method::Leiden {
             resolution,
@@ -228,130 +317,43 @@ pub(crate) fn cluster_leaves<R: Real, C: ClusterFeature<R>>(
             } else {
                 Objective::Modularity
             };
-            leiden(
-                features,
-                resolution,
-                obj,
-                seed,
-                cov_weight,
-                tangent_weight,
-                tangent_rank,
+            HeadFit::hard(
+                leiden(
+                    features,
+                    resolution,
+                    obj,
+                    seed,
+                    cov_weight,
+                    tangent_weight,
+                    tangent_rank,
+                )
+                .labels,
             )
-            .labels
         }
         // Spherical k-means needs a `k`; `k == 0` selects it by BIC via the vMF mixture.
         Method::SphericalKMeans if k == 0 => {
-            let kk = movmf_auto(features, 1, auto_hi, max_iter, seed).means.len();
-            spherical_kmeans(features, kk.min(nlv).max(1), max_iter, 4, seed).labels
+            let auto = movmf_auto(features, 1, auto_hi, max_iter, seed).means.len();
+            HeadFit::hard(
+                spherical_kmeans(features, auto.min(nlv).max(1), max_iter, 4, seed).labels,
+            )
         }
         Method::SphericalKMeans => {
-            spherical_kmeans(features, k.min(nlv).max(1), max_iter, 4, seed).labels
+            HeadFit::hard(spherical_kmeans(features, kk, max_iter, 4, seed).labels)
         }
-        Method::Movmf if k == 0 => movmf_auto(features, 1, auto_hi, max_iter, seed).labels,
-        Method::Movmf => movmf(features, k.min(nlv).max(1), max_iter, seed).labels,
+        Method::Movmf if k == 0 => HeadFit::soft(movmf_auto(features, 1, auto_hi, max_iter, seed)),
+        Method::Movmf => HeadFit::soft(movmf(features, kk, max_iter, seed)),
         Method::GmmToeplitz if k == 0 => {
-            gmm_toeplitz_auto(features, 1, auto_hi, max_iter, seed).labels
+            HeadFit::soft(gmm_toeplitz_auto(features, 1, auto_hi, max_iter, seed))
         }
-        Method::GmmToeplitz => gmm_toeplitz(features, k.min(nlv).max(1), max_iter, seed).labels,
+        Method::GmmToeplitz => HeadFit::soft(gmm_toeplitz(features, kk, max_iter, seed)),
         Method::GmmToeplitzFull if k == 0 => {
-            gmm_toeplitz_full_auto(features, 1, auto_hi, max_iter, seed).labels
+            HeadFit::soft(gmm_toeplitz_full_auto(features, 1, auto_hi, max_iter, seed))
         }
-        Method::GmmToeplitzFull => {
-            gmm_toeplitz_full(features, k.min(nlv).max(1), max_iter, seed).labels
-        }
+        Method::GmmToeplitzFull => HeadFit::soft(gmm_toeplitz_full(features, kk, max_iter, seed)),
         Method::GmmToeplitzGs if k == 0 => {
-            gmm_toeplitz_gs_auto(features, 1, auto_hi, max_iter, seed).labels
+            HeadFit::soft(gmm_toeplitz_gs_auto(features, 1, auto_hi, max_iter, seed))
         }
-        Method::GmmToeplitzGs => {
-            gmm_toeplitz_gs(features, k.min(nlv).max(1), max_iter, seed).labels
-        }
-    }
-}
-
-/// Like [`cluster_leaves`], but for the GMM heads also returns the per-leaf soft responsibility
-/// matrix flattened row-major as `(resp, k)` (`n_leaves × k`); `None` for k-means / Ward / (caller's)
-/// HDBSCAN, which have no posterior. Used to expose `predict_proba` without recomputing the E-step.
-#[cfg(feature = "python")]
-#[allow(clippy::type_complexity)]
-pub(crate) fn cluster_leaves_proba<R: Real, C: ClusterFeature<R>>(
-    features: &[C],
-    k: usize,
-    method: Method,
-    max_iter: usize,
-    seed: u64,
-) -> (Vec<usize>, Option<(Vec<f64>, usize)>) {
-    let nlv = features.len();
-    let auto_hi = nlv.min(AUTO_K_MAX);
-    let flatten = |resp: &[Vec<R>]| -> (Vec<f64>, usize) {
-        let kk = resp.first().map_or(0, |r| r.len());
-        let flat = resp
-            .iter()
-            .flat_map(|r| r.iter().map(|v| v.to_f64().unwrap()))
-            .collect();
-        (flat, kk)
-    };
-    match method {
-        Method::Gmm if k == 0 => {
-            let g = gmm_diagonal_auto(features, 1, auto_hi, max_iter, seed);
-            let p = flatten(&g.resp);
-            (g.labels, Some(p))
-        }
-        Method::Gmm => {
-            let g = gmm_diagonal(features, k.min(nlv).max(1), max_iter, seed);
-            let p = flatten(&g.resp);
-            (g.labels, Some(p))
-        }
-        Method::GmmFull if k == 0 => {
-            let g = gmm_full_auto(features, 1, auto_hi, max_iter, seed);
-            let p = flatten(&g.resp);
-            (g.labels, Some(p))
-        }
-        Method::GmmFull => {
-            let g = gmm_full(features, k.min(nlv).max(1), max_iter, seed);
-            let p = flatten(&g.resp);
-            (g.labels, Some(p))
-        }
-        Method::Movmf if k == 0 => {
-            let g = movmf_auto(features, 1, auto_hi, max_iter, seed);
-            let p = flatten(&g.resp);
-            (g.labels, Some(p))
-        }
-        Method::Movmf => {
-            let g = movmf(features, k.min(nlv).max(1), max_iter, seed);
-            let p = flatten(&g.resp);
-            (g.labels, Some(p))
-        }
-        Method::GmmToeplitz if k == 0 => {
-            let g = gmm_toeplitz_auto(features, 1, auto_hi, max_iter, seed);
-            let p = flatten(&g.resp);
-            (g.labels, Some(p))
-        }
-        Method::GmmToeplitz => {
-            let g = gmm_toeplitz(features, k.min(nlv).max(1), max_iter, seed);
-            let p = flatten(&g.resp);
-            (g.labels, Some(p))
-        }
-        Method::GmmToeplitzFull if k == 0 => {
-            let g = gmm_toeplitz_full_auto(features, 1, auto_hi, max_iter, seed);
-            let p = flatten(&g.resp);
-            (g.labels, Some(p))
-        }
-        Method::GmmToeplitzFull => {
-            let g = gmm_toeplitz_full(features, k.min(nlv).max(1), max_iter, seed);
-            let p = flatten(&g.resp);
-            (g.labels, Some(p))
-        }
-        Method::GmmToeplitzGs if k == 0 => {
-            let g = gmm_toeplitz_gs_auto(features, 1, auto_hi, max_iter, seed);
-            let p = flatten(&g.resp);
-            (g.labels, Some(p))
-        }
-        Method::GmmToeplitzGs => {
-            let g = gmm_toeplitz_gs(features, k.min(nlv).max(1), max_iter, seed);
-            let p = flatten(&g.resp);
-            (g.labels, Some(p))
-        }
-        _ => (cluster_leaves(features, k, method, max_iter, seed), None),
+        Method::GmmToeplitzGs => HeadFit::soft(gmm_toeplitz_gs(features, kk, max_iter, seed)),
     }
 }
 
@@ -464,7 +466,7 @@ mod tests {
             Method::Movmf,
         ] {
             for k in [3usize, 0usize] {
-                let labels = cluster_leaves(&feats, k, method, 100, 1);
+                let labels = fit_head(&feats, k, method, 100, 1).labels;
                 assert_eq!(labels.len(), feats.len());
             }
         }
