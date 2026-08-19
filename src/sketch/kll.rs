@@ -304,4 +304,74 @@ mod tests {
         s.update(1.0);
         assert_eq!(s.count(), 1);
     }
+
+    #[test]
+    fn the_batch_quantiles_agree_with_the_single_query_everywhere() {
+        // `quantiles` rebuilds the CDF search inline instead of calling `quantile`, so the two
+        // can drift apart on the endpoint guards and the rank target without any bound noticing.
+        let mut rng = SplitMix64::new(404);
+        let mut s = KllSketch::new(64, 3);
+        let mut vals = Vec::new();
+        for _ in 0..500 {
+            let v = 100.0 * rng.next_f64();
+            vals.push(v);
+            s.update(v);
+        }
+        let qs = [0.0, 0.001, 0.05, 0.25, 0.5, 0.75, 0.95, 0.999, 1.0];
+        let batch = s.quantiles(&qs);
+        assert_eq!(batch.len(), qs.len());
+        for (&q, &b) in qs.iter().zip(&batch) {
+            assert_eq!(b, s.quantile(q), "q = {q}");
+        }
+        assert_eq!(batch[0], s.min());
+        assert_eq!(batch[qs.len() - 1], s.max());
+        // Monotone in q, and inside the observed range.
+        for w in batch.windows(2) {
+            assert!(w[0] <= w[1], "not monotone: {batch:?}");
+        }
+        assert!(batch.iter().all(|v| *v >= s.min() && *v <= s.max()));
+    }
+
+    #[test]
+    fn an_empty_sketch_answers_one_nan_per_query() {
+        let s = KllSketch::new(64, 1);
+        let qs = [0.1, 0.5, 0.9];
+        let got = s.quantiles(&qs);
+        assert_eq!(got.len(), qs.len());
+        assert!(got.iter().all(|v| v.is_nan()), "{got:?}");
+    }
+
+    #[test]
+    fn merging_a_taller_sketch_grows_this_one_and_restores_the_size_bound() {
+        // `other` is deep enough to have more compactor levels than `self`, so the merge has to
+        // grow before copying, and overfull enough that one compress pass is not enough.
+        let mut rng = SplitMix64::new(77);
+        let mut small = KllSketch::new(32, 1);
+        for _ in 0..40 {
+            small.update(rng.next_f64());
+        }
+        let mut big = KllSketch::new(32, 2);
+        let mut all: Vec<f64> = Vec::new();
+        for _ in 0..20_000 {
+            let v = rng.next_f64();
+            all.push(v);
+            big.update(v);
+        }
+        assert!(
+            big.compactors.len() > small.compactors.len(),
+            "the fixture is not deeper than the sketch it merges into"
+        );
+        small.merge(&big);
+        assert_eq!(small.count(), 20_040);
+        assert!(
+            small.size < small.max_size,
+            "the size bound was not restored: {} >= {}",
+            small.size,
+            small.max_size
+        );
+        // The union is still summarized: the median cannot have drifted to an endpoint.
+        let med = small.quantile(0.5);
+        assert!((0.3..0.7).contains(&med), "median {med} is not plausible");
+        assert!(small.min() <= med && med <= small.max());
+    }
 }

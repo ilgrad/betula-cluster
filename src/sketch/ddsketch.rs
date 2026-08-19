@@ -262,4 +262,97 @@ mod tests {
         assert_eq!(one.count(), 1);
         assert_eq!(one.quantile(0.5), 0.0);
     }
+
+    /// Values a decade apart: `alpha`-accurate bins around them cannot overlap, so a rank that is
+    /// off by one returns a *different input value* rather than a slightly different estimate.
+    fn decades() -> Vec<f64> {
+        vec![
+            -1000.0, -100.0, -10.0, 0.0, 0.0, 10.0, 100.0, 1000.0, 10000.0,
+        ]
+    }
+
+    #[test]
+    fn every_rank_selects_its_own_order_statistic() {
+        let vals = decades();
+        let mut s = DdSketch::new(0.01, 4096).unwrap();
+        for &v in &vals {
+            s.update(v);
+        }
+        let mut sorted = vals.clone();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let n = vals.len();
+        for (i, &want) in sorted.iter().enumerate().take(n - 1) {
+            // any q with floor(q·(n−1)) == i; the midpoint keeps it off every boundary.
+            let q = (i as f64 + 0.5) / (n - 1) as f64;
+            let got = s.quantile(q);
+            assert!(
+                (got - want).abs() <= 0.01 * want.abs(),
+                "rank {i} (q = {q}): {got} vs {want}"
+            );
+        }
+        assert_eq!(s.quantile(0.0), -1000.0);
+        assert_eq!(s.quantile(1.0), 10000.0);
+        // The batch form is the loop, not a shortcut past it.
+        let qs = [0.0, 0.1, 0.35, 0.5, 0.7, 0.95, 1.0];
+        let batch = s.quantiles(&qs);
+        assert_eq!(batch.len(), qs.len());
+        for (&q, &b) in qs.iter().zip(&batch) {
+            assert_eq!(b, s.quantile(q), "q = {q}");
+        }
+    }
+
+    #[test]
+    fn zeros_and_negatives_keep_their_own_counters() {
+        // Three zeros between two negatives and two positives: the zero counter has to be added
+        // to the running rank, not folded into it, or ranks 2..4 fall through to the positives.
+        let mut s = DdSketch::new(0.01, 4096).unwrap();
+        for v in [-5.0, -50.0, 0.0, 0.0, 0.0, 5.0, 50.0] {
+            s.update(v);
+        }
+        let want = [-50.0, -5.0, 0.0, 0.0, 0.0, 5.0, 50.0];
+        for (i, &w) in want.iter().enumerate().take(6) {
+            let q = (i as f64 + 0.5) / 6.0;
+            let got = s.quantile(q);
+            assert!(
+                (got - w).abs() <= 0.01 * w.abs().max(1e-12),
+                "rank {i}: {got} vs {w}"
+            );
+        }
+        // A negative is bucketed by its magnitude; bucketing it by its signed value would take
+        // the logarithm of a negative number and land every negative in the same bin.
+        assert!(
+            s.quantile(0.05) < s.quantile(0.2),
+            "negatives are not ordered"
+        );
+    }
+
+    #[test]
+    fn merging_reproduces_the_combined_stream_rank_for_rank() {
+        let left = [-1000.0, -10.0, 0.0, 10.0];
+        let right = [-100.0, 0.0, 100.0, 1000.0, 10000.0];
+        let mut a = DdSketch::new(0.01, 4096).unwrap();
+        for &v in &left {
+            a.update(v);
+        }
+        let mut b = DdSketch::new(0.01, 4096).unwrap();
+        for &v in &right {
+            b.update(v);
+        }
+        a.merge(&b).expect("same alpha");
+        assert_eq!(a.count(), (left.len() + right.len()) as u64);
+
+        let mut both: Vec<f64> = left.iter().chain(&right).copied().collect();
+        both.sort_by(|x, y| x.partial_cmp(y).unwrap());
+        let n = both.len();
+        for (i, &want) in both.iter().enumerate().take(n - 1) {
+            let q = (i as f64 + 0.5) / (n - 1) as f64;
+            let got = a.quantile(q);
+            assert!(
+                (got - want).abs() <= 0.01 * want.abs().max(1e-12),
+                "rank {i}: {got} vs {want}"
+            );
+        }
+        assert_eq!(a.min(), -1000.0);
+        assert_eq!(a.max(), 10000.0);
+    }
 }
