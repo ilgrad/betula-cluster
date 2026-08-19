@@ -846,4 +846,146 @@ mod tests {
             prev = ll;
         }
     }
+
+    #[test]
+    fn unit_normalizes_and_leaves_a_zero_vector_alone() {
+        let u = unit(&[3.0f64, 4.0]);
+        assert!(
+            (u[0] - 0.6).abs() < 1e-15 && (u[1] - 0.8).abs() < 1e-15,
+            "{u:?}"
+        );
+        // There is no direction to return, and dividing by the norm would hand back two NaNs.
+        assert_eq!(unit(&[0.0f64, 0.0, 0.0]), vec![0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn argmax_keeps_the_first_of_equal_scores() {
+        assert_eq!(argmax(&[1.0f64, 3.0, 3.0, 2.0]), 1);
+        assert_eq!(argmax(&[5.0f64, 5.0]), 0);
+        assert_eq!(argmax(&[-2.0f64, -1.0]), 1);
+    }
+
+    #[test]
+    fn weighted_pick_is_proportional_and_never_leaves_the_slice() {
+        let mut rng = SplitMix64::new(13);
+        let mut hits = [0usize; 3];
+        for _ in 0..6000 {
+            hits[weighted_pick(&[2.0, 0.0, 4.0], &mut rng)] += 1;
+        }
+        assert_eq!(hits[1], 0, "a zero-probability entry was drawn");
+        let ratio = hits[2] as f64 / hits[0] as f64;
+        assert!((1.7..2.3).contains(&ratio), "0:2 ratio {ratio}, want 2");
+
+        // A degenerate total falls back to a uniform draw, which must still be an index.
+        let mut seen = [false; 4];
+        for _ in 0..400 {
+            let i = weighted_pick(&[0.0; 4], &mut rng);
+            assert!(i < 4, "index {i} out of range");
+            seen[i] = true;
+        }
+        assert!(
+            seen.iter().all(|&s| s),
+            "uniform fallback never reached some index"
+        );
+    }
+
+    /// Angular k-means++ re-derived: the first centre is drawn ∝ weight and normalized, then each
+    /// further one ∝ `weight · (1 − ĉ·μ̂)` against the closest centre so far. It shares
+    /// [`weighted_pick`], so it consumes the same rng stream.
+    fn reference_spherical_pp(
+        means: &[Vec<f64>],
+        n: &[f64],
+        k: usize,
+        rng: &mut SplitMix64,
+    ) -> Vec<Vec<f64>> {
+        let ang = |a: &[f64], c: &[f64]| {
+            (1.0 - a.iter().zip(c).map(|(x, y)| x * y).sum::<f64>()).max(0.0)
+        };
+        let mut centers = vec![unit(&means[weighted_pick(n, rng)])];
+        let mut d2: Vec<f64> = means.iter().map(|x| ang(x, &centers[0])).collect();
+        while centers.len() < k {
+            let probs: Vec<f64> = n.iter().zip(&d2).map(|(&w, &d)| w * d).collect();
+            let c = unit(&means[weighted_pick(&probs, rng)]);
+            for (di, x) in d2.iter_mut().zip(means) {
+                *di = di.min(ang(x, &c));
+            }
+            centers.push(c);
+        }
+        centers
+    }
+
+    #[test]
+    fn spherical_seeding_matches_the_angular_reference_draw_for_draw() {
+        // Only the seeds are observable downstream, and on separated directions every sampler
+        // returns the same ones -- so the fixture is deliberately crowded and the assertion is on
+        // the exact sequence, with the rng streams asserted to end in the same place.
+        let mut rng = SplitMix64::new(55);
+        let (feats, _truth) = unit_blobs(&mut rng, 5, 4, 25, 0.75);
+        let means: Vec<Vec<f64>> = feats.iter().map(|f| unit(f.mean())).collect();
+        let n: Vec<f64> = feats.iter().map(|f| f.weight()).collect();
+        for k in [2usize, 4, 6] {
+            let mut a = SplitMix64::new(808);
+            let mut b = SplitMix64::new(808);
+            assert_eq!(
+                spherical_pp(&means, &n, k, &mut a),
+                reference_spherical_pp(&means, &n, k, &mut b),
+                "k = {k}"
+            );
+            assert_eq!(a.next_u64(), b.next_u64(), "k = {k}: rng streams diverged");
+        }
+    }
+
+    #[test]
+    fn more_restarts_never_return_less_cohesion() {
+        // One rng stream feeds the restarts in order, so `n_init = m + 1` sees exactly the seeds
+        // `n_init = m` saw plus one more: keeping the best can only raise the cohesion.
+        let mut rng = SplitMix64::new(6);
+        let (feats, _truth) = unit_blobs(&mut rng, 6, 5, 30, 0.7);
+        let mut prev = f64::NEG_INFINITY;
+        let mut improvements = 0;
+        for n_init in 1..=10 {
+            let got = spherical_kmeans(&feats, 5, 100, n_init, 4).cohesion;
+            assert!(got >= prev - 1e-9, "n_init = {n_init}: {got} < {prev}");
+            if got > prev + 1e-9 {
+                improvements += 1;
+            }
+            prev = got;
+        }
+        assert!(
+            improvements > 1,
+            "every restart found the same optimum; the fixture cannot see the choice"
+        );
+    }
+
+    #[test]
+    fn movmf_auto_minimises_an_independently_counted_bic() {
+        // `p = k(d + 1) + (k − 1)`: a mean direction and a concentration per component, plus the
+        // free mixing weights. Sweeping the dimension is what makes the count visible -- `k·d` and
+        // the constant terms grow apart, so a penalty that agrees at one width moves at another.
+        for dim in [3usize, 6, 10] {
+            let mut rng = SplitMix64::new(70 + dim as u64);
+            let (feats, _truth) = unit_blobs(&mut rng, dim, 3, 22, 0.35);
+            let ntot: f64 = feats.iter().map(|f| f.weight()).sum();
+            let (mut want_k, mut want_ll, mut best) = (0usize, f64::NAN, f64::INFINITY);
+            for k in 1..=5 {
+                let g: Movmf<f64> = movmf(&feats, k, 100, 9);
+                let p = k * (dim + 1) + (k - 1);
+                let score = -2.0 * g.loglik + p as f64 * ntot.ln();
+                if score < best {
+                    best = score;
+                    want_k = k;
+                    want_ll = g.loglik;
+                }
+            }
+            assert!(
+                (2..5).contains(&want_k),
+                "dim {dim}: the reference chose {want_k}, an endpoint"
+            );
+            let got: Movmf<f64> = movmf_auto(&feats, 1, 5, 100, 9);
+            assert!(
+                (got.loglik - want_ll).abs() <= 1e-9 * want_ll.abs().max(1.0),
+                "dim {dim}: selected k is not the argmin (k = {want_k})"
+            );
+        }
+    }
 }

@@ -1022,4 +1022,131 @@ mod tests {
             assert_eq!(got.means.len(), want, "{name}");
         }
     }
+
+    /// Levinson-Durbin re-derived from the recursion itself: at order `m` the reflection
+    /// coefficient is `k_m = (r_m − Σ_{i<m−1} a_i r_{m−1−i}) / v_{m−1}`, clamped to `|k| ≤ 0.999`,
+    /// the order-`m` predictor is `a_i ← a_i − k·a_{m−2−i}` with `a_{m−1} = k`, and the prediction
+    /// error is `v_m = v_{m−1}(1 − k²)`.
+    fn reference_levinson(r: &[f64], w: usize) -> (Vec<Vec<f64>>, Vec<f64>) {
+        let (tiny, lim) = (1e-12, 0.999);
+        let mut phi: Vec<Vec<f64>> = vec![Vec::new()];
+        let mut v = vec![0.0; w + 1];
+        v[0] = r[0].max(tiny);
+        let mut a = vec![0.0; w];
+        for m in 1..=w {
+            let acc = r[m] - (0..m - 1).map(|i| a[i] * r[m - 1 - i]).sum::<f64>();
+            let k = (acc / v[m - 1]).clamp(-lim, lim);
+            let old = a.clone();
+            a[m - 1] = k;
+            for i in 0..m - 1 {
+                a[i] = old[i] - k * old[m - 2 - i];
+            }
+            v[m] = (v[m - 1] * (1.0 - k * k)).max(tiny);
+            phi.push(a[..m].to_vec());
+        }
+        (phi, v)
+    }
+
+    #[test]
+    fn levinson_matches_the_recursion_including_both_clamps() {
+        // The first sequence is an ordinary decaying autocovariance; the other two are built to
+        // drive the reflection coefficient past +0.999 and past -0.999 on the first step, which is
+        // the only place the stability clamp and its sign are visible.
+        let cases: [(&[f64], &str); 4] = [
+            (&[4.0, 2.4, 1.1, 0.3, -0.2, -0.4], "decaying"),
+            (&[1.0, 0.9999, 0.9, 0.5, 0.1, 0.0], "positive clamp"),
+            (&[1.0, -0.99999, 0.9, -0.5, 0.1, 0.0], "negative clamp"),
+            (&[2.0, 0.0, -1.6, 0.0, 0.9, 0.0], "sign alternating"),
+        ];
+        for (r, name) in cases {
+            for w in [1usize, 3, 5] {
+                let (phi, v) = levinson_full(r, w);
+                let (rphi, rv) = reference_levinson(r, w);
+                assert_eq!(phi.len(), w + 1, "{name}: order count");
+                for (m, (a, b)) in phi.iter().zip(&rphi).enumerate() {
+                    assert_eq!(a.len(), m, "{name}: phi[{m}] length");
+                    for (i, (&x, &y)) in a.iter().zip(b).enumerate() {
+                        assert!(
+                            (x - y).abs() <= 1e-12 * x.abs().max(y.abs()).max(1.0),
+                            "{name} w {w}: phi[{m}][{i}] = {x} vs {y}"
+                        );
+                    }
+                }
+                for (m, (&x, &y)) in v.iter().zip(&rv).enumerate() {
+                    assert!(
+                        (x - y).abs() <= 1e-12 * x.abs().max(y.abs()).max(1.0),
+                        "{name} w {w}: v[{m}] = {x} vs {y}"
+                    );
+                    assert!(x > 0.0, "{name}: v[{m}] = {x} is not positive");
+                }
+            }
+        }
+        // The clamp really does bind on those two, so the test is not passing vacuously.
+        let (_, v_pos) = levinson_full(&[1.0, 0.9999, 0.9, 0.5, 0.1, 0.0], 1);
+        assert!(
+            (v_pos[1] - (1.0 - 0.999f64 * 0.999)).abs() < 1e-12,
+            "the positive clamp did not bind: {v_pos:?}"
+        );
+    }
+
+    /// Rows of an echo process `x_t = 0.75·x_{t−lag} + ε`, whose true predictor order *is* `lag`:
+    /// sweeping the lag walks the order the BIC should select through the whole grid.
+    fn echo_component(dim: usize, lag: usize, rows: usize, seed: u64) -> Vec<Spherical<f64>> {
+        let mut rng = SplitMix64::new(seed);
+        (0..rows)
+            .map(|_| {
+                let mut x = vec![0.0; dim];
+                for t in 0..dim {
+                    let past = if t >= lag { 0.75 * x[t - lag] } else { 0.0 };
+                    x[t] = past + 0.66 * rng.gauss();
+                }
+                let mut f = Spherical::new(dim);
+                f.push(&x, 1.0);
+                f
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_ar_order_is_the_argmin_of_an_independently_scored_bic() {
+        // `fit_component` returns only the chosen predictor, never the score behind it, so the
+        // order is re-derived here: `−2·Σ_i w_i · ln p(x_i | AR(w)) + w · ln(Σw · d)`. Sweeping the
+        // autocorrelation walks the selected order, and the whole sequence is compared.
+        let dim = 40;
+        let mut got = Vec::new();
+        let mut want = Vec::new();
+        for lag in 1..9usize {
+            let feats = echo_component(dim, lag, 60, 400 + lag as u64);
+            let wt = vec![1.0f64; feats.len()];
+            let mu: f64 = feats.iter().flat_map(|f| f.mean().to_vec()).sum::<f64>()
+                / (feats.len() * dim) as f64;
+            let w_hi = TOEPLITZ_W_MAX.min(dim - 1).max(1);
+            let r = component_autocov(&feats, &wt, mu, dim, w_hi);
+            let (phi_all, v_all) = levinson_full(&r, w_hi);
+            let n_eff = (wt.iter().sum::<f64>() * dim as f64).max(1.0);
+
+            let mut best = (f64::INFINITY, 1usize);
+            for w in 1..=w_hi {
+                let ll: f64 = feats
+                    .iter()
+                    .zip(&wt)
+                    .map(|(f, &wi)| {
+                        let delta: Vec<f64> = f.mean().iter().map(|&t| t - mu).collect();
+                        wi * ar_loglik_exact(&delta, &phi_all[..=w], &v_all[..=w], w)
+                    })
+                    .sum();
+                let bic = -2.0 * ll + w as f64 * n_eff.ln();
+                if bic < best.0 {
+                    best = (bic, w);
+                }
+            }
+            want.push(best.1);
+            got.push(fit_component(&feats, &wt, mu, dim, TOEPLITZ_W_MAX).0.len() - 1);
+        }
+        assert!(
+            want.windows(2).any(|w| w[0] != w[1]),
+            "the sweep never changes the selected order: {want:?}"
+        );
+        assert_eq!(got, want, "the order-selection boundary moved");
+    }
 }

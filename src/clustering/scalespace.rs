@@ -450,4 +450,113 @@ mod tests {
         assert!((zero.bandwidth - fifteen.bandwidth).abs() < 1e-12);
         assert_eq!(zero.labels, fifteen.labels);
     }
+
+    /// The prominence merge re-derived: converged positions closer than `0.1h` are the same raw
+    /// mode (first-seen order), and two raw modes within `4h` join when the lowest density on the
+    /// eleven interior points of the segment between them reaches `VALLEY_RATIO` of the smaller
+    /// peak, under `ρ(x) = Σ_j n_j exp(−‖x − μ_j‖² / 2h²)`.
+    fn reference_prominence(
+        pts: &[Vec<f64>],
+        mu: &[Vec<f64>],
+        n: &[f64],
+        h: f64,
+    ) -> (Vec<usize>, usize) {
+        let dim = mu[0].len();
+        let d2 = |a: &[f64], b: &[f64]| -> f64 { (0..dim).map(|k| (a[k] - b[k]).powi(2)).sum() };
+        let rho = |x: &[f64]| -> f64 {
+            mu.iter()
+                .zip(n)
+                .map(|(m, &nj)| nj * (-d2(x, m) / (2.0 * h * h)).exp())
+                .sum()
+        };
+        let tol2 = (0.1 * h) * (0.1 * h);
+        let mut reps: Vec<Vec<f64>> = Vec::new();
+        let raw: Vec<usize> = pts
+            .iter()
+            .map(|p| match reps.iter().position(|r| d2(p, r) <= tol2) {
+                Some(c) => c,
+                None => {
+                    reps.push(p.clone());
+                    reps.len() - 1
+                }
+            })
+            .collect();
+        let m = reps.len();
+        let peak: Vec<f64> = reps.iter().map(|r| rho(r)).collect();
+
+        let mut parent: Vec<usize> = (0..m).collect();
+        let root = |p: &mut Vec<usize>, x: usize| -> usize {
+            let mut r = x;
+            while p[r] != r {
+                r = p[r];
+            }
+            r
+        };
+        let cutoff2 = (4.0 * h) * (4.0 * h);
+        for a in 0..m {
+            for b in (a + 1)..m {
+                if d2(&reps[a], &reps[b]) > cutoff2 {
+                    continue;
+                }
+                let mut valley = f64::INFINITY;
+                for t in 1..12 {
+                    let f = t as f64 / 12.0;
+                    let seg: Vec<f64> = (0..dim)
+                        .map(|k| reps[a][k] * (1.0 - f) + reps[b][k] * f)
+                        .collect();
+                    valley = valley.min(rho(&seg));
+                }
+                if valley >= VALLEY_RATIO * peak[a].min(peak[b]) {
+                    let (ra, rb) = (root(&mut parent, a), root(&mut parent, b));
+                    if ra != rb {
+                        parent[ra] = rb;
+                    }
+                }
+            }
+        }
+        let mut comp = vec![usize::MAX; m];
+        let mut n_modes = 0;
+        for a in 0..m {
+            let r = root(&mut parent, a);
+            if comp[r] == usize::MAX {
+                comp[r] = n_modes;
+                n_modes += 1;
+            }
+        }
+        let labels = raw
+            .iter()
+            .map(|&r| comp[root(&mut parent, r)])
+            .collect::<Vec<usize>>();
+        (labels, n_modes)
+    }
+
+    #[test]
+    fn the_prominence_merge_matches_an_independent_reference_across_the_sweep() {
+        // The density behind the merge is never returned, and the mode count on a well-separated
+        // fixture survives almost any corruption of it. Sweeping the bandwidth walks the merge
+        // through every count from "one mode per blob" to "everything is one", and the whole
+        // sequence of counts -- not just its endpoints -- is compared.
+        let mut rng = SplitMix64::new(21);
+        let centers = [[0.0, 0.0], [2.2, 0.3], [1.0, 2.4], [6.5, 5.0]];
+        let (pts, _truth) = blobs(&mut rng, 45, &centers, 0.45);
+        let (micros, _assign) = grid_micros(&pts, 0.4);
+        let mu: Vec<Vec<f64>> = micros.iter().map(|f| f.mean().to_vec()).collect();
+        let n: Vec<f64> = micros.iter().map(|f| f.weight()).collect();
+
+        let mut counts = Vec::new();
+        for step in 0..14 {
+            let h = 0.18 * 1.28f64.powi(step);
+            let (labels, modes) = mean_shift(&mu, &n, h, 200);
+            let ends = reference_shift_endpoints(&mu, &n, h, 200);
+            let (rlabels, rmodes) = reference_prominence(&ends, &mu, &n, h);
+            assert_eq!(modes, rmodes, "h = {h}: mode count");
+            assert_eq!(labels, rlabels, "h = {h}: labelling");
+            counts.push(modes);
+        }
+        assert!(
+            counts.first() > counts.last()
+                && counts.windows(2).filter(|w| w[0] != w[1]).count() > 2,
+            "the sweep does not walk the merge: {counts:?}"
+        );
+    }
 }
