@@ -961,6 +961,153 @@ mod tests {
             SecondMoment::Dense(_) => panic!("FD sketch must yield a low-rank second moment"),
         }
     }
+
+    /// `FdSketch::second_moment` hands the GMM the low-rank factors `b_r/√n` instead of a dense
+    /// `d×d` block, so `Σ_r (b_r/√n)(b_r/√n)ᵀ` must reproduce `cov_dense` exactly. Nothing asserted
+    /// that identity, which left the `1/√n` scaling and the merge's cross-term free to drift.
+    #[test]
+    fn the_low_rank_factors_reconstruct_the_dense_covariance() {
+        let d = 4;
+        let mut fd: FdSketch<f64> = FdSketch::with_ell(d, d);
+        for p in [
+            [1.0, 0.0, 2.0, -1.0],
+            [0.0, 3.0, 1.0, 0.5],
+            [2.0, 1.0, 0.0, 1.5],
+            [-1.0, 2.0, 3.0, 0.0],
+        ] {
+            fd.push(&p, 1.0);
+        }
+        let dense = fd.cov_dense();
+        let SecondMoment::LowRank(rows) = fd.second_moment() else {
+            panic!("FdSketch must expose low-rank factors");
+        };
+        for a in 0..d {
+            for b in 0..d {
+                let got: f64 = rows.iter().map(|r| r[a] * r[b]).sum();
+                assert!(
+                    (got - dense[a][b]).abs() < 1e-9,
+                    "Σ_r r_a r_b at ({a},{b}) = {got}, cov_dense = {}",
+                    dense[a][b]
+                );
+            }
+        }
+
+        // An empty sketch has no covariance and therefore no factors.
+        let e: FdSketch<f64> = FdSketch::with_ell(d, d);
+        assert!(matches!(e.second_moment(), SecondMoment::LowRank(r) if r.is_empty()));
+        for row in e.cov_dense() {
+            assert!(
+                row.iter().all(|&x| x == 0.0),
+                "empty sketch has a covariance"
+            );
+        }
+    }
+
+    #[test]
+    fn merging_sketches_matches_folding_the_same_points_into_one() {
+        // The Chan parallel update is exact in weight and mean, and the cross-term row
+        // √(n₁n₂/n)·(μ₂−μ₁) is what keeps the *scatter* exact too. `ℓ` is chosen larger than the
+        // number of rows either side ever holds (merge inserts `other.rows` plus one correction),
+        // so no Frequent-Directions shrink fires and the comparison can be exact rather than
+        // approximate.
+        let d = 8;
+        let left = [
+            [1.0, 0.0, 2.0, -1.0, 0.5, 1.0, 0.0, 3.0],
+            [0.0, 1.0, 1.0, 0.0, 2.0, -1.0, 1.0, 0.0],
+        ];
+        let right = [
+            [4.0, 2.0, 0.0, 1.0, 0.0, 3.0, 2.0, 1.0],
+            [3.0, 5.0, 1.0, 2.0, 1.0, 0.0, 0.5, 2.0],
+            [2.0, 2.0, 2.0, 0.0, 3.0, 1.0, 1.5, 0.0],
+        ];
+
+        let mut a: FdSketch<f64> = FdSketch::with_ell(d, d);
+        for p in &left {
+            a.push(p, 1.0);
+        }
+        let mut b: FdSketch<f64> = FdSketch::with_ell(d, d);
+        for p in &right {
+            b.push(p, 1.0);
+        }
+        a.merge(&b);
+
+        let mut all: FdSketch<f64> = FdSketch::with_ell(d, d);
+        for p in left.iter().chain(&right) {
+            all.push(p, 1.0);
+        }
+
+        assert!((a.weight() - all.weight()).abs() < 1e-12, "weight");
+        for i in 0..d {
+            assert!(
+                (a.mean()[i] - all.mean()[i]).abs() < 1e-12,
+                "mean {i}: {} vs {}",
+                a.mean()[i],
+                all.mean()[i]
+            );
+        }
+        let (ca, cb) = (a.cov_dense(), all.cov_dense());
+        for i in 0..d {
+            for j in 0..d {
+                assert!(
+                    (ca[i][j] - cb[i][j]).abs() < 1e-9,
+                    "covariance ({i},{j}): {} vs {}",
+                    ca[i][j],
+                    cb[i][j]
+                );
+            }
+        }
+
+        // Merging an empty sketch is a no-op in both directions.
+        let empty: FdSketch<f64> = FdSketch::with_ell(d, d);
+        let before = a.mean().to_vec();
+        a.merge(&empty);
+        assert!(
+            (a.weight() - all.weight()).abs() < 1e-12,
+            "empty merge changed the weight"
+        );
+        assert_eq!(a.mean().to_vec(), before);
+        let mut fresh: FdSketch<f64> = FdSketch::with_ell(d, d);
+        fresh.merge(&all);
+        assert!((fresh.weight() - all.weight()).abs() < 1e-12);
+        for i in 0..d {
+            assert!((fresh.mean()[i] - all.mean()[i]).abs() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn mahalanobis_uses_the_signed_deviation_from_the_mean() {
+        // Away from the origin, so `x − μ` and `x + μ` differ. Two points at 3 and 5 in dim 0 and
+        // at 10 and 10 in dim 1 give μ = (4, 10) and a singular covariance, so a ridge point is
+        // needed: add a third point to make Σ positive definite.
+        let mut f: Full<f64> = Full::new(2);
+        f.push(&[3.0, 9.0], 1.0);
+        f.push(&[5.0, 11.0], 1.0);
+        f.push(&[4.0, 13.0], 1.0);
+        let at_mean = f
+            .mahalanobis_sq(f.mean().to_vec().as_slice())
+            .expect("PD covariance");
+        assert!(
+            at_mean.abs() < 1e-12,
+            "the mean is not at distance 0: {at_mean}"
+        );
+
+        let mu = f.mean().to_vec();
+        let probe = [mu[0] + 1.0, mu[1] + 1.0];
+        let mirrored = [mu[0] - 1.0, mu[1] - 1.0];
+        let d1 = f.mahalanobis_sq(&probe).unwrap();
+        let d2 = f.mahalanobis_sq(&mirrored).unwrap();
+        assert!(d1 > 0.0, "a point off the mean scored {d1}");
+        assert!(
+            (d1 - d2).abs() < 1e-9,
+            "the metric is not symmetric about the mean: {d1} vs {d2}"
+        );
+        // Doubling the deviation quadruples the squared distance.
+        let far = [mu[0] + 2.0, mu[1] + 2.0];
+        assert!(
+            (f.mahalanobis_sq(&far).unwrap() - 4.0 * d1).abs() < 1e-9,
+            "not quadratic in the deviation"
+        );
+    }
 }
 
 #[cfg(test)]

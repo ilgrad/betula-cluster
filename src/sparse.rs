@@ -363,4 +363,115 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn validate_csr_names_the_exact_malformation() {
+        // Well-formed, including an *empty* row: `indptr` may repeat, so the non-decreasing test
+        // must accept equality. Rejecting it would refuse every matrix with an all-zero row.
+        assert!(validate_csr(&[1.0, 2.0], &[0, 2], &[0, 0, 2], 3).is_ok());
+        assert!(
+            validate_csr(&[], &[], &[0], 3).is_ok(),
+            "an empty matrix is valid"
+        );
+
+        /// `(data, indices, indptr, n_features, expected error fragment)`
+        type Case = (
+            &'static [f64],
+            &'static [i64],
+            &'static [i64],
+            usize,
+            &'static str,
+        );
+        let cases: [Case; 6] = [
+            (&[1.0], &[0], &[0, 1], 0, "n_features"),
+            (&[1.0, 2.0], &[0], &[0, 2], 3, "equal length"),
+            (&[1.0, 2.0], &[0, 1], &[1, 2], 3, "start at 0"),
+            (&[1.0, 2.0], &[0, 1], &[0, 1], 3, "end at nnz"),
+            (&[1.0, 2.0], &[0, 1], &[0, 2, 1, 2], 3, "non-decreasing"),
+            (&[1.0, f64::NAN], &[0, 1], &[0, 2], 3, "NaN"),
+        ];
+        for (data, indices, indptr, n_features, needle) in cases {
+            let err = validate_csr(data, indices, indptr, n_features)
+                .expect_err(&format!("accepted a matrix that should fail on `{needle}`"));
+            assert!(err.contains(needle), "wrong error for `{needle}`: {err}");
+        }
+
+        // Column bounds are checked on both sides: negative and past the end.
+        assert!(
+            validate_csr(&[1.0], &[-1], &[0, 1], 3).is_err(),
+            "negative column accepted"
+        );
+        assert!(
+            validate_csr(&[1.0], &[3], &[0, 1], 3).is_err(),
+            "out-of-range column accepted"
+        );
+        assert!(
+            validate_csr(&[1.0], &[2], &[0, 1], 3).is_ok(),
+            "the last column was rejected"
+        );
+
+        // An empty `indptr` must not be read as a valid trailer.
+        assert!(
+            validate_csr(&[1.0], &[0], &[], 3).is_err(),
+            "empty indptr accepted"
+        );
+    }
+
+    #[test]
+    fn nearest_sparse_expands_the_squared_distance_and_keeps_the_first_tie() {
+        // ‖x − μ‖² = ‖x‖² − 2⟨x, μ⟩ + ‖μ‖². Row x = (1, 0, 2) against μ0 = (1, 0, 0) and
+        // μ1 = (0, 0, 2): d0 = 5 − 2·1 + 1 = 4, d1 = 5 − 2·4 + 4 = 1, so μ1 wins.
+        let means = vec![vec![1.0, 0.0, 0.0], vec![0.0, 0.0, 2.0]];
+        let musq = vec![1.0, 4.0];
+        let (idx, val) = (vec![0usize, 2], vec![1.0, 2.0]);
+        assert_eq!(nearest_sparse(&means, &musq, &idx, &val, 5.0), 1);
+
+        // Exact tie: μ0 = (1,0,2) and μ1 = (1,0,2) are both at distance 0; the first must win.
+        let means = vec![vec![1.0, 0.0, 2.0], vec![1.0, 0.0, 2.0]];
+        let musq = vec![5.0, 5.0];
+        assert_eq!(nearest_sparse(&means, &musq, &idx, &val, 5.0), 0);
+
+        // A single candidate is returned whatever the distance.
+        let means = vec![vec![9.0, 9.0, 9.0]];
+        assert_eq!(nearest_sparse(&means, &[243.0], &idx, &val, 5.0), 0);
+    }
+
+    #[test]
+    fn the_sparse_accumulator_distance_uses_the_running_centroid() {
+        // Two rows folded in: ΣX = (3, 0, 4), n = 2, so μ = (1.5, 0, 2) and ‖ΣX‖² = 25.
+        // A third row x = (1, 0, 0) is at ‖x‖² − 2⟨ΣX, x⟩/n + ‖ΣX‖²/n² = 1 − 3 + 6.25 = 4.25,
+        // which is exactly ‖x − μ‖² = 0.25 + 4.
+        let mut acc = SparseSpherical::new(3);
+        acc.push(&[0, 2], &[1.0, 2.0], 5.0);
+        acc.push(&[0, 2], &[2.0, 2.0], 8.0);
+        let d = acc.dist2(&[0], &[1.0], 1.0);
+        assert!((d - 4.25).abs() < 1e-12, "dist2 = {d}");
+
+        // An empty accumulator has no centroid, so the distance is the row's own norm.
+        let empty = SparseSpherical::new(3);
+        assert!((empty.dist2(&[0], &[1.0], 1.0) - 1.0).abs() < 1e-12);
+
+        // The scatter matches the dense Welford value: two points 0.5 either side of the mean in
+        // dim 0 give ssd = 0.5.
+        let sph = acc.into_spherical();
+        assert!((sph.weight() - 2.0).abs() < 1e-12);
+        assert!((sph.mean()[0] - 1.5).abs() < 1e-12);
+        assert!((sph.ssd() - 0.5).abs() < 1e-9, "ssd = {}", sph.ssd());
+    }
+
+    #[test]
+    fn summarize_keeps_the_first_of_two_equally_near_leaders() {
+        // Threshold 0 forces every distinct row into its own leader; the two seeds are equidistant
+        // from the probe row, so only the scan's tie rule decides which absorbs it.
+        let data = [1.0, 1.0, 1.0];
+        let indices = [0i64, 2, 1];
+        let indptr = [0i64, 1, 2, 3];
+        let leaders = summarize_sparse(&data, &indices, &indptr, 3, 0.0, 8);
+        assert_eq!(leaders.len(), 3, "distinct rows were merged at threshold 0");
+
+        // With the leader cap reached, the nearest leader absorbs regardless of the threshold.
+        let capped = summarize_sparse(&data, &indices, &indptr, 3, 0.0, 1);
+        assert_eq!(capped.len(), 1, "max_leaders was not enforced");
+        assert!((capped[0].weight() - 3.0).abs() < 1e-12);
+    }
 }

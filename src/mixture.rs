@@ -487,4 +487,53 @@ mod tests {
         let want = ln_gauss_diag(&x, &[0.5, 0.5, 0.5], &[2.0, 2.0, 2.0]);
         assert!((got[0] - want).abs() < 1e-12, "{} vs {want}", got[0]);
     }
+
+    /// The `Toeplitz` arm of [`StationaryCov`] had no direct test: every existing case builds an
+    /// `Ar` covariance, so the general-Toeplitz log-density, its innovation variance and its empty
+    /// coefficient list were all reachable only through a head that never distinguished them.
+    #[test]
+    fn the_toeplitz_arm_scores_a_gaussian_and_reports_no_ar_coefficients() {
+        // L = [[2, 0], [1, 3]] ⇒ Σ = L Lᵀ = [[4, 2], [2, 10]], |Σ| = 36, ln|Σ| = ln 36.
+        let chol = vec![vec![2.0, 0.0], vec![1.0, 3.0]];
+        let logdet = 36.0_f64.ln();
+        let cov: StationaryCov<f64> = StationaryCov::Toeplitz {
+            chol: chol.clone(),
+            logdet,
+        };
+
+        // Σ⁻¹ = (1/36)·[[10, −2], [−2, 4]]; for δ = (1, 1): δᵀΣ⁻¹δ = (10 − 2 − 2 + 4)/36 = 10/36.
+        let delta = [1.0, 1.0];
+        let quad = 10.0 / 36.0;
+        let want = -0.5 * (2.0 * std::f64::consts::TAU.ln() + logdet + quad);
+        let got = cov.loglik(&delta);
+        assert!((got - want).abs() < 1e-12, "loglik = {got}, want {want}");
+
+        // The innovation variance of the general model is Σ₀₀ = L₀₀², not L₀₀ and not 2·L₀₀.
+        assert!((cov.innov() - 4.0).abs() < 1e-12, "innov = {}", cov.innov());
+        assert!(
+            cov.ar_coeffs().is_empty(),
+            "the Toeplitz arm reported AR coefficients: {:?}",
+            cov.ar_coeffs()
+        );
+
+        // The zero deviation is the density's mode, so no other δ may score higher.
+        let mode = cov.loglik(&[0.0, 0.0]);
+        assert!(mode > got, "the mode did not dominate: {mode} vs {got}");
+        assert!((mode - -0.5 * (2.0 * std::f64::consts::TAU.ln() + logdet)).abs() < 1e-12);
+    }
+
+    #[test]
+    fn the_ar_arm_reports_its_highest_order_predictor_and_last_innovation() {
+        // `phi[m]` is the order-`m` predictor; reporting must take the highest order, not the first.
+        let cov: StationaryCov<f64> = StationaryCov::Ar {
+            phi: vec![vec![], vec![0.5], vec![0.65, -0.3]],
+            v: vec![2.0, 1.5, 1.365],
+        };
+        assert_eq!(cov.ar_coeffs(), vec![0.65, -0.3]);
+        assert!(
+            (cov.innov() - 1.365).abs() < 1e-12,
+            "innov = {}",
+            cov.innov()
+        );
+    }
 }

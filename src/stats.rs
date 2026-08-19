@@ -227,4 +227,64 @@ mod tests {
         // x < 0.5 hits the reflection branch; Γ(0.25) ≈ 3.6256099082.
         assert!(close(ln_gamma(0.25).exp(), 3.625_609_908_2, 1e-6));
     }
+
+    /// `inv_reg_lower_gamma` is a Halley iteration, and Halley is self-correcting: the existing χ²
+    /// table test passes to 1e-3 even when the initial guess or the step denominator is corrupted,
+    /// because twelve refinements still land close. Inverting the CDF and reading it back catches
+    /// exactly that — a damaged iteration converges more slowly and leaves a bigger residual long
+    /// before it moves the third decimal. Measured worst case on the unmutated code: 1.6e-13.
+    #[test]
+    fn the_gamma_quantile_inverts_its_own_cdf_to_full_precision() {
+        for &a in &[0.2f64, 0.5, 1.0, 1.5, 3.0, 12.5, 60.0, 200.0] {
+            for &p in &[
+                1e-6f64,
+                1e-3,
+                0.05,
+                0.25,
+                0.5,
+                0.75,
+                0.95,
+                0.999,
+                1.0 - 1e-6,
+            ] {
+                let x = inv_reg_lower_gamma(a, p);
+                assert!(x > 0.0 && x.is_finite(), "a={a} p={p}: quantile = {x}");
+                let back = reg_lower_gamma(a, x);
+                assert!(
+                    (back - p).abs() <= 1e-11 * p,
+                    "a={a} p={p}: P(a, {x}) = {back}, relative error {:e}",
+                    (back - p).abs() / p
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_gamma_quantile_is_strictly_increasing_in_p() {
+        for &a in &[0.4f64, 1.0, 7.0, 45.0] {
+            let mut prev = 0.0;
+            for i in 1..200 {
+                let p = i as f64 / 200.0;
+                let x = inv_reg_lower_gamma(a, p);
+                assert!(x > prev, "a={a}: quantile fell at p={p} ({prev} -> {x})");
+                prev = x;
+            }
+        }
+    }
+
+    #[test]
+    fn chi2_quantile_is_twice_the_gamma_quantile_at_half_the_degrees() {
+        for d in [1usize, 2, 3, 7, 30] {
+            for p in [0.05, 0.5, 0.95] {
+                let got = chi2_quantile(d, p);
+                let want = 2.0 * inv_reg_lower_gamma(d as f64 / 2.0, p);
+                assert!(close(got, want, 1e-12), "d={d} p={p}: {got} vs {want}");
+                // The χ²_d CDF read back at the quantile must return the probability asked for.
+                assert!(
+                    close(reg_lower_gamma(d as f64 / 2.0, got / 2.0), p, 1e-11),
+                    "d={d} p={p}: CDF round-trip"
+                );
+            }
+        }
+    }
 }
