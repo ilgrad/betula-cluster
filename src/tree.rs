@@ -1197,6 +1197,261 @@ mod tests {
         assert!(t.threshold() >= 0.05);
         verify(&t, pts.len());
     }
+    /// Build a one-leaf tree holding exactly the given points as separate entries, so the private
+    /// descent/absorb/clip paths can be driven with known geometry.
+    fn tree_with_entries(
+        pts: &[&[f64]],
+        threshold: f64,
+    ) -> CFTree<f64, Spherical<f64>, CentroidEuclidean, CentroidEuclidean> {
+        let mut t = CFTree::new(
+            pts[0].len(),
+            8,
+            16,
+            threshold,
+            10_000,
+            CentroidEuclidean,
+            CentroidEuclidean,
+        );
+        for p in pts {
+            t.insert(p);
+        }
+        t
+    }
+
+    #[test]
+    fn clip_point_clamps_each_coordinate_to_k_sigma_and_passes_through_flat_dimensions() {
+        // One entry from two points: mean [3, 5], per-dimension variance 1 in x (spherical pools
+        // both dims: ssd = (1² + 0²)·2/2 = 2 over 2 dims ⇒ variance 0.5 each), so sd = √0.5.
+        let t = tree_with_entries(&[&[2.0, 5.0], &[4.0, 5.0]], 1e9);
+        let sd = 0.5_f64.sqrt();
+        let clipped = t.clip_point(&[100.0, -100.0], 0, 2.0);
+        assert!(
+            close(clipped[0], 3.0 + 2.0 * sd),
+            "upper clamp: {clipped:?}"
+        );
+        assert!(
+            close(clipped[1], 5.0 - 2.0 * sd),
+            "lower clamp: {clipped:?}"
+        );
+        // Inside the band the point is untouched.
+        let inside = t.clip_point(&[3.1, 5.1], 0, 2.0);
+        assert!(close(inside[0], 3.1) && close(inside[1], 5.1), "{inside:?}");
+
+        // A zero-variance entry has no band at all and must pass the coordinate through unchanged
+        // rather than collapsing it onto the mean.
+        let flat = tree_with_entries(&[&[7.0, 7.0]], 1e9);
+        let out = flat.clip_point(&[99.0, -99.0], 0, 2.0);
+        assert!(close(out[0], 99.0) && close(out[1], -99.0), "{out:?}");
+    }
+
+    #[test]
+    fn descent_and_absorption_pick_the_nearest_candidate_not_the_first() {
+        // Three well-separated entries in one leaf, ordered so that the nearest to the probe is the
+        // *last* one inserted: a scan that returns index 0, or one that never updates its best, gets
+        // a different entry.
+        let mut t = tree_with_entries(&[&[0.0], &[50.0], &[100.0]], 1e-9);
+        assert_eq!(t.nodes[t.root].children.len(), 3, "expected three entries");
+        assert_eq!(t.descend(&[99.0]), t.root, "single leaf tree");
+
+        // Absorption below threshold must land on entry 2, not entry 0.
+        let before: Vec<f64> = (0..3).map(|e| t.entries[e].weight()).collect();
+        t.threshold = 10.0;
+        t.insert(&[99.0]);
+        let after: Vec<f64> = (0..3).map(|e| t.entries[e].weight()).collect();
+        assert_eq!(
+            (
+                after[0] - before[0],
+                after[1] - before[1],
+                after[2] - before[2]
+            ),
+            (0.0, 0.0, 1.0),
+            "absorbed into the wrong entry: {before:?} -> {after:?}"
+        );
+
+        // With many entries the tree grows internal nodes; the descent must still reach the leaf
+        // whose subtree is nearest, so a far probe lands beside the far cluster.
+        let mut wide = CFTree::<f64, Spherical<f64>, _, _>::new(
+            1,
+            2,
+            2,
+            1e-9,
+            10_000,
+            CentroidEuclidean,
+            CentroidEuclidean,
+        );
+        for i in 0..16 {
+            wide.insert(&[i as f64 * 10.0]);
+        }
+        // Descent must agree with an independent walk that takes the nearest child at every level,
+        // and must reach more than one leaf across the probes -- a `descend` that always returns the
+        // same node satisfies "the leaf is non-empty" without doing any work.
+        fn reference_descend(
+            t: &CFTree<f64, Spherical<f64>, CentroidEuclidean, CentroidEuclidean>,
+            x: &[f64],
+        ) -> usize {
+            let mut cur = t.root;
+            while !t.nodes[cur].leaf {
+                cur = *t.nodes[cur]
+                    .children
+                    .iter()
+                    .min_by(|&&a, &&b| {
+                        t.dist
+                            .point(&t.nodes[a].cf, x)
+                            .total_cmp(&t.dist.point(&t.nodes[b].cf, x))
+                    })
+                    .expect("internal node without children");
+            }
+            cur
+        }
+        let mut reached = std::collections::BTreeSet::new();
+        for probe in [-5.0, 21.0, 73.0, 118.0, 151.0] {
+            let got = wide.descend(&[probe]);
+            assert_eq!(got, reference_descend(&wide, &[probe]), "probe {probe}");
+            assert!(wide.nodes[got].leaf, "descend stopped at an internal node");
+            reached.insert(got);
+        }
+        assert!(reached.len() > 1, "every probe landed in the same leaf");
+
+        let leaf = wide.descend(&[151.0]);
+        assert!(!wide.nodes[leaf].children.is_empty());
+        // Exact tie: two children at 0 and 8, probed at 4. Squared distances are 16 either way, so
+        // the scan must keep the first candidate rather than sliding onto the last equal one.
+        let mut tied = CFTree::<f64, Spherical<f64>, _, _>::new(
+            1,
+            2,
+            1,
+            1e-9,
+            10_000,
+            CentroidEuclidean,
+            CentroidEuclidean,
+        );
+        tied.insert(&[0.0]);
+        tied.insert(&[8.0]);
+        let kids = tied.nodes[tied.root].children.clone();
+        assert_eq!(kids.len(), 2, "expected a split into two children");
+        // Neither group may come out of a split empty: an empty leaf is invisible to `verify`,
+        // which skips childless nodes, and the tree silently loses a branch of its fan-out.
+        for &c in &kids {
+            assert!(
+                !tied.nodes[c].children.is_empty(),
+                "split left node {c} empty: {:?}",
+                kids
+            );
+        }
+        assert_eq!(
+            tied.nearest_child(tied.root, &[4.0]),
+            kids[0],
+            "an exact tie must keep the first child"
+        );
+
+        let near = wide.nearest_child(wide.root, &[151.0]);
+        let far = wide.nearest_child(wide.root, &[-5.0]);
+        assert_ne!(near, far, "every probe descends into the same child");
+    }
+
+    /// Return each leaf's entry set, sorted, so a split's partition can be asserted directly.
+    fn leaf_groups(
+        t: &CFTree<f64, Spherical<f64>, CentroidEuclidean, CentroidEuclidean>,
+    ) -> Vec<Vec<usize>> {
+        let mut g: Vec<Vec<usize>> = (0..t.nodes.len())
+            .filter(|&i| t.nodes[i].leaf && !t.nodes[i].children.is_empty())
+            .map(|i| {
+                let mut c = t.nodes[i].children.clone();
+                c.sort_unstable();
+                c
+            })
+            .collect();
+        g.sort();
+        g
+    }
+
+    #[test]
+    fn a_child_equidistant_from_both_seeds_joins_the_smaller_group() {
+        // Entries at 0, 10 and 5 with a leaf capacity of 2. The seeds are the farthest pair (0, 10);
+        // the midpoint at 5 is exactly 25 from each, so only the size rule can place it. Both groups
+        // hold one entry when it is weighed, so it must join the first.
+        let mut t = CFTree::<f64, Spherical<f64>, _, _>::new(
+            1,
+            8,
+            2,
+            1e-9,
+            10_000,
+            CentroidEuclidean,
+            CentroidEuclidean,
+        );
+        for x in [0.0, 10.0, 5.0] {
+            t.insert(&[x]);
+        }
+        verify(&t, 3);
+        assert_eq!(
+            leaf_groups(&t),
+            vec![vec![0, 2], vec![1]],
+            "tied child went to the wrong group"
+        );
+    }
+
+    #[test]
+    fn the_seed_pair_is_the_first_farthest_pair_encountered() {
+        // Unit square: both diagonals are at squared distance 2, so the farthest pair is tied.
+        // Scanning with `>` keeps the first diagonal (corners 0 and 2) as the seeds, and the two
+        // side corners then split by group size into {0,3} and {1,2}. Sliding onto the second
+        // diagonal instead (`>=`) partitions as {0,1} / {2,3}, so the expected value pins the seed
+        // scan and the size rule together.
+        let mut t = CFTree::<f64, Spherical<f64>, _, _>::new(
+            2,
+            8,
+            3,
+            1e-9,
+            10_000,
+            CentroidEuclidean,
+            CentroidEuclidean,
+        );
+        for p in [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]] {
+            t.insert(&p);
+        }
+        verify(&t, 4);
+        assert_eq!(
+            leaf_groups(&t),
+            vec![vec![0, 3], vec![1, 2]],
+            "the split ran along the wrong diagonal"
+        );
+    }
+
+    #[test]
+    fn a_split_breaks_ties_toward_the_smaller_group() {
+        // Four children on a line at 0, 1, 9, 10 with a branching factor of 2 forces a split. The
+        // seeds are the farthest pair (0 and 10); the tie rule only shows up when a child is
+        // equidistant from both seeds, which the midpoint at 5 supplies.
+        let mut t = CFTree::<f64, Spherical<f64>, _, _>::new(
+            1,
+            2,
+            1,
+            1e-9,
+            10_000,
+            CentroidEuclidean,
+            CentroidEuclidean,
+        );
+        for x in [0.0, 10.0, 5.0, 1.0, 9.0] {
+            t.insert(&[x]);
+        }
+        verify(&t, 5);
+        assert!(t.nodes.len() > 1, "tree never split");
+        // Every entry survives the split exactly once, and no group is left empty.
+        assert_eq!(t.entries.len(), 5);
+        for id in 0..t.nodes.len() {
+            if !t.nodes[id].children.is_empty() {
+                assert!(
+                    !t.nodes[id].children.is_empty(),
+                    "node {id} was left with no children"
+                );
+            }
+        }
+        let leaves: Vec<usize> = (0..t.nodes.len())
+            .filter(|&i| t.nodes[i].leaf && !t.nodes[i].children.is_empty())
+            .collect();
+        let total: usize = leaves.iter().map(|&l| t.nodes[l].children.len()).sum();
+        assert_eq!(total, 5, "split lost or duplicated entries");
+    }
 }
 
 #[cfg(test)]

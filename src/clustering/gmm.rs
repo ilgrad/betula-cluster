@@ -1224,4 +1224,249 @@ mod tests {
         assert_eq!(argmax(&[1.0, 2.0, 2.0]), 1);
         assert_eq!(argmax(&[5.0]), 0);
     }
+
+    /// Independent re-derivation of [`gmm_full_once`], the full-covariance twin of
+    /// [`reference_diagonal_em`]. Returns `(resp, weights, means, covs, loglik, iterations)`.
+    #[allow(clippy::type_complexity, clippy::needless_range_loop)]
+    fn reference_full_em<C: ClusterFeature<f64>>(
+        features: &[C],
+        k: usize,
+        max_iter: usize,
+        seed: u64,
+    ) -> (
+        Vec<Vec<f64>>,
+        Vec<f64>,
+        Vec<Vec<f64>>,
+        Vec<Vec<Vec<f64>>>,
+        f64,
+        usize,
+    ) {
+        let dim = features[0].dim();
+        let m = features.len();
+        let mu: Vec<Vec<f64>> = features.iter().map(|f| f.mean().to_vec()).collect();
+        let n: Vec<f64> = features.iter().map(|f| f.weight()).collect();
+        let sig: Vec<SecondMoment<f64>> = features.iter().map(|f| f.second_moment()).collect();
+        let gcov = global_cov(&mu, &n, &sig, dim);
+        let scale = ((0..dim).map(|d| gcov[d][d]).sum::<f64>() / dim as f64).max(1e-12);
+        let (ridge, reg, dfloor) = (1e-6, 1e-3, 1e-3);
+
+        let km = kmeans(features, k, 50, 1, seed);
+        let mut means = km.centers.clone();
+        let mut covs = vec![vec![vec![0.0; dim]; dim]; k];
+        let mut seed_nk = vec![0.0; k];
+        for (i, &c) in km.labels.iter().enumerate() {
+            seed_nk[c] += n[i];
+            sig[i].add_scaled(&mut covs[c], n[i]);
+            for a in 0..dim {
+                for b in 0..dim {
+                    covs[c][a][b] += n[i] * (mu[i][a] - means[c][a]) * (mu[i][b] - means[c][b]);
+                }
+            }
+        }
+        for c in 0..k {
+            if seed_nk[c] > 0.0 {
+                for a in 0..dim {
+                    for b in 0..dim {
+                        covs[c][a][b] /= seed_nk[c];
+                    }
+                }
+            } else {
+                covs[c] = gcov.clone();
+            }
+            for d in 0..dim {
+                covs[c][d][d] = covs[c][d][d].max(dfloor * gcov[d][d]);
+            }
+        }
+
+        let mut weights = vec![1.0 / k as f64; k];
+        let mut resp = vec![vec![0.0; k]; m];
+        let mut loglik = f64::NEG_INFINITY;
+        let mut iters = 0;
+
+        for it in 0..max_iter {
+            iters = it + 1;
+            let mut chol = Vec::with_capacity(k);
+            let mut inv = Vec::with_capacity(k);
+            let mut logdet = vec![0.0; k];
+            for c in 0..k {
+                let (l, ld) = chol_regularized(&covs[c], scale, ridge);
+                logdet[c] = ld;
+                inv.push(crate::linalg::inv_from_chol(&l));
+                chol.push(l);
+            }
+
+            let mut new_ll = 0.0;
+            for i in 0..m {
+                let logr: Vec<f64> = (0..k)
+                    .map(|c| {
+                        let delta: Vec<f64> = (0..dim).map(|d| mu[i][d] - means[c][d]).collect();
+                        let quad = crate::linalg::mahalanobis_sq_from_chol(&chol[c], &delta);
+                        let trace = sig[i].trace_under(&chol[c], &inv[c]);
+                        weights[c].ln()
+                            - 0.5 * (dim as f64 * std::f64::consts::TAU.ln() + logdet[c] + quad)
+                            - 0.5 * trace
+                    })
+                    .collect();
+                let mx = logr.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+                let lse = mx + logr.iter().map(|&l| (l - mx).exp()).sum::<f64>().ln();
+                new_ll += n[i] * lse;
+                for c in 0..k {
+                    resp[i][c] = (logr[c] - lse).exp();
+                }
+            }
+
+            let nk: Vec<f64> = (0..k)
+                .map(|c| (0..m).map(|i| n[i] * resp[i][c]).sum())
+                .collect();
+            let ntot: f64 = nk.iter().sum();
+            let mut new_means = vec![vec![0.0; dim]; k];
+            for c in 0..k {
+                weights[c] = nk[c] / ntot;
+                for d in 0..dim {
+                    let acc: f64 = (0..m).map(|i| n[i] * resp[i][c] * mu[i][d]).sum();
+                    new_means[c][d] = if nk[c] > 0.0 { acc / nk[c] } else { acc };
+                }
+            }
+            let mut new_covs = vec![vec![vec![0.0; dim]; dim]; k];
+            for i in 0..m {
+                for c in 0..k {
+                    let w = n[i] * resp[i][c];
+                    sig[i].add_scaled(&mut new_covs[c], w);
+                    for a in 0..dim {
+                        for b in 0..dim {
+                            new_covs[c][a][b] +=
+                                w * (mu[i][a] - new_means[c][a]) * (mu[i][b] - new_means[c][b]);
+                        }
+                    }
+                }
+            }
+            for c in 0..k {
+                for a in 0..dim {
+                    for b in 0..dim {
+                        new_covs[c][a][b] = (new_covs[c][a][b] + reg * gcov[a][b]) / (nk[c] + reg);
+                    }
+                }
+                for d in 0..dim {
+                    new_covs[c][d][d] = new_covs[c][d][d].max(dfloor * gcov[d][d]);
+                }
+            }
+            means = new_means;
+            covs = new_covs;
+
+            if it > 0 && (new_ll - loglik).abs() <= 1e-7 * loglik.abs().max(1.0) {
+                loglik = new_ll;
+                break;
+            }
+            loglik = new_ll;
+        }
+        (resp, weights, means, covs, loglik, iters)
+    }
+
+    #[test]
+    #[allow(clippy::needless_range_loop)] // index form mirrors the EM equations
+    fn full_em_matches_an_independent_reference_iteration_for_iteration() {
+        let micros = soft_fixture();
+        let (k, iters, seed) = (3, 4, 17);
+        let g: GmmFull<f64> = gmm_full_once(&micros, k, iters, seed);
+        let (rresp, rweights, rmeans, rcovs, rloglik, ran) =
+            reference_full_em(&micros, k, iters, seed);
+        assert_eq!(
+            ran, iters,
+            "fixture converged early, so the path is untested"
+        );
+
+        assert_close_rel(g.loglik, rloglik, 1e-9, "loglik");
+        for c in 0..k {
+            assert_close_rel(g.weights[c], rweights[c], 1e-9, "weight");
+            for a in 0..3 {
+                assert_close_rel(g.means[c][a], rmeans[c][a], 1e-9, "mean");
+                for b in 0..3 {
+                    assert_close_rel(g.covs[c][a][b], rcovs[c][a][b], 1e-9, "cov");
+                }
+            }
+        }
+        let mut soft = 0;
+        for i in 0..micros.len() {
+            for c in 0..k {
+                assert_close_rel(g.resp[i][c], rresp[i][c], 1e-9, "resp");
+                if g.resp[i][c] > 1e-3 && g.resp[i][c] < 1.0 - 1e-3 {
+                    soft += 1;
+                }
+            }
+            assert_eq!(g.labels[i], argmax(&rresp[i]), "label disagrees");
+        }
+        assert!(soft > 20, "fixture is not soft enough: {soft} soft entries");
+    }
+
+    #[test]
+    #[allow(clippy::needless_range_loop)] // index form mirrors the EM equations
+    fn full_em_stops_on_the_relative_loglik_test() {
+        let micros = soft_fixture();
+        let (k, seed) = (3, 17);
+        let g: GmmFull<f64> = gmm_full_once(&micros, k, 600, seed);
+        let (_, _, rmeans, _, rloglik, ran) = reference_full_em(&micros, k, 600, seed);
+        assert!(ran > 4 && ran < 600, "expected convergence, ran {ran}");
+        assert_close_rel(g.loglik, rloglik, 1e-6, "converged loglik");
+        for c in 0..k {
+            for d in 0..3 {
+                assert_close_rel(g.means[c][d], rmeans[c][d], 1e-5, "converged mean");
+            }
+        }
+        let mut prev = f64::NEG_INFINITY;
+        for t in 1..=10 {
+            let ll = gmm_full_once::<f64, _>(&micros, k, t, seed).loglik;
+            assert!(
+                ll >= prev - 1e-9,
+                "loglik fell at iteration {t}: {prev} -> {ll}"
+            );
+            prev = ll;
+        }
+    }
+
+    /// Both automatic-`k` wrappers minimise BIC over the same sweep the test can reproduce exactly.
+    /// The end-to-end tests only assert that the recovered `k` equals the planted one, which stays
+    /// right for a wide range of wrong penalties.
+    #[test]
+    fn auto_k_selects_the_argmin_of_an_independently_scored_bic() {
+        // Separated blobs, so the likelihood stops improving once `k` reaches the planted count and
+        // the *penalty* is the only thing deciding the rest of the sweep. The soft fixture is useless
+        // here: its BIC rises monotonically, so `k = 1` wins whatever the parameter count says.
+        let mut rng = SplitMix64::new(88);
+        let centers = [[0.0, 0.0], [9.0, 0.0], [0.0, 9.0], [9.0, 9.0]];
+        let (pts, _) = blobs(&mut rng, 150, &centers, 0.6);
+        let micros = grid_micros(&pts, 0.5).0;
+        let d = micros[0].dim();
+        let ntot: f64 = micros.iter().map(|f| f.weight()).sum();
+        let (lo, hi) = (1usize, 5usize);
+
+        let mut want_diag = lo;
+        let mut want_full = lo;
+        let (mut best_diag, mut best_full) = (f64::INFINITY, f64::INFINITY);
+        for k in lo..=hi {
+            let g: Gmm<f64> = gmm_diagonal_once(&micros, k, 80, 3);
+            let s = -2.0 * g.loglik + (2 * k * d + (k - 1)) as f64 * ntot.ln();
+            if s < best_diag {
+                best_diag = s;
+                want_diag = k;
+            }
+            let gf: GmmFull<f64> = gmm_full_once(&micros, k, 80, 3);
+            let sf = -2.0 * gf.loglik + (k * d + k * d * (d + 1) / 2 + (k - 1)) as f64 * ntot.ln();
+            if sf < best_full {
+                best_full = sf;
+                want_full = k;
+            }
+        }
+        assert_eq!(
+            gmm_diagonal_auto::<f64, _>(&micros, lo, hi, 80, 3)
+                .means
+                .len(),
+            want_diag,
+            "diagonal BIC"
+        );
+        assert_eq!(
+            gmm_full_auto::<f64, _>(&micros, lo, hi, 80, 3).means.len(),
+            want_full,
+            "full BIC"
+        );
+    }
 }
