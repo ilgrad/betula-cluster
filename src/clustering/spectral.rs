@@ -184,4 +184,43 @@ mod tests {
         let pred: Vec<usize> = point_to_micro.iter().map(|&m| micro_labels[m]).collect();
         assert!(ari(&pred, &truth) > 0.9, "landmark spectral lost the blobs");
     }
+
+    /// Three groups of very different size. Eigenvector entries scale like `1/sqrt(size)`, so the
+    /// raw embedding rows of the small groups are several times longer than the large group's --
+    /// which is exactly the magnitude the Ng-Jordan-Weiss row normalization exists to remove.
+    fn lopsided_groups() -> (Vec<Vec<f64>>, Vec<usize>) {
+        let mut rng = SplitMix64::new(404);
+        let spec = [
+            ([0.0f64, 0.0], 80usize),
+            ([14.0, 0.0], 10),
+            ([7.0, 13.0], 5),
+        ];
+        let mut pts = Vec::new();
+        let mut truth = Vec::new();
+        for (c, (ctr, count)) in spec.iter().enumerate() {
+            for _ in 0..*count {
+                pts.push(vec![
+                    ctr[0] + 0.35 * rng.gauss(),
+                    ctr[1] + 0.35 * rng.gauss(),
+                ]);
+                truth.push(c);
+            }
+        }
+        (pts, truth)
+    }
+
+    #[test]
+    fn the_embedding_is_row_normalized_before_the_final_kmeans() {
+        // Without the normalization the k-means at the end separates rows by *length* -- the large
+        // group's short rows cluster together with whichever small group is nearest the origin --
+        // so an exact partition, not an ARI threshold, is what makes the step visible.
+        let (pts, truth) = lopsided_groups();
+        let labels = spectral_core(&pts, 3, 100, 5);
+        assert_eq!(n_distinct(&labels), 3, "{labels:?}");
+        assert!(
+            (ari(&labels, &truth) - 1.0).abs() < 1e-12,
+            "ARI = {}",
+            ari(&labels, &truth)
+        );
+    }
 }
