@@ -1512,7 +1512,9 @@ mod tests {
     #[test]
     fn nndsvdar_matches_the_published_construction() {
         let x = svd_fixture();
-        for (r, seed) in [(2usize, 1u64), (4, 5), (7, 9)] {
+        // One seed shares bits with the fill's mask, so `seed ^ mask` and `seed | mask` differ;
+        // every seed below 32 leaves the mask's low bits clear and the two agree by accident.
+        for (r, seed) in [(2usize, 1u64), (4, 5), (7, 9), (4, 0xa1e0)] {
             let (w, h) = nndsvdar(&x, r, seed);
             let (rw, rh) = reference_nndsvdar(&x, r, seed);
             for (j, (a, b)) in w.iter().zip(&rw).enumerate() {
@@ -1695,6 +1697,38 @@ mod tests {
             max_abs_diff(&w, &rw_early) > 1e-9,
             "sweep {ran} is indistinguishable from {}; the fixture cannot see the rule",
             ran - 1
+        );
+    }
+
+    #[test]
+    fn a_component_whose_scale_lands_on_the_threshold_keeps_it() {
+        // The gauge `||h_k|| = 1` applies only *above* the guard: exactly on it the row is left
+        // alone rather than blown up to unit length with its column shrunk by the same factor.
+        let (mut w, mut h): (Vec<Vec<f64>>, Vec<Vec<f64>>) = (vec![vec![3.0]], vec![vec![1e-12]]);
+        canonicalize(&mut w, &mut h);
+        assert_eq!(h[0][0], 1e-12);
+        assert_eq!(w[0][0], 3.0);
+
+        let (mut w2, mut h2): (Vec<Vec<f64>>, Vec<Vec<f64>>) = (vec![vec![3.0]], vec![vec![2e-12]]);
+        canonicalize(&mut w2, &mut h2);
+        assert!((h2[0][0] - 1.0).abs() < 1e-12, "{h2:?}");
+        assert!((w2[0][0] - 6e-12).abs() < 1e-24, "{w2:?}");
+    }
+
+    #[test]
+    fn a_row_with_no_mass_gets_a_zero_code_rather_than_an_amplified_one() {
+        // Codes undo the `sqrt(w)` row scaling, so a vanishing weight would divide by a vanishing
+        // number. The guard is `sqrt(w) > 1e-10`, and a weight of exactly `(1e-10)^2` sits on it.
+        let (mut cents, mut ws) = hals_fixture();
+        cents.push(vec![1.0, 2.0, 3.0, 4.0]);
+        ws.push(1e-10f64 * 1e-10f64);
+        let j = ws.len() - 1;
+        assert_eq!(ws[j].sqrt(), 1e-10, "the fixture missed the threshold");
+        let (codes, _h) = weighted_nmf(&cents, &ws, 2, 40, 4);
+        assert!(
+            codes[j].iter().all(|&v| v == 0.0),
+            "the massless row was amplified: {:?}",
+            codes[j]
         );
     }
 }
