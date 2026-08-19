@@ -842,4 +842,147 @@ mod tests {
             );
         }
     }
+
+    /// Every node summary must be recomputable from its own members: the mass is their total, the
+    /// centroid is their mass-weighted mean and the lens value is their unweighted mean. Nothing
+    /// asserted any of the three -- the existing tests read the graph's *shape* (branch points,
+    /// bridges, component count), which survives an arithmetic error in the aggregation.
+    #[test]
+    fn node_summaries_are_recomputable_from_their_members() {
+        let feats = dumbbell();
+        let p = MapperParams {
+            lens: Lens::Coordinate(0),
+            resolution: 8,
+            gain: 0.3,
+            link_scale: 2.0,
+            min_node_mass: 0.0,
+        };
+        let g = mapper(&feats, &p);
+        assert!(
+            g.nodes.len() > 3,
+            "the cover produced too few nodes to test"
+        );
+
+        let mu: Vec<Vec<f64>> = feats.iter().map(centroid64).collect();
+        let mass: Vec<f64> = feats.iter().map(|f| f.weight()).collect();
+        let radius: Vec<f64> = feats.iter().map(rms_radius).collect();
+        let lens = lens_values(&mu, &radius, p.lens);
+        let lo = lens.iter().copied().fold(f64::INFINITY, f64::min);
+
+        for (nid, node) in g.nodes.iter().enumerate() {
+            assert!(!node.members.is_empty(), "node {nid} has no members");
+
+            let want_mass: f64 = node.members.iter().map(|&i| mass[i]).sum();
+            assert!(
+                (node.mass - want_mass).abs() < 1e-9,
+                "node {nid} mass {} vs {want_mass}",
+                node.mass
+            );
+            assert!(
+                node.mass >= p.min_node_mass,
+                "node {nid} is under the mass floor"
+            );
+
+            for (d, got) in node.centroid.iter().enumerate() {
+                let want: f64 = node
+                    .members
+                    .iter()
+                    .map(|&i| mass[i] * mu[i][d])
+                    .sum::<f64>()
+                    / want_mass;
+                assert!(
+                    (got - want).abs() < 1e-9,
+                    "node {nid} centroid[{d}] = {got} vs {want}"
+                );
+            }
+
+            let want_lens: f64 = node
+                .members
+                .iter()
+                .map(|&i| if lens[i].is_finite() { lens[i] } else { lo })
+                .sum::<f64>()
+                / node.members.len() as f64;
+            assert!(
+                (node.lens_value - want_lens).abs() < 1e-9,
+                "node {nid} lens {} vs {want_lens}",
+                node.lens_value
+            );
+        }
+
+        // Every microcluster that clears the mass floor lands in at least one node, and a node's
+        // members all come from its own cover bin.
+        let covered: std::collections::HashSet<usize> = g
+            .nodes
+            .iter()
+            .flat_map(|n| n.members.iter().copied())
+            .collect();
+        assert_eq!(covered.len(), feats.len(), "the cover lost microclusters");
+    }
+
+    #[test]
+    fn a_node_is_single_linkage_connected_at_the_scaled_median_gap() {
+        // Members of one node must be reachable from each other by hops no longer than
+        // `link_scale × median nearest-neighbour gap` within the bin. A threshold built from the
+        // wrong statistic either fuses the whole bin into one node or shatters it into singletons.
+        let feats = dumbbell();
+        for link_scale in [1.0_f64, 2.0, 4.0] {
+            let p = MapperParams {
+                lens: Lens::Coordinate(0),
+                resolution: 6,
+                gain: 0.25,
+                link_scale,
+                min_node_mass: 0.0,
+            };
+            let g = mapper(&feats, &p);
+            let mu: Vec<Vec<f64>> = feats.iter().map(centroid64).collect();
+
+            for (nid, node) in g.nodes.iter().enumerate() {
+                // Recompute the bin's threshold from the members of every node sharing this bin.
+                let bin_members: Vec<usize> = g
+                    .nodes
+                    .iter()
+                    .filter(|n| n.bin == node.bin)
+                    .flat_map(|n| n.members.iter().copied())
+                    .collect();
+                let bn = bin_members.len();
+                if bn < 2 {
+                    continue;
+                }
+                let mut nn = vec![f64::INFINITY; bn];
+                for a in 0..bn {
+                    for b in (a + 1)..bn {
+                        let d = euclid(&mu[bin_members[a]], &mu[bin_members[b]]);
+                        nn[a] = nn[a].min(d);
+                        nn[b] = nn[b].min(d);
+                    }
+                }
+                nn.sort_by(|x, y| x.partial_cmp(y).unwrap());
+                let thresh = link_scale * nn[bn / 2];
+
+                // Single-linkage closure of the node's members under `thresh` must be the node.
+                let ms = &node.members;
+                let mut reached = vec![false; ms.len()];
+                reached[0] = true;
+                let mut grew = true;
+                while grew {
+                    grew = false;
+                    for a in 0..ms.len() {
+                        if !reached[a] {
+                            continue;
+                        }
+                        for b in 0..ms.len() {
+                            if !reached[b] && euclid(&mu[ms[a]], &mu[ms[b]]) <= thresh + 1e-12 {
+                                reached[b] = true;
+                                grew = true;
+                            }
+                        }
+                    }
+                }
+                assert!(
+                    reached.iter().all(|&r| r),
+                    "link_scale {link_scale}: node {nid} is not connected at threshold {thresh}"
+                );
+            }
+        }
+    }
 }

@@ -411,4 +411,143 @@ mod tests {
         let total: f64 = m.iter().map(|c| c.weight()).sum();
         assert_eq!(total as i64, 500); // mass conserved
     }
+
+    /// The objective `kprototypes` minimises, rebuilt from a labelling: each cluster's prototype is
+    /// the merge of its members, and the cost is the within-micro scatter plus the micro-to-prototype
+    /// distance. The function returns only labels, so this is the only way to observe what it chose.
+    fn objective(micros: &[MixedCf<f64>], labels: &[usize], k: usize, gamma: f64) -> f64 {
+        let n_num = micros[0].n_numeric();
+        let cards: Vec<usize> = micros[0].cat.iter().map(|h| h.len()).collect();
+        let mut acc: Vec<MixedCf<f64>> = (0..k).map(|_| MixedCf::new(n_num, &cards)).collect();
+        for (i, m) in micros.iter().enumerate() {
+            acc[labels[i]].merge(m);
+        }
+        micros
+            .iter()
+            .enumerate()
+            .map(|(i, m)| {
+                let p = &acc[labels[i]];
+                m.numeric_ssd() + micro_dist(m, p.numeric_mean(), p.mode(), gamma)
+            })
+            .sum()
+    }
+
+    fn mixed_fixture() -> Vec<MixedCf<f64>> {
+        // Three groups: two numeric modes crossed with a categorical split, so neither the numeric
+        // nor the categorical part alone recovers the partition.
+        let mut rng = SplitMix64::new(19);
+        let mut num = Vec::new();
+        let mut cat = Vec::new();
+        for (c, (mx, my, a)) in [(0.0, 0.0, 0usize), (6.0, 0.5, 1), (0.5, 6.0, 0)]
+            .into_iter()
+            .enumerate()
+        {
+            let _ = c;
+            for _ in 0..20 {
+                num.push(mx + 0.6 * rng.gauss());
+                num.push(my + 0.6 * rng.gauss());
+                cat.push(a);
+            }
+        }
+        micros(&num, &cat, 60, 2, &[2])
+    }
+
+    #[test]
+    fn the_returned_labelling_is_a_lloyd_fixed_point() {
+        // Every micro-cluster must already sit with its nearest prototype: that is what the
+        // assignment loop converges to, and a comparison that stops updating -- or a prototype
+        // rebuild that skips a cluster -- leaves micro-clusters stranded beside a nearer one.
+        let ms = mixed_fixture();
+        let (k, gamma) = (3usize, 1.0);
+        let labels = kprototypes(&ms, k, gamma, 100, 4, 11);
+        assert_eq!(labels.len(), ms.len());
+
+        let n_num = ms[0].n_numeric();
+        let cards: Vec<usize> = ms[0].cat.iter().map(|h| h.len()).collect();
+        let mut acc: Vec<MixedCf<f64>> = (0..k).map(|_| MixedCf::new(n_num, &cards)).collect();
+        for (i, m) in ms.iter().enumerate() {
+            acc[labels[i]].merge(m);
+        }
+        assert!(
+            acc.iter().filter(|a| a.weight() > 0.0).count() >= 2,
+            "the fixture collapsed to one cluster, so nothing is tested"
+        );
+        for (i, m) in ms.iter().enumerate() {
+            let own = micro_dist(
+                m,
+                acc[labels[i]].numeric_mean(),
+                acc[labels[i]].mode(),
+                gamma,
+            );
+            for (c, a) in acc.iter().enumerate() {
+                if a.weight() <= 0.0 {
+                    continue;
+                }
+                let d = micro_dist(m, a.numeric_mean(), a.mode(), gamma);
+                assert!(
+                    own <= d + 1e-9,
+                    "micro {i} sits in {} at {own} but {c} is at {d}",
+                    labels[i]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn more_restarts_never_return_a_worse_partition() {
+        // Restarts share one RNG stream, so `n_init = m` runs exactly the first `m` inits of
+        // `n_init = m + 1` and must keep the best of them. A broken objective, or a restart
+        // comparison that keeps the *later* candidate, shows up as a cost that goes back up.
+        let ms = mixed_fixture();
+        let (k, gamma) = (3usize, 1.0);
+        let mut prev = f64::INFINITY;
+        let mut distinct = 0;
+        for n_init in 1..=8 {
+            let labels = kprototypes(&ms, k, gamma, 100, n_init, 5);
+            let cost = objective(&ms, &labels, k, gamma);
+            assert!(
+                cost <= prev + 1e-9,
+                "n_init = {n_init} cost {cost} is worse than {prev}"
+            );
+            if cost < prev - 1e-9 {
+                distinct += 1;
+            }
+            prev = cost;
+        }
+        assert!(
+            distinct > 0,
+            "every restart found the same cost, so the selection rule is untested"
+        );
+    }
+
+    #[test]
+    fn kpp_init_spreads_one_prototype_per_far_group() {
+        // D²-weighted sampling over the mixed distance: with the groups far apart in the numeric
+        // part, seeding two prototypes in one group is vanishingly unlikely unless the D² update or
+        // the sampling weight is broken.
+        let mut num = Vec::new();
+        let mut cat = Vec::new();
+        for (gx, gy) in [(0.0, 0.0), (100.0, 0.0), (0.0, 100.0)] {
+            for j in 0..8 {
+                num.push(gx + j as f64 * 0.05);
+                num.push(gy);
+                cat.push(0usize);
+            }
+        }
+        let ms = micros(&num, &cat, 24, 2, &[1]);
+        for seed in 0..24u64 {
+            let mut rng = SplitMix64::new(seed);
+            let chosen = kpp_init(&ms, 3, 1.0, &mut rng);
+            assert_eq!(chosen.len(), 3);
+            let groups: Vec<usize> = chosen.iter().map(|&i| i / 8).collect();
+            let mut seen = groups.clone();
+            seen.sort_unstable();
+            seen.dedup();
+            assert_eq!(
+                seen.len(),
+                3,
+                "seed {seed} seeded twice in one group: {groups:?}"
+            );
+        }
+    }
 }

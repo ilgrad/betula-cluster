@@ -1227,4 +1227,114 @@ mod tests {
             d.p[0].cf.weight()
         );
     }
+
+    #[test]
+    fn cleanup_runs_on_the_gap_tick_and_not_before() {
+        // `t_gap = ceil(1/lambda)`. A micro-cluster already faded below the floor must survive every
+        // tick that is not a multiple of the gap and disappear on the one that is: that schedule is
+        // the whole content of `period > 0 && t % period == 0`.
+        let mut d = db(1.0, 0.25);
+        let gap = d.t_gap as u64;
+        assert!(
+            gap >= 2,
+            "the gap must exceed one tick for the schedule to be observable"
+        );
+        d.insert(&[0.0, 0.0]);
+        d.micros[0].last_t = -10_000.0;
+        assert!(
+            d.faded_weight(&d.micros[0]) < d.clean_floor,
+            "the fixture is not below the cleanup floor, so nothing would be dropped"
+        );
+
+        let mut dropped_at = None;
+        for _ in 0..3 * gap {
+            let before = d.micros.len();
+            d.insert(&[80.0, 80.0]); // far away: always seeds its own micro-cluster
+            let is_gap_tick = (d.t as u64) % gap == 0;
+            let stale_gone = !d.micros.iter().any(|m| m.last_t < -1.0);
+            if before > 0 && stale_gone && dropped_at.is_none() {
+                dropped_at = Some(d.t as u64);
+                assert!(
+                    is_gap_tick,
+                    "the stale micro-cluster went at t = {}, which is not a multiple of {gap}",
+                    d.t
+                );
+            }
+        }
+        let t = dropped_at.expect("the stale micro-cluster was never cleaned up");
+        assert_eq!(t % gap, 0, "cleanup fired off-schedule at t = {t}");
+    }
+
+    #[test]
+    fn cleanup_drops_a_shared_entry_when_only_one_endpoint_dies() {
+        let mut d = db(1.0, 0.5);
+        d.insert(&[0.0, 0.0]);
+        d.insert(&[1.4, 0.0]);
+        d.insert(&[0.7, 0.0]); // co-absorbed: builds the pair
+        assert_eq!(d.micros.len(), 2);
+        assert_eq!(d.shared.len(), 1, "expected exactly one shared entry");
+
+        // Keep one endpoint current and let the other fade out. The surviving micro-cluster must
+        // stay, and the shared entry must go with its dead partner.
+        d.t += 200.0;
+        d.micros[0].last_t = d.t;
+        d.cleanup();
+        assert_eq!(d.micros.len(), 1, "the live endpoint was dropped too");
+        assert!(
+            d.shared.is_empty(),
+            "a shared entry outlived one of its micro-clusters"
+        );
+    }
+
+    #[test]
+    fn a_density_bridge_below_alpha_times_min_weight_does_not_join_two_clusters() {
+        // Two strong micro-clusters with a single co-absorption between them. The bridge test is
+        // `shared >= alpha * min_weight`, so raising `alpha` past that single point's worth of mass
+        // must split what a lower `alpha` joins -- with the micro-clusters themselves unchanged.
+        let build = |alpha: f64| {
+            let mut d: DbStream<f64, Spherical<f64>> =
+                DbStream::new(2, 1.0, 0.0005, alpha, 2.0).unwrap();
+            for _ in 0..6 {
+                d.insert(&[0.0, 0.0]);
+                d.insert(&[1.4, 0.0]);
+            }
+            d.insert(&[0.7, 0.0]); // one bridging point only
+            d.cluster();
+            d
+        };
+        let joined = build(0.1); // bridge threshold 0.2, one point of shared mass clears it
+        let split = build(0.9); // bridge threshold 1.8, the same point does not
+        assert_eq!(joined.micros.len(), split.micros.len(), "fixtures differ");
+        assert_eq!(joined.n_clusters(), 1, "a sufficient bridge failed to join");
+        assert_eq!(split.n_clusters(), 2, "an insufficient bridge still joined");
+    }
+
+    #[test]
+    fn denstream_components_join_within_two_epsilon_and_need_mu_of_mass() {
+        // Connected components are formed at `2ε`, so two potential micro-clusters just inside that
+        // distance are one cluster and two just outside are two. Component weight below `μ` is
+        // noise, whatever the geometry.
+        let build = |gap: f64, reps: usize| {
+            let mut d: DenStream<f64, Spherical<f64>> =
+                DenStream::new(1, 1.0, 0.0005, 0.5, 4.0).unwrap();
+            for _ in 0..reps {
+                d.insert(&[0.0]);
+                d.insert(&[gap]);
+            }
+            d.cluster();
+            d
+        };
+        // ε = 1, so components merge at a centre distance of 2.
+        let near = build(1.9, 12);
+        assert_eq!(near.n_clusters(), 1, "centres inside 2ε were not joined");
+        let far = build(2.4, 12);
+        assert_eq!(far.n_clusters(), 2, "centres outside 2ε were joined");
+        // μ = 4: three points per micro-cluster is not enough mass to be a cluster.
+        let light = build(1.9, 1);
+        assert!(
+            light.labels().iter().all(|&l| l == -1),
+            "a component below μ was labelled a cluster: {:?}",
+            light.labels()
+        );
+    }
 }
