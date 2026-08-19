@@ -304,4 +304,40 @@ mod tests {
         assert!((eig[0] - 3.5).abs() < 1e-12);
         assert!((v[0][0] - 1.0).abs() < 1e-12);
     }
+
+    #[test]
+    fn the_off_diagonal_norm_sums_squares_not_signed_entries() {
+        // The strictly-upper entries cancel: any convergence test that adds them, rather than
+        // their squares, reads zero on the first sweep and returns the untouched diagonal.
+        let a = vec![
+            vec![5.0, 1.0, -1.0],
+            vec![1.0, 2.0, 0.0],
+            vec![-1.0, 0.0, 3.0],
+        ];
+        let (mut eig, v) = jacobi_eigen(&a);
+        for i in 0..3 {
+            for j in 0..3 {
+                let recon: f64 = (0..3).map(|k| v[i][k] * eig[k] * v[j][k]).sum();
+                assert!(close(recon, a[i][j]), "A[{i}][{j}] = {recon}");
+            }
+        }
+        eig.sort_by(|x, y| x.partial_cmp(y).unwrap());
+        let diag = [2.0, 3.0, 5.0];
+        assert!(
+            eig.iter().zip(&diag).any(|(e, d)| (e - d).abs() > 1e-6),
+            "the sweep returned the diagonal unrotated: {eig:?}"
+        );
+    }
+
+    #[test]
+    fn a_zero_rotation_angle_takes_the_positive_root() {
+        // Equal diagonal entries give theta == 0, where the sign rule decides which of the two
+        // eigenvalues lands in slot p. Numerical Recipes takes t = +1 there.
+        let (eig, v) = jacobi_eigen(&[vec![2.0, 1.0], vec![1.0, 2.0]]);
+        assert!(close(eig[0], 1.0), "eig = {eig:?}");
+        assert!(close(eig[1], 3.0), "eig = {eig:?}");
+        let s = std::f64::consts::FRAC_1_SQRT_2;
+        assert!(close(v[0][0].abs(), s) && close(v[1][0].abs(), s), "{v:?}");
+        assert!(close(v[0][0] * v[1][0], -0.5), "{v:?}");
+    }
 }
