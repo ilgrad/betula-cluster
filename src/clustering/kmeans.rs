@@ -1070,4 +1070,37 @@ mod tests {
             assert_eq!(a.next_u64(), b.next_u64(), "k = {k}: rng streams diverged");
         }
     }
+
+    #[test]
+    fn the_xmeans_score_puts_its_split_boundary_where_the_reference_does() {
+        // A single argmax is a coarse probe: nearly every corruption of the Pelleg-Moore score
+        // keeps it on a fixture whose answer is obvious. Walking the separation of two blobs across
+        // the 1 -> 2 transition pins *where* the score changes its mind, and that boundary is one
+        // step wide, so a shift in the entropy term, the variance estimate or the parameter count
+        // moves it.
+        let (lo, hi) = (1usize, 4usize);
+        let mut got = Vec::new();
+        let mut want = Vec::new();
+        for step in 0..14 {
+            let sep = 0.4 + 0.3 * step as f64;
+            let mut rng = SplitMix64::new(5);
+            let (pts, _truth) = blobs(&mut rng, 120, &[[0.0, 0.0], [sep, 0.0]], 1.0);
+            let (micros, _assign) = grid_micros(&pts, 0.4);
+            let mut best = (f64::NEG_INFINITY, lo);
+            for k in lo..=hi {
+                let km = kmeans(&micros, k, 100, 4, 5);
+                let bic = reference_xmeans_bic(&micros, &km, k);
+                if bic > best.0 {
+                    best = (bic, k);
+                }
+            }
+            want.push(best.1);
+            got.push(xmeans(&micros, lo, hi, 100, 5).centers.len());
+        }
+        assert!(
+            want.windows(2).any(|w| w[0] != w[1]),
+            "the sweep never crosses a boundary: {want:?}"
+        );
+        assert_eq!(got, want, "the split boundary moved");
+    }
 }

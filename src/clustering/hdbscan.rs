@@ -637,4 +637,51 @@ mod tests {
             );
         }
     }
+
+    /// Two sub-blobs of `per` leaves each, `sep` apart, inside one loose parent cloud. Sweeping
+    /// `sep` walks the condensed tree across the point where the children's stability overtakes
+    /// their parent's, which is the only thing the excess-of-mass integral decides.
+    fn split_fixture(sep: f64, seed: u64) -> Vec<Spherical<f64>> {
+        let mut rng = SplitMix64::new(seed);
+        let mut pts: Vec<Vec<f64>> = Vec::new();
+        for s in [-0.5 * sep, 0.5 * sep] {
+            for _ in 0..45 {
+                pts.push(vec![s + 0.45 * rng.gauss(), 0.45 * rng.gauss()]);
+            }
+        }
+        for _ in 0..12 {
+            pts.push(vec![6.0 + 0.3 * rng.gauss(), 5.0 + 0.3 * rng.gauss()]);
+        }
+        grid_micros(&pts, 0.35).0
+    }
+
+    #[test]
+    fn the_excess_of_mass_boundary_sits_where_the_reference_puts_it() {
+        // Comparing one partition is a coarse probe: the stability integral can be corrupted and
+        // still select the same clusters on a fixture whose answer is obvious. Walking the
+        // separation moves the decision, and where it moves is decided entirely by
+        // `Σ (λ_split − λ_birth) · mass` -- both the per-node form and the per-point one.
+        let mut got = Vec::new();
+        let mut want = Vec::new();
+        for step in 0..16 {
+            let sep = 0.6 + 0.28 * step as f64;
+            let feats = split_fixture(sep, 91);
+            let mu: Vec<Vec<f64>> = feats.iter().map(|f| f.mean().to_vec()).collect();
+            let mass: Vec<f64> = feats.iter().map(|f| f.weight()).collect();
+            let w = reference_hdbscan(&mu, &mass, 3, 4);
+            got.push(hdbscan(&feats, 3, 4).n_clusters);
+            want.push(
+                w.iter()
+                    .filter(|&&l| l >= 0)
+                    .map(|&l| l as usize + 1)
+                    .max()
+                    .unwrap_or(0),
+            );
+        }
+        assert!(
+            want.windows(2).any(|w| w[0] != w[1]),
+            "the sweep never crosses a boundary: {want:?}"
+        );
+        assert_eq!(got, want, "the excess-of-mass boundary moved");
+    }
 }

@@ -274,4 +274,156 @@ mod tests {
             flat(&knn_affinity_geo(&centers, None, Some((&diff, 1.0)))),
         );
     }
+
+    /// The self-tuning k-NN affinity re-derived from Zelnik-Manor & Perona: pairwise squared
+    /// distance (centroid, plus `β·‖logΣ_i − logΣ_j‖²_F` and `γ·d²_Gr` when asked), a local scale
+    /// `σ_i` taken as the distance to the 7th neighbour, a symmetric k-NN edge set with
+    /// `k = clamp(n/10, 4, 10)`, and the weight `exp(−d²_ij / (σ_i σ_j))`.
+    fn reference_affinity(
+        centers: &[Vec<f64>],
+        cov: Option<(&[Vec<Vec<f64>>], f64)>,
+        tangent: Option<(&[Vec<Vec<f64>>], f64)>,
+    ) -> Vec<Vec<(usize, f64)>> {
+        let n = centers.len();
+        let mut d2 = vec![vec![0.0; n]; n];
+        for i in 0..n {
+            for j in 0..n {
+                if i == j {
+                    continue;
+                }
+                let mut v: f64 = centers[i]
+                    .iter()
+                    .zip(&centers[j])
+                    .map(|(a, b)| (a - b) * (a - b))
+                    .sum();
+                if let Some((lc, beta)) = cov {
+                    let f: f64 = lc[i]
+                        .iter()
+                        .zip(&lc[j])
+                        .flat_map(|(ra, rb)| ra.iter().zip(rb))
+                        .map(|(a, b)| (a - b) * (a - b))
+                        .sum();
+                    v += beta * f;
+                }
+                if let Some((ub, gamma)) = tangent {
+                    v += gamma * grassmann_sq(&ub[i], &ub[j]);
+                }
+                d2[i][j] = v;
+            }
+        }
+        let scale_rank = 7usize.min(n - 1);
+        let knn = (n / 10).clamp(4, 10).min(n - 1);
+        let mut sigma = vec![0.0; n];
+        let mut adj = vec![vec![false; n]; n];
+        for i in 0..n {
+            let mut idx: Vec<usize> = (0..n).filter(|&j| j != i).collect();
+            idx.sort_by(|&x, &y| d2[i][x].partial_cmp(&d2[i][y]).unwrap());
+            sigma[i] = d2[i][idx[scale_rank - 1]].sqrt().max(1e-12);
+            for &j in &idx[..knn] {
+                adj[i][j] = true;
+                adj[j][i] = true;
+            }
+        }
+        (0..n)
+            .map(|i| {
+                (0..n)
+                    .filter(|&j| j != i && adj[i][j])
+                    .map(|j| (j, (-d2[i][j] / (sigma[i] * sigma[j])).exp()))
+                    .collect()
+            })
+            .collect()
+    }
+
+    fn assert_same_graph(got: &[Vec<(usize, f64)>], want: &[Vec<(usize, f64)>], what: &str) {
+        assert_eq!(got.len(), want.len(), "{what}: node count");
+        for (i, (a, b)) in got.iter().zip(want).enumerate() {
+            assert_eq!(
+                a.iter().map(|e| e.0).collect::<Vec<_>>(),
+                b.iter().map(|e| e.0).collect::<Vec<_>>(),
+                "{what}: neighbours of {i}"
+            );
+            for ((_, x), (_, y)) in a.iter().zip(b) {
+                assert!(
+                    (x - y).abs() <= 1e-12 * x.abs().max(1.0),
+                    "{what}: {x} vs {y}"
+                );
+            }
+        }
+    }
+
+    /// 60 leaves: enough that `n/10` clears the lower clamp, so the degree rule is visible, and
+    /// enough that the 7th-neighbour local scale is not the whole graph.
+    type AffinityFixture = (Vec<Vec<f64>>, Vec<Vec<Vec<f64>>>, Vec<Vec<Vec<f64>>>);
+
+    fn affinity_fixture() -> AffinityFixture {
+        let mut st = 88u64;
+        let mut next = move || {
+            st = st.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            ((st >> 33) as f64) / (u32::MAX as f64)
+        };
+        let mut centers = Vec::new();
+        let mut logcov = Vec::new();
+        let mut bases = Vec::new();
+        for i in 0..60 {
+            let t = i as f64 * 0.37;
+            centers.push(vec![t.cos() * 3.0 + next(), t.sin() * 3.0 + next()]);
+            let (a, b, c) = (0.5 + next(), 0.2 * next(), 0.5 + next());
+            logcov.push(vec![vec![a, b], vec![b, c]]);
+            let th = t * 0.5;
+            bases.push(vec![vec![th.cos()], vec![th.sin()]]);
+        }
+        (centers, logcov, bases)
+    }
+
+    #[test]
+    fn the_affinity_graph_matches_an_independent_construction() {
+        // The existing tests assert only that the shape and tangent terms *change* the graph. Both
+        // terms, the local scale, the degree rule and the kernel are now compared edge for edge.
+        let (centers, logcov, bases) = affinity_fixture();
+        assert_same_graph(
+            &knn_affinity(&centers),
+            &reference_affinity(&centers, None, None),
+            "plain",
+        );
+        assert_same_graph(
+            &knn_affinity_geo(&centers, Some((&logcov, 0.7)), None),
+            &reference_affinity(&centers, Some((&logcov, 0.7)), None),
+            "shape",
+        );
+        assert_same_graph(
+            &knn_affinity_geo(&centers, None, Some((&bases, 1.3))),
+            &reference_affinity(&centers, None, Some((&bases, 1.3))),
+            "tangent",
+        );
+        assert_same_graph(
+            &knn_affinity_geo(&centers, Some((&logcov, 0.4)), Some((&bases, 0.9))),
+            &reference_affinity(&centers, Some((&logcov, 0.4)), Some((&bases, 0.9))),
+            "both",
+        );
+        // The degree rule is `clamp(n/10, 4, 10)`: at n = 60 that is 6, between both clamps, so a
+        // graph built with the wrong arithmetic there cannot land on the same degree by accident.
+        let g = knn_affinity(&centers);
+        assert!(g.iter().all(|row| row.len() >= 6), "degree fell below n/10");
+    }
+
+    #[test]
+    fn the_matrix_log_floor_follows_each_leaf_own_scale() {
+        // A leaf with no spread at all in one direction: the eigenvalue floor is `1e-8 · trace/d`,
+        // so the flat direction's log is decided entirely by the other direction's variance.
+        let mut wide = Full::<f64>::new(2);
+        wide.push(&[-10.0, 0.0], 1.0);
+        wide.push(&[10.0, 0.0], 1.0);
+        let mut flat = Full::<f64>::new(2);
+        flat.push(&[0.0, 0.0], 1.0);
+
+        let out = log_covariances(&[wide, flat]);
+        // cov(wide) = diag(100, 0); trace/d = 50, so the floor is 5e-7 and log|_22 = ln 5e-7.
+        assert!((out[0][0][0] - 100f64.ln()).abs() < 1e-9, "{:?}", out[0]);
+        assert!((out[0][1][1] - 5e-7f64.ln()).abs() < 1e-9, "{:?}", out[0]);
+        assert!(out[0][0][1].abs() < 1e-9 && out[0][1][0].abs() < 1e-9);
+        // A single point has no scale of its own, so the absolute floor 1e-12 takes over.
+        for d in 0..2 {
+            assert!((out[1][d][d] - 1e-12f64.ln()).abs() < 1e-9, "{:?}", out[1]);
+        }
+    }
 }
