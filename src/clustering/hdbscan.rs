@@ -308,6 +308,7 @@ mod tests {
     use super::*;
     use crate::clustering::rng::SplitMix64;
     use crate::clustering::testutil::{ari, grid_micros, two_moons};
+    use crate::feature::Spherical;
 
     #[test]
     fn hdbscan_separates_two_moons() {
@@ -384,5 +385,256 @@ mod tests {
             "A and B are distinct clusters"
         );
         assert_eq!(res.n_clusters, 2);
+    }
+
+    /// HDBSCAN* re-derived from Campello, Moulavi & Sander (2013). The library builds its minimum
+    /// spanning tree with Prim; this one uses Kruskal over every pair, so the two agree only if the
+    /// mutual-reachability metric underneath them agrees. From there: the single-linkage dendrogram,
+    /// the condensed tree — a merge whose two sides both reach `min_cluster_size` births two
+    /// clusters, anything smaller falls out of its parent and pays stability `(λ_split − λ_birth)`
+    /// per unit of the mass that left — and excess-of-mass selection, keeping a cluster whenever its
+    /// own stability is at least the total its descendants can claim.
+    fn reference_hdbscan(
+        mu: &[Vec<f64>],
+        mass: &[f64],
+        min_samples: usize,
+        min_cluster_size: usize,
+    ) -> Vec<i64> {
+        let m = mu.len();
+        let dist = |i: usize, j: usize| -> f64 {
+            mu[i]
+                .iter()
+                .zip(&mu[j])
+                .map(|(a, b)| (a - b) * (a - b))
+                .sum::<f64>()
+                .sqrt()
+        };
+        let k = min_samples.clamp(1, m - 1);
+        let core: Vec<f64> = (0..m)
+            .map(|i| {
+                let mut ds: Vec<f64> = (0..m).filter(|&j| j != i).map(|j| dist(i, j)).collect();
+                ds.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                ds[k - 1]
+            })
+            .collect();
+
+        fn root_of(p: &mut [usize], x: usize) -> usize {
+            let mut r = x;
+            while p[r] != r {
+                r = p[r];
+            }
+            let mut c = x;
+            while p[c] != c {
+                let nxt = p[c];
+                p[c] = r;
+                c = nxt;
+            }
+            r
+        }
+
+        let mut edges: Vec<(f64, usize, usize)> = Vec::new();
+        for i in 0..m {
+            for j in (i + 1)..m {
+                edges.push((core[i].max(core[j]).max(dist(i, j)), i, j));
+            }
+        }
+        edges.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+        let mut uf: Vec<usize> = (0..m).collect();
+        let mut mst: Vec<(f64, usize, usize)> = Vec::new();
+        for (w, a, b) in edges {
+            let (ra, rb) = (root_of(&mut uf, a), root_of(&mut uf, b));
+            if ra != rb {
+                uf[ra] = rb;
+                mst.push((w, a, b));
+            }
+        }
+
+        let total = 2 * m;
+        let mut children = vec![(usize::MAX, usize::MAX); total];
+        let mut node_dist = vec![0.0f64; total];
+        let mut node_mass = vec![0.0f64; total];
+        let mut node_size = vec![0usize; total];
+        for i in 0..m {
+            node_mass[i] = mass[i];
+            node_size[i] = 1;
+        }
+        let mut uf: Vec<usize> = (0..m).collect();
+        let mut comp_node: Vec<usize> = (0..m).collect();
+        let mut next = m;
+        for &(w, a, b) in &mst {
+            let (ra, rb) = (root_of(&mut uf, a), root_of(&mut uf, b));
+            let (na, nb) = (comp_node[ra], comp_node[rb]);
+            children[next] = (na, nb);
+            node_dist[next] = w;
+            node_mass[next] = node_mass[na] + node_mass[nb];
+            node_size[next] = node_size[na] + node_size[nb];
+            uf[ra] = rb;
+            comp_node[rb] = next;
+            next += 1;
+        }
+        let root = next - 1;
+
+        let leaves = |nd: usize, children: &[(usize, usize)]| -> Vec<usize> {
+            let mut out = Vec::new();
+            let mut st = vec![nd];
+            while let Some(x) = st.pop() {
+                if x < m {
+                    out.push(x);
+                } else {
+                    st.push(children[x].0);
+                    st.push(children[x].1);
+                }
+            }
+            out
+        };
+
+        let (mut birth, mut stab, mut kids) = (vec![0.0f64], vec![0.0f64], vec![Vec::new()]);
+        let mut point_cluster = vec![0usize; m];
+        let mut stack = vec![(root, 0usize)];
+        while let Some((nd, c)) = stack.pop() {
+            if nd < m {
+                continue;
+            }
+            let (l, r) = children[nd];
+            let split = if node_dist[nd] > 0.0 {
+                1.0 / node_dist[nd]
+            } else {
+                f64::INFINITY
+            };
+            let (lbig, rbig) = (
+                node_size[l] >= min_cluster_size,
+                node_size[r] >= min_cluster_size,
+            );
+            let fresh =
+                |b: f64, birth: &mut Vec<f64>, stab: &mut Vec<f64>, kids: &mut Vec<Vec<usize>>| {
+                    birth.push(b);
+                    stab.push(0.0);
+                    kids.push(Vec::new());
+                    birth.len() - 1
+                };
+            if lbig && rbig {
+                stab[c] += (split - birth[c]) * node_mass[nd];
+                let cl = fresh(split, &mut birth, &mut stab, &mut kids);
+                let cr = fresh(split, &mut birth, &mut stab, &mut kids);
+                kids[c].push(cl);
+                kids[c].push(cr);
+                for p in leaves(l, &children) {
+                    point_cluster[p] = cl;
+                }
+                for p in leaves(r, &children) {
+                    point_cluster[p] = cr;
+                }
+                stack.push((l, cl));
+                stack.push((r, cr));
+            } else if lbig {
+                for p in leaves(r, &children) {
+                    stab[c] += (split - birth[c]) * mass[p];
+                }
+                stack.push((l, c));
+            } else if rbig {
+                for p in leaves(l, &children) {
+                    stab[c] += (split - birth[c]) * mass[p];
+                }
+                stack.push((r, c));
+            } else {
+                for p in leaves(nd, &children) {
+                    stab[c] += (split - birth[c]) * mass[p];
+                }
+            }
+        }
+
+        let n_cl = birth.len();
+        let mut selected = vec![false; n_cl];
+        let mut prop = stab.clone();
+        for c in (1..n_cl).rev() {
+            let child_stab: f64 = kids[c].iter().map(|&cc| prop[cc]).sum();
+            if kids[c].is_empty() || stab[c] >= child_stab {
+                selected[c] = true;
+                let mut ds = kids[c].clone();
+                while let Some(x) = ds.pop() {
+                    selected[x] = false;
+                    ds.extend(kids[x].iter().copied());
+                }
+                prop[c] = stab[c];
+            } else {
+                prop[c] = child_stab;
+            }
+        }
+        let mut cl_parent = vec![usize::MAX; n_cl];
+        for (c, kc) in kids.iter().enumerate() {
+            for &cc in kc {
+                cl_parent[cc] = c;
+            }
+        }
+        let mut label_of = vec![-1i64; n_cl];
+        let mut nl = 0i64;
+        for c in 0..n_cl {
+            if selected[c] {
+                label_of[c] = nl;
+                nl += 1;
+            }
+        }
+        (0..m)
+            .map(|p| {
+                let mut c = point_cluster[p];
+                loop {
+                    if selected[c] {
+                        return label_of[c];
+                    }
+                    if cl_parent[c] == usize::MAX {
+                        return -1;
+                    }
+                    c = cl_parent[c];
+                }
+            })
+            .collect()
+    }
+
+    /// Nested structure at three scales: two tight blobs a short hop apart, a third far away, and
+    /// two stragglers between them. A flat fixture never exercises the condensed tree at all.
+    fn nested_micros() -> Vec<Spherical<f64>> {
+        let mut rng = SplitMix64::new(1234);
+        let mut pts: Vec<Vec<f64>> = Vec::new();
+        for c in [[0.0, 0.0], [1.4, 0.0], [9.0, 6.0]] {
+            for _ in 0..40 {
+                pts.push(vec![c[0] + 0.25 * rng.gauss(), c[1] + 0.25 * rng.gauss()]);
+            }
+        }
+        pts.push(vec![4.5, 3.0]);
+        pts.push(vec![5.5, 3.6]);
+        grid_micros(&pts, 0.4).0
+    }
+
+    #[test]
+    fn hdbscan_matches_an_independent_reference_partition() {
+        let feats = nested_micros();
+        let mu: Vec<Vec<f64>> = feats.iter().map(|f| f.mean().to_vec()).collect();
+        let mass: Vec<f64> = feats.iter().map(|f| f.weight()).collect();
+        for (ms, mcs) in [(1usize, 3usize), (2, 3), (3, 5), (5, 8), (2, 12)] {
+            let got = hdbscan(&feats, ms, mcs);
+            let want = reference_hdbscan(&mu, &mass, ms, mcs);
+            assert_eq!(
+                got.labels.iter().map(|&l| l < 0).collect::<Vec<_>>(),
+                want.iter().map(|&l| l < 0).collect::<Vec<_>>(),
+                "min_samples {ms}, min_cluster_size {mcs}: the noise set differs"
+            );
+            let a: Vec<usize> = got.labels.iter().map(|&l| (l + 1) as usize).collect();
+            let b: Vec<usize> = want.iter().map(|&l| (l + 1) as usize).collect();
+            assert!(
+                (ari(&a, &b) - 1.0).abs() < 1e-12,
+                "min_samples {ms}, min_cluster_size {mcs}: {:?} vs {:?}",
+                got.labels,
+                want
+            );
+            assert_eq!(
+                got.n_clusters,
+                want.iter()
+                    .filter(|&&l| l >= 0)
+                    .map(|&l| l as usize)
+                    .max()
+                    .map_or(0, |x| x + 1),
+                "min_samples {ms}, min_cluster_size {mcs}: cluster count"
+            );
+        }
     }
 }

@@ -224,6 +224,22 @@ mod tests {
     }
 
     #[test]
+    fn grassmann_sq_sums_squares_over_a_genuinely_mixed_basis() {
+        // Rank 1 with axis-aligned bases makes every inner product a single term and every square
+        // its own value, so the Frobenius sum can be corrupted without moving the answer. Two
+        // mixed columns at a 30-degree tilt give ‖AᵀB‖²_F four nonzero terms and a known result.
+        let s = std::f64::consts::FRAC_1_SQRT_2;
+        let a = vec![vec![s, -s], vec![s, s], vec![0.0, 0.0]];
+        let (c, sn) = (30f64.to_radians().cos(), 30f64.to_radians().sin());
+        let b = vec![vec![c, 0.0], vec![0.0, 1.0], vec![sn, 0.0]];
+        // A spans the xy-plane; B tilts one of its two axes out of it by 30 degrees, so the
+        // squared projection distance is r − (cos²θ + 1) = sin²θ.
+        let got = grassmann_sq(&a, &b);
+        assert!((got - sn * sn).abs() < 1e-12, "{got} vs {}", sn * sn);
+        assert!(grassmann_sq(&a, &a).abs() < 1e-12);
+    }
+
+    #[test]
     fn tangent_bases_recover_principal_axis() {
         // Points along y ≈ 0.05·x: the rank-1 tangent basis is the long (≈ x) axis.
         let mut f = Full::<f64>::new(2);
