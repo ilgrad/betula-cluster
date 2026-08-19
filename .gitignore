@@ -16,8 +16,14 @@ __pycache__/
 .pytest_cache/
 # docs site build
 /site/
-# local planning / research notes (not shipped)
+# local planning / research notes / scratch measurements (not shipped)
 /plans/
+/local/
+# agent rules, memory pointers and session state -- local only, never published
+/CLAUDE.md
+/.claude/
+/AGENTS.md
+/.cursorrules
 # editor
 .idea/
 .vscode/
