@@ -841,4 +841,233 @@ mod tests {
         assert_eq!(argmax(&[1.0, 2.0, 2.0]), 1);
         assert_eq!(argmax(&[5.0]), 0);
     }
+
+    #[test]
+    fn more_restarts_never_return_a_worse_partition() {
+        // One rng stream feeds the restarts in order, so `n_init = m + 1` sees exactly the inits
+        // `n_init = m` saw plus one more: keeping the best of them can only lower the inertia.
+        let mut rng = SplitMix64::new(31);
+        let centers = [[0.0, 0.0], [3.0, 0.4], [1.2, 3.1], [4.5, 3.6]];
+        let (pts, _truth) = blobs(&mut rng, 60, &centers, 1.1);
+        let (micros, _assign) = grid_micros(&pts, 0.55);
+        let mut prev = f64::INFINITY;
+        let mut improvements = 0;
+        for n_init in 1..=10 {
+            let got = kmeans(&micros, 4, 100, n_init, 5).inertia;
+            assert!(got <= prev + 1e-9, "n_init = {n_init}: {got} > {prev}");
+            if got < prev - 1e-9 {
+                improvements += 1;
+            }
+            prev = got;
+        }
+        assert!(
+            improvements > 1,
+            "every restart found the same optimum; the fixture cannot see the choice"
+        );
+    }
+
+    #[test]
+    fn a_constraint_index_equal_to_the_feature_count_is_out_of_range() {
+        // `n` itself is the first invalid id, and it is the only one a bound that admits it can
+        // reach: the union-find has exactly `n` slots.
+        let f = feats(&[[0.0, 0.0], [0.2, 0.0], [10.0, 0.0]]);
+        let lab = cop_kmeans(&f, 2, &[(0, 3), (3, 1)], &[(2, 3)], 100, 4, 1).expect("feasible");
+        assert_eq!(lab[0], lab[1], "the near pair was split");
+        assert_ne!(lab[0], lab[2], "the far feature joined the near pair");
+    }
+
+    /// Independent re-derivation of the SSE [`cop_kmeans`] minimises across restarts,
+    /// `Σ_i [S_i + w_i ‖μ_i − c_{a(i)}‖²]`, evaluated at the mass-weighted centroid of each label.
+    fn reference_sse(features: &[Spherical<f64>], labels: &[usize]) -> f64 {
+        let k = labels.iter().max().map_or(0, |&m| m + 1);
+        let dim = features[0].dim();
+        let mut wsum = vec![0.0; k];
+        let mut csum = vec![vec![0.0; dim]; k];
+        for (f, &l) in features.iter().zip(labels) {
+            wsum[l] += f.weight();
+            for (s, &m) in csum[l].iter_mut().zip(f.mean()) {
+                *s += f.weight() * m;
+            }
+        }
+        for (c, &w) in csum.iter_mut().zip(&wsum) {
+            if w > 0.0 {
+                for s in c.iter_mut() {
+                    *s /= w;
+                }
+            }
+        }
+        features
+            .iter()
+            .zip(labels)
+            .map(|(f, &l)| f.ssd() + f.weight() * sq_euclidean(f.mean(), &csum[l]))
+            .sum()
+    }
+
+    /// One constrained assignment step of COP-KMeans, re-derived from Wagstaff et al.: heaviest
+    /// chunklet first, then the nearest centre that no already-placed cannot-link partner occupies.
+    /// With no must-links each feature is its own chunklet, so it indexes `features` directly.
+    fn constrained_step(
+        features: &[Spherical<f64>],
+        cannot: &[(usize, usize)],
+        centers: &[Vec<f64>],
+    ) -> Vec<usize> {
+        let n = features.len();
+        let mut order: Vec<usize> = (0..n).collect();
+        order.sort_by(|&i, &j| {
+            features[j]
+                .weight()
+                .partial_cmp(&features[i].weight())
+                .unwrap()
+                .then(i.cmp(&j))
+        });
+        let mut members: Vec<Vec<usize>> = vec![Vec::new(); centers.len()];
+        let mut assign = vec![usize::MAX; n];
+        for &i in &order {
+            let mut cand: Vec<(f64, usize)> = centers
+                .iter()
+                .enumerate()
+                .map(|(c, ctr)| (sq_euclidean(features[i].mean(), ctr), c))
+                .collect();
+            cand.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap().then(a.1.cmp(&b.1)));
+            let c = cand
+                .into_iter()
+                .map(|(_, c)| c)
+                .find(|&c| {
+                    !members[c]
+                        .iter()
+                        .any(|&m| cannot.contains(&(i, m)) || cannot.contains(&(m, i)))
+                })
+                .expect("a feasible centre");
+            assign[i] = c;
+            members[c].push(i);
+        }
+        assign
+    }
+
+    /// Mass-weighted centroid per label, in label order.
+    fn centroids(features: &[Spherical<f64>], labels: &[usize], k: usize) -> Vec<Vec<f64>> {
+        let dim = features[0].dim();
+        let mut wsum = vec![0.0; k];
+        let mut csum = vec![vec![0.0; dim]; k];
+        for (f, &l) in features.iter().zip(labels) {
+            wsum[l] += f.weight();
+            for (s, &m) in csum[l].iter_mut().zip(f.mean()) {
+                *s += f.weight() * m;
+            }
+        }
+        for (c, &w) in csum.iter_mut().zip(&wsum) {
+            if w > 0.0 {
+                for s in c.iter_mut() {
+                    *s /= w;
+                }
+            }
+        }
+        csum
+    }
+
+    #[test]
+    fn cop_kmeans_returns_a_constrained_fixed_point() {
+        // Stopping one step early still satisfies every constraint, so only a fixed-point test
+        // sees it: re-running the assignment step from the returned centres must change nothing.
+        let mut rng = SplitMix64::new(19);
+        let centers = [[0.0, 0.0], [2.6, 0.5], [1.0, 2.8], [3.8, 3.2]];
+        let (pts, _truth) = blobs(&mut rng, 50, &centers, 1.0);
+        let (micros, _assign) = grid_micros(&pts, 0.6);
+        let cannot = [(0usize, 1usize), (2, 3)];
+        let lab = cop_kmeans(&micros, 4, &[], &cannot, 100, 6, 3).expect("feasible");
+        for &(a, b) in &cannot {
+            assert_ne!(lab[a], lab[b], "cannot-link ({a}, {b}) was violated");
+        }
+        let ctrs = centroids(&micros, &lab, 4);
+        assert_eq!(
+            constrained_step(&micros, &cannot, &ctrs),
+            lab,
+            "the returned labelling is not a fixed point of the assignment step"
+        );
+    }
+
+    #[test]
+    fn cop_kmeans_keeps_the_restart_with_the_lowest_independently_scored_sse() {
+        let mut rng = SplitMix64::new(23);
+        let centers = [[0.0, 0.0], [2.4, 0.6], [1.1, 2.7]];
+        let (pts, _truth) = blobs(&mut rng, 50, &centers, 1.0);
+        let (micros, _assign) = grid_micros(&pts, 0.6);
+        let cannot = [(0usize, 1usize)];
+        let mut prev = f64::INFINITY;
+        let mut improvements = 0;
+        for n_init in 1..=12 {
+            let lab = cop_kmeans(&micros, 3, &[], &cannot, 100, n_init, 11).expect("feasible");
+            let sse = reference_sse(&micros, &lab);
+            assert!(sse <= prev + 1e-9, "n_init = {n_init}: {sse} > {prev}");
+            if sse < prev - 1e-9 {
+                improvements += 1;
+            }
+            prev = sse;
+        }
+        assert!(
+            improvements > 1,
+            "every restart scored the same; the fixture cannot see the choice"
+        );
+    }
+
+    /// Greedy k-means++ re-derived from Arthur–Vassilvitskii plus scikit-learn's greedy variant:
+    /// the first centre is drawn ∝ weight, then each further centre is the best of `2 + ⌊ln k⌋`
+    /// candidates drawn ∝ weight·D², scored by the potential `Σ_i w_i · min(‖x_i − cand‖², D²_i)`
+    /// it would leave behind. It shares [`weighted_pick`], so it consumes the same rng stream.
+    fn reference_kpp(
+        means: &[Vec<f64>],
+        weights: &[f64],
+        k: usize,
+        rng: &mut SplitMix64,
+    ) -> Vec<Vec<f64>> {
+        let mut centers = vec![means[weighted_pick(weights, rng)].clone()];
+        let mut d2: Vec<f64> = means.iter().map(|m| sq_euclidean(m, &centers[0])).collect();
+        let n_trials = 2 + (k as f64).ln().floor().max(0.0) as usize;
+        while centers.len() < k {
+            let probs: Vec<f64> = weights.iter().zip(&d2).map(|(&w, &d)| w * d).collect();
+            let mut best = usize::MAX;
+            let mut best_pot = f64::INFINITY;
+            for _ in 0..n_trials {
+                let cand = weighted_pick(&probs, rng);
+                let pot: f64 = means
+                    .iter()
+                    .zip(weights)
+                    .zip(&d2)
+                    .map(|((m, &w), &d)| w * sq_euclidean(m, &means[cand]).min(d))
+                    .sum();
+                if pot < best_pot {
+                    best_pot = pot;
+                    best = cand;
+                }
+            }
+            for (di, m) in d2.iter_mut().zip(means) {
+                *di = di.min(sq_euclidean(m, &means[best]));
+            }
+            centers.push(means[best].clone());
+        }
+        centers
+    }
+
+    #[test]
+    fn kmeans_plus_plus_matches_the_greedy_reference_draw_for_draw() {
+        // The seeds it returns are the only thing downstream sees, and on separated data every
+        // sane sampler lands on the same ones — so the fixture is deliberately unseparated, and
+        // the assertion is on the exact sequence rather than on the partition it leads to.
+        let mut rng = SplitMix64::new(77);
+        let centers = [[0.0, 0.0], [1.8, 0.7], [0.9, 2.0], [3.0, 2.4]];
+        let (pts, _truth) = blobs(&mut rng, 40, &centers, 1.2);
+        let (micros, _assign) = grid_micros(&pts, 0.5);
+        let means: Vec<Vec<f64>> = micros.iter().map(|f| f.mean().to_vec()).collect();
+        let weights: Vec<f64> = micros.iter().map(|f| f.weight()).collect();
+        for k in [2usize, 4, 7] {
+            let mut a = SplitMix64::new(2024);
+            let mut b = SplitMix64::new(2024);
+            assert_eq!(
+                kmeans_plus_plus(&means, &weights, k, &mut a),
+                reference_kpp(&means, &weights, k, &mut b),
+                "k = {k}"
+            );
+            assert_eq!(a.next_u64(), b.next_u64(), "k = {k}: rng streams diverged");
+        }
+    }
 }
