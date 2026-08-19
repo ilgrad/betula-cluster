@@ -372,6 +372,7 @@ mod tests {
     use crate::clustering::testutil::{ari, blobs};
     use crate::distance::CentroidEuclidean;
     use crate::feature::{Diagonal, Spherical};
+    use std::collections::HashMap;
 
     #[test]
     fn end_to_end_kmeans_from_points() {
@@ -470,5 +471,158 @@ mod tests {
                 assert_eq!(labels.len(), feats.len());
             }
         }
+    }
+
+    /// Three well-separated blobs collapsed onto a coarse grid: few enough leaves that the
+    /// automatic sweep is cheap, separated enough — in direction as well as in position — that
+    /// every head's automatic arm finds more than one component.
+    fn dispatch_leaves() -> Vec<Diagonal<f64>> {
+        let mut rng = SplitMix64::new(11);
+        let centers = [[10.0, 0.0], [0.0, 10.0], [-7.0, -7.0]];
+        let (pts, _truth) = blobs(&mut rng, 40, &centers, 0.6);
+        let mut map: HashMap<(i64, i64), usize> = HashMap::new();
+        let mut cfs: Vec<Diagonal<f64>> = Vec::new();
+        for p in &pts {
+            let key = ((p[0] / 1.5).round() as i64, (p[1] / 1.5).round() as i64);
+            let idx = *map.entry(key).or_insert_with(|| {
+                cfs.push(<Diagonal<f64> as ClusterFeature<f64>>::new(2));
+                cfs.len() - 1
+            });
+            cfs[idx].push(p, 1.0);
+        }
+        cfs
+    }
+
+    #[test]
+    fn every_head_takes_its_automatic_arm_only_when_k_is_zero() {
+        let feats = dispatch_leaves();
+        for (name, method) in [
+            ("kmeans", Method::KMeans),
+            ("gmm", Method::Gmm),
+            ("gmm-full", Method::GmmFull),
+            ("ward", Method::Ward),
+            ("spherical-kmeans", Method::SphericalKMeans),
+            ("movmf", Method::Movmf),
+            ("gmm-toeplitz", Method::GmmToeplitz),
+            ("gmm-toeplitz-full", Method::GmmToeplitzFull),
+            ("gmm-toeplitz-gs", Method::GmmToeplitzGs),
+        ] {
+            let auto = distinct_count(&fit_head(&feats, 0, method, 100, 1).labels);
+            let one = distinct_count(&fit_head(&feats, 1, method, 100, 1).labels);
+            let two = distinct_count(&fit_head(&feats, 2, method, 100, 1).labels);
+            assert!(auto > 1, "{name}: the automatic arm collapsed to {auto}");
+            assert_eq!(one, 1, "{name}: k = 1 did not take the fixed arm");
+            assert_eq!(two, 2, "{name}: k = 2 did not take the fixed arm");
+        }
+    }
+
+    #[test]
+    fn cluster_centroids_are_mass_weighted_and_normalized_only_when_asked() {
+        let leaf = |p: [f64; 2], w: f64| {
+            let mut f = <Diagonal<f64> as ClusterFeature<f64>>::new(2);
+            f.push(&p, w);
+            f
+        };
+        // Label 1 is empty, and label 2's two leaves cancel to the origin — the one centroid whose
+        // norm is zero, so `unit` must leave it alone rather than divide by it.
+        let feats = vec![
+            leaf([0.0, 4.0], 1.0),
+            leaf([4.0, 0.0], 3.0),
+            leaf([1.0, 0.0], 2.0),
+            leaf([-1.0, 0.0], 2.0),
+        ];
+        let labels = [0usize, 0, 2, 2];
+
+        let raw = cluster_centroids(&feats, &labels, false);
+        assert_eq!(raw.len(), 2, "the empty label was emitted");
+        assert_eq!(raw[0].0, 0);
+        assert_eq!(raw[1].0, 2);
+        for (got, want) in raw[0].1.iter().zip(&[3.0, 1.0]) {
+            assert!((got - want).abs() < 1e-12, "{raw:?}");
+        }
+        assert!(raw[1].1.iter().all(|v| v.abs() < 1e-12), "{raw:?}");
+
+        let unit = cluster_centroids(&feats, &labels, true);
+        let n = 10f64.sqrt();
+        for (got, want) in unit[0].1.iter().zip(&[3.0 / n, 1.0 / n]) {
+            assert!((got - want).abs() < 1e-12, "{unit:?}");
+        }
+        assert!(unit[1].1.iter().all(|v| *v == 0.0), "{unit:?}");
+    }
+
+    #[test]
+    fn nearest_center_keeps_the_first_of_two_equidistant_centers() {
+        let centers = vec![(3usize, vec![-1.0, 0.0]), (7usize, vec![1.0, 0.0])];
+        assert_eq!(nearest_center(&centers, &[0.0, 0.0]), 3);
+        assert_eq!(nearest_center(&centers, &[0.9, 0.0]), 7);
+        assert_eq!(nearest_center(&centers, &[-0.9, 0.0]), 3);
+    }
+
+    #[test]
+    fn each_head_installs_the_assignment_rule_it_declares() {
+        let mut rng = SplitMix64::new(4);
+        let centers = [[0.0, 0.0], [9.0, 0.0], [0.0, 9.0]];
+        let (pts, _truth) = blobs(&mut rng, 60, &centers, 0.5);
+        for (name, method) in [
+            ("kmeans", Method::KMeans),
+            ("spherical-kmeans", Method::SphericalKMeans),
+            ("gmm", Method::Gmm),
+            ("movmf", Method::Movmf),
+            ("ward", Method::Ward),
+            ("spectral", Method::Spectral),
+            (
+                "leiden",
+                Method::Leiden {
+                    resolution: 1.0,
+                    cpm: false,
+                    cov_weight: 0.0,
+                    tangent_weight: 0.0,
+                    tangent_rank: 2,
+                },
+            ),
+        ] {
+            let mut tree: CFTree<f64, Diagonal<f64>, _, _> =
+                CFTree::new(2, 16, 16, 0.05, 200, CentroidEuclidean, CentroidEuclidean);
+            for p in &pts {
+                tree.insert(p);
+            }
+            let model = Model::fit(tree, 3, method, 100, 1);
+            let ok = matches!(
+                (assignment_rule(method), &model.assign),
+                (Rule::Centroid { .. }, Assignment::Centers(_))
+                    | (Rule::Posterior, Assignment::Posterior(_))
+                    | (Rule::Microcluster, Assignment::Microcluster)
+            );
+            assert!(ok, "{name}: fit installed a rule the head does not declare");
+        }
+    }
+
+    #[test]
+    fn the_centroid_rule_outvotes_the_nearest_microcluster() {
+        // One cluster is a heavy core at the origin plus a light satellite at x = 5; the other is
+        // compact at x = 12. The probe at x = 7 has the satellite as its nearest microcluster, but
+        // the satellite barely moves its cluster's centroid, so the far compact centre is nearer.
+        let mut rng = SplitMix64::new(17);
+        let (core, _t) = blobs(&mut rng, 100, &[[0.0, 0.0]], 0.4);
+        let (satellite, _t) = blobs(&mut rng, 20, &[[5.0, 0.0]], 0.2);
+        let (far, _t) = blobs(&mut rng, 40, &[[12.0, 0.0]], 0.2);
+        let mut tree: CFTree<f64, Diagonal<f64>, _, _> =
+            CFTree::new(2, 16, 16, 0.05, 200, CentroidEuclidean, CentroidEuclidean);
+        for p in core.iter().chain(&satellite).chain(&far) {
+            tree.insert(p);
+        }
+        let model = Model::fit(tree, 2, Method::KMeans, 100, 1);
+        let probe = [7.0, 0.0];
+        let micro = model.entry_labels[model.tree.nearest_entry(&probe)];
+        assert_eq!(
+            model.predict(&probe),
+            model.predict(&[12.0, 0.0]),
+            "the probe did not fall to the far centre"
+        );
+        assert_ne!(
+            model.predict(&probe),
+            micro,
+            "the centroid rule agreed with the descent, so the fixture proves nothing"
+        );
     }
 }
