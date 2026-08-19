@@ -11,9 +11,19 @@ permissions:
 
 jobs:
   cargo-mutants:
-    name: cargo-mutants (CF math core)
+    # Sharded because a single job never finished: measured on the 2026-08-17 run, 90 minutes at
+    # -j2 completed 98 of 1011 mutants (9.7%) and was killed by the timeout -- as were all seven
+    # scheduled runs since 2026-07-06, so this workflow had produced no signal at all. At ~110
+    # worker-seconds per mutant, 12 shards x 4 workers puts each job around 115 mutants, well
+    # inside the cap. Shards are 0-indexed and the mutant list order is deterministic, so shard k
+    # covers the same mutants every week.
+    name: cargo-mutants ${{ matrix.shard }}/12
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -21,13 +31,48 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-mutants
-      - name: cargo mutants (scoped by .cargo/mutants.toml)
-        run: cargo mutants --no-shuffle -j2
+      - name: cargo mutants (scope in .cargo/mutants.toml)
+        run: cargo mutants --shard ${{ matrix.shard }}/12 -j4
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: mutants-out
+          name: mutants-out-${{ matrix.shard }}
           path: mutants.out
+
+  mutants-summary:
+    # One place to read the week's result instead of twelve. Fails the workflow if any shard left a
+    # mutant alive, so a surviving mutant is visible rather than buried in a per-shard artifact --
+    # which is how four survivors in src/distance.rs went unnoticed from July to August.
+    name: mutants summary
+    runs-on: ubuntu-latest
+    needs: cargo-mutants
+    if: always()
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: mutants-out-*
+          path: shards
+      - name: Collate
+        run: |
+          cat shards/*/missed.txt  2>/dev/null | sort -u > missed.txt  || true
+          cat shards/*/timeout.txt 2>/dev/null | sort -u > timeout.txt || true
+          cat shards/*/caught.txt  2>/dev/null | sort -u > caught.txt  || true
+          echo "caught:  $(wc -l < caught.txt)"  >> "$GITHUB_STEP_SUMMARY"
+          echo "missed:  $(wc -l < missed.txt)"  >> "$GITHUB_STEP_SUMMARY"
+          echo "timeout: $(wc -l < timeout.txt)" >> "$GITHUB_STEP_SUMMARY"
+          if [ -s missed.txt ]; then
+            { echo; echo '## Surviving mutants'; echo '```'; cat missed.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::$(wc -l < missed.txt) mutant(s) survived -- the tests do not constrain this code"
+            exit 1
+          fi
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: mutants-collated
+          path: |
+            missed.txt
+            timeout.txt
+            caught.txt
 
   mutmut:
     name: mutmut (tuning.py + wrapper)
@@ -36,11 +81,12 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
-      - uses: astral-sh/setup-uv@v7
+      - uses: astral-sh/setup-uv@v10
       - name: mutmut run (advisory)
         run: |
           uv venv --python 3.12
           uv pip install maturin numpy "scikit-learn>=1.3" scipy networkx pytest mutmut
-          uv run maturin develop --release
-          uv run mutmut run || true
-          uv run mutmut results || true
+          # --no-sync: same .python-version=3.14 vs deliberate-3.12 venv trap as ci.yml.
+          uv run --no-sync maturin develop --release
+          uv run --no-sync mutmut run || true
+          uv run --no-sync mutmut results || true

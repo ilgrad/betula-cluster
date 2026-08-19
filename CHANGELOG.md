@@ -22,6 +22,26 @@ All notable changes to this project are documented here. The format follows
   below. Re-measurement is pending.
 - References to `../../math_improove/` in `DESIGN.md`, `src/distance.rs`, `src/feature.rs` and
   `src/stats.rs` pointed outside the repository; they now say the working notes are local-only.
+- **CI on macOS and Windows broke the moment `.python-version` was added.** That job builds a
+  deliberate 3.12 environment (`uv venv --python 3.12`) and installs its tools into it; with a
+  repo-wide 3.14 pin present, a bare `uv run` no longer accepts that environment, recreates it, and
+  discards the tools — `error: Failed to spawn: maturin`. Both `uv run` calls there, and the two in
+  the `mutmut` job that would have hit the same wall on its next schedule, now pass `--no-sync`.
+- **Mutation testing had never once produced a result.** All seven scheduled runs since 2026-07-06
+  were killed by the 90-minute cap: measured on the last of them, 90 minutes at `-j2` completed
+  **98 of 1011 mutants (9.7%)**. The job is now a 12-way shard matrix at `-j4` (~115 mutants each)
+  with a summary job that collates every shard and fails loudly on a survivor. Scope grew to include
+  `src/tree.rs`, `src/mixture.rs` and `src/model.rs`; `.cargo/mutants.toml` records the measured
+  mutant counts so the next widening can be sized rather than guessed.
+- **Four mutants had been surviving in `src/distance.rs` unread inside a cancelled run's artifact.**
+  `Radius::between` was pinned only by a case where `na·nb` and `na/nb` coincide (2·1) and where one
+  scatter was zero, so `*`→`/` and `+`→`-` both went unnoticed; `MahalanobisChi2::maha_sq` was only
+  ever exercised at mean zero, where `x − μ` and `x + μ` agree, so the sign of the residual was
+  unconstrained. Two tests now pin both. The fourth (`||`→`&&` in `VarianceIncrease::between`) was
+  an equivalent mutant — with exactly one weight zero the formula already returns zero — so the
+  guard is now written on the sum, `nab = na + nb`, matching `Radius::between` directly below it.
+  Same result for every input; the operator is simply no longer free. The Rust suite is 202 lib +
+  4 integration tests as a result (201 + 4 serial).
 
 ## [0.6.0] — 2026-08-19
 

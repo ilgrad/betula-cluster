@@ -30,7 +30,7 @@ jobs:
         with:
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
-      - uses: astral-sh/setup-uv@v7
+      - uses: astral-sh/setup-uv@v10
       - name: Build extension + deploy docs
         run: |
           uv venv

@@ -1,13 +1,23 @@
 # cargo-mutants: mutation testing scoped to the numerically-critical, Rust-tested core.
-# `cargo mutants` (see .github/workflows/mutants.yml for the scheduled run). First pass targets the
-# CF math where a surviving mutant silently corrupts every downstream label; broaden later by
-# dropping `examine_globs`.
+# `cargo mutants` (see .github/workflows/mutants.yml for the sharded scheduled run). The scope is
+# the code where a surviving mutant silently corrupts every downstream label: the CF math, plus the
+# tree that builds the summary and the fitted mixture that labels a raw point.
+#
+# Measured mutant counts (cargo mutants --list), for sizing the shard matrix:
+#   these 8 files        1386
+#   + src/clustering/*   +2093  -> would need ~30 shards instead of 12
+#   whole crate          4312
+# clustering/ is deliberately still out: widen only once a sharded run has gone green end-to-end,
+# since expanding the scope of something that never finishes just multiplies the failure.
 examine_globs = [
     "src/feature.rs",
     "src/distance.rs",
     "src/linalg.rs",
     "src/stats.rs",
     "src/sparse.rs",
+    "src/tree.rs",
+    "src/mixture.rs",
+    "src/model.rs",
 ]
 # python.rs has no Rust-level test coverage (coverage runs --features persistence,cli, not python),
 # so any mutant there is a false survivor; the CLI bin is a thin wrapper.

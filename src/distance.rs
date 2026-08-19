@@ -77,10 +77,11 @@ impl<R: Real, C: ClusterFeature<R>> CFDistance<R, C> for VarianceIncrease {
     }
     fn between(&self, a: &C, b: &C) -> R {
         let (na, nb) = (a.weight(), b.weight());
-        if na <= R::zero() || nb <= R::zero() {
+        let nab = na + nb;
+        if nab <= R::zero() {
             return R::zero();
         }
-        kernels::sq_euclidean(a.mean(), b.mean()) * na * nb / (na + nb)
+        kernels::sq_euclidean(a.mean(), b.mean()) * na * nb / nab
     }
 }
 
@@ -334,6 +335,25 @@ mod tests {
         );
         // var_eff = (0 + 2·1)/(1 + 2) = 2/3 per dim ⇒ maha² = (1+1)/(2/3) = 3.
         assert!(close(m, 3.0), "maha² = {m}");
+    }
+
+    #[test]
+    fn radius_between_pins_the_product_and_the_pooled_scatter() {
+        // Deliberately na·nb != na/nb and both scatters non-zero, so the weight product and the
+        // ssd sum are each pinned to a value rather than to a coincidence.
+        // a: n 2, mean 1, ssd 2. b: n 4, mean 11, ssd 20. (2·4·100 + 6·(2 + 20)) / 6² = 932/36.
+        let a: Spherical<f64> = build(1, &[&[0.], &[2.]]);
+        let b: Spherical<f64> = build(1, &[&[8.], &[10.], &[12.], &[14.]]);
+        assert!(close(Radius.between(&a, &b), 233.0 / 9.0));
+    }
+
+    #[test]
+    fn mahalanobis_chi2_uses_the_signed_difference() {
+        // Away from the origin, so x - mean and x + mean disagree.
+        let c: Diagonal<f64> = build(1, &[&[4.], &[6.]]); // n 2, mean 5, scatter 2
+        let gate = MahalanobisChi2::new(1.0, 2.0);
+        // var_eff = (2 + 2·1)/(2 + 2) = 1 ⇒ maha² = (1 − 5)² / 1 = 16.
+        assert!(close(gate.point(&c, &[1.0]), 16.0));
     }
 
     #[test]
