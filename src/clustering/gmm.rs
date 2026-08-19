@@ -74,16 +74,38 @@ fn gmm_diagonal_once<R: Real, C: ClusterFeature<R>>(
     // warm start from k-means
     let km = kmeans(features, k, 50, 1, seed);
     let mut means = km.centers;
-    // Floor the warm-start variances. Real data often has constant dimensions (e.g. always-zero
-    // border pixels in images) where `gvar` is 0; without flooring, the first E-step divides by that
-    // zero and every responsibility becomes NaN, collapsing the model to a single cluster. The M-step
-    // already floors each variance — the initial value must too.
-    let var0: Vec<R> = gvar
-        .iter()
-        .zip(&floor)
-        .map(|(&g, &f)| if g > f { g } else { f })
-        .collect();
-    let mut vars = vec![var0; k];
+    // Seed each component's variance from its own k-means cluster, not from `gvar`. `gvar` is the
+    // spread of the *whole* dataset, so in a well-separated dimension it is dominated by the
+    // between-cluster distance and overstates the within-component spread — by 34x on four blobs
+    // eight units apart. Inflating every dimension by the same factor would be harmless: it cancels
+    // in the argmax. It is the *ratio across* dimensions that decides responsibilities, and a
+    // dimension whose spread is already purely within-component — a sparse binary feature, a
+    // near-constant pixel — gets no such inflation, so it silently gains that factor of relative
+    // weight and can dominate the first E-step. Four blobs plus twelve 2%-density binary columns
+    // collapsed every component onto the global mean (ARI 1.000 -> 0.000) until the seed came from
+    // the k-means partition. Still floored: real data has constant dimensions where the variance is
+    // 0, and without a floor the first E-step divides by zero and every responsibility becomes NaN.
+    let mut vars = vec![vec![R::zero(); dim]; k];
+    {
+        let mut nk = vec![R::zero(); k];
+        for (i, &c) in km.labels.iter().enumerate() {
+            nk[c] = nk[c] + n[i];
+            for d in 0..dim {
+                let diff = mu[i][d] - means[c][d];
+                vars[c][d] = vars[c][d] + n[i] * (diff * diff + var[i][d]);
+            }
+        }
+        for c in 0..k {
+            for d in 0..dim {
+                let raw = if nk[c] > R::zero() {
+                    vars[c][d] / nk[c]
+                } else {
+                    gvar[d]
+                };
+                vars[c][d] = if raw > floor[d] { raw } else { floor[d] };
+            }
+        }
+    }
     let mut weights = vec![R::one() / R::from_usize(k).unwrap(); k];
 
     let mut resp = vec![vec![R::zero(); k]; m];
@@ -341,7 +363,42 @@ fn gmm_full_once<R: Real, C: ClusterFeature<R>>(
 
     let km = kmeans(features, k, 50, 1, seed);
     let mut means = km.centers;
-    let mut covs = vec![gcov.clone(); k];
+    // Seed each component from its own k-means cluster rather than from `gcov`, for the reason given
+    // at the same point in `gmm_diagonal_once`: the global covariance carries the between-cluster
+    // separation, which inflates well-separated dimensions but not those whose spread is already
+    // within-component, and that uneven inflation alone can decide the first E-step.
+    let mut covs = vec![vec![vec![R::zero(); dim]; dim]; k];
+    {
+        let dfloor = R::from_f64(1e-3).unwrap();
+        let mut nk = vec![R::zero(); k];
+        for (i, &c) in km.labels.iter().enumerate() {
+            nk[c] = nk[c] + n[i];
+            let delta: Vec<R> = (0..dim).map(|d| mu[i][d] - means[c][d]).collect();
+            sig[i].add_scaled(&mut covs[c], n[i]);
+            for a in 0..dim {
+                for b in 0..dim {
+                    covs[c][a][b] = covs[c][a][b] + n[i] * delta[a] * delta[b];
+                }
+            }
+        }
+        for c in 0..k {
+            if nk[c] > R::zero() {
+                for row in covs[c].iter_mut() {
+                    for v in row.iter_mut() {
+                        *v = *v / nk[c];
+                    }
+                }
+            } else {
+                covs[c] = gcov.clone();
+            }
+            for d in 0..dim {
+                let f = dfloor * gcov[d][d];
+                if covs[c][d][d] < f {
+                    covs[c][d][d] = f;
+                }
+            }
+        }
+    }
     let mut weights = vec![R::one() / R::from_usize(k).unwrap(); k];
 
     let mut resp = vec![vec![R::zero(); k]; m];
@@ -615,6 +672,8 @@ mod tests {
     use super::*;
     use crate::clustering::rng::SplitMix64;
     use crate::clustering::testutil::{ari, blobs, grid_micros};
+    use crate::feature::Spherical;
+    use std::collections::HashMap;
 
     #[test]
     fn gmm_recovers_separated_blobs() {
@@ -626,6 +685,58 @@ mod tests {
         let labels: Vec<usize> = point_to_micro.iter().map(|&m| g.labels[m]).collect();
         let score = ari(&labels, &truth);
         assert!(score > 0.95, "ARI = {score}");
+    }
+
+    #[test]
+    fn sparse_binary_columns_do_not_dilute_a_separable_partition() {
+        // Four blobs eight units apart, plus twelve binary columns that are 1 with probability 0.02.
+        // The columns carry no signal and each has variance ~0.02, while the two informative ones have
+        // a *global* variance of ~16.5 — dominated by the between-blob distance, not by the 0.49 spread
+        // within a blob. Seeding every component with that global variance therefore weights a junk
+        // column ~900x more per dimension than an informative one, and a single spike outweighs the
+        // whole blob separation: every component collapses onto the global mean (ARI 1.00 -> 0.00).
+        // Seeding from the k-means partition instead measures the within-component spread directly.
+        let mut rng = SplitMix64::new(4);
+        let centers = [[0.0, 0.0], [8.0, 0.0], [0.0, 8.0], [8.0, 8.0]];
+        let (core, truth) = blobs(&mut rng, 400, &centers, 0.7);
+        let dim = 2 + 12;
+        let pts: Vec<Vec<f64>> = core
+            .iter()
+            .map(|p| {
+                let mut row = Vec::with_capacity(dim);
+                row.extend_from_slice(p);
+                for _ in 2..dim {
+                    row.push(if rng.next_f64() < 0.02 { 1.0 } else { 0.0 });
+                }
+                row
+            })
+            .collect();
+
+        // Micro-cluster over *all* dimensions, as a CF-tree does: points that share a spike pattern
+        // land in the same leaf, so the leaf means carry real spread in the junk columns. Bucketing on
+        // the informative plane alone hides the bug — every leaf mean is then ~0.02 in every junk
+        // column, the terms cancel in the argmax, and even the unfixed seed recovers the partition.
+        let mut map: HashMap<Vec<i64>, usize> = HashMap::new();
+        let mut micros: Vec<Spherical<f64>> = Vec::new();
+        let mut point_to_micro = vec![0usize; pts.len()];
+        for (i, p) in pts.iter().enumerate() {
+            let key: Vec<i64> = p.iter().map(|&v| (v / 0.5).round() as i64).collect();
+            let idx = *map.entry(key).or_insert_with(|| {
+                micros.push(Spherical::new(dim));
+                micros.len() - 1
+            });
+            micros[idx].push(p, 1.0);
+            point_to_micro[i] = idx;
+        }
+
+        for (head, labels) in [
+            ("gmm", gmm_diagonal(&micros, 4, 200, 3).labels),
+            ("gmm-full", gmm_full(&micros, 4, 200, 3).labels),
+        ] {
+            let assigned: Vec<usize> = point_to_micro.iter().map(|&m| labels[m]).collect();
+            let score = ari(&assigned, &truth);
+            assert!(score > 0.95, "{head} ARI = {score}");
+        }
     }
 
     #[test]

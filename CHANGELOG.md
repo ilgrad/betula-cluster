@@ -36,19 +36,19 @@ All notable changes to this project are documented here. The format follows
   normalizes the same scores, so `predict_proba(X).argmax(1) == predict(X)` by construction, and it now
   scores the row rather than the row's microcluster. A component that no leaf claims is silenced, so
   `predict` can only emit a label the fitted partition uses. Measured ARI, median of 3 seeds, defaults
-  (`max_leaves=2000`), old rule → new rule: 20-newsgroups TF-IDF `gmm` **0.027 → 0.059** (71.8%
-  relabelled) and `vmf` 0.021 → 0.026, digits `gmm` 0.479 → 0.496, `gmm-full` 0.739 → 0.777, `vmf`
+  (`max_leaves=2000`), old rule → new rule: 20-newsgroups TF-IDF `gmm` **0.027 → 0.054** (72.1%
+  relabelled) and `vmf` 0.021 → 0.026, digits `gmm` 0.489 → 0.507, `gmm-full` 0.722 → 0.754, `vmf`
   0.643 → 0.631, blobs `gmm` 1.000 → 1.000.
-  **It costs accuracy on raw image pixels, and that is not hidden here:** MNIST-20k `gmm` **0.340 →
-  0.176** (52.1% relabelled). The cause is the model, not the rule. A diagonal covariance treats 784
-  correlated pixels as independent, so scoring a raw point sums 784 separate penalties and the
-  per-dimension modelling error accumulates; the leaf-level score damps this through the
-  `−½ tr(Σ_c⁻¹ Σ_i)` term, which a single observation genuinely does not have. Two measurements pin it
-  on the diagonal parameterization rather than on the new rule: on the same data a *nearest-centre* rule,
-  which ignores the covariance entirely, scores **0.379** — above both — and the full-covariance head
-  moves the other way, 0.177 → **0.224** at `max_leaves=300` (the budget at which both heads fit in
-  memory; the full head holds 1962 leaf covariances of 784×784 at the default budget). For raw images
-  prefer `gmm-full`, a `projection`, or `kmeans`.
+  **It costs accuracy on raw image pixels at a fine leaf budget, and that is not hidden here:**
+  MNIST-20k `gmm` **0.340 → 0.185** (52.1% relabelled). The cause is the model, not the rule: on the
+  same fit a *nearest-centre* rule, which ignores the covariance entirely, scores **0.378** — above
+  both — so it is the fitted covariance that costs the ARI. A diagonal covariance treats 784 correlated
+  pixels as independent, so scoring a raw point sums 784 separate penalties and the per-dimension
+  modelling error accumulates; the leaf-level score damps this through the `−½ tr(Σ_c⁻¹ Σ_i)` term,
+  which a single observation genuinely does not have, and the coarser the leaves the more that term
+  smooths. The loss is accordingly budget-specific rather than head-specific: at `max_leaves=300` the
+  new rule wins for `gmm` (0.206 → **0.239**) and for `gmm-full` (0.207 → **0.212**) alike. For raw
+  images prefer `kmeans` or a `projection`.
 - **The diagonal GMM could drive `1/σ²` to `1e12` in a dimension with no spread.** The variance floor
   was expressed purely relative to the spread of the dimension itself (`1e-3 · gvar_d + 1e-12`), so a
   constant or near-constant dimension — an always-zero border pixel, a term absent from every document —
@@ -64,6 +64,25 @@ All notable changes to this project are documented here. The format follows
   `gmm-full`, `vmf` and blobs are byte-identical, as they must be — they never used this floor. The fix
   is real but partial: it lifts the MNIST point-level ARI by 30% relative and still leaves it below leaf
   descent, for the modelling reason given in the entry above.
+- **Both GMM heads seeded every component with the *global* covariance, so a junk dimension could
+  decide the first E-step.** `gmm` started each component's variance at `max(gvar_d, floor_d)` and
+  `gmm-full` at `gcov` — the spread of the whole dataset. In a dimension that separates the clusters
+  that spread is dominated by the *between*-cluster distance and says little about the within-component
+  scatter: on four blobs eight units apart it overstates it **34×**. A dimension whose spread is already
+  purely within-component — a sparse binary feature, a near-constant pixel — gets no such inflation, so
+  a uniform-looking seed is in fact a skewed metric that weighs the junk dimension up to **889× more per
+  dimension**, and one spike there costs more (51.7) than the entire blob separation (3.9). Both heads
+  then converge with every component mean sitting on the global mean. Reproduced with four trivially
+  separable blobs plus twelve binary columns that are 1 with probability 0.02: ARI **0.000 → 1.000**
+  (`gmm`) and **0.001 → 0.985** (`gmm-full`), while `kmeans`, `ward` and `hdbscan` scored 1.000 on the
+  very same CF-tree throughout — as did scikit-learn's `GaussianMixture(covariance_type="diag")`, which
+  seeds from its k-means partition. Each component is now seeded from its own k-means cluster (the same
+  within-cluster accumulation the M-step performs, the same floor and ridge, the global value as the
+  fallback for an empty cluster). On real data this lands EM in a different local optimum and the effect
+  is small in both directions (max-posterior ARI, median of 3 seeds): digits `gmm` 0.496 → **0.507** and
+  MNIST-20k `gmm` 0.176 → **0.185**, against digits `gmm-full` 0.777 → 0.754 and 20-newsgroups `gmm`
+  0.059 → 0.054. `vmf` never had the defect — it seeds κ from the hard assignment — and `gmm-toeplitz`
+  starts from random responsibilities; both are unchanged to the last digit, as are all non-mixture heads.
 - **CF-tree: the rebuild spent a third of the leaf budget, and collapsed the tree outright in high
   dimension.** `max_leaves` is a resolution budget — the summary handed to the global clustering is
   only as fine as the leaves actually kept — but the rebuild grew the threshold to the *mean*

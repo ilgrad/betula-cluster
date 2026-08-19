@@ -235,10 +235,12 @@ dimension as independent, so scoring a raw point sums `d` separate penalties and
 modelling error accumulates across all of them; the leaf-level score damps this through the
 $-\tfrac{1}{2}\operatorname{tr}(\Sigma_c^{-1}\Sigma_i)$ term, which a single observation does not have.
 On raw image pixels — strongly correlated, and exactly what a diagonal covariance cannot represent —
-that costs accuracy: MNIST-20k ARI **0.340** by leaf descent against **0.176** by posterior. The
-full-covariance head on the same data moves the other way (**0.177 → 0.224** at `max_leaves=300`, where
-both fit in memory), as does TF-IDF text (20-newsgroups `gmm` **0.027 → 0.059**) and `digits`
-(**0.479 → 0.496**). For raw images prefer `gmm-full`, a `projection`, or `kmeans`.
+that costs accuracy: MNIST-20k ARI **0.340** by leaf descent against **0.185** by posterior, where
+TF-IDF text gains (20-newsgroups `gmm` **0.027 → 0.054**) and so does `digits` (**0.489 → 0.507**). The
+fitted covariance is what costs it: on the same fit a nearest-centre rule, which ignores the covariance
+entirely, scores **0.378** — above both. The loss is specific to a fine leaf budget, not to the head:
+at `max_leaves=300` the posterior wins for `gmm` (**0.206 → 0.239**) and for `gmm-full`
+(**0.207 → 0.212**) alike. For raw images prefer `kmeans` or a `projection`.
 
 ## Geometry-aware graph (GeoBETULA) and scale-space modes
 
