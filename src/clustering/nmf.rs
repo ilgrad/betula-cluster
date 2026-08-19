@@ -1010,4 +1010,233 @@ mod tests {
         }
         assert!(err / energy < 0.05, "relative residual {}", err / energy);
     }
+
+    /// Independent re-derivation of the weighted-HALS sweeps in [`weighted_nmf`], written from the
+    /// block-coordinate update `w_jk ← max(0, (X Hᵀ − W H Hᵀ)_jk / (H Hᵀ)_kk + w_jk)` rather than
+    /// from the source. The end-to-end tests assert a reconstruction *bound*, which a factorisation
+    /// can meet while every individual coordinate update is wrong.
+    fn reference_hals(
+        centroids: &[Vec<f64>],
+        weights: &[f64],
+        rank: usize,
+        max_iter: usize,
+        seed: u64,
+    ) -> (Vec<Vec<f64>>, Vec<Vec<f64>>) {
+        let m = centroids.len();
+        let d = centroids[0].len();
+        let r = rank.min(d).min(m).max(1);
+        let eps = 1e-10;
+        let sw: Vec<f64> = weights.iter().map(|&w| w.max(0.0).sqrt()).collect();
+        let x: Vec<Vec<f64>> = (0..m)
+            .map(|j| (0..d).map(|c| sw[j] * centroids[j][c].max(0.0)).collect())
+            .collect();
+        let (mut w, mut h) = nndsvdar(&x, r, seed);
+
+        let mut first_movement = 0.0;
+        for it in 0..max_iter {
+            let mut movement = 0.0;
+            for j in 0..m {
+                for k in 0..r {
+                    let hkk: f64 = h[k].iter().map(|&t| t * t).sum();
+                    let xh: f64 = (0..d).map(|c| x[j][c] * h[k][c]).sum();
+                    let whh: f64 = (0..r)
+                        .filter(|&l| l != k)
+                        .map(|l| w[j][l] * (0..d).map(|c| h[l][c] * h[k][c]).sum::<f64>())
+                        .sum();
+                    let next = ((xh - whh) / hkk.max(eps)).max(0.0);
+                    movement += (next - w[j][k]).abs();
+                    w[j][k] = next;
+                }
+            }
+            for k in 0..r {
+                for c in 0..d {
+                    let wkk: f64 = w.iter().map(|row| row[k] * row[k]).sum();
+                    let wx: f64 = (0..m).map(|j| w[j][k] * x[j][c]).sum();
+                    let wwh: f64 = (0..r)
+                        .filter(|&l| l != k)
+                        .map(|l| h[l][c] * (0..m).map(|j| w[j][k] * w[j][l]).sum::<f64>())
+                        .sum();
+                    let next = ((wx - wwh) / wkk.max(eps)).max(0.0);
+                    movement += (next - h[k][c]).abs();
+                    h[k][c] = next;
+                }
+            }
+            if it == 0 {
+                first_movement = movement;
+            } else if movement <= 1e-4 * first_movement {
+                break;
+            }
+        }
+        canonicalize(&mut w, &mut h);
+        let codes: Vec<Vec<f64>> = (0..m)
+            .map(|j| {
+                let inv = if sw[j] > eps { 1.0 / sw[j] } else { 0.0 };
+                w[j].iter().map(|&v| v * inv).collect()
+            })
+            .collect();
+        (codes, h)
+    }
+
+    fn hals_fixture() -> (Vec<Vec<f64>>, Vec<f64>) {
+        let base = [[3.0, 0.2, 1.0, 0.4], [0.5, 2.0, 0.3, 4.0]];
+        let mut rng = SplitMix64::new(9);
+        let mut cents = Vec::new();
+        let mut ws = Vec::new();
+        for _ in 0..25 {
+            let (a, b) = (rng.next_f64(), rng.next_f64());
+            cents.push(
+                (0..4)
+                    .map(|c| a * base[0][c] + b * base[1][c] + 0.05 * rng.next_f64())
+                    .collect::<Vec<f64>>(),
+            );
+            ws.push(1.0 + 4.0 * rng.next_f64());
+        }
+        (cents, ws)
+    }
+
+    #[test]
+    fn hals_sweeps_match_an_independent_reference() {
+        let (cents, ws) = hals_fixture();
+        for iters in [1usize, 3, 40] {
+            let (codes, h) = weighted_nmf(&cents, &ws, 2, iters, 4);
+            let (rcodes, rh) = reference_hals(&cents, &ws, 2, iters, 4);
+            for (j, (a, b)) in codes.iter().zip(&rcodes).enumerate() {
+                for (k, (&x, &y)) in a.iter().zip(b).enumerate() {
+                    assert!(
+                        (x - y).abs() <= 1e-9 * x.abs().max(y.abs()).max(1.0),
+                        "iters {iters} code[{j}][{k}]: {x} vs {y}"
+                    );
+                }
+            }
+            for (k, (a, b)) in h.iter().zip(&rh).enumerate() {
+                for (c, (&x, &y)) in a.iter().zip(b).enumerate() {
+                    assert!(
+                        (x - y).abs() <= 1e-9 * x.abs().max(y.abs()).max(1.0),
+                        "iters {iters} h[{k}][{c}]: {x} vs {y}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Every HALS coordinate update is the exact nonnegative minimiser along that coordinate, so the
+    /// Frobenius residual can never rise from one sweep to the next. Likewise the Lee–Seung
+    /// multiplicative updates never raise the generalized KL divergence.
+    #[test]
+    fn both_solvers_descend_their_own_objective() {
+        let (cents, ws) = hals_fixture();
+        let d = cents[0].len();
+        let sw: Vec<f64> = ws.iter().map(|&w| w.sqrt()).collect();
+        let xf: Vec<Vec<f64>> = (0..cents.len())
+            .map(|j| cents[j].iter().map(|&v| sw[j] * v).collect())
+            .collect();
+
+        let mut prev = f64::INFINITY;
+        for t in 1..=8 {
+            let (codes, h) = weighted_nmf(&cents, &ws, 2, t, 4);
+            let w: Vec<Vec<f64>> = (0..codes.len())
+                .map(|j| codes[j].iter().map(|&v| sw[j] * v).collect())
+                .collect();
+            let res = residual(&xf, &w, &h, d);
+            assert!(res <= prev + 1e-9, "Frobenius residual rose at sweep {t}");
+            prev = res;
+        }
+
+        let mut prev = f64::INFINITY;
+        for t in 1..=8 {
+            let (w, h) = weighted_nmf_kl(&cents, &ws, 2, t, 4);
+            let kl = kl_divergence(&cents, &w, &h, d);
+            assert!(
+                kl <= prev + 1e-9,
+                "KL divergence rose at sweep {t}: {prev} -> {kl}"
+            );
+            prev = kl;
+        }
+    }
+
+    #[test]
+    fn canonicalize_normalizes_h_preserves_wh_and_orders_by_energy() {
+        let mut w = vec![vec![1.0, 4.0], vec![2.0, 1.0], vec![0.5, 3.0]];
+        let mut h = vec![vec![3.0, 4.0, 0.0], vec![0.0, 0.0, 2.0]];
+        let before: Vec<Vec<f64>> = (0..3)
+            .map(|j| {
+                (0..3)
+                    .map(|c| (0..2).map(|k| w[j][k] * h[k][c]).sum())
+                    .collect()
+            })
+            .collect();
+
+        canonicalize(&mut w, &mut h);
+
+        for (k, row) in h.iter().enumerate() {
+            let n: f64 = row.iter().map(|&t| t * t).sum::<f64>().sqrt();
+            assert!(
+                (n - 1.0).abs() < 1e-12,
+                "component {k} is not unit-norm: {n}"
+            );
+        }
+        for j in 0..3 {
+            for c in 0..3 {
+                let got: f64 = (0..2).map(|k| w[j][k] * h[k][c]).sum();
+                assert!(
+                    (got - before[j][c]).abs() < 1e-12,
+                    "W·H changed at ({j},{c})"
+                );
+            }
+        }
+        // Column 1 carries √(4²+1²+3²)·2 = √26·2 ≈ 10.2 of energy against column 0's √(1+4+0.25)·5
+        // = 11.5, so the order is unchanged here; swapping the two inputs must swap the output.
+        let energy: Vec<f64> = (0..2)
+            .map(|k| w.iter().map(|row| row[k] * row[k]).sum())
+            .collect();
+        assert!(
+            energy[0] >= energy[1],
+            "components are not ordered by energy"
+        );
+
+        let mut w2 = vec![vec![4.0, 1.0], vec![1.0, 2.0], vec![3.0, 0.5]];
+        let mut h2 = vec![vec![0.0, 0.0, 2.0], vec![3.0, 4.0, 0.0]];
+        canonicalize(&mut w2, &mut h2);
+        let e2: Vec<f64> = (0..2)
+            .map(|k| w2.iter().map(|row| row[k] * row[k]).sum())
+            .collect();
+        assert!(e2[0] >= e2[1], "reordering did not fire on a swapped input");
+        assert!(
+            (h2[0][0] - 0.6).abs() < 1e-12,
+            "the heavier component is not first: {:?}",
+            h2[0]
+        );
+    }
+
+    #[test]
+    fn projection_error_is_the_relative_frobenius_norm() {
+        let (cents, ws) = hals_fixture();
+        let feats: Vec<Spherical<f64>> = cents
+            .iter()
+            .zip(&ws)
+            .map(|(c, &w)| Spherical::from_moments(w, c.clone(), 0.0))
+            .collect();
+        let spec = NmfSpec {
+            rank: 2,
+            max_iter: 40,
+            kl: false,
+        };
+        let out: Projection<f64> = project(&feats, spec, 4);
+
+        let d = cents[0].len();
+        let sw: Vec<f64> = ws.iter().map(|&w| w.sqrt()).collect();
+        let x: Vec<Vec<f64>> = (0..cents.len())
+            .map(|j| cents[j].iter().map(|&v| sw[j] * v).collect())
+            .collect();
+        let w: Vec<Vec<f64>> = (0..out.coded.len())
+            .map(|j| out.coded[j].mean().iter().map(|&v| sw[j] * v).collect())
+            .collect();
+        let energy: f64 = x.iter().flatten().map(|&v| v * v).sum();
+        let want = (residual(&x, &w, &out.components, d) / energy).sqrt();
+        assert!(
+            (out.reconstruction_err - want).abs() < 1e-9,
+            "got {}, want {want}",
+            out.reconstruction_err
+        );
+    }
 }

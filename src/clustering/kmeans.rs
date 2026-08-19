@@ -569,7 +569,7 @@ mod tests {
     use super::*;
     use crate::clustering::rng::SplitMix64;
     use crate::clustering::testutil::{ari, blobs, grid_micros};
-    use crate::feature::ClusterFeature;
+    use crate::feature::{ClusterFeature, Spherical};
 
     #[test]
     fn kmeans_recovers_separated_blobs() {
@@ -685,5 +685,160 @@ mod tests {
         let f = feats(&[[0.0, 0.0], [0.2, 0.0], [10.0, 0.0]]);
         let lab = cop_kmeans(&f, 2, &[(0, 99)], &[(1, 99)], 100, 4, 1).expect("feasible");
         assert_eq!(lab.len(), 3);
+    }
+
+    /// Independent re-derivation of the Pelleg–Moore BIC that [`xmeans`] maximises. The score itself
+    /// is never returned, so the only end-to-end test asserts the selected `k` on four separated
+    /// blobs — a target so easy that most of the score can be corrupted without moving it.
+    fn reference_xmeans_bic(features: &[Spherical<f64>], km: &KMeans<f64>, k: usize) -> f64 {
+        let d = features[0].dim();
+        let nr: f64 = features.iter().map(|f| f.weight()).sum();
+        let mut nk = vec![0.0; k];
+        let mut sse = 0.0;
+        for (i, f) in features.iter().enumerate() {
+            let c = km.labels[i];
+            nk[c] += f.weight();
+            sse += f.weight() * sq_euclidean(f.mean(), &km.centers[c]);
+        }
+        let var = (sse / (nr - k as f64).max(1.0) / d as f64).max(1e-12);
+        let log_2pi_var = (std::f64::consts::TAU * var).ln();
+        let loglik: f64 = nk
+            .iter()
+            .filter(|&&n_k| n_k > 0.0)
+            .map(|&n_k| {
+                n_k * n_k.ln()
+                    - n_k * nr.ln()
+                    - 0.5 * n_k * d as f64 * log_2pi_var
+                    - 0.5 * (n_k - 1.0) * d as f64
+            })
+            .sum();
+        loglik - 0.5 * (k * (d + 1)) as f64 * nr.ln()
+    }
+
+    #[test]
+    fn xmeans_selects_the_argmax_of_an_independently_scored_bic() {
+        // Three fixtures with different true k, plus a single homogeneous cloud where the entropy
+        // and parameter penalties are the only thing stopping the score from splitting for ever.
+        let fixtures: [(&[[f64; 2]], f64); 4] = [
+            (&[[0.0, 0.0], [9.0, 0.0], [0.0, 9.0], [9.0, 9.0]], 0.6),
+            (&[[0.0, 0.0], [7.0, 1.0]], 0.8),
+            (&[[0.0, 0.0], [4.0, 0.0], [8.0, 0.0]], 1.0),
+            (&[[0.0, 0.0]], 1.5),
+        ];
+        for (f, (centers, spread)) in fixtures.iter().enumerate() {
+            for seed in [7u64, 23, 91] {
+                let mut rng = SplitMix64::new(seed);
+                let (pts, _) = blobs(&mut rng, 120, centers, *spread);
+                let (micros, _) = grid_micros(&pts, 0.5);
+                let (lo, hi) = (1usize, 6usize);
+
+                let mut want = lo;
+                let mut best = f64::NEG_INFINITY;
+                for k in lo..=hi {
+                    let km = kmeans(&micros, k, 100, 4, seed);
+                    let bic = reference_xmeans_bic(&micros, &km, k);
+                    if bic > best {
+                        best = bic;
+                        want = k;
+                    }
+                }
+                let got = xmeans(&micros, lo, hi, 100, seed).centers.len();
+                assert_eq!(got, want, "fixture {f}, seed {seed}");
+            }
+        }
+    }
+
+    #[test]
+    fn update_centers_takes_the_weighted_centroid() {
+        let mut centers: Vec<Vec<f64>> = vec![vec![0.0; 2], vec![0.0; 2]];
+        let means = vec![vec![0.0, 0.0], vec![4.0, 2.0], vec![10.0, 10.0]];
+        let weights = vec![1.0, 3.0, 2.0];
+        update_centers(&mut centers, &means, &weights, &[0, 0, 1], 2);
+        // (1·[0,0] + 3·[4,2]) / 4 = [3, 1.5]; the singleton keeps its own mean.
+        assert_eq!(centers[0], vec![3.0, 1.5]);
+        assert_eq!(centers[1], vec![10.0, 10.0]);
+    }
+
+    #[test]
+    fn update_centers_reseeds_every_stranded_cluster_on_a_distinct_leaf() {
+        let mut centers: Vec<Vec<f64>> = vec![vec![0.0, 0.0], vec![99.0, 0.0], vec![-99.0, 0.0]];
+        let means = vec![vec![0.0, 0.0], vec![1.0, 0.0], vec![7.0, 0.0]];
+        let weights = vec![1.0, 1.0, 1.0];
+        update_centers(&mut centers, &means, &weights, &[0, 0, 0], 2);
+        // centre 0 becomes the centroid 8/3; served = [(8/3)², (1-8/3)², (7-8/3)²] = [7.11, 2.78,
+        // 18.78], so the worst-served leaf is index 2 and the next is index 0. Reseeding both empty
+        // clusters onto index 2 would leave the run with a duplicate centre and one cluster short.
+        assert!((centers[0][0] - 8.0 / 3.0).abs() < 1e-12);
+        assert_eq!(centers[1], vec![7.0, 0.0]);
+        assert_eq!(centers[2], vec![0.0, 0.0]);
+    }
+
+    #[test]
+    fn weighted_pick_is_proportional_and_never_leaves_the_slice() {
+        let mut rng = SplitMix64::new(5);
+        let mut hits = [0usize; 3];
+        for _ in 0..6000 {
+            hits[weighted_pick(&[1.0, 0.0, 3.0], &mut rng)] += 1;
+        }
+        assert_eq!(hits[1], 0, "a zero-probability entry was drawn");
+        let ratio = hits[2] as f64 / hits[0] as f64;
+        assert!((2.6..3.4).contains(&ratio), "0:2 ratio {ratio}, want 3");
+
+        // Degenerate total falls back to a uniform draw, which must still be an index.
+        let mut seen = [false; 3];
+        for _ in 0..300 {
+            let i = weighted_pick(&[0.0, 0.0, 0.0], &mut rng);
+            assert!(i < 3, "index {i} out of range");
+            seen[i] = true;
+        }
+        assert!(
+            seen.iter().all(|&s| s),
+            "uniform fallback never reached some index"
+        );
+    }
+
+    #[test]
+    fn kmeans_plus_plus_spreads_one_seed_per_far_group() {
+        // D²-proportional sampling is the whole point of k-means++: with groups 100 units apart the
+        // probability of seeding two centres in one group is negligible, so a corrupted D² update or
+        // a corrupted candidate score shows up as a duplicated group.
+        let groups = [[0.0, 0.0], [100.0, 0.0], [0.0, 100.0]];
+        let means: Vec<Vec<f64>> = groups
+            .iter()
+            .flat_map(|g| (0..8).map(move |j| vec![g[0] + j as f64 * 0.1, g[1]]))
+            .collect();
+        let weights = vec![1.0; means.len()];
+        for seed in 0..24u64 {
+            let mut rng = SplitMix64::new(seed);
+            let centers = kmeans_plus_plus(&means, &weights, 3, &mut rng);
+            let mut hit = [false; 3];
+            for c in &centers {
+                let g = groups
+                    .iter()
+                    .position(|g| sq_euclidean(c, &[g[0], g[1]]) < 100.0)
+                    .expect("centre landed outside every group");
+                assert!(!hit[g], "seed {seed} put two centres in group {g}");
+                hit[g] = true;
+            }
+        }
+    }
+
+    #[test]
+    fn nearest_two_keeps_the_first_of_tied_nearest_centres() {
+        // Ties matter: `<` vs `<=` on the nearest test silently changes which cluster a leaf joins.
+        let (best, d1, d2) = nearest_two(&[0.0], &[vec![-1.0], vec![5.0], vec![1.0]]);
+        assert_eq!(best, 0);
+        assert_eq!((d1, d2), (1.0, 1.0));
+        let (best, d1, d2) = nearest_two(&[0.0], &[vec![4.0], vec![1.0], vec![-2.0]]);
+        assert_eq!(best, 1);
+        assert_eq!((d1, d2), (1.0, 4.0));
+    }
+
+    #[test]
+    fn argmax_keeps_the_first_of_equal_scores() {
+        assert_eq!(argmax(&[1.0, 3.0, 2.0]), 1);
+        assert_eq!(argmax(&[3.0, 3.0, 1.0]), 0);
+        assert_eq!(argmax(&[1.0, 2.0, 2.0]), 1);
+        assert_eq!(argmax(&[5.0]), 0);
     }
 }

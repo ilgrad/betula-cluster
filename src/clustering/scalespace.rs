@@ -331,4 +331,123 @@ mod tests {
         let res = scale_space(&micros, 10, 50);
         assert_eq!(res.labels, vec![0]);
     }
+
+    #[test]
+    fn bandwidth_range_is_half_the_median_gap_and_half_the_diameter() {
+        // Four collinear points at 0, 1, 3, 7. Squared nearest-neighbour gaps are 1, 1, 4, 16, so the
+        // sorted distances are 1, 1, 2, 4 and the median (index m/2 = 2) is 2. The diameter is 7,
+        // already above 2·median, so it is not clamped. Expect (0.5·2, 0.5·7) = (1.0, 3.5).
+        let mu = vec![vec![0.0], vec![1.0], vec![3.0], vec![7.0]];
+        let (lo, hi) = bandwidth_range(&mu);
+        assert!((lo - 1.0).abs() < 1e-12, "h_min = {lo}");
+        assert!((hi - 3.5).abs() < 1e-12, "h_max = {hi}");
+
+        // Coincident points: every gap is 0, so the median is floored to 1e-12 and the diameter is
+        // clamped up to 2·median rather than staying at 0.
+        let same = vec![vec![2.0, 2.0]; 3];
+        let (lo, hi) = bandwidth_range(&same);
+        assert!((lo - 0.5e-12).abs() < 1e-24, "degenerate h_min = {lo}");
+        assert!((hi - 1e-12).abs() < 1e-24, "degenerate h_max = {hi}");
+    }
+
+    /// Independent re-derivation of the mean-shift ascent in [`mean_shift`]: Gaussian kernel, data
+    /// fixed at `μ` with weights `n`, iterate until no coordinate moves by more than `1e-4·h`.
+    /// Returns the converged positions, which the source never exposes.
+    #[allow(clippy::needless_range_loop)] // mutates pts[i] while reading mu by index, as the source does
+    fn reference_shift_endpoints(
+        mu: &[Vec<f64>],
+        n: &[f64],
+        h: f64,
+        max_iter: usize,
+    ) -> Vec<Vec<f64>> {
+        let (m, d) = (mu.len(), mu[0].len());
+        let tol = 1e-4 * h;
+        let mut pts = mu.to_vec();
+        for _ in 0..max_iter.max(1) {
+            let mut moved = false;
+            for i in 0..m {
+                let mut num = vec![0.0; d];
+                let mut den = 0.0;
+                for j in 0..m {
+                    let d2: f64 = (0..d).map(|k| (pts[i][k] - mu[j][k]).powi(2)).sum();
+                    let w = n[j] * (-d2 / (2.0 * h * h)).exp();
+                    den += w;
+                    for k in 0..d {
+                        num[k] += w * mu[j][k];
+                    }
+                }
+                if den > 0.0 {
+                    for k in 0..d {
+                        let nv = num[k] / den;
+                        if (nv - pts[i][k]).abs() > tol {
+                            moved = true;
+                        }
+                        pts[i][k] = nv;
+                    }
+                }
+            }
+            if !moved {
+                break;
+            }
+        }
+        pts
+    }
+
+    #[test]
+    fn mean_shift_ascent_matches_an_independent_reference_across_the_sweep() {
+        // Sweeping h walks the whole merge cascade, from one mode per group down to a single mode.
+        // The bandwidth at which each merge happens is what the arithmetic decides, so a corrupted
+        // kernel, numerator or convergence test moves a merge and changes the labelling.
+        let mut rng = SplitMix64::new(31);
+        let centers = [[0.0, 0.0], [3.0, 0.4], [1.4, 3.0]];
+        let (pts, _) = blobs(&mut rng, 60, &centers, 0.7);
+        let (micros, _) = grid_micros(&pts, 0.5);
+        let mu: Vec<Vec<f64>> = micros.iter().map(|f| f.mean().to_vec()).collect();
+        let n: Vec<f64> = micros.iter().map(|f| f.weight()).collect();
+
+        let mut counts = Vec::new();
+        for step in 0..8 {
+            let h = 0.25 * 1.45_f64.powi(step);
+            let (labels, modes) = mean_shift(&mu, &n, h, 100);
+            let endpoints = reference_shift_endpoints(&mu, &n, h, 100);
+            let (rlabels, rmodes) = prominence_modes(&endpoints, &mu, &n, h);
+            assert_eq!(modes, rmodes, "h = {h}: mode count");
+            assert_eq!(labels, rlabels, "h = {h}: labelling");
+            counts.push(modes);
+        }
+        assert!(
+            counts.first() > counts.last(),
+            "sweep did not traverse a merge cascade: {counts:?}"
+        );
+    }
+
+    #[test]
+    fn the_bandwidth_grid_is_log_spaced_and_zero_means_the_default() {
+        let mut rng = SplitMix64::new(5);
+        let centers = [[0.0, 0.0], [6.0, 0.0]];
+        let (pts, _) = blobs(&mut rng, 120, &centers, 0.6);
+        let (micros, _) = grid_micros(&pts, 0.6);
+        let mu: Vec<Vec<f64>> = micros.iter().map(|f| f.mean().to_vec()).collect();
+
+        let (h_min, h_max) = bandwidth_range(&mu);
+        let steps = 9usize;
+        let ln_lo = h_min.ln();
+        let ln_step = (h_max.ln() - ln_lo) / (steps as f64 - 1.0);
+        let grid: Vec<f64> = (0..steps)
+            .map(|s| (ln_lo + ln_step * s as f64).exp())
+            .collect();
+
+        let got = scale_space(&micros, steps, 100).bandwidth;
+        assert!(
+            grid.iter().any(|&g| (g - got).abs() <= 1e-12 * g.max(1.0)),
+            "selected bandwidth {got} is not on the log grid {grid:?}"
+        );
+
+        // `n_bandwidths = 0` selects the documented default of 15, not a two-point sweep.
+        let zero = scale_space(&micros, 0, 100);
+        let fifteen = scale_space(&micros, 15, 100);
+        assert_eq!(zero.n_modes, fifteen.n_modes);
+        assert!((zero.bandwidth - fifteen.bandwidth).abs() < 1e-12);
+        assert_eq!(zero.labels, fifteen.labels);
+    }
 }

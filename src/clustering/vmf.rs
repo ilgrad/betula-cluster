@@ -660,4 +660,190 @@ mod tests {
             assert!(kap.is_finite() && kap < 9_000.0, "κ over-estimated: {kap}");
         }
     }
+
+    /// `log C_3(κ) = ln κ − ln(4π sinh κ)` — the three-dimensional vMF normaliser in closed form,
+    /// derived from the density rather than from [`log_vmf_norm`]'s own expression.
+    #[test]
+    fn log_vmf_norm_matches_the_closed_form_on_the_sphere() {
+        for &kap in &[0.3_f64, 1.0, 4.0, 12.0] {
+            let want = kap.ln() - (4.0 * std::f64::consts::PI).ln() - kap.sinh().ln();
+            let got = log_vmf_norm(3, kap);
+            assert!((got - want).abs() < 1e-9, "κ={kap}: got {got}, want {want}");
+        }
+    }
+
+    #[test]
+    fn argmin_keeps_the_first_of_equal_scores() {
+        assert_eq!(argmin(&[3.0, 1.0, 2.0]), 1);
+        assert_eq!(argmin(&[1.0, 1.0, 5.0]), 0);
+        assert_eq!(argmin(&[5.0, 2.0, 2.0]), 1);
+        assert_eq!(argmin(&[7.0]), 0);
+    }
+
+    #[test]
+    fn cohesion_is_the_summed_length_of_the_weighted_resultants() {
+        // Cluster 0 gets 2·[1,0] and 3·[0,1] → resultant [2,3], length √13.
+        // Cluster 1 gets 4·[0.6,0.8] → resultant [2.4,3.2], length 4.
+        let means = vec![vec![1.0, 0.0], vec![0.0, 1.0], vec![0.6, 0.8]];
+        let n = vec![2.0, 3.0, 4.0];
+        let got = cohesion_of(&means, &n, &[0, 0, 1], 2, 2);
+        let want = 13.0_f64.sqrt() + 4.0;
+        assert!((got - want).abs() < 1e-12, "got {got}, want {want}");
+    }
+
+    /// Independent re-derivation of [`movmf_once`], written from the movMF EM equations. The
+    /// end-to-end tests assert an ARI over well-separated directions, which stays above 0.9 even
+    /// when the E-step or the M-step is arithmetically wrong.
+    ///
+    /// Returns `(resp, weights, means, kappas, loglik, iterations)`.
+    #[allow(clippy::type_complexity)]
+    fn reference_movmf_em(
+        features: &[Spherical<f64>],
+        k: usize,
+        max_iter: usize,
+        seed: u64,
+    ) -> (Vec<Vec<f64>>, Vec<f64>, Vec<Vec<f64>>, Vec<f64>, f64, usize) {
+        let (mu, n) = leaf_means(features);
+        let dim = features[0].dim();
+        let m = mu.len();
+        let km = spherical_kmeans(features, k, 50, 1, seed);
+        let mut means = km.centers.clone();
+        let mut weights = vec![1.0 / k as f64; k];
+        let mut kappas: Vec<f64> = init_kappas(&mu, &n, &km.labels, k, dim);
+
+        let mut resp = vec![vec![0.0; k]; m];
+        let mut loglik = f64::NEG_INFINITY;
+        let mut iters = 0;
+
+        for it in 0..max_iter {
+            iters = it + 1;
+            let mut new_ll = 0.0;
+            for i in 0..m {
+                let logr: Vec<f64> = (0..k)
+                    .map(|c| {
+                        let dv: f64 = (0..dim).map(|d| mu[i][d] * means[c][d]).sum();
+                        weights[c].max(1e-300).ln()
+                            + log_vmf_norm(dim, kappas[c].max(1e-8))
+                            + kappas[c] * dv
+                    })
+                    .collect();
+                let mx = logr.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+                let lse = mx + logr.iter().map(|&l| (l - mx).exp()).sum::<f64>().ln();
+                new_ll += n[i] * lse;
+                for c in 0..k {
+                    resp[i][c] = (logr[c] - lse).exp();
+                }
+            }
+
+            let mut rvec = vec![vec![0.0; dim]; k];
+            let mut nk = vec![0.0; k];
+            for i in 0..m {
+                for c in 0..k {
+                    let w = n[i] * resp[i][c];
+                    nk[c] += w;
+                    for d in 0..dim {
+                        rvec[c][d] += w * mu[i][d];
+                    }
+                }
+            }
+            let ntot: f64 = nk.iter().sum();
+            for c in 0..k {
+                weights[c] = if ntot > 0.0 {
+                    nk[c] / ntot
+                } else {
+                    1.0 / k as f64
+                };
+                let rnorm = rvec[c].iter().map(|x| x * x).sum::<f64>().sqrt();
+                if rnorm > 0.0 {
+                    for d in 0..dim {
+                        means[c][d] = rvec[c][d] / rnorm;
+                    }
+                }
+                let rbar = if nk[c] > 0.0 { rnorm / nk[c] } else { 0.0 };
+                kappas[c] = estimate_kappa(rbar, dim);
+            }
+
+            if it > 0 && (new_ll - loglik).abs() <= 1e-7 * loglik.abs().max(1.0) {
+                loglik = new_ll;
+                break;
+            }
+            loglik = new_ll;
+        }
+        (resp, weights, means, kappas, loglik, iters)
+    }
+
+    #[track_caller]
+    fn assert_close_rel(got: f64, want: f64, tol: f64, what: &str) {
+        let scale = got.abs().max(want.abs()).max(1.0);
+        assert!(
+            (got - want).abs() <= tol * scale,
+            "{what}: got {got}, want {want}"
+        );
+    }
+
+    /// Directions close enough together that every responsibility stays strictly inside `(0, 1)`.
+    /// Well-separated directions saturate the posterior and hide the arithmetic under it.
+    fn overlapping_directions() -> Vec<Spherical<f64>> {
+        let mut rng = SplitMix64::new(1234);
+        unit_blobs(&mut rng, 6, 3, 40, 0.55).0
+    }
+
+    #[test]
+    #[allow(clippy::needless_range_loop)] // index form mirrors the movMF equations
+    fn movmf_em_matches_an_independent_reference_iteration_for_iteration() {
+        let feats = overlapping_directions();
+        let (k, iters, seed) = (3, 4, 5);
+        let got: Movmf<f64> = movmf_once(&feats, k, iters, seed);
+        let (rresp, rweights, rmeans, rkappas, rloglik, ran) =
+            reference_movmf_em(&feats, k, iters, seed);
+        assert_eq!(
+            ran, iters,
+            "fixture converged early, so the path is untested"
+        );
+
+        assert_close_rel(got.loglik, rloglik, 1e-9, "loglik");
+        let dim = feats[0].dim();
+        let mut soft = 0;
+        for c in 0..k {
+            assert_close_rel(got.weights[c], rweights[c], 1e-9, "weight");
+            assert_close_rel(got.kappas[c], rkappas[c], 1e-9, "kappa");
+            for d in 0..dim {
+                assert_close_rel(got.means[c][d], rmeans[c][d], 1e-9, "mean");
+            }
+        }
+        for i in 0..rresp.len() {
+            for c in 0..k {
+                assert_close_rel(got.resp[i][c], rresp[i][c], 1e-9, "resp");
+                if got.resp[i][c] > 1e-3 && got.resp[i][c] < 1.0 - 1e-3 {
+                    soft += 1;
+                }
+            }
+            assert_eq!(got.labels[i], argmax(&rresp[i]), "label disagrees");
+        }
+        assert!(soft > 20, "fixture is not soft enough: {soft} soft entries");
+    }
+
+    #[test]
+    #[allow(clippy::needless_range_loop)] // index form mirrors the movMF equations
+    fn movmf_em_stops_on_the_relative_loglik_test() {
+        let feats = overlapping_directions();
+        let (k, seed) = (3, 5);
+        let got: Movmf<f64> = movmf_once(&feats, k, 500, seed);
+        let (_, _, _, rkappas, rloglik, ran) = reference_movmf_em(&feats, k, 500, seed);
+        assert!(ran > 3 && ran < 500, "expected convergence, ran {ran}");
+        assert_close_rel(got.loglik, rloglik, 1e-6, "converged loglik");
+        for c in 0..k {
+            assert_close_rel(got.kappas[c], rkappas[c], 1e-4, "converged kappa");
+        }
+        // movMF EM ascends the same likelihood as any other EM: no iteration may lower it.
+        let mut prev = f64::NEG_INFINITY;
+        for t in 1..=10 {
+            let ll = movmf_once::<f64, _>(&feats, k, t, seed).loglik;
+            assert!(
+                ll >= prev - 1e-9,
+                "loglik fell at iteration {t}: {prev} -> {ll}"
+            );
+            prev = ll;
+        }
+    }
 }

@@ -823,4 +823,203 @@ mod tests {
             "gs {a_gs} should beat banded AR {a_ar} on a long-lag echo"
         );
     }
+
+    /// Two leaves whose autocovariance is small enough to work out by hand: leaf A is a single point
+    /// (no within-leaf spread) and leaf B is a heavier, flat leaf that contributes only through the
+    /// zero lag. Fixes the weighting, the trace fold and the per-lag denominator at once.
+    fn autocov_fixture() -> (Vec<Spherical<f64>>, Vec<f64>) {
+        let a = Spherical::from_moments(1.0, vec![1.0, 2.0, 3.0, 4.0], 0.0);
+        let b = Spherical::from_moments(2.0, vec![2.0, 2.0, 2.0, 2.0], 8.0);
+        (vec![a, b], vec![1.0, 2.0])
+    }
+
+    #[test]
+    fn unbiased_autocov_divides_each_lag_by_its_own_product_count() {
+        // δ_A = [−1.5, −0.5, 0.5, 1.5], δ_B = [−0.5; 4], tr Σ_B = 4, weights 1 and 2.
+        // raw r = [1·5 + 2·1 + 2·4, 1·1.25 + 2·0.75, 1·(−1.5) + 2·0.5] = [15, 2.75, −0.5],
+        // divided by nsum·(d − τ) = [12, 9, 6].
+        let (feats, wt) = autocov_fixture();
+        let r = component_autocov(&feats, &wt, 2.5, 4, 2);
+        let want = [15.0 / 12.0, 2.75 / 9.0, -0.5 / 6.0];
+        assert_eq!(r.len(), 3);
+        for (t, (&got, &w)) in r.iter().zip(&want).enumerate() {
+            assert!((got - w).abs() < 1e-12, "lag {t}: got {got}, want {w}");
+        }
+    }
+
+    #[test]
+    fn biased_autocov_divides_every_lag_by_d() {
+        // Same raw sums, one shared denominator nsum·d = 12, and a lag-3 term δ_A[0]·δ_A[3] +
+        // 2·δ_B[0]·δ_B[3] = −2.25 + 0.5 = −1.75.
+        let (feats, wt) = autocov_fixture();
+        let r = component_autocov_biased(&feats, &wt, 2.5, 4);
+        let want = [15.0 / 12.0, 2.75 / 12.0, -0.5 / 12.0, -1.75 / 12.0];
+        assert_eq!(r.len(), 4);
+        for (t, (&got, &w)) in r.iter().zip(&want).enumerate() {
+            assert!((got - w).abs() < 1e-12, "lag {t}: got {got}, want {w}");
+        }
+    }
+
+    #[test]
+    fn step_up_runs_the_levinson_recursion_in_reverse_index_order() {
+        // φ_m[i] = φ_{m−1}[i] − k_m·φ_{m−1}[m−2−i] — the *reversed* index is the whole content of the
+        // recursion, and it is invisible below order 3 where m−2−i collapses to i.
+        let (phi, v): (Vec<Vec<f64>>, Vec<f64>) = step_up(&[0.0, 0.5, -0.3, 0.4], 2.0, 3);
+        assert_eq!(phi[1], vec![0.5]);
+        for (got, want) in phi[2].iter().zip(&[0.65, -0.3]) {
+            assert!((got - want).abs() < 1e-12, "order 2: {phi:?}");
+        }
+        for (got, want) in phi[3].iter().zip(&[0.77, -0.56, 0.4]) {
+            assert!((got - want).abs() < 1e-12, "order 3: {phi:?}");
+        }
+        for (got, want) in v.iter().zip(&[2.0, 1.5, 1.365, 1.1466]) {
+            assert!((got - want).abs() < 1e-12, "variances: {v:?}");
+        }
+    }
+
+    /// Independent re-derivation of the coordinate ascent in [`fit_component_gs`]: pattern search on
+    /// each reflection coefficient, best of ±0.15 and ±0.05, clamped to ±0.999.
+    fn reference_gs_reflections(
+        feats: &[Spherical<f64>],
+        wt: &[f64],
+        mu_c: f64,
+        dim: usize,
+    ) -> Vec<f64> {
+        let p = GS_ORDER_MAX.min(dim.saturating_sub(1)).max(1);
+        let r = component_autocov(feats, wt, mu_c, dim, p);
+        let (phi0, _) = levinson_full(&r, p);
+        let mut refl = vec![0.0; p + 1];
+        for m in 1..=p {
+            refl[m] = *phi0[m].last().unwrap();
+        }
+        let deltas: Vec<(f64, Vec<f64>)> = feats
+            .iter()
+            .zip(wt)
+            .filter(|(_, &w)| w > 0.0)
+            .map(|(f, &w)| (w, (0..dim).map(|t| f.mean()[t] - mu_c).collect()))
+            .collect();
+        let r0 = r[0];
+        let eval = |refl: &[f64]| -> f64 {
+            let (phi, v) = step_up(refl, r0, p);
+            deltas
+                .iter()
+                .map(|(w, d)| w * ar_loglik_exact(d, &phi, &v, p))
+                .sum()
+        };
+        let mut cur = eval(&refl);
+        for _ in 0..GS_REFINE_SWEEPS {
+            for m in 1..=p {
+                let (mut best_k, mut best_l) = (refl[m], cur);
+                for s in [0.15_f64, 0.05] {
+                    for dir in [1.0_f64, -1.0] {
+                        let cand = (refl[m] + dir * s).clamp(-0.999, 0.999);
+                        let saved = refl[m];
+                        refl[m] = cand;
+                        let l = eval(&refl);
+                        refl[m] = saved;
+                        if l > best_l {
+                            best_l = l;
+                            best_k = cand;
+                        }
+                    }
+                }
+                refl[m] = best_k;
+                cur = best_l;
+            }
+        }
+        refl
+    }
+
+    #[test]
+    fn gs_refinement_matches_an_independent_ascent_and_never_loses_likelihood() {
+        let mut rng = SplitMix64::new(17);
+        let dim = 24;
+        let feats: Vec<Spherical<f64>> = (0..30)
+            .map(|_| {
+                let row = ar_window(&mut rng, dim, &[0.6, -0.25]);
+                Spherical::from_moments(1.0, row, 0.0)
+            })
+            .collect();
+        let wt = vec![1.0; feats.len()];
+        let mu_c: f64 =
+            feats.iter().flat_map(|f| f.mean().to_vec()).sum::<f64>() / (30 * dim) as f64;
+
+        let got = fit_component_gs(&feats, &wt, mu_c, dim);
+        let StationaryCov::Ar { phi, v } = got else {
+            panic!("GS fit must return an AR covariance");
+        };
+
+        let p = GS_ORDER_MAX.min(dim - 1).max(1);
+        let refl = reference_gs_reflections(&feats, &wt, mu_c, dim);
+        let (rphi, rv) = step_up(&refl, component_autocov(&feats, &wt, mu_c, dim, p)[0], p);
+        for m in 1..=p {
+            for (i, (&a, &b)) in phi[m].iter().zip(&rphi[m]).enumerate() {
+                assert!(
+                    (a - b).abs() <= 1e-9 * a.abs().max(b.abs()).max(1.0),
+                    "order {m} coefficient {i}: {a} vs {b}"
+                );
+            }
+        }
+        for (m, (&a, &b)) in v.iter().zip(&rv).enumerate() {
+            assert!(
+                (a - b).abs() <= 1e-9 * a.abs().max(1.0),
+                "variance {m}: {a} vs {b}"
+            );
+        }
+
+        // Ascent, not just agreement: the refined coefficients must not score below the Yule-Walker
+        // warm start they were seeded from.
+        let deltas: Vec<Vec<f64>> = feats
+            .iter()
+            .map(|f| (0..dim).map(|t| f.mean()[t] - mu_c).collect())
+            .collect();
+        let score = |ph: &[Vec<f64>], vv: &[f64]| -> f64 {
+            deltas.iter().map(|d| ar_loglik_exact(d, ph, vv, p)).sum()
+        };
+        let r = component_autocov(&feats, &wt, mu_c, dim, p);
+        let (wphi, wv) = levinson_full(&r, p);
+        assert!(
+            score(&phi, &v) >= score(&wphi, &wv) - 1e-9,
+            "refinement lost likelihood against the warm start"
+        );
+    }
+
+    #[test]
+    fn auto_kind_selects_the_argmin_of_an_independently_scored_bic() {
+        let mut rng = SplitMix64::new(4);
+        let dim = 16;
+        let mut feats: Vec<Spherical<f64>> = Vec::new();
+        for a in [[0.6, -0.25], [-0.5, 0.2]] {
+            for _ in 0..15 {
+                let row = ar_window(&mut rng, dim, &a);
+                feats.push(Spherical::from_moments(1.0, row, 0.0));
+            }
+        }
+        let ntot: f64 = feats.iter().map(|f| f.weight()).sum();
+        for (kind, name) in [
+            (CovKind::Ar, "Ar"),
+            (CovKind::ToeplitzFull, "ToeplitzFull"),
+            (CovKind::GsMle, "GsMle"),
+        ] {
+            let cov_p = match kind {
+                CovKind::Ar => 1 + TOEPLITZ_W_MAX,
+                CovKind::ToeplitzFull => dim,
+                CovKind::GsMle => 1 + GS_ORDER_MAX,
+            };
+            let (lo, hi) = (1usize, 2usize);
+            let mut want = lo;
+            let mut best = f64::INFINITY;
+            for k in lo..=hi {
+                let g: GmmToeplitz<f64> = gmm_toeplitz_kind(&feats, k, kind, 40, 3);
+                let p = k * (1 + cov_p) + (k - 1);
+                let bic = -2.0 * g.loglik + p as f64 * ntot.ln();
+                if bic < best {
+                    best = bic;
+                    want = k;
+                }
+            }
+            let got: GmmToeplitz<f64> = gmm_toeplitz_auto_kind(&feats, lo, hi, kind, 40, 3);
+            assert_eq!(got.means.len(), want, "{name}");
+        }
+    }
 }

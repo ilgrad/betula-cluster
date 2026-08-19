@@ -672,7 +672,7 @@ mod tests {
     use super::*;
     use crate::clustering::rng::SplitMix64;
     use crate::clustering::testutil::{ari, blobs, grid_micros};
-    use crate::feature::Spherical;
+    use crate::feature::{Diagonal, Spherical};
     use std::collections::HashMap;
 
     #[test]
@@ -971,5 +971,257 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Independent re-derivation of [`gmm_diagonal_once`], written from the EM equations rather than
+    /// from the source, so that an operator swap anywhere in the fit shows up as a disagreement.
+    /// The end-to-end tests above all assert an ARI, which four well-separated blobs make insensitive
+    /// to the arithmetic: they hold even when the E-step is corrupted.
+    ///
+    /// Returns `(resp, weights, means, vars, loglik, iterations)`.
+    #[allow(clippy::type_complexity)]
+    fn reference_diagonal_em<C: ClusterFeature<f64>>(
+        features: &[C],
+        k: usize,
+        max_iter: usize,
+        seed: u64,
+    ) -> (
+        Vec<Vec<f64>>,
+        Vec<f64>,
+        Vec<Vec<f64>>,
+        Vec<Vec<f64>>,
+        f64,
+        usize,
+    ) {
+        let dim = features[0].dim();
+        let m = features.len();
+        let mu: Vec<Vec<f64>> = features.iter().map(|f| f.mean().to_vec()).collect();
+        let n: Vec<f64> = features.iter().map(|f| f.weight()).collect();
+        let var: Vec<Vec<f64>> = features
+            .iter()
+            .map(|f| (0..dim).map(|d| f.variance(d)).collect())
+            .collect();
+
+        let wtot: f64 = n.iter().sum();
+        let mut gmean = vec![0.0; dim];
+        for i in 0..m {
+            for d in 0..dim {
+                gmean[d] += n[i] * mu[i][d];
+            }
+        }
+        for g in gmean.iter_mut() {
+            *g /= wtot;
+        }
+        let mut gvar = vec![0.0; dim];
+        for i in 0..m {
+            for d in 0..dim {
+                gvar[d] += n[i] * ((mu[i][d] - gmean[d]).powi(2) + var[i][d]);
+            }
+        }
+        for g in gvar.iter_mut() {
+            *g /= wtot;
+        }
+
+        let scale = gvar.iter().sum::<f64>() / dim.max(1) as f64;
+        let abs_floor = scale * VAR_FLOOR_REL;
+        let floor: Vec<f64> = gvar
+            .iter()
+            .map(|&g| (g * 1e-3).max(abs_floor) + 1e-12)
+            .collect();
+
+        let km = kmeans(features, k, 50, 1, seed);
+        let mut means = km.centers.clone();
+        let mut vars = vec![vec![0.0; dim]; k];
+        let mut seed_nk = vec![0.0; k];
+        for (i, &c) in km.labels.iter().enumerate() {
+            seed_nk[c] += n[i];
+            for d in 0..dim {
+                vars[c][d] += n[i] * ((mu[i][d] - means[c][d]).powi(2) + var[i][d]);
+            }
+        }
+        for c in 0..k {
+            for d in 0..dim {
+                let raw = if seed_nk[c] > 0.0 {
+                    vars[c][d] / seed_nk[c]
+                } else {
+                    gvar[d]
+                };
+                vars[c][d] = raw.max(floor[d]);
+            }
+        }
+
+        let mut weights = vec![1.0 / k as f64; k];
+        let mut resp = vec![vec![0.0; k]; m];
+        let mut loglik = f64::NEG_INFINITY;
+        let mut iters = 0;
+
+        for it in 0..max_iter {
+            iters = it + 1;
+            let mut new_ll = 0.0;
+            for i in 0..m {
+                let logr: Vec<f64> = (0..k)
+                    .map(|c| {
+                        let mut acc = weights[c].ln();
+                        for d in 0..dim {
+                            let s2 = vars[c][d];
+                            let diff = mu[i][d] - means[c][d];
+                            acc -= 0.5 * (std::f64::consts::TAU * s2).ln();
+                            acc -= 0.5 * (diff * diff) / s2;
+                            acc -= 0.5 * var[i][d] / s2;
+                        }
+                        acc
+                    })
+                    .collect();
+                let mx = logr.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+                let lse = mx + logr.iter().map(|&l| (l - mx).exp()).sum::<f64>().ln();
+                new_ll += n[i] * lse;
+                for c in 0..k {
+                    resp[i][c] = (logr[c] - lse).exp();
+                }
+            }
+
+            let nk: Vec<f64> = (0..k)
+                .map(|c| (0..m).map(|i| n[i] * resp[i][c]).sum())
+                .collect();
+            let ntot: f64 = nk.iter().sum();
+            let mut new_means = vec![vec![0.0; dim]; k];
+            for c in 0..k {
+                weights[c] = nk[c] / ntot;
+                for d in 0..dim {
+                    let acc: f64 = (0..m).map(|i| n[i] * resp[i][c] * mu[i][d]).sum();
+                    new_means[c][d] = if nk[c] > 0.0 { acc / nk[c] } else { acc };
+                }
+            }
+            let mut new_vars = vec![vec![0.0; dim]; k];
+            for c in 0..k {
+                for d in 0..dim {
+                    let acc: f64 = (0..m)
+                        .map(|i| {
+                            n[i] * resp[i][c] * (var[i][d] + (mu[i][d] - new_means[c][d]).powi(2))
+                        })
+                        .sum();
+                    new_vars[c][d] = ((acc + 1e-3 * gvar[d]) / (nk[c] + 1e-3)).max(floor[d]);
+                }
+            }
+            means = new_means;
+            vars = new_vars;
+
+            if it > 0 && (new_ll - loglik).abs() <= 1e-7 * loglik.abs().max(1.0) {
+                loglik = new_ll;
+                break;
+            }
+            loglik = new_ll;
+        }
+        (resp, weights, means, vars, loglik, iters)
+    }
+
+    #[track_caller]
+    fn assert_close_rel(got: f64, want: f64, tol: f64, what: &str) {
+        let scale = got.abs().max(want.abs()).max(1.0);
+        assert!(
+            (got - want).abs() <= tol * scale,
+            "{what}: got {got}, want {want}"
+        );
+    }
+
+    /// Overlapping blobs, so every responsibility sits strictly between 0 and 1 and each term of the
+    /// E-step actually moves the answer. Well-separated blobs saturate the posterior to 0/1 and hide
+    /// arithmetic errors.
+    fn soft_fixture() -> Vec<Diagonal<f64>> {
+        let mut rng = SplitMix64::new(2024);
+        let centers = [[0.0, 0.0], [2.5, 0.4], [1.1, 2.6]];
+        let (pts, _) = blobs(&mut rng, 90, &centers, 1.3);
+        // `Diagonal`, not `Spherical`, and a third dimension that never varies: `Spherical` carries
+        // one pooled scalar variance for *every* dimension, so no dimension of a spherical fixture
+        // can have zero spread. Here `gvar_2 = 0`, the relative floor `1e-3·gvar_d` vanishes with it,
+        // and the absolute floor `VAR_FLOOR_REL · mean_d gvar_d` is what bounds `1/σ²_c2` — the only
+        // path on which `scale` reaches the answer.
+        let mut map: HashMap<(i64, i64), usize> = HashMap::new();
+        let mut cfs: Vec<Diagonal<f64>> = Vec::new();
+        for p in &pts {
+            let key = ((p[0] / 0.45).round() as i64, (p[1] / 0.45).round() as i64);
+            let idx = *map.entry(key).or_insert_with(|| {
+                cfs.push(<Diagonal<f64> as ClusterFeature<f64>>::new(3));
+                cfs.len() - 1
+            });
+            cfs[idx].push(&[p[0], p[1], 0.0], 1.0);
+        }
+        cfs
+    }
+
+    #[test]
+    #[allow(clippy::needless_range_loop)] // index form mirrors the EM equations
+    fn diagonal_em_matches_an_independent_reference_iteration_for_iteration() {
+        let micros = soft_fixture();
+        let (k, iters, seed) = (3, 5, 17);
+        let g = gmm_diagonal_once(&micros, k, iters, seed);
+        let (rresp, rweights, rmeans, rvars, rloglik, ran) =
+            reference_diagonal_em(&micros, k, iters, seed);
+        assert_eq!(
+            ran, iters,
+            "fixture converged early, so the path is untested"
+        );
+
+        assert_close_rel(g.loglik, rloglik, 1e-9, "loglik");
+        for c in 0..k {
+            assert_close_rel(g.weights[c], rweights[c], 1e-9, "weight");
+            for d in 0..3 {
+                assert_close_rel(g.means[c][d], rmeans[c][d], 1e-9, "mean");
+                assert_close_rel(g.vars[c][d], rvars[c][d], 1e-9, "var");
+            }
+        }
+        let mut soft = 0;
+        for i in 0..micros.len() {
+            for c in 0..k {
+                assert_close_rel(g.resp[i][c], rresp[i][c], 1e-9, "resp");
+                if g.resp[i][c] > 1e-3 && g.resp[i][c] < 1.0 - 1e-3 {
+                    soft += 1;
+                }
+            }
+            assert_eq!(
+                g.labels[i],
+                argmax(&rresp[i]),
+                "label disagrees with the reference posterior"
+            );
+        }
+        assert!(soft > 20, "fixture is not soft enough: {soft} soft entries");
+    }
+
+    #[test]
+    #[allow(clippy::needless_range_loop)] // index form mirrors the EM equations
+    fn diagonal_em_stops_on_the_relative_loglik_test() {
+        // Same fixture run to convergence. The tolerance is loose because the two implementations
+        // sum in a different order and may stop an iteration apart; it is still far tighter than the
+        // O(1) shift any swapped operator in the stopping test produces (`<=` inverted stops after
+        // one iteration, `&&` widened stops before the first M-step is scored).
+        let micros = soft_fixture();
+        let (k, seed) = (3, 17);
+        let g = gmm_diagonal_once(&micros, k, 1000, seed);
+        let (_, _, rmeans, _, rloglik, ran) = reference_diagonal_em(&micros, k, 1000, seed);
+        assert!(ran > 5 && ran < 1000, "expected convergence, ran {ran}");
+        assert_close_rel(g.loglik, rloglik, 1e-6, "converged loglik");
+        for c in 0..k {
+            for d in 0..3 {
+                assert_close_rel(g.means[c][d], rmeans[c][d], 1e-5, "converged mean");
+            }
+        }
+        // Monotone ascent is the defining property of EM: no iteration may lower the objective.
+        let mut prev = f64::NEG_INFINITY;
+        for t in 1..=12 {
+            let ll = gmm_diagonal_once(&micros, k, t, seed).loglik;
+            assert!(
+                ll >= prev - 1e-9,
+                "loglik fell at iteration {t}: {prev} -> {ll}"
+            );
+            prev = ll;
+        }
+    }
+
+    #[test]
+    fn argmax_keeps_the_first_of_equal_scores() {
+        assert_eq!(argmax(&[1.0, 3.0, 2.0]), 1);
+        assert_eq!(argmax(&[3.0, 3.0, 1.0]), 0);
+        assert_eq!(argmax(&[1.0, 2.0, 2.0]), 1);
+        assert_eq!(argmax(&[5.0]), 0);
     }
 }
