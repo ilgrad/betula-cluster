@@ -62,7 +62,7 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - uses: astral-sh/setup-uv@v10
+      - uses: astral-sh/setup-uv@v10.0.1
       - name: ruff check
         run: uvx ruff check python/ tests/ bench/
       - name: ruff format --check
@@ -103,7 +103,7 @@ jobs:
         python-version: ["3.11", "3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10
+      - uses: astral-sh/setup-uv@v10.0.1
       - uses: actions/download-artifact@v8
         with:
           name: wheel
@@ -139,7 +139,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - uses: astral-sh/setup-uv@v10
+      - uses: astral-sh/setup-uv@v10.0.1
       # The published abi3 wheel is Linux-only in CI; build from source here so the extension is
       # exercised natively on macOS and Windows (where release.yml also ships wheels).
       - name: build (maturin develop) + pytest (wrapper coverage, floor 100%)
