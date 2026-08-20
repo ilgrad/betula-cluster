@@ -286,11 +286,7 @@ impl<R: Real, C: ClusterFeature<R>> DenStream<R, C> {
         match Self::nearest(&self.p, x) {
             Some(i) => {
                 let d = sq_euclidean(self.p[i].cf.mean(), x).to_f64().unwrap();
-                if d <= self.eps2 {
-                    self.labels[i]
-                } else {
-                    -1
-                }
+                if d <= self.eps2 { self.labels[i] } else { -1 }
             }
             None => -1,
         }
@@ -601,11 +597,7 @@ impl<R: Real, C: ClusterFeature<R>> DbStream<R, C> {
 
 /// Order a micro-cluster id pair as `(lo, hi)` so shared-density keys are symmetric.
 fn pair(a: u64, b: u64) -> (u64, u64) {
-    if a < b {
-        (a, b)
-    } else {
-        (b, a)
-    }
+    if a < b { (a, b) } else { (b, a) }
 }
 
 // ── Tests ──

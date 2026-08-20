@@ -1,10 +1,10 @@
 //! End-to-end model: build a CF-tree, cluster its leaves (Phase 3), and label points.
 
 use crate::clustering::{
-    gmm_diagonal, gmm_diagonal_auto, gmm_full, gmm_full_auto, gmm_toeplitz, gmm_toeplitz_auto,
-    gmm_toeplitz_full, gmm_toeplitz_full_auto, gmm_toeplitz_gs, gmm_toeplitz_gs_auto, kmeans,
-    leiden, movmf, movmf_auto, spectral, spherical_kmeans, ward_hac, ward_hac_auto, xmeans, Gmm,
-    GmmFull, GmmToeplitz, Movmf, Objective,
+    Gmm, GmmFull, GmmToeplitz, Movmf, Objective, gmm_diagonal, gmm_diagonal_auto, gmm_full,
+    gmm_full_auto, gmm_toeplitz, gmm_toeplitz_auto, gmm_toeplitz_full, gmm_toeplitz_full_auto,
+    gmm_toeplitz_gs, gmm_toeplitz_gs_auto, kmeans, leiden, movmf, movmf_auto, spectral,
+    spherical_kmeans, ward_hac, ward_hac_auto, xmeans,
 };
 use crate::distance::CFDistance;
 use crate::feature::ClusterFeature;

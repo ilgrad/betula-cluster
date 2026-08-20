@@ -779,9 +779,11 @@ mod tests {
         assert!((0.0..=1.0).contains(&out.reconstruction_err));
         assert!(coded.iter().all(|f| f.dim() == 2));
         assert!(coded.iter().all(|f| f.weight() == 1.0));
-        assert!(coded
-            .iter()
-            .all(|f| f.mean().iter().all(|&v| v >= 0.0 && v.is_finite())));
+        assert!(
+            coded
+                .iter()
+                .all(|f| f.mean().iter().all(|&v| v >= 0.0 && v.is_finite()))
+        );
     }
 
     #[test]

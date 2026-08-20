@@ -213,7 +213,7 @@ mod tests {
     #[test]
     fn radius_matches_formula() {
         let c: Spherical<f64> = build(1, &[&[1.], &[3.], &[5.]]); // mean 3, ssd 8
-                                                                  // point to 0: (n·cd + (n+1)·S)/(n+1)² = (3·9 + 4·8)/16
+        // point to 0: (n·cd + (n+1)·S)/(n+1)² = (3·9 + 4·8)/16
         assert!(close(Radius.point(&c, &[0.]), 59.0 / 16.0));
     }
 

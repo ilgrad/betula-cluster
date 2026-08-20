@@ -97,18 +97,10 @@ impl DdSketch {
 
     /// Smallest / largest value seen (`NaN` if empty).
     pub fn min(&self) -> f64 {
-        if self.n == 0 {
-            f64::NAN
-        } else {
-            self.min
-        }
+        if self.n == 0 { f64::NAN } else { self.min }
     }
     pub fn max(&self) -> f64 {
-        if self.n == 0 {
-            f64::NAN
-        } else {
-            self.max
-        }
+        if self.n == 0 { f64::NAN } else { self.max }
     }
 
     /// Estimated `q`-quantile (`q ∈ [0, 1]`); exact at the endpoints, `NaN` if empty.

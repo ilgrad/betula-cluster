@@ -123,11 +123,7 @@ pub fn jacobi_eigen<R: Real>(matrix: &[Vec<R>]) -> (Vec<R>, Vec<Vec<R>>) {
                 let theta = half * (a[q][q] - a[p][p]) / apq;
                 let t = {
                     let mag = one / (theta.abs() + (theta * theta + one).sqrt());
-                    if theta < R::zero() {
-                        -mag
-                    } else {
-                        mag
-                    }
+                    if theta < R::zero() { -mag } else { mag }
                 };
                 let c = one / (t * t + one).sqrt();
                 let s = t * c;
@@ -216,7 +212,7 @@ mod tests {
             }
         }
         assert!(close(logdet_from_chol(&l), 8.0_f64.ln())); // det = 4*3 - 2*2 = 8
-                                                            // A⁻¹ = 1/8 [[3,-2],[-2,4]]; δ=[1,1] -> δᵀA⁻¹δ = (3-2-2+4)/8 = 3/8
+        // A⁻¹ = 1/8 [[3,-2],[-2,4]]; δ=[1,1] -> δᵀA⁻¹δ = (3-2-2+4)/8 = 3/8
         assert!(close(mahalanobis_sq_from_chol(&l, &[1.0, 1.0]), 3.0 / 8.0));
     }
 

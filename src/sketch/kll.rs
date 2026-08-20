@@ -108,18 +108,10 @@ impl KllSketch {
 
     /// Smallest / largest value seen (`NaN` if empty).
     pub fn min(&self) -> f64 {
-        if self.n == 0 {
-            f64::NAN
-        } else {
-            self.min
-        }
+        if self.n == 0 { f64::NAN } else { self.min }
     }
     pub fn max(&self) -> f64 {
-        if self.n == 0 {
-            f64::NAN
-        } else {
-            self.max
-        }
+        if self.n == 0 { f64::NAN } else { self.max }
     }
 
     /// Sorted `(value, cumulative_weight)` pairs over all compactors (cumulative weight reaches `n`).

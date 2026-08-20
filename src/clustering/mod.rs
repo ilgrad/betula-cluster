@@ -17,19 +17,19 @@ pub mod spectral;
 pub mod vmf;
 pub mod ward;
 
-pub use community::{leiden, Community, Objective};
-pub use gmm::{gmm_diagonal, gmm_diagonal_auto, gmm_full, gmm_full_auto, Gmm, GmmFull};
+pub use community::{Community, Objective, leiden};
+pub use gmm::{Gmm, GmmFull, gmm_diagonal, gmm_diagonal_auto, gmm_full, gmm_full_auto};
 pub use gmm_toeplitz::{
-    gmm_toeplitz, gmm_toeplitz_auto, gmm_toeplitz_full, gmm_toeplitz_full_auto, gmm_toeplitz_gs,
-    gmm_toeplitz_gs_auto, GmmToeplitz,
+    GmmToeplitz, gmm_toeplitz, gmm_toeplitz_auto, gmm_toeplitz_full, gmm_toeplitz_full_auto,
+    gmm_toeplitz_gs, gmm_toeplitz_gs_auto,
 };
-pub use hdbscan::{hdbscan, Hdbscan};
-pub use kmeans::{cop_kmeans, kmeans, xmeans, ConstraintError, KMeans};
-pub use kprototypes::{kprototypes, nearest_micro, summarize_mixed, MixedCf};
-pub use scalespace::{scale_space, ScaleSpace};
-pub use spectral::{spectral, Spectral};
-pub use vmf::{movmf, movmf_auto, spherical_kmeans, Movmf, SphericalKMeans};
-pub use ward::{ward_hac, ward_hac_auto, WardHac};
+pub use hdbscan::{Hdbscan, hdbscan};
+pub use kmeans::{ConstraintError, KMeans, cop_kmeans, kmeans, xmeans};
+pub use kprototypes::{MixedCf, kprototypes, nearest_micro, summarize_mixed};
+pub use scalespace::{ScaleSpace, scale_space};
+pub use spectral::{Spectral, spectral};
+pub use vmf::{Movmf, SphericalKMeans, movmf, movmf_auto, spherical_kmeans};
+pub use ward::{WardHac, ward_hac, ward_hac_auto};
 
 #[cfg(test)]
 pub(crate) mod testutil {

@@ -26,7 +26,7 @@
 
 use crate::clustering::rng::SplitMix64;
 use crate::feature::ClusterFeature;
-use crate::mixture::{ar_loglik_exact, Mixture, StationaryCov};
+use crate::mixture::{Mixture, StationaryCov, ar_loglik_exact};
 use crate::types::Real;
 
 /// Random EM restarts kept by data log-likelihood (EM is non-convex; covariance-only clustering is
@@ -272,7 +272,7 @@ where
     let deltas: Vec<(R, Vec<R>)> = features
         .iter()
         .zip(wt)
-        .filter(|(_, &w)| w > R::zero())
+        .filter(|&(_, &w)| w > R::zero())
         .map(|(f, &w)| (w, (0..dim).map(|t| f.mean()[t] - mu_c).collect()))
         .collect();
     let r0 = r[0];
@@ -895,7 +895,7 @@ mod tests {
         let deltas: Vec<(f64, Vec<f64>)> = feats
             .iter()
             .zip(wt)
-            .filter(|(_, &w)| w > 0.0)
+            .filter(|&(_, &w)| w > 0.0)
             .map(|(f, &w)| (w, (0..dim).map(|t| f.mean()[t] - mu_c).collect()))
             .collect();
         let r0 = r[0];

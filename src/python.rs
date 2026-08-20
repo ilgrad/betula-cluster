@@ -21,7 +21,7 @@ use crate::clustering::hdbscan::hdbscan;
 use crate::clustering::nmf::NmfSpec;
 use crate::clustering::scalespace::scale_space;
 use crate::clustering::{
-    cop_kmeans, kprototypes, nearest_micro, summarize_mixed, ConstraintError, MixedCf,
+    ConstraintError, MixedCf, cop_kmeans, kprototypes, nearest_micro, summarize_mixed,
 };
 use crate::distance::{
     AverageIntercluster, CFDistance, CentroidEuclidean, CentroidManhattan, MahalanobisChi2,
@@ -29,11 +29,11 @@ use crate::distance::{
 };
 use crate::feature::{ClusterFeature, Diagonal, FdSketch, Full, Spherical};
 use crate::mixture::Mixture;
-use crate::model::{assignment_rule, fit_head, Method, Model, Rule};
+use crate::model::{Method, Model, Rule, assignment_rule, fit_head};
 use crate::sparse::{nearest_sparse, summarize_sparse};
 use crate::stats::chi2_quantile;
 use crate::stream::{DbStream, DenStream};
-use crate::topology::{mapper, Lens, MapperGraph, MapperParams};
+use crate::topology::{Lens, MapperGraph, MapperParams, mapper};
 use crate::tree::CFTree;
 use crate::types::Real;
 
@@ -114,7 +114,7 @@ fn parse_projection(
         _ => {
             return Err(PyValueError::new_err(
                 "projection must be 'none', 'weighted-nmf' or 'weighted-nmf-kl'",
-            ))
+            ));
         }
     };
     if projection_dim == 0 {
@@ -1163,11 +1163,7 @@ impl<R: Real> TreeState<R> {
             }
             let d = d2.sqrt();
             let r = radii[cl];
-            if r > 0.0 {
-                d / r
-            } else {
-                d
-            }
+            if r > 0.0 { d / r } else { d }
         })
     }
 
@@ -1556,11 +1552,7 @@ impl Betula {
             let row = &centers[c * dim..(c + 1) * dim];
             let scale = if unit {
                 let norm = row.iter().map(|v| v * v).sum::<f64>().sqrt();
-                if norm > 0.0 {
-                    1.0 / norm
-                } else {
-                    1.0
-                }
+                if norm > 0.0 { 1.0 / norm } else { 1.0 }
             } else {
                 1.0
             };
@@ -2231,24 +2223,25 @@ impl Betula {
         density_k: usize,
         coordinate: usize,
     ) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
-        let lens =
-            match lens {
-                "density" => Lens::Density { k: density_k },
-                "radius" => Lens::Radius,
-                "l2norm" | "l2" => Lens::L2Norm,
-                "coordinate" | "coord" => {
-                    if self.dim != 0 && coordinate >= self.dim {
-                        return Err(PyValueError::new_err(
-                            "coordinate index out of range for the fitted dimensionality",
-                        ));
-                    }
-                    Lens::Coordinate(coordinate)
+        let lens = match lens {
+            "density" => Lens::Density { k: density_k },
+            "radius" => Lens::Radius,
+            "l2norm" | "l2" => Lens::L2Norm,
+            "coordinate" | "coord" => {
+                if self.dim != 0 && coordinate >= self.dim {
+                    return Err(PyValueError::new_err(
+                        "coordinate index out of range for the fitted dimensionality",
+                    ));
                 }
-                "eccentricity" | "ecc" => Lens::Eccentricity,
-                _ => return Err(PyValueError::new_err(
+                Lens::Coordinate(coordinate)
+            }
+            "eccentricity" | "ecc" => Lens::Eccentricity,
+            _ => {
+                return Err(PyValueError::new_err(
                     "lens must be 'density', 'radius', 'l2norm', 'coordinate' or 'eccentricity'",
-                )),
-            };
+                ));
+            }
+        };
         let p = MapperParams {
             lens,
             resolution,
@@ -2262,7 +2255,7 @@ impl Betula {
             _ => {
                 return Err(PyValueError::new_err(
                     "call fit() or partial_fit() before mapper()",
-                ))
+                ));
             }
         };
 
@@ -2808,11 +2801,7 @@ fn default_gamma(num: &[f64], n: usize, n_num: usize) -> f64 {
         }
     }
     let avg_std = var.iter().map(|v| (v / n as f64).sqrt()).sum::<f64>() / n_num as f64;
-    if avg_std > 0.0 {
-        0.5 * avg_std
-    } else {
-        1.0
-    }
+    if avg_std > 0.0 { 0.5 * avg_std } else { 1.0 }
 }
 
 /// A fitted k-prototypes model: mixed micro-clusters, each one's cluster label, and the split metadata.
