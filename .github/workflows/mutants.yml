@@ -26,19 +26,24 @@ jobs:
     # (24 shards, 90-minute cap): only 2 of 24 shards finished, both at ~28 s/mutant; the other 22
     # were killed by the timeout, and the slowest managed 53 mutants in 90 minutes -- 101 s each,
     # because a mutant that *survives* runs the whole suite to the end while a caught one stops at
-    # the first failure. Sizing on 101 s and a 120-minute cap gives 4312 / (7200/101) = 61 mutants
-    # per shard, so 64. Shards are 0-indexed and the mutant list order is deterministic, so shard k
-    # covers the same mutants every week.
-    name: cargo-mutants ${{ matrix.shard }}/64
+    # the first failure. Sizing on 101 s and a 120-minute cap gave 4312 / (7200/101) = 61 mutants per
+    # shard, so 64 -- and on run 32296066525 shard 20 was *still* cancelled at exactly 2 h, costing
+    # that run ~60 unmeasured mutants and making its 488-survivor total an undercount. There was no
+    # margin, and the suite has grown since. 96 shards at a 150-minute cap gives ~45 mutants each at
+    # the same 101 s: 76 minutes of work against a cap twice that. Shards are 0-indexed and the
+    # mutant list order is deterministic, so shard k covers the same mutants every week.
+    name: cargo-mutants ${{ matrix.shard }}/96
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 150
     strategy:
       fail-fast: false
       matrix:
         shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
                 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
                 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47,
-                48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63]
+                48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63,
+                64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79,
+                80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95]
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -47,7 +52,7 @@ jobs:
         with:
           tool: cargo-mutants,cargo-nextest
       - name: cargo mutants (whole crate, scope in .cargo/mutants.toml)
-        run: cargo mutants --shard ${{ matrix.shard }}/64 -j4 --test-tool nextest
+        run: cargo mutants --shard ${{ matrix.shard }}/96 -j4 --test-tool nextest
       - uses: actions/upload-artifact@v7
         if: always()
         with:
