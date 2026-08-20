@@ -6,11 +6,29 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+- **Rust 2024 edition; minimum supported Rust version 1.82 → 1.85.** The migration needed two source
+  changes in total (a binding mode made explicit in `gmm_toeplitz.rs`); the rest is `rustfmt`'s 2024
+  style edition collapsing short `if`/`else` onto one line. 1.85 is the edition's own floor.
+
 ### Fixed
+- **Leiden was not reproducible: the same graph and the same `seed` gave different communities on
+  successive calls in one process.** `refine` (and, on a tied graph, `one_level`) picked its target
+  sub-community by scanning a `HashMap`, and kept whichever tied candidate the iterator produced
+  first. `std::collections::HashMap` draws a fresh `RandomState` seed per instance, so the candidate
+  order — and with it the tie-break — changed between calls; `seed` only ever controlled the node
+  visit order. `aggregate` had the same problem one level down: it emitted each super-node's
+  adjacency row in `HashMap` order, and since floating-point addition is not associative, the
+  weighted degree summed from that row differed run to run, moving every gain computed from it.
+  Both now scan in community / neighbour index order. Labels change for graphs that carry tied
+  gains — symmetric ones above all — and are now stable. Measured: reverting the three hunks in place
+  and re-running every `betula-leiden` row of `bench/results_quality.csv` and `bench/results_real.csv`
+  against the same build reproduces all nine to the last digit, so no published benchmark number moves
+  with this fix.
 - **Documentation shipped with 0.6.0 still described 0.5.0.** The verified-suite line in `README.md`
-  and `DESIGN.md` claimed 185 Rust + a 213-case Python suite; the release actually carries **200 Rust
-  unit + 4 integration tests** (199 + 4 with `--no-default-features`, 8 more for the `cli` binary) and
-  a **228-case** Python suite (227 passed / 1 skipped without the optional `scipy` / `networkx` test
+  and `DESIGN.md` claimed 185 Rust + a 213-case Python suite; the tree now carries **352 Rust unit +
+  4 integration tests** (351 + 4 with `--no-default-features`, 8 more for the `cli` binary) and a
+  **228-case** Python suite (227 passed / 1 skipped without the optional `scipy` / `networkx` test
   dependencies). `DESIGN.md` also still described `predict_proba` as the per-leaf responsibility
   matrix, which 0.6.0 replaced with scoring the row itself under the fitted mixture, and its crate
   layout predated `src/mixture.rs`. `docs/api.md` omitted `consensus` / `ConsensusResult` although
@@ -238,7 +256,7 @@ All notable changes to this project are documented here. The format follows
   stationary signals: a Yule-Walker (Levinson) warm start at order ≤ 16, then coordinate ascent of the
   exact log-likelihood over the reflection coefficients (positive-definite by the `|k| < 1` constraint) —
   the likelihood-optimal general precision (arXiv:2311.14995), completing the three-rung Toeplitz ladder
-  of [`docs/adr/001-gmm-toeplitz.md`](docs/adr/001-gmm-toeplitz.md). Reuses the exact GS precision E-step;
+  of [`docs/adr/001-gmm-toeplitz.md`](https://github.com/ilgrad/betula-cluster/blob/main/docs/adr/001-gmm-toeplitz.md). Reuses the exact GS precision E-step;
   BIC auto-`k`; a true `predict_proba`. Measured: competitive with the AR head on AR signals and recovers
   mid-lag echo structure (lags 11–16, beyond the banded cap `w_max = 10`) the banded head is blind to,
   while the dense-covariance `gmm-toeplitz-full` covers arbitrarily long lags (`bench/toeplitz_ar_mixture.py`).
@@ -268,7 +286,7 @@ All notable changes to this project are documented here. The format follows
   dependency-free weighted **HALS** (coordinate descent, Gram-reuse across sweeps); the compression, not a
   fast NMF, is the speedup. Available on the one-shot `fit_predict` and the streaming `Betula` estimator.
   Signed input is rejected (no silent shifting — use `vmf` / `spherical-kmeans` or PCA / TruncatedSVD for
-  embeddings); dense input in this release. See [`docs/MATH.md`](docs/MATH.md).
+  embeddings); dense input in this release. See [`docs/MATH.md`](https://github.com/ilgrad/betula-cluster/blob/main/docs/MATH.md).
 
 ## [0.3.0] — 2026-07-18
 
@@ -281,7 +299,7 @@ All notable changes to this project are documented here. The format follows
   small ridge — factored by Cholesky for an exact multivariate-Gaussian E-step. `O(d²)` parameters,
   `O(d³)` per component; BIC auto-`k` at `n_clusters=0`; a true posterior via `predict_proba`. This is
   the general (non-AR) rung of the Toeplitz ladder recorded in
-  [`docs/adr/001-gmm-toeplitz.md`](docs/adr/001-gmm-toeplitz.md). On a long-lag-echo mixture (echo lag
+  [`docs/adr/001-gmm-toeplitz.md`](https://github.com/ilgrad/betula-cluster/blob/main/docs/adr/001-gmm-toeplitz.md). On a long-lag-echo mixture (echo lag
   `K ∈ {16, 28, 40}`, all beyond the AR order) it recovers the components (ARI 0.70 → 0.97 as the window
   grows) where the banded `gmm-toeplitz` sits at chance; on AR-generated signals the two match
   (`bench/toeplitz_ar_mixture.py`).
@@ -341,7 +359,7 @@ All notable changes to this project are documented here. The format follows
   at `n_clusters=0`; a true posterior via `predict_proba`; parallel EM restarts (`parallel` feature).
   **For ordered coordinates only** — on generic embeddings the Toeplitz prior is
   wrong (use `gmm` / `gmm-full`). Based on the Gohberg-Semencul Toeplitz-precision estimator of
-  arXiv:2311.14995; design and validation in [`docs/adr/001-gmm-toeplitz.md`](docs/adr/001-gmm-toeplitz.md).
+  arXiv:2311.14995; design and validation in [`docs/adr/001-gmm-toeplitz.md`](https://github.com/ilgrad/betula-cluster/blob/main/docs/adr/001-gmm-toeplitz.md).
 
 ### Fixed
 - **High-dimensional GMM regularization** — the expected-log E-step adds a within-leaf correction
