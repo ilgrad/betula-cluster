@@ -559,4 +559,58 @@ mod tests {
             "the sweep does not walk the merge: {counts:?}"
         );
     }
+    /// The valley test, in closed form, on two equal Gaussian bumps `s` apart: `rho` is a plain sum
+    /// of kernels here, not the implementation's cached reciprocal bandwidth, so a corrupted
+    /// exponent or a corrupted `1/(2h²)` shows up as a different merge decision.
+    fn expected_two_bump_modes(s: f64, h: f64) -> usize {
+        let rho = |x: f64| {
+            (-(x * x) / (2.0 * h * h)).exp() + (-((x - s) * (x - s)) / (2.0 * h * h)).exp()
+        };
+        if s <= 0.1 * h {
+            return 1; // the two converged points tight-unique into one raw mode
+        }
+        if s * s > (4.0 * h) * (4.0 * h) {
+            return 2; // farther apart than the pair cutoff: never even tested
+        }
+        let valley = (1..12)
+            .map(|t| rho(s * t as f64 / 12.0))
+            .fold(f64::INFINITY, f64::min);
+        if valley >= VALLEY_RATIO * rho(0.0).min(rho(s)) {
+            1
+        } else {
+            2
+        }
+    }
+
+    /// A separation sweep over `prominence_modes` alone, with the converged points placed exactly on
+    /// the two peaks so the merge decision is the only thing left to get wrong. The bandwidth sweep
+    /// in the test above walks the *mean-shift* endpoints; nothing walked the valley test itself, and
+    /// on a well-separated fixture it agrees with almost any corruption of the density.
+    #[test]
+    fn the_valley_test_flips_where_the_density_says_it_does() {
+        for &h in &[0.5_f64, 1.0, 2.0] {
+            let mut seen = Vec::new();
+            for step in 0..40 {
+                let s = 0.05 * h + 0.09 * h * step as f64;
+                let mu = vec![vec![0.0, 0.0], vec![s, 0.0]];
+                let n = vec![1.0, 1.0];
+                let (labels, modes) = prominence_modes(&mu.clone(), &mu, &n, h);
+                let want = expected_two_bump_modes(s, h);
+                assert_eq!(modes, want, "h = {h}, s = {s}: mode count");
+                assert_eq!(labels.len(), 2, "h = {h}, s = {s}: one label per point");
+                assert_eq!(
+                    labels[0] == labels[1],
+                    want == 1,
+                    "h = {h}, s = {s}: labelling disagrees with the count"
+                );
+                seen.push(modes);
+            }
+            seen.dedup();
+            assert_eq!(
+                seen,
+                vec![1, 2],
+                "h = {h}: the sweep never crossed the valley threshold: {seen:?}"
+            );
+        }
+    }
 }
