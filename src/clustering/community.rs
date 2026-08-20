@@ -213,7 +213,10 @@ fn one_level(g: &Graph, obj: Objective, gamma: f64, seed: u64, init: &[usize]) -
             };
             let mut best_c = ci;
             let mut best = score(ci, &tot_deg, &tot_size);
-            for &c in w_to.keys() {
+            // Community order, not `HashMap` order -- see the note in `refine`.
+            let mut cands: Vec<usize> = w_to.keys().copied().collect();
+            cands.sort_unstable();
+            for c in cands {
                 let s = score(c, &tot_deg, &tot_size);
                 if s > best {
                     best = s;
@@ -256,7 +259,12 @@ fn refine(g: &Graph, part: &[usize], obj: Objective, gamma: f64, seed: u64) -> V
         tot_size[refined[v]] -= sv;
         let mut best_c = refined[v];
         let mut best = 0.0; // require a strictly positive gain to leave the singleton
-        for (&c, &w) in &w_to {
+        // Scan the candidates in sub-community order: `w_to` is a `HashMap`, whose iteration order
+        // depends on a per-instance random seed, and the strict `>` below keeps whichever tied
+        // candidate came first. Left unordered, two identical calls disagree.
+        let mut cands: Vec<(usize, f64)> = w_to.into_iter().collect();
+        cands.sort_by_key(|&(c, _)| c);
+        for (c, w) in cands {
             let s = gain(obj, gamma, g.two_m, w, kv, sv, tot_deg[c], tot_size[c]);
             if s > best {
                 best = s;
@@ -293,7 +301,17 @@ fn aggregate(g: &Graph, part: &[usize], refined: &[usize], nr: usize) -> (Graph,
             }
         }
     }
-    let adj = acc.into_iter().map(|m| m.into_iter().collect()).collect();
+    // Sorted by neighbour index: the row order decides the order the weighted degree is summed
+    // in, and floating-point addition is not associative, so an unordered row makes `degree` --
+    // and every gain computed from it -- depend on the `HashMap` seed.
+    let adj: Vec<Vec<(usize, f64)>> = acc
+        .into_iter()
+        .map(|m| {
+            let mut row: Vec<(usize, f64)> = m.into_iter().collect();
+            row.sort_by_key(|&(j, _)| j);
+            row
+        })
+        .collect();
     let two_m = g.two_m;
     (
         Graph {
@@ -582,5 +600,520 @@ mod tests {
         }
         assert_eq!(next.adj[0], vec![(1, 1.0)]);
         assert_eq!(next.adj[1], vec![(0, 1.0)]);
+    }
+    /// Fisher--Yates from the top down, drawing `j` from `0..=i`, written out rather than reused.
+    fn reference_shuffle(n: usize, seed: u64) -> (Vec<usize>, SplitMix64) {
+        let mut order: Vec<usize> = (0..n).collect();
+        let mut rng = SplitMix64::new(seed);
+        let mut i = n;
+        while i > 1 {
+            i -= 1;
+            let draw = rng.next_u64();
+            let j = (draw % (i as u64 + 1)) as usize;
+            let (a, b) = (order[i], order[j]);
+            order[i] = b;
+            order[j] = a;
+        }
+        (order, rng)
+    }
+
+    #[test]
+    fn shuffled_matches_an_independent_fisher_yates_draw_for_draw() {
+        // Checking that the output is *a* permutation cannot see a wrong draw range: `% i` instead
+        // of `% (i + 1)` still permutes, it just never leaves an element in place at the top.
+        for n in [0usize, 1, 2, 3, 9, 64] {
+            for seed in [0u64, 1, 42, 0xdead_beef] {
+                let (want, want_rng) = reference_shuffle(n, seed);
+                assert_eq!(shuffled(n, seed), want, "n = {n}, seed = {seed}");
+                // The two consumed the same number of draws, so the stream ends in the same place.
+                let mut got_rng = SplitMix64::new(seed);
+                for _ in 1..n {
+                    got_rng.next_u64();
+                }
+                let mut want_rng = want_rng;
+                assert_eq!(
+                    got_rng.next_u64(),
+                    want_rng.next_u64(),
+                    "n = {n}, seed = {seed}: draw count"
+                );
+            }
+        }
+    }
+
+    /// Objective value of a whole partition, summed over communities from the graph itself --
+    /// the quantity the local move is hill-climbing, independent of any incremental bookkeeping.
+    fn quality(g: &Graph, obj: Objective, gamma: f64, comm: &[usize]) -> f64 {
+        let nc = comm.iter().max().map_or(0, |&x| x + 1);
+        let (mut inner, mut deg, mut size) = (vec![0.0; nc], vec![0.0; nc], vec![0.0; nc]);
+        for i in 0..g.len() {
+            deg[comm[i]] += g.degree[i];
+            size[comm[i]] += g.size[i];
+            for &(j, w) in &g.adj[i] {
+                if comm[j] == comm[i] {
+                    inner[comm[i]] += w;
+                }
+            }
+        }
+        match obj {
+            Objective::Modularity => (0..nc)
+                .map(|c| inner[c] / g.two_m - gamma * (deg[c] / g.two_m).powi(2))
+                .sum(),
+            Objective::Cpm => (0..nc)
+                .map(|c| 0.5 * inner[c] - 0.5 * gamma * size[c] * (size[c] - 1.0))
+                .sum(),
+        }
+    }
+
+    /// Four planted communities of five nodes joined in a ring by weak edges. The within-community
+    /// weights carry a deterministic jitter so no two candidate moves score exactly alike: the
+    /// local move breaks ties by `HashMap` iteration order, which a test must not depend on.
+    fn planted_ring() -> (Vec<Vec<(usize, f64)>>, Vec<usize>) {
+        let n = 20;
+        let mut adj: Vec<Vec<(usize, f64)>> = vec![Vec::new(); n];
+        let link = |adj: &mut Vec<Vec<(usize, f64)>>, i: usize, j: usize, w: f64| {
+            adj[i].push((j, w));
+            adj[j].push((i, w));
+        };
+        for c in 0..4 {
+            for a in 0..5 {
+                for b in (a + 1)..5 {
+                    let (i, j) = (c * 5 + a, c * 5 + b);
+                    link(&mut adj, i, j, 1.0 + 0.013 * ((i * 7 + j * 11) % 7) as f64);
+                }
+            }
+        }
+        for c in 0..4 {
+            link(
+                &mut adj,
+                c * 5 + 4,
+                ((c + 1) % 4) * 5,
+                0.11 + 0.007 * c as f64,
+            );
+        }
+        let planted: Vec<usize> = (0..n).map(|i| i / 5).collect();
+        (adj, planted)
+    }
+
+    /// The local move's contract: it returns a partition no single node can improve on, and it
+    /// scores at least as well as the planted answer. A corrupted running total of `tot_deg` /
+    /// `tot_size` still produces *a* partition -- it just stops being an optimum of the objective
+    /// the totals are supposed to describe.
+    #[test]
+    fn one_level_returns_a_partition_no_single_move_can_improve() {
+        let (base, planted) = planted_ring();
+        let g = Graph::from_adj(base.clone());
+        let init: Vec<usize> = (0..g.len()).collect();
+        for (name, obj) in [
+            ("modularity", Objective::Modularity),
+            ("cpm", Objective::Cpm),
+        ] {
+            for &gamma in &[0.25_f64, 0.5, 1.0] {
+                for seed in [1u64, 17, 99] {
+                    let part = one_level(&g, obj, gamma, seed, &init);
+                    let ctx = format!("{name} gamma={gamma} seed={seed}");
+                    let q = quality(&g, obj, gamma, &part);
+                    assert!(
+                        q >= quality(&g, obj, gamma, &planted) - 1e-9,
+                        "{ctx}: lost to the planted partition ({q} vs {})",
+                        quality(&g, obj, gamma, &planted)
+                    );
+                    for i in 0..g.len() {
+                        let mut targets: Vec<usize> =
+                            g.adj[i].iter().map(|&(j, _)| part[j]).collect();
+                        targets.sort_unstable();
+                        targets.dedup();
+                        for c in targets {
+                            if c == part[i] {
+                                continue;
+                            }
+                            let mut alt = part.clone();
+                            alt[i] = c;
+                            let alt_q = quality(&g, obj, gamma, &relabel(&alt));
+                            assert!(
+                                alt_q <= q + 1e-9,
+                                "{ctx}: moving {i} to {c} improves {q} -> {alt_q}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Resolution has to reach the local move through the null-model totals. Totals stuck at zero
+    /// (or negated) leave the gain resolution-free, and the granularity stops responding.
+    #[test]
+    fn the_resolution_moves_the_local_move_granularity() {
+        let (base, _) = planted_ring();
+        let g = Graph::from_adj(base);
+        let init: Vec<usize> = (0..g.len()).collect();
+        for (name, obj) in [
+            ("modularity", Objective::Modularity),
+            ("cpm", Objective::Cpm),
+        ] {
+            let counts: Vec<usize> = [0.05_f64, 0.5, 2.0, 8.0, 40.0]
+                .iter()
+                .map(|&gamma| n_distinct(&one_level(&g, obj, gamma, 5, &init)))
+                .collect();
+            assert!(
+                counts.windows(2).all(|w| w[0] <= w[1]),
+                "{name}: granularity is not monotone in the resolution: {counts:?}"
+            );
+            assert!(
+                counts.first() < counts.last(),
+                "{name}: the resolution changed nothing: {counts:?}"
+            );
+        }
+    }
+
+    /// A node leaves its singleton only for a *strictly* positive gain. Unit weights and unit node
+    /// sizes under CPM at `gamma = 1` make the first merge score exactly `1 - 1·1·1 = 0`, which is
+    /// the one input that tells `>` and `>=` apart.
+    #[test]
+    fn refine_requires_a_strictly_positive_gain_to_leave_a_singleton() {
+        let g = Graph::from_adj(two_triangles());
+        let part = vec![0, 0, 0, 1, 1, 1];
+        for seed in 0..8u64 {
+            assert_eq!(
+                refine(&g, &part, Objective::Cpm, 1.0, seed),
+                (0..6).collect::<Vec<_>>(),
+                "seed {seed}: a zero-gain merge was taken"
+            );
+        }
+        // Just below the break-even resolution the same merges are strictly profitable.
+        let merged = refine(&g, &part, Objective::Cpm, 0.9, 3);
+        assert!(
+            n_distinct(&merged) < 6,
+            "nothing merged at gamma = 0.9: {merged:?}"
+        );
+    }
+
+    /// Every refined sub-community must be connected inside the graph -- the property that makes
+    /// Leiden's aggregation safe, and the one a corrupted running total breaks first.
+    #[test]
+    fn every_refined_sub_community_is_connected() {
+        let (base, planted) = planted_ring();
+        let g = Graph::from_adj(base.clone());
+        for (name, obj) in [
+            ("modularity", Objective::Modularity),
+            ("cpm", Objective::Cpm),
+        ] {
+            for &gamma in &[0.25_f64, 1.0] {
+                for seed in 0..6u64 {
+                    let refined = refine(&g, &planted, obj, gamma, seed);
+                    assert!(
+                        all_communities_connected(&base, &refined),
+                        "{name} gamma={gamma} seed={seed}: {refined:?} is disconnected"
+                    );
+                }
+            }
+        }
+    }
+    /// Microclusters whose centres lie on a ring -- so a centre-only affinity links each to its
+    /// ring neighbours -- but whose spread alternates between two orthogonal orientations. Only a
+    /// geometry-aware affinity can see the second structure.
+    fn oriented_ring() -> Vec<crate::feature::Full<f64>> {
+        (0..24)
+            .map(|i| {
+                let t = i as f64 * std::f64::consts::TAU / 24.0;
+                let (cx, cy) = (5.0 * t.cos(), 5.0 * t.sin());
+                let th = if i % 2 == 0 {
+                    0.0
+                } else {
+                    std::f64::consts::FRAC_PI_2
+                };
+                let mut cf = crate::feature::Full::new(2);
+                for k in 0..12 {
+                    let s = (k as f64 - 5.5) * 0.25;
+                    let u = ((k % 3) as f64 - 1.0) * 0.03;
+                    cf.push(
+                        &[
+                            cx + s * th.cos() - u * th.sin(),
+                            cy + s * th.sin() + u * th.cos(),
+                        ],
+                        1.0,
+                    );
+                }
+                cf
+            })
+            .collect()
+    }
+
+    /// `leiden` reaches for the log-covariance and tangent terms exactly when their weights are
+    /// positive, and for neither otherwise. Nothing in the Rust suite exercised the switch, so a
+    /// guard that fired on the wrong side -- or demanded both weights instead of either -- silently
+    /// dropped the geometry the caller asked for.
+    #[test]
+    fn leiden_reaches_for_the_geometry_terms_exactly_when_their_weights_are_positive() {
+        let feats = oriented_ring();
+        let centers: Vec<Vec<f64>> = feats.iter().map(|f| f.mean().to_vec()).collect();
+        let lc = to_f64_tensors(log_covariances(&feats));
+        // Rank 1: in a 2-D space a rank-2 tangent basis spans everything, so every pair of
+        // subspaces is at Grassmann distance 0 and the term contributes nothing.
+        let tg = to_f64_tensors(tangent_bases(&feats, 1));
+        let (w, seed, gamma, rank) = (0.8_f64, 7u64, 1.0_f64, 1usize);
+
+        let routes = [
+            (
+                (0.0, 0.0),
+                detect(
+                    &knn_affinity::<f64>(&centers),
+                    gamma,
+                    Objective::Modularity,
+                    seed,
+                ),
+            ),
+            (
+                (w, 0.0),
+                detect(
+                    &knn_affinity_geo::<f64>(&centers, Some((&lc, w)), None),
+                    gamma,
+                    Objective::Modularity,
+                    seed,
+                ),
+            ),
+            (
+                (0.0, w),
+                detect(
+                    &knn_affinity_geo::<f64>(&centers, None, Some((&tg, w))),
+                    gamma,
+                    Objective::Modularity,
+                    seed,
+                ),
+            ),
+            (
+                (w, w),
+                detect(
+                    &knn_affinity_geo::<f64>(&centers, Some((&lc, w)), Some((&tg, w))),
+                    gamma,
+                    Objective::Modularity,
+                    seed,
+                ),
+            ),
+        ];
+        for ((cw, tw), want) in &routes {
+            assert_eq!(
+                &leiden(&feats, gamma, Objective::Modularity, seed, *cw, *tw, rank).labels,
+                want,
+                "cov_weight = {cw}, tangent_weight = {tw}"
+            );
+        }
+        // Each geometry route has to actually move the answer, or the assertions above are
+        // vacuous -- a guard that never fires reads exactly like one that always does.
+        assert_ne!(routes[0].1, routes[1].1, "cov_weight changed nothing");
+        assert_ne!(routes[0].1, routes[2].1, "tangent_weight changed nothing");
+        assert_ne!(routes[0].1, routes[3].1, "neither weight changed anything");
+    }
+    /// Two identical calls must agree. They did not: `refine` picked its target sub-community by
+    /// scanning a `HashMap`, whose iteration order comes from a per-instance random seed, and the
+    /// strict `>` kept whichever tied candidate happened to come first. `leiden`'s `seed` only
+    /// ever controlled the node visit order, so nothing pinned the tie-break.
+    #[test]
+    fn detect_is_reproducible_within_a_process() {
+        let (base, _) = planted_ring();
+        assert_eq!(
+            detect(&base, 1.0, Objective::Modularity, 7),
+            detect(&base, 1.0, Objective::Modularity, 7),
+            "planted ring: same seed, same graph, different answer"
+        );
+        // A symmetric ring of microclusters is where the ties are: every node sees the same gain
+        // toward either side of it.
+        let feats = oriented_ring();
+        let centers: Vec<Vec<f64>> = feats.iter().map(|f| f.mean().to_vec()).collect();
+        let g = knn_affinity::<f64>(&centers);
+        assert_eq!(
+            detect(&g, 1.0, Objective::Modularity, 7),
+            detect(&g, 1.0, Objective::Modularity, 7),
+            "oriented ring: same seed, same graph, different answer"
+        );
+        assert_eq!(
+            leiden(&feats, 1.0, Objective::Modularity, 7, 0.0, 0.0, 2).labels,
+            detect(&g, 1.0, Objective::Modularity, 7),
+            "leiden disagrees with its own pipeline"
+        );
+    }
+    /// A weighted random graph with a wide degree spread and no planted structure, so the
+    /// null-model correction -- not the raw edge weight -- decides almost every move. `planted_ring`
+    /// cannot serve here: its blocks are so much denser than the links between them that the greedy
+    /// recovers them whatever the totals say, which is exactly why a corrupted total hid in it.
+    fn irregular_graph() -> Vec<Vec<(usize, f64)>> {
+        let n = 22;
+        let mut rng = SplitMix64::new(0xc0ff_ee11);
+        let mut adj: Vec<Vec<(usize, f64)>> = vec![Vec::new(); n];
+        for a in 0..n {
+            for b in (a + 1)..n {
+                let p = (92 - 3 * (a + b) as i64).clamp(6, 92) as u64;
+                if rng.next_u64() % 100 < p {
+                    let w = 0.2 + (rng.next_u64() % 20) as f64 * 0.1;
+                    adj[a].push((b, w));
+                    adj[b].push((a, w));
+                }
+            }
+        }
+        adj
+    }
+
+    /// `one_level` with the null-model totals recomputed from the whole graph at every node instead
+    /// of carried incrementally. Same visit order, same candidate order, same strict `>`; the only
+    /// difference is that nothing is remembered between steps, so a corrupted running total shows
+    /// up as a different greedy trajectory rather than as a partition that still looks plausible.
+    fn reference_one_level(
+        g: &Graph,
+        obj: Objective,
+        gamma: f64,
+        seed: u64,
+        init: &[usize],
+    ) -> Vec<usize> {
+        let n = g.len();
+        let mut comm = init.to_vec();
+        let order = shuffled(n, seed);
+        loop {
+            let mut moved = false;
+            for &i in &order {
+                let ci = comm[i];
+                let nc = comm.iter().max().map_or(0, |&x| x + 1);
+                let (mut td, mut ts) = (vec![0.0; nc], vec![0.0; nc]);
+                for v in 0..n {
+                    if v != i {
+                        td[comm[v]] += g.degree[v];
+                        ts[comm[v]] += g.size[v];
+                    }
+                }
+                let mut w_to: std::collections::BTreeMap<usize, f64> =
+                    std::collections::BTreeMap::new();
+                for &(j, w) in &g.adj[i] {
+                    *w_to.entry(comm[j]).or_insert(0.0) += w;
+                }
+                let sc = |c: usize| {
+                    gain(
+                        obj,
+                        gamma,
+                        g.two_m,
+                        w_to.get(&c).copied().unwrap_or(0.0),
+                        g.degree[i],
+                        g.size[i],
+                        td[c],
+                        ts[c],
+                    )
+                };
+                let mut best_c = ci;
+                let mut best = sc(ci);
+                for &c in w_to.keys() {
+                    let s = sc(c);
+                    if s > best {
+                        best = s;
+                        best_c = c;
+                    }
+                }
+                if best_c != ci {
+                    comm[i] = best_c;
+                    moved = true;
+                }
+            }
+            if !moved {
+                break;
+            }
+        }
+        relabel(&comm)
+    }
+
+    /// `refine` with the same treatment: sub-community totals recomputed rather than carried.
+    fn reference_refine(
+        g: &Graph,
+        part: &[usize],
+        obj: Objective,
+        gamma: f64,
+        seed: u64,
+    ) -> Vec<usize> {
+        let n = g.len();
+        let mut refined: Vec<usize> = (0..n).collect();
+        let mut singleton = vec![true; n];
+        for &v in &shuffled(n, seed ^ 0x9e37_79b9) {
+            if !singleton[v] {
+                continue;
+            }
+            let cv = part[v];
+            let (mut td, mut ts) = (vec![0.0; n], vec![0.0; n]);
+            for u in 0..n {
+                if u != v {
+                    td[refined[u]] += g.degree[u];
+                    ts[refined[u]] += g.size[u];
+                }
+            }
+            let mut w_to: std::collections::BTreeMap<usize, f64> =
+                std::collections::BTreeMap::new();
+            for &(j, w) in &g.adj[v] {
+                if part[j] == cv {
+                    *w_to.entry(refined[j]).or_insert(0.0) += w;
+                }
+            }
+            let mut best_c = refined[v];
+            let mut best = 0.0;
+            for (&c, &w) in &w_to {
+                let s = gain(obj, gamma, g.two_m, w, g.degree[v], g.size[v], td[c], ts[c]);
+                if s > best {
+                    best = s;
+                    best_c = c;
+                }
+            }
+            if best_c != refined[v] {
+                refined[v] = best_c;
+                singleton[best_c] = false;
+            }
+        }
+        relabel(&refined)
+    }
+
+    /// The running totals are the whole null model. Nothing compared them against a recomputation,
+    /// so an initial total left at zero -- or negated, or divided instead of subtracted -- still
+    /// produced a partition that reads as plausible: connected, resolution-responsive, and a local
+    /// optimum of *something*. It is just no longer a local optimum of the stated objective.
+    #[test]
+    fn the_running_null_model_totals_match_a_from_scratch_recomputation() {
+        let (ring, _) = planted_ring();
+        let mut moved_any = 0usize;
+        for (gname, base) in [("planted ring", ring), ("irregular", irregular_graph())] {
+            let g = Graph::from_adj(base);
+            let n = g.len();
+            // Three seed partitions, because an initial total is only a genuine sum when a
+            // community holds more than one node -- from all-singletons the first pass rebuilds
+            // them anyway, and `detect` seeds every level above the first from the previous one.
+            let inits: [(&str, Vec<usize>); 3] = [
+                ("singletons", (0..n).collect()),
+                ("blocks", (0..n).map(|i| i / 5).collect()),
+                ("halves", (0..n).map(|i| i / (n / 2)).collect()),
+            ];
+            for (name, obj) in [
+                ("modularity", Objective::Modularity),
+                ("cpm", Objective::Cpm),
+            ] {
+                for &gamma in &[0.1_f64, 0.5, 1.0, 3.0] {
+                    for seed in [1u64, 17, 99, 2024] {
+                        for (iname, init) in &inits {
+                            let ctx =
+                                format!("{gname} {name} gamma={gamma} seed={seed} init={iname}");
+                            let part = one_level(&g, obj, gamma, seed, init);
+                            assert_eq!(
+                                part,
+                                reference_one_level(&g, obj, gamma, seed, init),
+                                "{ctx}: local move"
+                            );
+                            assert_eq!(
+                                refine(&g, &part, obj, gamma, seed),
+                                reference_refine(&g, &part, obj, gamma, seed),
+                                "{ctx}: refinement"
+                            );
+                            if n_distinct(&part) < n {
+                                moved_any += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            moved_any > 16,
+            "the sweep hardly ever left the all-singleton partition: {moved_any}"
+        );
     }
 }
