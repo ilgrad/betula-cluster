@@ -675,6 +675,233 @@ mod tests {
     use crate::feature::{Diagonal, Spherical};
     use std::collections::HashMap;
 
+    /// BIC selection is normally checked through the `k` it returns on a well-separated fixture,
+    /// where that `k` is right whatever the penalty says — the parameter counts survive mutation
+    /// there. What makes the count decide is a *weakly* separated fixture, where the likelihood a
+    /// component buys is the same order as the penalty it costs. This sweeps the separation across
+    /// that regime and compares the whole sequence of choices against an independently written
+    /// count, asserting first that the sweep really is discriminating.
+    fn selection_sweep(full: bool) {
+        let seps = [1.0f64, 1.5, 2.0, 3.0, 6.0];
+        let mut chosen = Vec::new();
+        let mut discriminating = false;
+        for sep in seps {
+            let mut rng = SplitMix64::new(4);
+            let (pts, _) = blobs(&mut rng, 300, &[[0.0, 0.0], [sep, 0.0], [0.0, sep]], 0.6);
+            let (micros, _) = grid_micros(&pts, 0.5);
+            let (d, ntot) = (micros[0].dim(), total_weight(&micros));
+            let ll: Vec<f64> = (1..=5)
+                .map(|k| {
+                    if full {
+                        gmm_full_once(&micros, k, 200, 7).loglik
+                    } else {
+                        gmm_diagonal_once(&micros, k, 200, 7).loglik
+                    }
+                })
+                .collect();
+            // -2·ln L + p·ln n, written out rather than reusing `bic`.
+            let pick = |params: &dyn Fn(usize) -> usize| {
+                (1..=5)
+                    .min_by(|&a, &b| {
+                        let s = |k: usize| -2.0 * ll[k - 1] + params(k) as f64 * ntot.ln();
+                        s(a).partial_cmp(&s(b)).unwrap()
+                    })
+                    .unwrap()
+            };
+            let truth: Box<dyn Fn(usize) -> usize> = if full {
+                Box::new(move |k| k * d + k * d * (d + 1) / 2 + (k - 1))
+            } else {
+                Box::new(move |k| 2 * k * d + (k - 1))
+            };
+            let want = pick(&truth);
+            // Flipping the sign of the mixing-weight term must move at least one choice in the
+            // sweep, or the fixture cannot see the penalty at all.
+            if pick(&|k| truth(k) - 2 * (k - 1)) != want {
+                discriminating = true;
+            }
+            let got = if full {
+                gmm_full_auto(&micros, 1, 5, 200, 7).means.len()
+            } else {
+                gmm_diagonal_auto(&micros, 1, 5, 200, 7).means.len()
+            };
+            assert_eq!(
+                got, want,
+                "full={full} sep={sep}: k does not minimise the BIC"
+            );
+            chosen.push(want);
+        }
+        assert!(
+            discriminating,
+            "full={full}: no separation in the sweep lets the parameter count decide, so this \
+             tests the fixture and not the penalty"
+        );
+        assert!(
+            chosen.windows(2).any(|w| w[0] != w[1]),
+            "full={full}: the sweep never changes its mind, so it crosses no boundary"
+        );
+    }
+
+    #[test]
+    fn the_diagonal_bic_search_minimises_an_independently_counted_penalty() {
+        selection_sweep(false);
+    }
+
+    #[test]
+    fn the_full_bic_search_minimises_an_independently_counted_penalty() {
+        selection_sweep(true);
+    }
+
+    /// Six micro-clusters at three distinct locations, so k-means++ can only find three centres and
+    /// two of five components enter EM with nothing assigned. k-means reseeds a stranded centre but
+    /// does not re-label, so `nk[c] == 0` exactly -- the case both heads guard before dividing.
+    fn duplicated_micros() -> Vec<Diagonal<f64>> {
+        let mk = |x: f64, y: f64| {
+            let mut cf = Diagonal::<f64>::new(2);
+            cf.push(&[x, y], 1.0);
+            cf.push(&[x + 0.2, y - 0.1], 1.0);
+            cf
+        };
+        [[0.0, 0.0], [10.0, 0.0], [0.0, 10.0]]
+            .iter()
+            .flat_map(|c| [mk(c[0], c[1]), mk(c[0], c[1])])
+            .collect()
+    }
+
+    fn empty_warm_start_components(micros: &[Diagonal<f64>], k: usize) -> Vec<usize> {
+        let km = kmeans(micros, k, 50, 1, 7);
+        let mut nk = vec![0.0f64; k];
+        for (i, &c) in km.labels.iter().enumerate() {
+            nk[c] += micros[i].weight();
+        }
+        (0..k).filter(|&c| nk[c] == 0.0).collect()
+    }
+
+    #[test]
+    fn a_component_with_an_empty_warm_start_seeds_from_the_global_spread() {
+        // Seeding it from its own (empty) k-means cluster would divide zero scatter by zero weight.
+        // The diagonal head masks that NaN in the very next line -- `NaN > floor` is false, so the
+        // variance silently becomes the floor, roughly 1e-3 of the global spread, and the component
+        // enters the first E-step a thousand times more confident than any real one. Falling back to
+        // the global variance is what keeps it broad enough to compete for members instead.
+        let micros = duplicated_micros();
+        let empty = empty_warm_start_components(&micros, 5);
+        assert!(
+            !empty.is_empty(),
+            "the fixture handed every component a member, so it cannot see the fallback"
+        );
+        let full = (0..5).find(|c| !empty.contains(c)).unwrap();
+
+        let g = gmm_diagonal_once::<f64, _>(&micros, 5, 200, 7);
+        for &c in &empty {
+            assert!(
+                g.vars[c][0] > 100.0 * g.vars[full][0],
+                "component {c} was seeded at {} against a within-cluster {}",
+                g.vars[c][0],
+                g.vars[full][0]
+            );
+        }
+        assert!(g.loglik.is_finite());
+    }
+
+    #[test]
+    fn an_empty_warm_start_does_not_make_the_full_head_singular() {
+        // The full head has no masking line: `NaN < floor` is false too, so a 0/0 covariance stays
+        // NaN, its Cholesky is NaN, and every responsibility and the log-likelihood follow. The
+        // caller gets a `GmmFull` that looks fitted and scores every point as NaN.
+        let micros = duplicated_micros();
+        let empty = empty_warm_start_components(&micros, 5);
+        assert!(
+            !empty.is_empty(),
+            "the fixture handed every component a member, so it cannot see the fallback"
+        );
+
+        let f = gmm_full_once::<f64, _>(&micros, 5, 200, 7);
+        assert!(f.loglik.is_finite(), "log-likelihood is {}", f.loglik);
+        for (c, cov) in f.covs.iter().enumerate() {
+            for row in cov {
+                assert!(
+                    row.iter().all(|v| v.is_finite()),
+                    "component {c} covariance is {row:?}"
+                );
+            }
+        }
+        assert!(f.resp.iter().flatten().all(|r| r.is_finite()));
+    }
+
+    /// `k` isotropic Gaussian blobs in `dim` dimensions, summarised into micro-clusters of five points
+    /// each -- the shape the tree hands the global step, and finer than the blobs so a `k` past the
+    /// truth still has something to fit.
+    fn separated_micros(
+        dim: usize,
+        sep: f64,
+        k: usize,
+        per: usize,
+        seed: u64,
+    ) -> Vec<Diagonal<f64>> {
+        let mut rng = SplitMix64::new(seed);
+        let mut out = Vec::new();
+        for c in 0..k {
+            for _ in 0..per / 5 {
+                let mut cf = Diagonal::<f64>::new(dim);
+                for _ in 0..5 {
+                    let p: Vec<f64> = (0..dim)
+                        .map(|d| (if d == c % dim { sep } else { 0.0 }) + 0.6 * rng.gauss())
+                        .collect();
+                    cf.push(&p, 1.0);
+                }
+                out.push(cf);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn the_full_bic_search_pays_for_a_triangular_covariance() {
+        // `selection_sweep` runs in two dimensions, where `d(d+1)/2` and `d·d/2` differ by a single
+        // parameter per component -- less leverage than any separation in that sweep can resolve, so
+        // the triangular count merely accompanies the choice there rather than deciding it. Six
+        // dimensions give the term `d/2 = 3` parameters of leverage per component.
+        let dim = 6;
+        let mut chosen = Vec::new();
+        let mut discriminating = false;
+        for sep in [0.8f64, 1.2, 1.8, 2.6, 4.0] {
+            let micros = separated_micros(dim, sep, 3, 200, 4);
+            let ntot = total_weight(&micros);
+            let ll: Vec<f64> = (1..=4)
+                .map(|k| gmm_full_once::<f64, _>(&micros, k, 200, 7).loglik)
+                .collect();
+            let pick = |params: &dyn Fn(usize) -> usize| {
+                (1..=4)
+                    .min_by(|&a, &b| {
+                        let s = |k: usize| -2.0 * ll[k - 1] + params(k) as f64 * ntot.ln();
+                        s(a).partial_cmp(&s(b)).unwrap()
+                    })
+                    .unwrap()
+            };
+            let truth = |k: usize| k * dim + k * dim * (dim + 1) / 2 + (k - 1);
+            let want = pick(&truth);
+            // Dropping the `+1` charges a square block instead of a triangular one: half a parameter
+            // per dimension per component. It must move a choice somewhere in the sweep.
+            if pick(&|k| k * dim + k * dim * dim / 2 + (k - 1)) != want {
+                discriminating = true;
+            }
+            assert_eq!(
+                gmm_full_auto(&micros, 1, 4, 200, 7).means.len(),
+                want,
+                "sep={sep}: k does not minimise the BIC"
+            );
+            chosen.push(want);
+        }
+        assert!(
+            discriminating,
+            "no separation lets the covariance count decide, so this tests the fixture"
+        );
+        assert!(
+            chosen.windows(2).any(|w| w[0] != w[1]),
+            "the sweep never changes its mind, so it crosses no boundary"
+        );
+    }
+
     #[test]
     fn gmm_recovers_separated_blobs() {
         let mut rng = SplitMix64::new(11);

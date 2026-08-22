@@ -536,6 +536,25 @@ mod tests {
         assert!((log_iv(1.0, 1.0).exp() - 0.565_159_103_992_485).abs() < 1e-9);
     }
 
+    #[test]
+    fn a_fully_concentrated_resultant_stays_inside_the_kappa_range() {
+        // R̄ = 1 is the pole of the Banerjee estimate: the denominator 1 − R̄² vanishes, and in one
+        // dimension the numerator vanishes with it. Holding R̄ off the pole is what keeps that ratio
+        // from being 0/0 -- a NaN seed κ that every later E-step then carries.
+        for dim in 1..=5usize {
+            let got = estimate_kappa(1.0, dim);
+            assert!(
+                got.is_finite() && (1e-8..=KAPPA_MAX).contains(&got),
+                "dim {dim}: κ = {got}"
+            );
+        }
+        assert!(
+            estimate_kappa(1.0, 1) < KAPPA_MAX,
+            "one dimension saturates the concentration cap, so the fixture never reaches the 0/0 \
+             corner that only the degenerate sphere has"
+        );
+    }
+
     /// `per` unit points around each random unit direction in `dim` dims, one Spherical leaf each.
     fn unit_blobs(
         rng: &mut SplitMix64,
@@ -887,6 +906,23 @@ mod tests {
             seen.iter().all(|&s| s),
             "uniform fallback never reached some index"
         );
+
+        // The other fallback: `t` is `u · Σw` and the loop subtracts the terms one at a time, so
+        // when the sum is not representable the running remainder need never cross zero and the
+        // loop ends without returning. What it falls back to has to be an index -- the caller uses
+        // it to subscript, and one past the end is a panic rather than a slightly wrong draw.
+        let overflow = [f64::MAX, f64::MAX, f64::MAX];
+        assert!(
+            overflow.iter().sum::<f64>().is_infinite(),
+            "the fixture's total is finite, so the loop still returns from inside"
+        );
+        for _ in 0..8 {
+            let i = weighted_pick(&overflow, &mut rng);
+            assert!(
+                i < overflow.len(),
+                "index {i} is past the end of a 3-slot slice"
+            );
+        }
     }
 
     /// Angular k-means++ re-derived: the first centre is drawn ∝ weight and normalized, then each
@@ -957,35 +993,492 @@ mod tests {
         );
     }
 
+    /// `κ_c` re-derived from Banerjee et al. (2005): the resultant is built by *filtering* the
+    /// leaves that carry the label, so nothing is accumulated into an indexed slot, and the estimate
+    /// `R̄(d − R̄²)/(1 − R̄²)` is written out rather than called. Returns one κ per component.
+    fn reference_init_kappas(
+        mu: &[Vec<f64>],
+        n: &[f64],
+        labels: &[usize],
+        k: usize,
+        dim: usize,
+    ) -> Vec<f64> {
+        (0..k)
+            .map(|c| {
+                let members: Vec<usize> = (0..mu.len()).filter(|&i| labels[i] == c).collect();
+                let mass: f64 = members.iter().map(|&i| n[i]).sum();
+                let resultant: Vec<f64> = (0..dim)
+                    .map(|d| members.iter().map(|&i| n[i] * mu[i][d]).sum())
+                    .collect();
+                let rbar = if mass > 0.0 {
+                    resultant.iter().map(|v| v * v).sum::<f64>().sqrt() / mass
+                } else {
+                    0.0
+                };
+                let r = rbar.clamp(1e-8, 1.0 - 1e-9);
+                ((r * (dim as f64 - r * r)) / (1.0 - r * r)).clamp(1e-8, KAPPA_MAX)
+            })
+            .collect()
+    }
+
     #[test]
-    fn movmf_auto_minimises_an_independently_counted_bic() {
-        // `p = k(d + 1) + (k − 1)`: a mean direction and a concentration per component, plus the
-        // free mixing weights. Sweeping the dimension is what makes the count visible -- `k·d` and
-        // the constant terms grow apart, so a penalty that agrees at one width moves at another.
-        for dim in [3usize, 6, 10] {
-            let mut rng = SplitMix64::new(70 + dim as u64);
-            let (feats, _truth) = unit_blobs(&mut rng, dim, 3, 22, 0.35);
-            let ntot: f64 = feats.iter().map(|f| f.weight()).sum();
-            let (mut want_k, mut want_ll, mut best) = (0usize, f64::NAN, f64::INFINITY);
-            for k in 1..=5 {
-                let g: Movmf<f64> = movmf(&feats, k, 100, 9);
-                let p = k * (dim + 1) + (k - 1);
-                let score = -2.0 * g.loglik + p as f64 * ntot.ln();
-                if score < best {
-                    best = score;
-                    want_k = k;
-                    want_ll = g.loglik;
-                }
-            }
+    fn init_kappas_matches_an_independent_reference() {
+        // κ seeds every component's EM, and the resultant it comes from is a weighted sum -- so the
+        // fixture gives every leaf a distinct weight and spreads each component's directions by a
+        // different amount, or a concentration read off the wrong resultant lands on the right
+        // answer anyway. Component 2 is deliberately left empty: its mass is exactly zero, and
+        // dividing the resultant by it would return NaN through a value the caller cannot check.
+        let dim = 3usize;
+        let mu: Vec<Vec<f64>> = [
+            [1.0, 0.0, 0.0],
+            [0.995, 0.100, 0.0],
+            [0.980, 0.199, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.707, 0.707],
+            [0.0, 0.0, 1.0],
+        ]
+        .iter()
+        .map(|v| v.to_vec())
+        .collect();
+        let n = vec![3.0, 11.0, 2.0, 7.0, 5.0, 13.0];
+        let labels = vec![0, 0, 0, 1, 1, 1];
+        let k = 3;
+
+        let want = reference_init_kappas(&mu, &n, &labels, k, dim);
+        assert!(
+            !labels.contains(&2),
+            "the fixture gave component 2 a member, so it cannot see the empty-mass guard"
+        );
+        assert!(
+            want[0] > 2.0 * want[1],
+            "the two populated components have the same concentration ({want:?}); \
+             the fixture cannot tell one resultant from another"
+        );
+        assert!(
+            want.iter().all(|k| k.is_finite() && *k < KAPPA_MAX),
+            "a reference κ sits on the clamp, where any resultant gives the same answer: {want:?}"
+        );
+
+        let got = init_kappas(&mu, &n, &labels, k, dim);
+        for (c, (g, w)) in got.iter().zip(&want).enumerate() {
             assert!(
-                (2..5).contains(&want_k),
-                "dim {dim}: the reference chose {want_k}, an endpoint"
-            );
-            let got: Movmf<f64> = movmf_auto(&feats, 1, 5, 100, 9);
-            assert!(
-                (got.loglik - want_ll).abs() <= 1e-9 * want_ll.abs().max(1.0),
-                "dim {dim}: selected k is not the argmin (k = {want_k})"
+                (g - w).abs() <= 1e-12 * w.abs().max(1.0),
+                "component {c}: got {g}, want {w}"
             );
         }
+    }
+
+    #[test]
+    fn a_component_whose_resultant_cancels_keeps_a_unit_direction() {
+        // Antipodal leaves of equal mass sum to the zero vector exactly, so the mean-direction
+        // update has nothing to normalize by. Dividing anyway gives 0/0, and the NaN direction then
+        // poisons every later E-step and the reported log-likelihood with it.
+        let dim = 2;
+        let feats: Vec<Spherical<f64>> = [[1.0, 0.0], [-1.0, 0.0], [0.0, 1.0], [0.0, -1.0]]
+            .iter()
+            .map(|p| {
+                let mut f = Spherical::new(dim);
+                f.push(p, 1.0);
+                f
+            })
+            .collect();
+        let (mu, n) = leaf_means(&feats);
+        let resultant: Vec<f64> = (0..dim)
+            .map(|d| mu.iter().zip(&n).map(|(v, w)| w * v[d]).sum())
+            .collect();
+        assert!(
+            resultant.iter().all(|&v| v == 0.0),
+            "the fixture's resultant is {resultant:?}, not exactly zero, so it cannot see the guard"
+        );
+
+        let got: Movmf<f64> = movmf_once(&feats, 1, 10, 5);
+        assert!(
+            got.loglik.is_finite(),
+            "the log-likelihood is {}",
+            got.loglik
+        );
+        let nrm = norm(&got.means[0]);
+        assert!(
+            (nrm - 1.0).abs() < 1e-12,
+            "the mean direction is no longer a unit vector: {:?}",
+            got.means[0]
+        );
+    }
+
+    #[test]
+    fn movmf_keeps_the_best_restart_and_not_the_last() {
+        // EM is non-convex, which is the whole reason for `MOVMF_N_INIT` restarts; keeping whichever
+        // one happened to run last would spend four fits and report a random draw from them. The
+        // restart seeds are derived from the caller's, so the individual runs are reproducible here
+        // and the winner can be named rather than inferred.
+        let mut rng = SplitMix64::new(31);
+        let (feats, _truth) = unit_blobs(&mut rng, 4, 4, 20, 0.55);
+        let lls: Vec<f64> = (0..MOVMF_N_INIT)
+            .map(|s| {
+                movmf_once::<f64, _>(
+                    &feats,
+                    4,
+                    100,
+                    17u64.wrapping_add(s.wrapping_mul(0x9E37_79B9)),
+                )
+                .loglik
+            })
+            .collect();
+        let best = lls.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        assert!(
+            *lls.last().unwrap() < best,
+            "the last restart is already the best one ({lls:?}); the fixture cannot see the choice"
+        );
+
+        let got: Movmf<f64> = movmf(&feats, 4, 100, 17);
+        assert_eq!(got.loglik, best, "restarts were {lls:?}");
+    }
+
+    #[test]
+    fn movmf_auto_minimises_an_independently_counted_bic() {
+        // `p = k(d + 1) + (k - 1)`: a mean direction and a concentration per component, plus the
+        // free mixing weights. Every rival count below differs from it by one or two parameters per
+        // component -- one or two `ln n` of penalty -- so it can only decide where the likelihood an
+        // extra component buys is the same order as what it costs. Sweeping the *separation* walks
+        // the fixture through that regime; sweeping the dimension does not, because the difference
+        // between these counts is constant in `d`.
+        let dim = 6usize;
+        /// A rival free-parameter count, in `(k, d)`.
+        type ParamCount = fn(usize, usize) -> usize;
+        let rivals: [(&str, ParamCount); 3] = [
+            ("k·d + (k-1)", |k, d| k * d + (k - 1)),
+            ("k(d-1) + (k-1)", |k, d| k * (d - 1) + (k - 1)),
+            ("k(d+1) - (k-1)", |k, d| k * (d + 1) - (k - 1)),
+        ];
+        let mut discriminating = [false; 3];
+        let mut chosen = Vec::new();
+        for spread in [0.30f64, 0.45, 0.60, 0.75, 0.90] {
+            let mut rng = SplitMix64::new(70);
+            let (feats, _truth) = unit_blobs(&mut rng, dim, 3, 22, spread);
+            let ntot: f64 = feats.iter().map(|f| f.weight()).sum();
+            let ll: Vec<f64> = (1..=5)
+                .map(|k| movmf::<f64, _>(&feats, k, 100, 9).loglik)
+                .collect();
+            let pick = |params: &dyn Fn(usize) -> usize| {
+                (1..=5)
+                    .min_by(|&a, &b| {
+                        let s = |k: usize| -2.0 * ll[k - 1] + params(k) as f64 * ntot.ln();
+                        s(a).partial_cmp(&s(b)).unwrap()
+                    })
+                    .unwrap()
+            };
+            let want = pick(&|k| k * (dim + 1) + (k - 1));
+            for (i, (_, f)) in rivals.iter().enumerate() {
+                if pick(&|k| f(k, dim)) != want {
+                    discriminating[i] = true;
+                }
+            }
+
+            let got: Movmf<f64> = movmf_auto(&feats, 1, 5, 100, 9);
+            assert!(
+                (got.loglik - ll[want - 1]).abs() <= 1e-9 * ll[want - 1].abs().max(1.0),
+                "spread {spread}: selected k is not the argmin (k = {want})"
+            );
+            chosen.push(want);
+        }
+        for (i, (name, _)) in rivals.iter().enumerate() {
+            assert!(
+                discriminating[i],
+                "no separation in the sweep lets `{name}` choose differently, so the penalty \
+                 accompanies the choice here rather than deciding it"
+            );
+        }
+        assert!(
+            chosen.windows(2).any(|w| w[0] != w[1]),
+            "the sweep never changes its mind, so it crosses no boundary: {chosen:?}"
+        );
+    }
+
+    /// Independent re-derivation of [`spherical_lloyd`], written from the max-cosine assignment and
+    /// the resultant-normalization update rather than from the production loop: the assignment
+    /// materializes the whole dot-product row before choosing, the empty-cluster test asks whether
+    /// any label mentions the cluster instead of counting members, and the accumulation is a
+    /// separate pass. Returns `(labels, centers, cohesion)`.
+    fn reference_spherical_lloyd(
+        means: &[Vec<f64>],
+        n: &[f64],
+        init: &[Vec<f64>],
+        max_iter: usize,
+    ) -> (Vec<usize>, Vec<Vec<f64>>, f64) {
+        let (m, k, dim) = (means.len(), init.len(), means[0].len());
+        let resultants = |labels: &[usize]| {
+            let mut acc = vec![vec![0.0; dim]; k];
+            for (i, &c) in labels.iter().enumerate() {
+                for d in 0..dim {
+                    acc[c][d] += n[i] * means[i][d];
+                }
+            }
+            acc
+        };
+        let length = |v: &[f64]| v.iter().map(|x| x * x).sum::<f64>().sqrt();
+        let direction = |v: &[f64]| {
+            let l = length(v);
+            if l > 0.0 {
+                v.iter().map(|x| x / l).collect()
+            } else {
+                v.to_vec()
+            }
+        };
+
+        let mut centers: Vec<Vec<f64>> = init.to_vec();
+        let mut labels = vec![0usize; m];
+        for it in 0..max_iter.max(1) {
+            let mut changed = false;
+            let mut served = vec![f64::NEG_INFINITY; m];
+            for (i, mu) in means.iter().enumerate() {
+                let row: Vec<f64> = centers
+                    .iter()
+                    .map(|c| c.iter().zip(mu).map(|(a, b)| a * b).sum())
+                    .collect();
+                let mut best = 0usize;
+                for c in 1..k {
+                    if row[c] > row[best] {
+                        best = c;
+                    }
+                }
+                served[i] = row[best];
+                if labels[i] != best {
+                    labels[i] = best;
+                    changed = true;
+                }
+            }
+            if !changed && it > 0 {
+                break;
+            }
+            let acc = resultants(&labels);
+            for c in 0..k {
+                if !labels.contains(&c) {
+                    let mut worst = 0usize;
+                    for i in 1..m {
+                        if served[i] < served[worst] {
+                            worst = i;
+                        }
+                    }
+                    centers[c] = direction(&means[worst]);
+                    served[worst] = f64::INFINITY;
+                    continue;
+                }
+                if length(&acc[c]) > 0.0 {
+                    centers[c] = direction(&acc[c]);
+                }
+            }
+        }
+        let cohesion = resultants(&labels).iter().map(|a| length(a)).sum();
+        (labels, centers, cohesion)
+    }
+
+    /// A fixture whose weights are all distinct and whose directions straddle two seeds, so the
+    /// resultant depends on *which* leaf carries *which* weight — an accumulation that adds the
+    /// weight instead of multiplying by it lands somewhere else.
+    fn lloyd_fixture() -> (Vec<Vec<f64>>, Vec<f64>, Vec<Vec<f64>>) {
+        let means: Vec<Vec<f64>> = [
+            [0.980, 0.199],
+            [0.940, 0.342],
+            [0.766, 0.643],
+            [0.174, 0.985],
+            [-0.259, 0.966],
+            [-0.707, 0.707],
+        ]
+        .iter()
+        .map(|v| v.to_vec())
+        .collect();
+        let n = vec![3.0, 11.0, 2.0, 7.0, 5.0, 13.0];
+        let init = vec![vec![1.0, 0.0], vec![0.0, 1.0]];
+        (means, n, init)
+    }
+
+    #[test]
+    fn spherical_lloyd_matches_an_independent_reference() {
+        let (means, n, init) = lloyd_fixture();
+        let got = spherical_lloyd(&means, &n, init.clone(), 50, 2);
+        let (want_labels, want_centers, want_cohesion) =
+            reference_spherical_lloyd(&means, &n, &init, 50);
+
+        assert!(
+            want_labels.iter().any(|&c| c != want_labels[0]),
+            "the fixture put every leaf in one cluster; it cannot see the update"
+        );
+        assert!(
+            want_centers
+                .iter()
+                .zip(&init)
+                .any(|(a, b)| a.iter().zip(b).any(|(x, y)| (x - y).abs() > 1e-6)),
+            "the fixture never moved a center; it cannot see the accumulation"
+        );
+
+        assert_eq!(got.labels, want_labels);
+        for (c, (a, b)) in got.centers.iter().zip(&want_centers).enumerate() {
+            for (d, (x, y)) in a.iter().zip(b).enumerate() {
+                assert!((x - y).abs() < 1e-12, "center {c}[{d}]: got {x}, want {y}");
+            }
+        }
+        assert!(
+            (got.cohesion - want_cohesion).abs() < 1e-12,
+            "cohesion: got {}, want {want_cohesion}",
+            got.cohesion
+        );
+    }
+
+    /// Leaves spread evenly along half of the unit circle, with all three centers seeded within six
+    /// degrees of one end. A continuum has no gap for the first update to snap to, so each round
+    /// moves the boundaries only partway and the labelling is still shifting after the second
+    /// assignment -- the only regime in which "stop once nothing changed" differs from "stop as soon
+    /// as something does".
+    fn slow_lloyd_fixture() -> (Vec<Vec<f64>>, Vec<f64>, Vec<Vec<f64>>) {
+        let at = |deg: f64| {
+            let r: f64 = deg.to_radians();
+            vec![r.cos(), r.sin()]
+        };
+        let means: Vec<Vec<f64>> = (0..24).map(|i| at(7.5 * i as f64)).collect();
+        let n: Vec<f64> = (0..24).map(|i| 1.0 + 0.05 * i as f64).collect();
+        (means, n, vec![at(2.0), at(4.0), at(6.0)])
+    }
+
+    #[test]
+    fn spherical_lloyd_runs_until_the_labelling_stops_moving() {
+        let (means, n, init) = slow_lloyd_fixture();
+        let k = init.len();
+        let early = spherical_lloyd(&means, &n, init.clone(), 2, 2);
+        let got = spherical_lloyd(&means, &n, init, 50, 2);
+        assert_ne!(
+            early.labels, got.labels,
+            "the fixture settles within two assignments, so it cannot tell a loop that stops when \
+             nothing changed from one that stops as soon as something does"
+        );
+
+        // Both halves of the iteration are stationary at a Lloyd fixed point: every leaf sits on its
+        // largest-cosine center, and every center is the normalized weighted resultant of its own
+        // members. A run that stopped early still holds centers built from a labelling it has left.
+        for (i, mu) in means.iter().enumerate() {
+            let mut best = 0;
+            for c in 1..k {
+                if dot(mu, &got.centers[c]) > dot(mu, &got.centers[best]) {
+                    best = c;
+                }
+            }
+            assert_eq!(got.labels[i], best, "leaf {i} is not on its nearest center");
+        }
+        for c in 0..k {
+            let members: Vec<usize> = (0..means.len()).filter(|&i| got.labels[i] == c).collect();
+            assert!(
+                !members.is_empty(),
+                "component {c} is empty, so its center was reseeded rather than averaged"
+            );
+            let mut acc = vec![0.0f64; 2];
+            for &i in &members {
+                for (d, a) in acc.iter_mut().enumerate() {
+                    *a += n[i] * means[i][d];
+                }
+            }
+            let want = unit(&acc);
+            for (d, w) in want.iter().enumerate() {
+                assert!(
+                    (got.centers[c][d] - w).abs() < 1e-12,
+                    "center {c} is not the resultant of its members: {:?} vs {want:?}",
+                    got.centers[c]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_first_pass_that_changes_nothing_still_reseeds_the_empty_cluster() {
+        // Labels start at zero, so leaves that all prefer the first center leave the opening
+        // assignment with nothing changed. That is the one round whose update has to run regardless,
+        // because it is what fills the second center -- returning here hands back the seed.
+        let means: Vec<Vec<f64>> = [[1.0, 0.0], [0.940, 0.342], [0.766, 0.643], [0.174, 0.985]]
+            .iter()
+            .map(|v| v.to_vec())
+            .collect();
+        let n = vec![3.0, 11.0, 2.0, 7.0];
+        let init = vec![vec![1.0, 0.0], vec![-1.0, 0.0]];
+
+        let first = spherical_lloyd(&means, &n, init.clone(), 1, 2);
+        assert!(
+            first.labels.iter().all(|&c| c == 0),
+            "a leaf left cluster 0 on the opening pass, so the fixture cannot see a round that \
+             changed nothing: {:?}",
+            first.labels
+        );
+
+        let got = spherical_lloyd(&means, &n, init.clone(), 50, 2);
+        assert!(
+            got.labels.contains(&1),
+            "the second cluster stayed empty, so the run returned its seed rather than a fit"
+        );
+        assert!(
+            (got.centers[1][0] - init[1][0]).abs() > 1e-9,
+            "the second center is still its seed: {:?}",
+            got.centers[1]
+        );
+    }
+
+    #[test]
+    fn spherical_lloyd_breaks_an_exact_dot_tie_towards_the_first_center() {
+        // `[s, s]` with `s = 1/√2` has dot `s` with both axis centers, bit for bit: the products
+        // are `s·1 + s·0` and `s·0 + s·1`. Only the comparison decides, so `>` (first wins) and
+        // `>=` (last wins) put the leaf in different clusters.
+        let s = std::f64::consts::FRAC_1_SQRT_2;
+        let means = vec![vec![s, s], vec![1.0, 0.0], vec![0.0, 1.0]];
+        let n = vec![1.0, 1.0, 1.0];
+        let init = vec![vec![1.0, 0.0], vec![0.0, 1.0]];
+
+        let a: f64 = means[0].iter().zip(&init[0]).map(|(x, y)| x * y).sum();
+        let b: f64 = means[0].iter().zip(&init[1]).map(|(x, y)| x * y).sum();
+        assert_eq!(a.to_bits(), b.to_bits(), "the fixture is not an exact tie");
+
+        let got = spherical_lloyd(&means, &n, init, 1, 2);
+        assert_eq!(got.labels, vec![0, 0, 1]);
+    }
+
+    #[test]
+    fn spherical_lloyd_always_runs_one_update_pass() {
+        // Both leaves already sit on center 0 and the labels start there, so the first assignment
+        // changes nothing. Skipping the update on that basis would return the seed untouched and
+        // leave cluster 1 anti-aligned; the loop must still reseed it from the worst-served leaf.
+        let means = vec![vec![1.0, 0.0], vec![0.6, 0.8]];
+        let n = vec![1.0, 1.0];
+        let init = vec![vec![1.0, 0.0], vec![-1.0, 0.0]];
+
+        let got = spherical_lloyd(&means, &n, init.clone(), 20, 2);
+        let (want_labels, want_centers, _) = reference_spherical_lloyd(&means, &n, &init, 20);
+        assert_eq!(got.labels, want_labels);
+        assert!(
+            got.centers[1][0] > 0.0,
+            "cluster 1 kept its anti-aligned seed {:?}; the update pass was skipped",
+            got.centers[1]
+        );
+        for (a, b) in got
+            .centers
+            .iter()
+            .flatten()
+            .zip(want_centers.iter().flatten())
+        {
+            assert!((a - b).abs() < 1e-12, "got {a}, want {b}");
+        }
+    }
+
+    #[test]
+    fn spherical_lloyd_keeps_a_center_whose_resultant_cancels() {
+        // Two antipodal leaves of equal weight in one cluster sum to exactly `[0, 0]`, so the
+        // normalization has nothing to divide by. The guard must leave the seed in place rather
+        // than emit `0/0`.
+        let means = vec![vec![1.0, 0.0], vec![-1.0, 0.0]];
+        let n = vec![4.0, 4.0];
+        let init = vec![vec![1.0, 0.0]];
+
+        let got = spherical_lloyd(&means, &n, init, 5, 2);
+        assert!(
+            got.centers[0].iter().all(|x: &f64| x.is_finite()),
+            "the cancelled resultant escaped the zero guard: {:?}",
+            got.centers[0]
+        );
+        assert_eq!(got.centers[0], vec![1.0, 0.0]);
+        assert_eq!(got.cohesion, 0.0);
     }
 }

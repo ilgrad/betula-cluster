@@ -716,6 +716,73 @@ where
 mod tests {
     use super::*;
 
+    /// A planted-spectrum matrix: an exactly rank-`r` core plus a full-rank noise floor, so the top-`r`
+    /// subspace is well separated but the sketch cannot capture it by accident the way it would from a
+    /// matrix whose rank is below the sketch width.
+    fn planted(m: usize, d: usize, r: usize, noise: f64, seed: u64) -> Vec<Vec<f64>> {
+        let mut rng = SplitMix64::new(seed);
+        let a: Vec<Vec<f64>> = (0..m)
+            .map(|_| (0..r).map(|_| rng.gauss()).collect())
+            .collect();
+        let b: Vec<Vec<f64>> = (0..r)
+            .map(|_| (0..d).map(|_| rng.gauss()).collect())
+            .collect();
+        (0..m)
+            .map(|i| {
+                (0..d)
+                    .map(|j| (0..r).map(|k| a[i][k] * b[k][j]).sum::<f64>() + noise * rng.gauss())
+                    .collect()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_randomized_svd_matches_a_dense_eigendecomposition() {
+        // The range finder is deliberately insensitive to its own sketch, so an end-to-end NMF
+        // assertion cannot see whether the sketch or the power iterations are computed correctly at
+        // all -- a factorization seeded from a wrong basis still descends to a plausible one. A dense
+        // symmetric eigendecomposition of `XᵀX` can: it shares no arithmetic with the range finder,
+        // and it gives both the singular values and the Eckart-Young optimum the finder is supposed
+        // to come within a percent of.
+        let (m, d, r) = (60usize, 40usize, 4usize);
+        let x = planted(m, d, r, 0.05, 20);
+        let (sigma, u, v) = randomized_svd(&x, r, 11);
+
+        let (eigvals, _) = jacobi_eigen(&gram_cols(&x, d));
+        let mut lambda: Vec<f64> = eigvals.iter().map(|&l| l.max(0.0)).collect();
+        lambda.sort_by(|a, b| b.partial_cmp(a).unwrap());
+        let want: Vec<f64> = lambda.iter().map(|l| l.sqrt()).collect();
+        assert!(
+            want[r - 1] > 10.0 * want[r],
+            "the fixture has no spectral gap at {r}, so no basis is the right one"
+        );
+        for k in 0..r {
+            assert!(
+                (sigma[k] - want[k]).abs() <= 1e-6 * want[k],
+                "sigma[{k}] = {} against {}",
+                sigma[k],
+                want[k]
+            );
+        }
+
+        // Eckart-Young: no rank-`r` approximation beats `sqrt(sum of the tail eigenvalues)`. The
+        // triplets have to come within a percent of it, which pins `u`, `v` and `sigma` jointly --
+        // individually their signs are arbitrary, but the outer product is not.
+        let best: f64 = lambda[r..].iter().sum::<f64>().sqrt();
+        let mut ss = 0.0f64;
+        for i in 0..m {
+            for j in 0..d {
+                let approx: f64 = (0..r).map(|k| sigma[k] * u[k][i] * v[k][j]).sum();
+                ss += (x[i][j] - approx) * (x[i][j] - approx);
+            }
+        }
+        let got = ss.sqrt();
+        assert!(
+            got <= 1.01 * best,
+            "residual {got} against the rank-{r} optimum {best}"
+        );
+    }
+
     /// Build spherical leaves directly from centroids (unit mass) for testing the projection.
     fn leaves(centroids: &[Vec<f64>]) -> Vec<Spherical<f64>> {
         centroids
@@ -1700,6 +1767,65 @@ mod tests {
             "sweep {ran} is indistinguishable from {}; the fixture cannot see the rule",
             ran - 1
         );
+    }
+
+    #[test]
+    fn the_kl_stopping_rule_is_relative_to_the_divergence_it_measures() {
+        // The divergence scales with the data, so a tolerance that is not relative to it turns the
+        // same factorization problem into a different number of sweeps purely by choice of units.
+        // `max(prev, 1)` is the clamp that keeps the rule relative only where relative means
+        // something, and it is invisible below `prev = 1` -- which is the whole range the unscaled
+        // fixture lives in, so the rule is measured here at a thousand times that scale.
+        let (cents, ws) = slow_fixture();
+        let big: Vec<Vec<f64>> = cents
+            .iter()
+            .map(|row| row.iter().map(|&v| 1e3 * v).collect())
+            .collect();
+        let (_, _, small_ran) = reference_kl(&cents, &ws, 3, 2000, 6);
+        let (_, _, ran) = reference_kl(&big, &ws, 3, 2000, 6);
+        assert!(
+            (5..2000).contains(&ran),
+            "the divergence test never fired within the budget: {ran}"
+        );
+        assert!(
+            kl_divergence(
+                &big,
+                &vec![vec![0.0; 3]; big.len()],
+                &vec![vec![0.0; 9]; 3],
+                9
+            ) > 1.0,
+            "the scaled fixture still sits below the clamp, so it cannot see it"
+        );
+
+        let (w, h) = weighted_nmf_kl(&big, &ws, 3, 2000, 6);
+        let (rw, rh, _) = reference_kl(&big, &ws, 3, ran, 6);
+        assert!(
+            max_abs_diff(&w, &rw) < 1e-9 && max_abs_diff(&h, &rh) < 1e-6,
+            "stopped on a different sweep than {ran} (unscaled stops at {small_ran})"
+        );
+        let (rw_early, _, _) = reference_kl(&big, &ws, 3, ran - 1, 6);
+        assert!(
+            max_abs_diff(&w, &rw_early) > 1e-9,
+            "sweep {ran} is indistinguishable from {}; the fixture cannot see the rule",
+            ran - 1
+        );
+    }
+
+    #[test]
+    fn a_projection_of_an_all_zero_matrix_reports_no_error_rather_than_infinity() {
+        // The relative reconstruction error divides by the input energy, so a zero-energy input is
+        // only safe while the residual is zero with it. That holds today because NNDSVDar's fill is
+        // proportional to the mean of `X`, which is what makes the guard on `energy` look redundant
+        // -- give the fill a floor that does not vanish with the data and the same line starts
+        // reporting an infinite error on a matrix that was reconstructed exactly.
+        let feats = leaves(&vec![vec![0.0; 4]; 6]);
+        let spec = NmfSpec {
+            rank: 2,
+            max_iter: 40,
+            kl: false,
+        };
+        let out: Projection<f64> = project(&feats, spec, 4);
+        assert_eq!(out.reconstruction_err, 0.0);
     }
 
     #[test]

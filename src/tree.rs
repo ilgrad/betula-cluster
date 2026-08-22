@@ -713,7 +713,7 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> CF
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::distance::CentroidEuclidean;
+    use crate::distance::{CentroidEuclidean, Radius};
     use crate::feature::{Diagonal, Full, Spherical};
 
     fn close(a: f64, b: f64) -> bool {
@@ -751,6 +751,246 @@ mod tests {
         assert!(
             close(tree.summary().weight(), n_points as f64),
             "total weight"
+        );
+    }
+
+    type EuclidTree = CFTree<f64, Spherical<f64>, CentroidEuclidean, CentroidEuclidean>;
+
+    /// A tree whose leaf entries are exactly `points`, one each, all in a single leaf: threshold 0
+    /// forbids absorption of a distinct point and the leaf capacity holds them all.
+    fn entries_at(points: &[f64], threshold: f64) -> EuclidTree {
+        let mut t = EuclidTree::new(
+            1,
+            8,
+            points.len().max(1),
+            threshold,
+            usize::MAX,
+            CentroidEuclidean,
+            CentroidEuclidean,
+        );
+        for p in points {
+            t.insert(&[*p]);
+        }
+        assert_eq!(
+            t.entries.len(),
+            points.len(),
+            "fixture did not build one entry per point"
+        );
+        t
+    }
+
+    fn feature_at(x: f64) -> Spherical<f64> {
+        let mut cf = Spherical::new(1);
+        cf.push(&[x], 1.0);
+        cf
+    }
+
+    /// The three argmin scans (`nearest_entry`, `nearest_in_leaf`, `try_absorb_cf`) are each a
+    /// `if d < bd` loop seeded with the first candidate. A fixture whose answer *is* the first
+    /// candidate cannot tell that loop apart from one that never updates, or from an argmax — so
+    /// every query below is deliberately nearest to a later entry.
+    #[test]
+    fn the_argmin_scans_answer_with_the_nearest_entry_not_the_first() {
+        let t = entries_at(&[0.0, 10.0, 20.0], 0.0);
+        for (x, want) in [(19.0, 2), (11.0, 1), (1.0, 0), (9.0, 1), (20.5, 2)] {
+            assert_eq!(t.nearest_entry(&[x]), want, "nearest_entry({x})");
+            assert_eq!(
+                t.nearest_in_leaf(t.root, &[x]),
+                Some(want),
+                "nearest_in_leaf({x})"
+            );
+        }
+    }
+
+    /// `1.0` is exactly equidistant from `0.0` and `2.0` in binary floating point, so the tie-break
+    /// is observable rather than an accident of rounding: a strict `<` keeps the earlier candidate,
+    /// a `<=` would hand the answer to the later one.
+    #[test]
+    fn an_exact_tie_is_broken_toward_the_lower_entry_index() {
+        let t = entries_at(&[0.0, 2.0], 0.0);
+        let (d0, d1) = (
+            t.dist.point(&t.entries[0], &[1.0]),
+            t.dist.point(&t.entries[1], &[1.0]),
+        );
+        assert_eq!(
+            d0, d1,
+            "the fixture is not actually tied, so it tests nothing"
+        );
+        assert_eq!(t.nearest_entry(&[1.0]), 0);
+        assert_eq!(t.nearest_in_leaf(t.root, &[1.0]), Some(0));
+    }
+
+    /// Absorption scans the leaf for its nearest entry and then gates on `<= threshold`. Both
+    /// halves need a leaf with *several* entries: with a single entry the scan loop never runs, and
+    /// a fixture built that way cannot see the scan at all.
+    #[test]
+    fn absorption_merges_into_the_nearest_entry_of_the_leaf() {
+        for (x, want) in [(19.0, 2usize), (11.0, 1), (1.0, 0)] {
+            let mut t = entries_at(&[0.0, 10.0, 20.0], 4.0);
+            let before: Vec<f64> = t.entries.iter().map(|e| e.weight()).collect();
+            assert!(t.try_absorb_cf(t.root, &feature_at(x)));
+            let grew: Vec<usize> = (0..3)
+                .filter(|&i| t.entries[i].weight() > before[i])
+                .collect();
+            assert_eq!(
+                grew,
+                vec![want],
+                "a feature at {x} was absorbed into the wrong entry"
+            );
+        }
+    }
+
+    /// The same scan, tied: `1.0` is exactly equidistant from entries at `0.0` and `2.0`, so a
+    /// strict `<` absorbs into the earlier one where a `<=` would take the later.
+    #[test]
+    fn absorption_breaks_an_exact_tie_toward_the_lower_entry_index() {
+        let mut t = entries_at(&[0.0, 2.0], 1.0);
+        let cf = feature_at(1.0);
+        assert_eq!(
+            t.abs.between(&t.entries[0], &cf),
+            t.abs.between(&t.entries[1], &cf),
+            "the fixture is not actually tied, so it tests nothing"
+        );
+        assert!(t.try_absorb_cf(t.root, &cf));
+        assert_eq!(
+            t.entries[0].weight(),
+            2.0,
+            "the tie must go to the earlier entry"
+        );
+        assert_eq!(t.entries[1].weight(), 1.0);
+    }
+
+    /// Absorption is gated on `<= threshold`, so the boundary itself decides: a feature exactly on
+    /// it must be absorbed, one past it must not.
+    #[test]
+    fn a_feature_exactly_on_the_absorption_threshold_is_absorbed() {
+        let mut t = entries_at(&[0.0, 10.0], 4.0);
+        let on = feature_at(2.0); // squared distance 4.0 from entry 0 == threshold
+        assert_eq!(t.abs.between(&t.entries[0], &on), 4.0);
+        assert!(
+            t.try_absorb_cf(t.root, &on),
+            "a feature on the threshold must be absorbed"
+        );
+        assert_eq!(t.entries[0].weight(), 2.0);
+
+        let mut t = entries_at(&[0.0, 10.0], 4.0);
+        let past = feature_at(2.0 + 1e-9);
+        assert!(t.abs.between(&t.entries[0], &past) > 4.0);
+        assert!(
+            !t.try_absorb_cf(t.root, &past),
+            "a feature past it must not be absorbed"
+        );
+        assert_eq!(
+            t.entries.len(),
+            2,
+            "try_absorb_cf must not push an entry itself"
+        );
+    }
+
+    /// The point path (`try_absorb`, reached through `insert`) is a second copy of the same
+    /// scan-then-gate; the entry weights and the entry count are the observables.
+    #[test]
+    fn inserting_a_point_absorbs_it_into_the_nearest_entry_at_the_threshold() {
+        for (x, want) in [(19.0, 2usize), (11.0, 1), (1.0, 0)] {
+            let mut t = entries_at(&[0.0, 10.0, 20.0], 4.0);
+            t.insert(&[x]);
+            assert_eq!(
+                t.entries.len(),
+                3,
+                "a point within the threshold must not add an entry"
+            );
+            assert_eq!(
+                t.entries[want].weight(),
+                2.0,
+                "point {x} landed in the wrong entry"
+            );
+        }
+        let mut t = entries_at(&[0.0, 10.0], 4.0);
+        t.insert(&[2.0]); // squared distance 4.0 == threshold
+        assert_eq!(t.entries.len(), 2);
+        let mut t = entries_at(&[0.0, 10.0], 4.0);
+        t.insert(&[5.0]); // squared distance 25 from both -- past the threshold
+        assert_eq!(t.entries.len(), 3);
+
+        // The point path has its own tie-break, and it is only reachable when two entries are
+        // exactly equidistant *and* the point is inside the threshold, so absorption actually runs.
+        let mut t = entries_at(&[0.0, 2.0], 1.0);
+        assert_eq!(
+            t.dist.point(&t.entries[0], &[1.0]),
+            t.dist.point(&t.entries[1], &[1.0]),
+            "the fixture is not actually tied, so it tests nothing"
+        );
+        t.insert(&[1.0]);
+        assert_eq!(
+            t.entries.len(),
+            2,
+            "the tied point is inside the threshold, so it must absorb"
+        );
+        assert_eq!(
+            t.entries[0].weight(),
+            2.0,
+            "the tie must go to the earlier entry"
+        );
+        assert_eq!(t.entries[1].weight(), 1.0);
+    }
+
+    /// `descend_cf` needs an internal node to have anything to choose between; a one-leaf tree
+    /// returns the root whatever the comparison says.
+    #[test]
+    fn descend_cf_picks_the_nearest_leaf_and_not_the_first() {
+        let mut t = EuclidTree::new(
+            1,
+            4,
+            1,
+            0.0,
+            usize::MAX,
+            CentroidEuclidean,
+            CentroidEuclidean,
+        );
+        for x in [0.0, 10.0, 20.0, 30.0] {
+            t.insert(&[x]);
+        }
+        assert!(
+            !t.nodes[t.root].leaf,
+            "fixture has no internal node, so it tests nothing"
+        );
+        let leaves: Vec<usize> = (0..t.nodes.len()).filter(|&i| t.nodes[i].leaf).collect();
+        assert!(
+            leaves.len() > 1,
+            "fixture has one leaf, so descend_cf cannot choose"
+        );
+
+        for x in [0.0, 10.0, 20.0, 30.0] {
+            let leaf = t.descend_cf(&feature_at(x));
+            let chosen = t.dist.between(&t.nodes[leaf].cf, &feature_at(x));
+            let best = leaves
+                .iter()
+                .map(|&l| t.dist.between(&t.nodes[l].cf, &feature_at(x)))
+                .fold(f64::INFINITY, f64::min);
+            assert!(
+                close(chosen, best),
+                "descend_cf({x}) chose {chosen}, nearest leaf is {best}"
+            );
+        }
+
+        // Tied: a feature at 15 is exactly equidistant from the leaves at 10 and 20, so the scan's
+        // tie-break is observable -- a strict `<` keeps whichever child the root lists first.
+        let mid = feature_at(15.0);
+        let ch = t.nodes[t.root].children.clone();
+        let d: Vec<f64> = ch
+            .iter()
+            .map(|&c| t.dist.between(&t.nodes[c].cf, &mid))
+            .collect();
+        let lo = d.iter().cloned().fold(f64::INFINITY, f64::min);
+        let tied: Vec<usize> = (0..ch.len()).filter(|&i| close(d[i], lo)).collect();
+        assert!(
+            tied.len() > 1,
+            "the fixture is not actually tied, so it tests nothing"
+        );
+        assert_eq!(
+            t.descend_cf(&mid),
+            ch[tied[0]],
+            "a tie must go to the earlier child"
         );
     }
 
@@ -940,6 +1180,138 @@ mod tests {
     }
 
     #[test]
+    fn a_compaction_that_skips_the_rebalance_leaves_the_tree_intact() {
+        // Compaction merges strictly inside a leaf, so mass is conserved per node and no ancestor is
+        // touched: the tree is already valid when it finishes, and the rebalance that follows is a
+        // re-routing rather than a repair. This fixture stops one compaction short of the rebalance
+        // trigger, which is the only state in which that claim is load-bearing.
+        let budget = 100usize;
+        let mut tree: CFTree<f64, Spherical<f64>, _, _> =
+            CFTree::new(2, 8, 8, 0.0, budget, CentroidEuclidean, CentroidEuclidean);
+        let pts = pseudo(110, 2);
+        for p in &pts {
+            tree.insert(p);
+        }
+        assert!(tree.rebuilds() > 0, "the fixture never compacted");
+        assert!(
+            tree.merged_since_rebalance > 0 && tree.merged_since_rebalance < budget,
+            "the fixture rebalanced ({} merges against a {budget} trigger); \
+             it cannot see the skipped path",
+            tree.merged_since_rebalance
+        );
+        verify(&tree, pts.len());
+    }
+
+    #[test]
+    fn the_leaf_budget_is_a_ceiling_not_a_trigger_point() {
+        // A rebuild fires on the entry *after* the budget, not on the one that reaches it: at
+        // exactly `max_leaves` entries the caller has the resolution it asked for and paid for, and
+        // compacting there would hand back a summary coarser than the budget on every run. Swept
+        // over the robust insert too -- it carries its own copy of the trigger, and at threshold 0
+        // every entry is a singleton, so winsorization never fires and the two paths must agree.
+        for huber in [None, Some(2.0)] {
+            the_budget_is_a_ceiling(huber);
+        }
+    }
+
+    fn the_budget_is_a_ceiling(huber: Option<f64>) {
+        let budget = 40usize;
+        let pts = pseudo(budget + 1, 3);
+        let build = |n: usize| {
+            let mut tree: CFTree<f64, Spherical<f64>, _, _> =
+                CFTree::new(3, 8, 8, 0.0, budget, CentroidEuclidean, CentroidEuclidean);
+            tree.set_huber_k(huber);
+            for p in &pts[..n] {
+                tree.insert(p);
+            }
+            tree
+        };
+        let at = build(budget);
+        assert_eq!(
+            at.num_leaves(),
+            budget,
+            "{huber:?}: the fixture absorbed instead of splitting"
+        );
+        assert_eq!(
+            at.rebuilds(),
+            0,
+            "{huber:?}: compacted at the budget rather than past it"
+        );
+        assert_eq!(
+            at.threshold, 0.0,
+            "{huber:?}: the threshold grew without a compaction"
+        );
+
+        let past = build(budget + 1);
+        assert_eq!(
+            past.rebuilds(),
+            1,
+            "{huber:?}: the entry past the budget did not compact"
+        );
+        assert_eq!(
+            past.num_leaves(),
+            budget - budget / 10,
+            "{huber:?}: compaction did not land on the margin below the budget"
+        );
+    }
+
+    #[test]
+    fn rebalancing_re_partitions_a_leaf_that_compaction_cannot_split() {
+        // Compaction merges strictly *inside* a leaf, so it can shrink a leaf holding two clusters
+        // but never split it -- insertion order decided that grouping and nothing revisits it.
+        // Rebalancing does: each entry is routed against the tree as it now stands. Measured as the
+        // leaf partition itself, since that is the only thing the pass changes.
+        let mut tree: CFTree<f64, Spherical<f64>, _, _> =
+            CFTree::new(2, 4, 4, 0.0, 60, CentroidEuclidean, CentroidEuclidean);
+        let pts = pseudo(70, 2);
+        for p in &pts {
+            tree.insert(p);
+        }
+        let before = leaf_partition(&tree);
+        tree.reinsert();
+        let after = leaf_partition(&tree);
+
+        assert!(
+            before.len() > 1,
+            "the fixture has a single leaf to re-partition"
+        );
+        assert_ne!(
+            before, after,
+            "the rebalance left the leaf partition untouched"
+        );
+        verify(&tree, pts.len());
+        assert_eq!(
+            before.iter().map(|g| g.len()).sum::<usize>(),
+            after.iter().map(|g| g.len()).sum::<usize>(),
+            "the rebalance lost or duplicated an entry"
+        );
+    }
+
+    /// The leaf partition as sortable content rather than arena indices, which `reinsert` renumbers:
+    /// each leaf becomes its members' centroids, rounded so the grouping (not the arithmetic) is
+    /// what the comparison sees.
+    fn leaf_partition<D: CFDistance<f64, Spherical<f64>>, A: CFDistance<f64, Spherical<f64>>>(
+        tree: &CFTree<f64, Spherical<f64>, D, A>,
+    ) -> Vec<Vec<i64>> {
+        let mut out: Vec<Vec<i64>> = tree
+            .nodes
+            .iter()
+            .filter(|n| n.leaf && !n.children.is_empty())
+            .map(|n| {
+                let mut g: Vec<i64> = n
+                    .children
+                    .iter()
+                    .map(|&e| (tree.entries[e].mean()[0] * 1e6).round() as i64)
+                    .collect();
+                g.sort_unstable();
+                g
+            })
+            .collect();
+        out.sort_unstable();
+        out
+    }
+
+    #[test]
     fn sibling_pairs_track_the_within_leaf_nn() {
         // A rebuild merges the closest sibling pairs and reads the grown threshold off the widest gap
         // it took, so every gap the scan reports must sit at the true nearest-sibling scale. For
@@ -976,6 +1348,89 @@ mod tests {
                 "sibling gap {gap} drifted from the unit nearest-sibling scale (≈1.0)"
             );
         }
+    }
+
+    #[test]
+    fn a_tied_sibling_scan_keeps_the_first_neighbour() {
+        // Three collinear entries one unit apart share a leaf, so the middle one is equidistant from
+        // both neighbours -- bit for bit, not to a tolerance. Which one it pairs with decides which
+        // merge a rebuild considers, and only the strictness of the comparison decides that.
+        let t = entries_at(&[0.0, 1.0, 2.0], 0.0);
+        let left = t.dist.between(&t.entries[1], &t.entries[0]);
+        let right = t.dist.between(&t.entries[1], &t.entries[2]);
+        assert_eq!(
+            left.to_bits(),
+            right.to_bits(),
+            "the fixture is not an exact tie, so it cannot see the comparison"
+        );
+
+        let pairs = t.sibling_pairs();
+        let mid = pairs
+            .iter()
+            .find(|p| p.1 == 1)
+            .expect("the middle entry reported no pair");
+        assert_eq!(mid.2, 0, "the tie went to the later sibling");
+        assert_eq!(mid.0, 1.0);
+    }
+
+    #[test]
+    fn a_two_entry_leaf_still_reports_its_pair() {
+        // Two entries is the smallest leaf a compaction can act on, and once the tree is near its
+        // budget it is the shape most leaves are in. Skipping it would hide the only merge candidate
+        // such a leaf has, and the budget would then be unreachable from above.
+        let t = entries_at(&[0.0, 5.0], 0.0);
+        assert_eq!(
+            t.nodes
+                .iter()
+                .filter(|n| n.leaf && n.children.len() == 2)
+                .count(),
+            1,
+            "the fixture holds no two-entry leaf"
+        );
+
+        let pairs = t.sibling_pairs();
+        assert_eq!(pairs.len(), 2, "the two-entry leaf reported no pair");
+        assert!(pairs.iter().all(|p| p.0 == 25.0));
+    }
+
+    #[test]
+    fn a_rebuild_lifts_the_gate_just_past_the_widest_gap_it_merged() {
+        // Absorption is gated on `<= threshold`, so the widest gap a pass merged must itself clear the
+        // gate afterwards -- otherwise the next insert re-splits the very entries just fused. `1 + 4eps`
+        // is the smallest step that covers the `sqrt(d)^2 < d` rounding the linear-space scan
+        // introduces: anything smaller (or a division, or a subtraction) leaves the gate at or below
+        // the gap it was derived from, and anything larger coarsens the tree for the rest of the run.
+        //
+        // One merge only. Reciprocal nearest-neighbour pairs are reported twice at an identical gap,
+        // and `sort_unstable_by` leaves their order -- hence which of the two entries survives --
+        // unspecified, which changes `widest` as soon as a second merge is allowed to chain off it.
+        let mut t = entries_at(&[0.0, 1.5, 5.0, 12.0, 25.0], 0.0);
+        t.max_leaves = 4;
+
+        let mut gaps: Vec<f64> = t.sibling_pairs().iter().map(|p| p.0).collect();
+        gaps.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let widest = gaps[0];
+        assert_eq!(widest, 2.25, "the closest sibling gap moved");
+        assert!(gaps[2] > widest, "more than one pair sits at the minimum");
+        assert_eq!(
+            t.entries.len() - (t.max_leaves - t.max_leaves / 10).max(1),
+            1,
+            "the fixture asks for more than the single merge it can pin"
+        );
+
+        t.rebuild();
+
+        assert_eq!(t.num_leaves(), 4);
+        assert_eq!(t.threshold, widest * (1.0 + 4.0 * f64::EPSILON));
+        assert!(
+            t.threshold > widest,
+            "the merged pair would be re-split by the next insert"
+        );
+        assert!(
+            t.threshold < widest * (1.0 + 8.0 * f64::EPSILON),
+            "the gate was lifted further than the rounding it exists to cover"
+        );
+        verify(&t, 5);
     }
 
     #[test]
@@ -1049,6 +1504,42 @@ mod tests {
             "exact total weight"
         );
         assert!(par.num_leaves() >= 1 && par.num_leaves() <= 200);
+    }
+
+    #[cfg(feature = "parallel")]
+    #[test]
+    fn a_shard_gets_its_own_slice_of_the_leaf_budget() {
+        // Each shard summarises to `max_leaves / shards`, which is the same points-per-leaf resolution
+        // the sequential build would give. Get that division wrong downwards and the merge phase is fed
+        // `shards * leaf_cap` coarse CFs instead of ~`max_leaves` -- the budget the caller asked for is
+        // then unreachable no matter how many points arrive, because it was already spent inside the
+        // shards. `max_leaves` is a multiple of `shards` here, so a remainder collapses to the floor.
+        const LEAF_CAP: usize = 16;
+        const BUDGET: usize = 400;
+        const SHARDS: usize = 8;
+        let pts = pseudo(4000, 3);
+        let n = pts.len();
+        let flat: Vec<f64> = pts.iter().flatten().copied().collect();
+        let par = CFTree::<f64, Spherical<f64>, _, _>::build_parallel(
+            3,
+            LEAF_CAP,
+            LEAF_CAP,
+            0.0,
+            BUDGET,
+            CentroidEuclidean,
+            CentroidEuclidean,
+            &flat,
+            n,
+            SHARDS,
+        );
+        assert!(
+            par.num_leaves() > SHARDS * LEAF_CAP,
+            "{} leaves is at or below the {} a per-shard budget of `leaf_cap` would cap the merge at",
+            par.num_leaves(),
+            SHARDS * LEAF_CAP
+        );
+        assert!(par.num_leaves() <= BUDGET);
+        assert!(close(par.summary().weight(), n as f64));
     }
 
     fn dist2(a: &[f64], b: &[f64]) -> f64 {
@@ -1395,6 +1886,56 @@ mod tests {
             leaf_groups(&t),
             vec![vec![0, 2], vec![1]],
             "tied child went to the wrong group"
+        );
+    }
+
+    #[test]
+    fn a_split_seeds_on_two_distinct_children() {
+        // The seed scan reads the farthest *pair*, so it must not compare a child with itself. That
+        // is invisible under `CentroidEuclidean`, where a self-comparison is zero, but `Radius` and
+        // `AverageIntercluster` both carry the children's own scatter into `between`, so a child
+        // with enough of it is further from itself than any two children are from each other. The
+        // scan would then seed both sides on that one child, every child would sit at an identical
+        // distance from both seeds, and the split would fall through to the size tie-break --
+        // separating two entries that coincide to within a hundredth of a unit.
+        let fat = Spherical::from_moments(10.0, vec![0.0], 251.0);
+        let tips: Vec<Spherical<f64>> = [-5.0, -4.9, 5.0, 4.9]
+            .iter()
+            .map(|&x| Spherical::from_moments(1.0, vec![x], 0.0))
+            .collect();
+
+        let mut tree: CFTree<f64, Spherical<f64>, _, _> =
+            CFTree::new(1, 4, 4, 0.0, usize::MAX, Radius, CentroidEuclidean);
+        let all: Vec<Spherical<f64>> = std::iter::once(fat.clone()).chain(tips).collect();
+        let self_gap = tree.dist.between(&fat, &fat);
+        let widest_pair = (0..all.len())
+            .flat_map(|i| ((i + 1)..all.len()).map(move |j| (i, j)))
+            .map(|(i, j)| tree.dist.between(&all[i], &all[j]))
+            .fold(0.0f64, f64::max);
+        assert!(
+            self_gap > widest_pair,
+            "the fixture's scatter ({self_gap}) does not exceed its widest pair ({widest_pair}), \
+             so a self-comparison could not win the scan and the test is vacuous"
+        );
+
+        for cf in &all {
+            tree.insert_cf(cf.clone());
+        }
+        assert_eq!(
+            tree.num_leaves(),
+            all.len(),
+            "the fixture absorbed instead of splitting"
+        );
+        let leaves = leaf_partition(&tree);
+        assert_eq!(leaves.len(), 2, "the fixture did not split");
+        let together = |a: i64, b: i64| leaves.iter().any(|g| g.contains(&a) && g.contains(&b));
+        assert!(
+            together(-5_000_000, -4_900_000),
+            "the split separated -5.0 from -4.9"
+        );
+        assert!(
+            together(5_000_000, 4_900_000),
+            "the split separated 5.0 from 4.9"
         );
     }
 

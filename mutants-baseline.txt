@@ -1,0 +1,571 @@
+# Surviving mutants accepted as of the sweeps below. `mutants-summary` fails only on a mutant that
+# is NOT in this list, so red means "this change added a survivor" rather than "the crate still has
+# survivors" -- which it always will, because some survivors are provably equivalent mutants and no
+# test can kill those.
+#
+# This is a debt register, not an approval. Entries marked "Debt" are holes that should shrink;
+# entries marked "believed equivalent" carry the argument for why no test can close them, and a
+# claim of equivalence without an argument does not belong here.
+#
+# Source: run 32347677860 at e8852c2, 2026-08-20, whole crate, 96 shards.
+#   caught 3460 | missed 414 | timeout 55 | unviable 336
+# Shard 39 uploaded no artifact (it ran 88 minutes against a ~20-minute median), so ~45 mutants in
+# that shard are unmeasured and absent from this list; the summary job now fails on a missing shard
+# rather than collating 95 of 96 into a total that looks complete.
+#
+# Since re-measured locally, and those sections replaced: `src/tree.rs` (2026-08-20 after the
+# rebuild-cost fix, and again 2026-08-21 whole-file), `src/clustering/gmm.rs` and
+# `src/clustering/nmf.rs` (2026-08-21, entry by entry), `src/clustering/vmf.rs` and
+# `src/clustering/kprototypes.rs` (2026-08-22, entry by entry). The entry-by-entry form is sound
+# where the only change to the file was *test* code: adding a test can kill a mutant but can never
+# create one, so nothing outside the recorded set needs re-measuring. It is not sound after a
+# production edit -- re-measure the file whole then.
+#
+# The entry-by-entry runs used `cargo test --lib`, not the `--test-tool nextest` the CI job uses.
+# The difference is `tests/integration_api.rs`, whose four tests assert label counts and a 4-blob
+# recovery; none of them reaches a variance floor, a BIC tie, an empty component or the NMF sketch,
+# so none can close an entry the 399-test library suite left open.
+#
+# Tests added on 2026-08-20 after the whole-crate sweep already kill part of the remaining list
+# (DenStream prune, both BIC parameter counts). The next run reports those under "Baseline entries
+# that are now caught" -- trim them then, from measurement rather than memory.
+#
+# KNOWN WEAKNESS OF THIS FILE: an entry is keyed by `file:line:col`, so *any* edit that shifts a
+# line invalidates every key below it in that file, and the ratchet then reads a moved survivor as
+# a new one. Do not reconcile a shifted section by hand -- re-measure that file whole
+# (`cargo mutants -f <file>`) and replace its section, which is what was done for `src/tree.rs` on
+# 2026-08-20 after the rebuild-cost fix moved its production lines.
+#
+# A `timeout` is a detection, not a survivor: the mutant made the suite hang (a `rebuild` or `split`
+# that no longer terminates, a divergent `ln_gamma` series). Only `missed.txt` feeds this list.
+#
+# Regenerate: gh run download <id> -p 'mutants-out-*' && cat */missed.txt | sort -u
+# Narrow, locally: cargo mutants -f <file> -j2   (-j4 oversubscribes rayon and reports false timeouts)
+
+
+# ── src/stats.rs (47) ──
+# The initial guess of `inv_reg_lower_gamma` (Numerical Recipes `invgammp`) and the
+# convergence guards of `gser` / `gcf`. Believed equivalent: twelve cubically convergent
+# Halley steps absorb any perturbation of the guess, and the guards test values the series
+# never reaches (FPMIN = 1e-300). The round-trip test asserts P(a, P^-1(a, p)) = p to 1e-12
+# relative over 17 x 16 (a, p) points, so a mutant that moved the result would fail it.
+src/stats.rs:106:21: replace > with >= in inv_reg_lower_gamma
+src/stats.rs:107:21: replace > with >= in inv_reg_lower_gamma
+src/stats.rs:115:10: replace > with >= in inv_reg_lower_gamma
+src/stats.rs:116:23: replace < with <= in inv_reg_lower_gamma
+src/stats.rs:118:31: replace + with * in inv_reg_lower_gamma
+src/stats.rs:118:31: replace + with - in inv_reg_lower_gamma
+src/stats.rs:118:35: replace * with + in inv_reg_lower_gamma
+src/stats.rs:118:35: replace * with / in inv_reg_lower_gamma
+src/stats.rs:118:53: replace + with * in inv_reg_lower_gamma
+src/stats.rs:118:57: replace * with + in inv_reg_lower_gamma
+src/stats.rs:118:57: replace * with / in inv_reg_lower_gamma
+src/stats.rs:118:68: replace + with * in inv_reg_lower_gamma
+src/stats.rs:118:68: replace + with - in inv_reg_lower_gamma
+src/stats.rs:118:72: replace * with + in inv_reg_lower_gamma
+src/stats.rs:118:72: replace * with / in inv_reg_lower_gamma
+src/stats.rs:119:14: replace < with <= in inv_reg_lower_gamma
+src/stats.rs:122:23: replace - with + in inv_reg_lower_gamma
+src/stats.rs:122:36: replace * with + in inv_reg_lower_gamma
+src/stats.rs:124:21: replace - with + in inv_reg_lower_gamma
+src/stats.rs:124:34: replace + with * in inv_reg_lower_gamma
+src/stats.rs:124:34: replace + with - in inv_reg_lower_gamma
+src/stats.rs:125:14: replace < with <= in inv_reg_lower_gamma
+src/stats.rs:126:20: replace / with % in inv_reg_lower_gamma
+src/stats.rs:126:20: replace / with * in inv_reg_lower_gamma
+src/stats.rs:128:28: replace - with + in inv_reg_lower_gamma
+src/stats.rs:128:38: replace / with % in inv_reg_lower_gamma
+src/stats.rs:128:38: replace / with * in inv_reg_lower_gamma
+src/stats.rs:128:45: replace - with + in inv_reg_lower_gamma
+src/stats.rs:128:45: replace - with / in inv_reg_lower_gamma
+src/stats.rs:147:21: replace * with + in inv_reg_lower_gamma
+src/stats.rs:147:21: replace * with / in inv_reg_lower_gamma
+src/stats.rs:147:26: replace + with * in inv_reg_lower_gamma
+src/stats.rs:147:26: replace + with - in inv_reg_lower_gamma
+src/stats.rs:149:23: replace < with <= in inv_reg_lower_gamma
+src/stats.rs:149:23: replace < with == in inv_reg_lower_gamma
+src/stats.rs:56:22: replace < with <= in gser
+src/stats.rs:56:22: replace < with == in gser
+src/stats.rs:73:20: replace < with <= in gcf
+src/stats.rs:73:20: replace < with == in gcf
+src/stats.rs:77:20: replace < with <= in gcf
+src/stats.rs:77:20: replace < with == in gcf
+src/stats.rs:83:17: replace - with + in gcf
+src/stats.rs:83:17: replace - with / in gcf
+src/stats.rs:83:30: replace < with <= in gcf
+src/stats.rs:83:30: replace < with == in gcf
+src/stats.rs:94:10: replace < with <= in reg_lower_gamma
+src/stats.rs:94:14: replace + with * in reg_lower_gamma
+
+# ── src/clustering/vmf.rs (19) ──
+# Re-measured 2026-08-22, entry by entry, after eight fixtures were added for this file: 19 of the
+# recorded 38 are now caught. `weighted_pick` (the overflow fallback), `movmf`'s restart choice,
+# `movmf_auto`'s parameter count, `init_kappas` (an independent Banerjee reference with one label
+# class left empty), the whole `spherical_lloyd` loop (a slow-converging continuum fixture asserted
+# against the Lloyd fixed-point conditions, plus a first-pass and a cancelled-resultant fixture) and
+# `estimate_kappa` at the pole are closed. Each kill was verified to fail on revert.
+#
+# Believed equivalent -- `log_iv`'s stopping rule and two ties that assign the value they already
+# hold. The series is all-positive with `sum_exp >= 1`, so a term below e^-40 (about half an ulp of
+# the running sum) cannot move it: both `73:23` mutants *widen* the peak test (`k + 0.5` and `2k` both
+# exceed `k/2` for every k > 0) and only sum more negligible terms; `73:15` `==`/`>=` fire only at
+# `m = k/2`, the peak of the series, where `log_a < max_log - 40` is false, so they never fire and the
+# loop runs to the hard cap instead; `73:61` mutates that cap, which kappa <= KAPPA_MAX = 1e4 never
+# reaches; `73:38` differs only on an exact float coincidence, one term below half an ulp. `66:18`
+# `log_a >= max_log` takes the other arm of an if whose two arms coincide at equality. `207:19`'s
+# `nd <= *di` writes `*di = nd` when the two are already equal. `299:35` negates `cohesion_of`'s
+# accumulator, which is only ever read through `norm`, and ‖−v‖ = ‖v‖.
+src/clustering/vmf.rs:66:18: replace > with >= in log_iv
+src/clustering/vmf.rs:73:15: replace > with == in log_iv
+src/clustering/vmf.rs:73:15: replace > with >= in log_iv
+src/clustering/vmf.rs:73:23: replace * with + in log_iv
+src/clustering/vmf.rs:73:23: replace * with / in log_iv
+src/clustering/vmf.rs:73:38: replace < with <= in log_iv
+src/clustering/vmf.rs:73:61: replace > with == in log_iv
+src/clustering/vmf.rs:73:61: replace > with >= in log_iv
+src/clustering/vmf.rs:207:19: replace < with <= in spherical_pp
+src/clustering/vmf.rs:299:35: replace + with - in cohesion_of
+# Believed equivalent -- a loop that never breaks early. `it < 0` is never true for a usize, so
+# `spherical_lloyd` runs all `max_iter` rounds instead of stopping at convergence; the update is
+# idempotent once the labelling is stationary, so labels, centers and cohesion are bit-identical and
+# only the work differs.
+src/clustering/vmf.rs:248:27: replace > with < in spherical_lloyd
+# Believed equivalent -- zero total responsibility. `ntot = sum_c sum_i n_i r_ic = sum_i n_i`, because
+# the E-step normalizes each row of `resp` to sum to one and every leaf mass is positive. So `ntot > 0`
+# always holds, `>=` cannot differ from `>`, and the `1/k` fallback that the `420:26` pair rewrites is
+# unreachable.
+src/clustering/vmf.rs:417:34: replace > with >= in movmf_once
+src/clustering/vmf.rs:420:26: replace / with % in movmf_once
+src/clustering/vmf.rs:420:26: replace / with * in movmf_once
+# Believed equivalent -- `init_kappas` accumulates `-sum n_i mu_i` instead of `+sum`, and the result is
+# only ever read through `norm`, so `rbar` is unchanged.
+src/clustering/vmf.rs:467:21: replace + with - in init_kappas
+# Believed equivalent -- a constant offset in a selection score, the same argument as gmm.rs:632:32.
+# `bic = -2 lnL + p ln n`, and `(k-1) -> (k+1)` adds exactly 2 to p for every k while `(k-1) -> (k/1)`
+# adds exactly 1, so every score shifts by the same c·ln n and the argmin cannot move.
+src/clustering/vmf.rs:501:34: replace - with + in movmf_auto
+src/clustering/vmf.rs:501:34: replace - with / in movmf_auto
+# Debt: two exact-coincidence guards.
+#   428:33  needs a component whose *total* responsibility underflows to exactly 0.0 -- the same
+#           constraint that keeps gmm.rs:159:22 and 455:22 open, and unreachable for the same reason.
+#   503:18  needs two k with a bit-identical BIC.
+src/clustering/vmf.rs:428:33: replace > with >= in movmf_once
+src/clustering/vmf.rs:503:18: replace < with <= in movmf_auto
+
+# ── src/clustering/kprototypes.rs (3) ──
+# Re-measured 2026-08-22. 37 of the 40 are caught: an independent reference for the Lloyd loop,
+# `summarize_mixed` and the mixed distances, plus exact-tie fixtures -- 167:18 closed here by a
+# three-point fixture whose third point is the same distance from both leaders to the bit.
+#   229:19  believed equivalent -- `nd <= *di` writes `*di = nd` when the two are already equal.
+#   305:31  believed equivalent -- the mutated `+` is the *first* one, so the objective becomes
+#           `-sum ssd_i + sum micro_dist_i`. `sum ssd_i` runs over every micro regardless of the
+#           labelling, so it is the same constant for every restart and the argmin is unchanged.
+#           Measured against the whole library suite, which includes
+#           `more_restarts_never_return_a_worse_partition` -- the test a real sign error would fail.
+#   290:31  Debt, and expensive to reach: an orphaned prototype is observable only if a later pass
+#           runs *and* the collapsed prototype (origin, mode 0) outranks a real one for some micro.
+#           The only route to an orphaned prototype here is a duplicated seed, and `kpp_init`
+#           duplicates only once every remaining candidate has D² = 0 -- that is, once k exceeds the
+#           number of distinct micro sites. But then every cluster is a set of *identical* micros, its
+#           prototype coincides with its members at distance zero, and the origin cannot outrank it.
+#           A killing fixture has to empty a cluster by a prototype *update* rather than by seeding,
+#           while another cluster keeps enough internal spread that one of its micros is closer to the
+#           origin than to its own centroid.
+src/clustering/kprototypes.rs:229:19: replace < with <= in kpp_init
+src/clustering/kprototypes.rs:290:31: replace > with >= in kprototypes
+src/clustering/kprototypes.rs:305:31: replace + with - in kprototypes
+
+# ── src/tree.rs (2) ──
+# Re-measured 2026-08-21 against the five fixtures added with it: 130 of 156 mutants
+# before the local 90-minute cap stopped the run (112 caught / 2 missed / 6 timeout /
+# 10 unviable). `660:25` sits in `split`, which the cap never reached, and was measured
+# on its own -- it is caught by `a_split_seeds_on_two_distinct_children`, and it is *not*
+# the equivalent mutant it looks like: `Radius` and `AverageIntercluster` both give a
+# child a nonzero distance to itself, so `(i * 1)..k` can seed both sides on one child.
+# All twenty of the twenty-two entries this replaces except the two below are now caught
+# -- the grown-threshold arithmetic, both `sibling_pairs` scans, the per-shard leaf
+# budget, both rebuild triggers, the compaction margin, `rebuilds()`, the rebalance pass
+# and the seed scan. The 6 timeouts
+# are genuine non-termination in `rebuild` (a mutated break condition or liveness test)
+# and are detections, not survivors.
+#
+# Both remaining are believed equivalent, and both sit in `rebuild`:
+#   319:19  `merged > 0` -> `>=`. Entering the block with `merged == 0` runs
+#           `drop_merged` against an all-alive mask, which is a no-op; `widest` is
+#           still zero, so `grown` is zero and cannot exceed a non-negative threshold,
+#           and `merged_since_rebalance` gains nothing.
+#   323:22  `grown > self.threshold` -> `>=`. At equality the assignment stores the
+#           value that is already there.
+src/tree.rs:319:19: replace > with >= in CFTree<R, C, D, A>::rebuild
+src/tree.rs:323:22: replace > with >= in CFTree<R, C, D, A>::rebuild
+
+# ── src/stream.rs (33) ──
+# Debt, partly closed on 2026-08-20 (the DenStream prune thresholds are now checked
+# against a geometric-series reference). The rest is DbStream and `try_merge`.
+src/stream.rs:174:14: replace > with >= in DenStream<R, C>::try_merge
+src/stream.rs:174:27: replace / with * in DenStream<R, C>::try_merge
+src/stream.rs:220:19: replace > with < in DenStream<R, C>::tick
+src/stream.rs:220:19: replace > with == in DenStream<R, C>::tick
+src/stream.rs:220:19: replace > with >= in DenStream<R, C>::tick
+src/stream.rs:220:42: replace % with + in DenStream<R, C>::tick
+src/stream.rs:231:30: replace * with / in DenStream<R, C>::prune
+src/stream.rs:233:53: replace * with + in DenStream<R, C>::prune
+src/stream.rs:234:32: replace * with / in DenStream<R, C>::prune
+src/stream.rs:234:37: replace - with + in DenStream<R, C>::prune
+src/stream.rs:234:37: replace - with / in DenStream<R, C>::prune
+src/stream.rs:234:44: replace + with * in DenStream<R, C>::prune
+src/stream.rs:234:44: replace + with - in DenStream<R, C>::prune
+src/stream.rs:234:65: replace / with * in DenStream<R, C>::prune
+src/stream.rs:243:22: replace * with + in DenStream<R, C>::cluster
+src/stream.rs:243:22: replace * with / in DenStream<R, C>::cluster
+src/stream.rs:246:25: replace + with * in DenStream<R, C>::cluster
+src/stream.rs:260:61: replace * with + in DenStream<R, C>::cluster
+src/stream.rs:260:61: replace * with / in DenStream<R, C>::cluster
+src/stream.rs:274:21: delete - in DenStream<R, C>::cluster
+src/stream.rs:284:20: delete - in DenStream<R, C>::predict
+src/stream.rs:309:33: replace > with >= in DenStream<R, C>::potential_stats
+src/stream.rs:483:19: replace > with >= in DbStream<R, C>::tick
+src/stream.rs:496:50: replace && with || in DbStream<R, C>::cleanup
+src/stream.rs:496:61: replace * with + in DbStream<R, C>::cleanup
+src/stream.rs:496:61: replace * with / in DbStream<R, C>::cleanup
+src/stream.rs:523:27: replace || with && in DbStream<R, C>::cluster
+src/stream.rs:526:24: replace * with / in DbStream<R, C>::cluster
+src/stream.rs:552:44: replace < with <= in DbStream<R, C>::nearest
+src/stream.rs:563:20: delete - in DbStream<R, C>::predict
+src/stream.rs:588:33: replace > with >= in DbStream<R, C>::micro_stats
+src/stream.rs:600:10: replace < with <= in pair
+src/stream.rs:63:31: replace += with *= in UnionFind::union
+
+# ── src/clustering/scalespace.rs (28) ──
+# Debt: mode-counting and bandwidth arithmetic.
+src/clustering/scalespace.rs:107:47: replace * with / in bandwidth_range
+src/clustering/scalespace.rs:119:20: replace * with / in mean_shift
+src/clustering/scalespace.rs:133:20: replace > with >= in mean_shift
+src/clustering/scalespace.rs:136:28: replace - with + in mean_shift
+src/clustering/scalespace.rs:136:28: replace - with / in mean_shift
+src/clustering/scalespace.rs:136:47: replace > with >= in mean_shift
+src/clustering/scalespace.rs:159:21: replace * with + in prominence_modes
+src/clustering/scalespace.rs:186:21: replace + with * in prominence_modes
+src/clustering/scalespace.rs:187:56: replace > with >= in prominence_modes
+src/clustering/scalespace.rs:241:5: replace select_scale -> usize with 1
+src/clustering/scalespace.rs:250:34: replace > with >= in select_scale
+src/clustering/scalespace.rs:254:27: replace && with || in select_scale
+src/clustering/scalespace.rs:254:34: replace > with < in select_scale
+src/clustering/scalespace.rs:254:34: replace > with == in select_scale
+src/clustering/scalespace.rs:254:34: replace > with >= in select_scale
+src/clustering/scalespace.rs:263:21: replace + with * in select_scale
+src/clustering/scalespace.rs:263:33: replace / with % in select_scale
+src/clustering/scalespace.rs:264:25: replace > with < in select_scale
+src/clustering/scalespace.rs:264:25: replace > with == in select_scale
+src/clustering/scalespace.rs:264:25: replace > with >= in select_scale
+src/clustering/scalespace.rs:265:21: replace + with * in select_scale
+src/clustering/scalespace.rs:265:33: replace / with % in select_scale
+src/clustering/scalespace.rs:268:22: replace - with + in select_scale
+src/clustering/scalespace.rs:268:22: replace - with / in select_scale
+src/clustering/scalespace.rs:62:56: replace - with + in scale_space
+src/clustering/scalespace.rs:93:19: replace < with <= in bandwidth_range
+src/clustering/scalespace.rs:96:19: replace < with <= in bandwidth_range
+src/clustering/scalespace.rs:99:19: replace > with >= in bandwidth_range
+
+# ── src/clustering/kmeans.rs (26) ──
+# Debt: Lloyd assignment and the k-means++ draw.
+src/clustering/kmeans.rs:136:22: replace > with >= in cop_kmeans
+src/clustering/kmeans.rs:225:31: replace + with - in cop_kmeans
+src/clustering/kmeans.rs:267:30: replace * with + in kmeans_plus_plus
+src/clustering/kmeans.rs:269:20: replace < with <= in kmeans_plus_plus
+src/clustering/kmeans.rs:276:19: replace < with <= in kmeans_plus_plus
+src/clustering/kmeans.rs:297:17: replace - with + in weighted_pick
+src/clustering/kmeans.rs:297:17: replace - with / in weighted_pick
+src/clustering/kmeans.rs:376:21: replace < with <= in nearest_two
+src/clustering/kmeans.rs:402:16: replace > with >= in update_centers
+src/clustering/kmeans.rs:415:31: replace <= with > in update_centers
+src/clustering/kmeans.rs:419:38: replace * with + in update_centers
+src/clustering/kmeans.rs:546:24: replace / with * in xmeans
+src/clustering/kmeans.rs:546:30: replace - with + in xmeans
+src/clustering/kmeans.rs:546:73: replace / with * in xmeans
+src/clustering/kmeans.rs:550:20: replace > with >= in xmeans
+src/clustering/kmeans.rs:552:21: replace - with + in xmeans
+src/clustering/kmeans.rs:552:27: replace * with / in xmeans
+src/clustering/kmeans.rs:554:21: replace - with + in xmeans
+src/clustering/kmeans.rs:554:28: replace * with + in xmeans
+src/clustering/kmeans.rs:554:28: replace * with / in xmeans
+src/clustering/kmeans.rs:554:35: replace - with + in xmeans
+src/clustering/kmeans.rs:554:35: replace - with / in xmeans
+src/clustering/kmeans.rs:554:47: replace * with + in xmeans
+src/clustering/kmeans.rs:554:47: replace * with / in xmeans
+src/clustering/kmeans.rs:557:43: replace + with * in xmeans
+src/clustering/kmeans.rs:559:16: replace > with >= in xmeans
+
+# ── src/clustering/gmm_toeplitz.rs (23) ──
+# Debt. Also the largest timeout pool (17), so some of these are unmeasured rather
+# than surviving.
+src/clustering/gmm_toeplitz.rs:102:23: replace - with / in levinson_full
+src/clustering/gmm_toeplitz.rs:106:14: replace > with >= in levinson_full
+src/clustering/gmm_toeplitz.rs:108:21: replace < with <= in levinson_full
+src/clustering/gmm_toeplitz.rs:275:30: replace > with >= in fit_component_gs
+src/clustering/gmm_toeplitz.rs:276:57: replace - with + in fit_component_gs
+src/clustering/gmm_toeplitz.rs:296:41: replace + with - in fit_component_gs
+src/clustering/gmm_toeplitz.rs:301:26: replace > with >= in fit_component_gs
+src/clustering/gmm_toeplitz.rs:336:24: replace > with >= in fit_component
+src/clustering/gmm_toeplitz.rs:338:23: replace * with + in fit_component
+src/clustering/gmm_toeplitz.rs:348:62: replace - with + in fit_component
+src/clustering/gmm_toeplitz.rs:352:16: replace < with <= in fit_component
+src/clustering/gmm_toeplitz.rs:363:17: replace > with >= in argmax
+src/clustering/gmm_toeplitz.rs:395:48: replace + with * in gmm_toeplitz_once
+src/clustering/gmm_toeplitz.rs:395:48: replace + with - in gmm_toeplitz_once
+src/clustering/gmm_toeplitz.rs:423:20: replace > with >= in gmm_toeplitz_once
+src/clustering/gmm_toeplitz.rs:442:32: replace / with * in gmm_toeplitz_once
+src/clustering/gmm_toeplitz.rs:540:30: replace + with * in gmm_toeplitz_auto_kind
+src/clustering/gmm_toeplitz.rs:542:33: replace + with * in gmm_toeplitz_auto_kind
+src/clustering/gmm_toeplitz.rs:544:24: replace + with * in gmm_toeplitz_auto_kind
+src/clustering/gmm_toeplitz.rs:544:33: replace + with - in gmm_toeplitz_auto_kind
+src/clustering/gmm_toeplitz.rs:544:38: replace - with + in gmm_toeplitz_auto_kind
+src/clustering/gmm_toeplitz.rs:544:38: replace - with / in gmm_toeplitz_auto_kind
+src/clustering/gmm_toeplitz.rs:546:16: replace < with <= in gmm_toeplitz_auto_kind
+
+# ── src/sketch/kll.rs (20) ──
+# Debt: compaction levels and capacity arithmetic.
+src/sketch/kll.rs:137:9: replace KllSketch::rank -> u64 with 0
+src/sketch/kll.rs:137:9: replace KllSketch::rank -> u64 with 1
+src/sketch/kll.rs:139:26: replace << with >> in KllSketch::rank
+src/sketch/kll.rs:140:15: replace += with *= in KllSketch::rank
+src/sketch/kll.rs:140:15: replace += with -= in KllSketch::rank
+src/sketch/kll.rs:140:20: replace * with + in KllSketch::rank
+src/sketch/kll.rs:140:20: replace * with / in KllSketch::rank
+src/sketch/kll.rs:140:46: replace <= with > in KllSketch::rank
+src/sketch/kll.rs:196:37: replace < with <= in KllSketch::merge
+src/sketch/kll.rs:54:37: replace - with + in KllSketch::capacity
+src/sketch/kll.rs:54:37: replace - with / in KllSketch::capacity
+src/sketch/kll.rs:55:19: replace / with % in KllSketch::capacity
+src/sketch/kll.rs:55:19: replace / with * in KllSketch::capacity
+src/sketch/kll.rs:55:45: replace * with + in KllSketch::capacity
+src/sketch/kll.rs:55:78: replace + with * in KllSketch::capacity
+src/sketch/kll.rs:55:78: replace + with - in KllSketch::capacity
+src/sketch/kll.rs:60:18: replace ^= with |= in KllSketch::coin
+src/sketch/kll.rs:60:30: replace << with >> in KllSketch::coin
+src/sketch/kll.rs:62:18: replace ^= with |= in KllSketch::coin
+src/sketch/kll.rs:62:30: replace << with >> in KllSketch::coin
+
+# ── src/clustering/gmm.rs (13) ──
+# Re-measured 2026-08-21, entry by entry, each mutation applied at its own line:col and
+# run against the full library suite. Six of the nineteen this replaces are now caught:
+# both BIC slopes (`selection_sweep`, added 2026-08-20, already killed three of them --
+# the list was stale, not the tests), the triangular covariance count, and both
+# empty-warm-start fallbacks.
+#
+# Believed equivalent -- a constant offset in a BIC parameter count. `bic = -2 lnL +
+# p*ln n`, so a change that adds the same amount to `p` for every `k` shifts every score
+# equally and cannot move the argmin, which is all either `_auto` returns. `(k-1)` ->
+# `(k+1)` adds exactly 2; `(k-1)` -> `(k/1)` adds exactly 1 (integer division, k >= 1).
+src/clustering/gmm.rs:632:32: replace - with + in gmm_diagonal_auto
+src/clustering/gmm.rs:632:32: replace - with / in gmm_diagonal_auto
+src/clustering/gmm.rs:660:50: replace - with + in gmm_full_auto
+src/clustering/gmm.rs:660:50: replace - with / in gmm_full_auto
+#
+# Believed equivalent -- assigning at equality. Each of these is `if raw > floor { raw }
+# else { floor }` or `if x < floor { x = floor }`; at `raw == floor` both branches store
+# the same bits, so no execution can tell them apart.
+src/clustering/gmm.rs:105:37: replace > with >= in gmm_diagonal_once
+src/clustering/gmm.rs:178:41: replace > with >= in gmm_diagonal_once
+src/clustering/gmm.rs:396:34: replace < with <= in gmm_full_once
+src/clustering/gmm.rs:491:38: replace < with <= in gmm_full_once
+#
+# Debt. The M-step guard `nk[c] > 0` needs a component whose *total* responsibility
+# underflows to exactly 0.0 -- every micro-cluster more than ~746 nats behind the
+# log-sum-exp, including at the component's own mean. Not constructible while the mean
+# stays inside the convex hull of the data and the variance is floored at 1e-3*gvar.
+# (The *warm-start* guards one loop up, 100:36 and 385:22, are reachable and are pinned.)
+src/clustering/gmm.rs:159:22: replace > with >= in gmm_diagonal_once
+src/clustering/gmm.rs:455:22: replace > with >= in gmm_full_once
+#
+# Debt. `<` -> `==` disables the *initialisation* covariance floor, which is a
+# conditioning guard that EM erases: measured on a fixture whose init diagonals sit at
+# 0.0025-0.01 against a 0.022 floor, the converged log-likelihood moved from
+# 7.09723733379987731 to 7.09723733390917122 -- the eleventh significant digit -- and on
+# `blobs` it did not move at all. A killing fixture needs the near-singular direction to
+# survive to convergence, which is the high-dimensional regime the comment at
+# `gmm.rs:482` cites and which no cheap unit fixture reproduces.
+src/clustering/gmm.rs:396:34: replace < with == in gmm_full_once
+#
+# Debt. `score < best_score` -> `<=` differs only when two `k` produce a bit-identical
+# BIC. `p` is strictly increasing in `k`, so that needs the log-likelihoods to differ by
+# exactly (p_k - p_j)*ln(n)/2 in f64; a fixture built to hit it would be pinned to a bit
+# pattern rather than to a property.
+src/clustering/gmm.rs:634:18: replace < with <= in gmm_diagonal_auto
+src/clustering/gmm.rs:662:18: replace < with <= in gmm_full_auto
+
+# ── src/clustering/hdbscan.rs (17) ──
+# Debt: mutual reachability and the condensed-tree stability rule.
+src/clustering/hdbscan.rs:117:36: replace - with + in hdbscan
+src/clustering/hdbscan.rs:117:36: replace - with / in hdbscan
+src/clustering/hdbscan.rs:151:22: replace < with <= in hdbscan
+src/clustering/hdbscan.rs:189:26: replace > with >= in hdbscan
+src/clustering/hdbscan.rs:203:15: replace < with <= in hdbscan
+src/clustering/hdbscan.rs:203:15: replace < with == in hdbscan
+src/clustering/hdbscan.rs:211:43: replace * with + in hdbscan
+src/clustering/hdbscan.rs:232:25: replace += with *= in hdbscan
+src/clustering/hdbscan.rs:232:35: replace - with / in hdbscan
+src/clustering/hdbscan.rs:232:47: replace * with + in hdbscan
+src/clustering/hdbscan.rs:239:25: replace += with -= in hdbscan
+src/clustering/hdbscan.rs:239:35: replace - with / in hdbscan
+src/clustering/hdbscan.rs:239:47: replace * with + in hdbscan
+src/clustering/hdbscan.rs:239:47: replace * with / in hdbscan
+src/clustering/hdbscan.rs:246:35: replace - with / in hdbscan
+src/clustering/hdbscan.rs:246:47: replace * with + in hdbscan
+src/clustering/hdbscan.rs:57:31: replace += with *= in UnionFind::union
+
+# ── src/feature.rs (16) ──
+# Debt: `SecondMoment::add_scaled` and `trace_under`, plus the FD sketch.
+src/feature.rs:39:31: replace + with * in SecondMoment<R>::trace_under
+src/feature.rs:39:31: replace + with - in SecondMoment<R>::trace_under
+src/feature.rs:47:43: replace + with * in SecondMoment<R>::trace_under
+src/feature.rs:47:43: replace + with - in SecondMoment<R>::trace_under
+src/feature.rs:495:38: replace / with % in FdSketch<R>::reduce
+src/feature.rs:512:41: replace + with - in FdSketch<R>::reduce
+src/feature.rs:560:39: replace + with * in <impl ClusterFeature<R> for FdSketch<R>>::variance
+src/feature.rs:560:39: replace + with - in <impl ClusterFeature<R> for FdSketch<R>>::variance
+src/feature.rs:57:37: replace * with + in SecondMoment<R>::add_scaled
+src/feature.rs:65:37: replace * with + in SecondMoment<R>::add_scaled
+src/feature.rs:65:37: replace * with / in SecondMoment<R>::add_scaled
+src/feature.rs:66:32: replace != with == in SecondMoment<R>::add_scaled
+src/feature.rs:68:61: replace + with * in SecondMoment<R>::add_scaled
+src/feature.rs:68:61: replace + with - in SecondMoment<R>::add_scaled
+src/feature.rs:68:67: replace * with + in SecondMoment<R>::add_scaled
+src/feature.rs:68:67: replace * with / in SecondMoment<R>::add_scaled
+
+# ── src/clustering/nmf.rs (13) ──
+# Re-measured 2026-08-21, entry by entry against the full library suite. Two of the
+# fifteen this replaces are now caught: the second half of the power iteration, by a
+# reference check against a dense eigendecomposition of `XᵀX` and the Eckart-Young
+# optimum it gives; and the KL stopping rule, by a fixture scaled a thousandfold so the
+# `max(prev, 1)` clamp is above 1 and the tolerance's relative form is decidable.
+#
+# Not measured by this configuration, not survivors. `default = ["parallel"]`, so line 34
+# is the `#[cfg(not(feature = "parallel"))]` copy of `build_rows` and is not compiled at
+# all -- mutating it cannot fail a test that never runs it. The serial path is covered by
+# `cargo test --no-default-features`, which the mutation job does not run.
+src/clustering/nmf.rs:34:5: replace build_rows -> Vec<Vec<R>> with vec![]
+src/clustering/nmf.rs:34:5: replace build_rows -> Vec<Vec<R>> with vec![vec![Default::default()]]
+src/clustering/nmf.rs:34:5: replace build_rows -> Vec<Vec<R>> with vec![vec![]]
+#
+# Believed equivalent -- the range finder is insensitive to its own sketch, by design.
+# Everything these touch is post-multiplied by `X`, so the basis stays inside `range(X)`,
+# and two power iterations with re-orthonormalization pull it onto the dominant subspace
+# wherever it started. Measured against the Eckart-Young optimum on a slowly decaying
+# spectrum (60x40, singular values ∝ 1/k², r = 4, sketch width l = 14), as residual over
+# optimum: unmutated 1.000000, `95:38` 1.000000, `106:42` 1.000009, `84:16` 1.000000,
+# `145:28` 1.000000. A ratio that moves by 9e-6 is below any tolerance defensible as
+# chosen in advance. `85:40` is the same from the other side: the seed only picks the
+# starting basis, so two seeds the mix collapses onto one stream return identical
+# triplets anyway and no assertion on the output can see the collapse.
+src/clustering/nmf.rs:84:16: replace + with * in randomized_svd
+src/clustering/nmf.rs:85:40: replace ^ with & in randomized_svd
+src/clustering/nmf.rs:85:40: replace ^ with | in randomized_svd
+src/clustering/nmf.rs:95:38: replace * with / in randomized_svd
+src/clustering/nmf.rs:106:42: replace * with / in randomized_svd
+#
+# Believed equivalent -- the numerical-rank cutoff separates zero from √ε·σ_max. A Gram
+# eigenvalue that is noise comes out at ±ε·λ_max, so `λ.max(0).sqrt()` is either exactly
+# zero (non-positive λ) or about 1.5e-8·σ_max. The true cutoff (σ_max·max(m,d)·ε ≈
+# 8.8e-15·σ_max) and the mutated one (σ_max·ε/max(m,d) ≈ 5.5e-18·σ_max) both sit strictly
+# between those, so both fire on exactly the same triplets.
+src/clustering/nmf.rs:145:28: replace * with / in randomized_svd
+#
+# Believed equivalent -- `fold(zero, |a, b| a - b)` is `-Σ`, not an alternating sum, so it
+# negates its whole result. For 96 and 107 the negated quantity is multiplied by `X` on
+# the next line and the sign rides into `Q`; for 116 it negates `Q` directly. Either way
+# `B = QᵀX` is negated too and `gram_rows(B) = BBᵀ` is not, so the eigenproblem is
+# untouched, and the lift gives `u_k -> -u_k` with `v_k = Bᵀu_B/σ -> -v_k`. The returned
+# `σ·u·vᵀ` -- the only thing a caller observes -- is invariant.
+src/clustering/nmf.rs:96:47: replace + with - in randomized_svd
+src/clustering/nmf.rs:107:51: replace + with - in randomized_svd
+src/clustering/nmf.rs:116:51: replace + with - in randomized_svd
+#
+# Believed equivalent, conditionally. NNDSVDar's fill is proportional to the mean of `X`,
+# so an all-zero input gives all-zero factors and a zero residual; the mutant then
+# evaluates 0.0/0.0 = NaN, and `num_traits::Float::max` returns the *other* argument when
+# one is NaN, so `.max(0)` yields 0 and the `sqrt` yields 0 -- bit-identical to the `else`
+# branch. The condition is on that fill, which is why
+# `a_projection_of_an_all_zero_matrix_reports_no_error_rather_than_infinity` pins it:
+# give the fill a floor that does not vanish with the data and this stops being equivalent.
+src/clustering/nmf.rs:696:40: replace > with >= in project
+
+# ── src/mixture.rs (15) ──
+# Debt: `Mixture::log_joint` term arithmetic.
+src/mixture.rs:225:47: replace + with * in Mixture::vmf
+src/mixture.rs:225:47: replace + with - in Mixture::vmf
+src/mixture.rs:254:9: replace Mixture::n_components -> usize with 0
+src/mixture.rs:254:9: replace Mixture::n_components -> usize with 1
+src/mixture.rs:290:56: replace * with + in Mixture::log_joint
+src/mixture.rs:290:56: replace * with / in Mixture::log_joint
+src/mixture.rs:291:37: replace > with >= in Mixture::log_joint
+src/mixture.rs:291:49: replace / with % in Mixture::log_joint
+src/mixture.rs:291:49: replace / with * in Mixture::log_joint
+src/mixture.rs:294:39: replace * with + in Mixture::log_joint
+src/mixture.rs:294:45: replace * with + in Mixture::log_joint
+src/mixture.rs:294:45: replace * with / in Mixture::log_joint
+src/mixture.rs:340:22: replace - with + in Mixture::responsibilities
+src/mixture.rs:358:14: replace > with >= in argmax
+src/mixture.rs:56:64: replace * with + in StationaryCov<R>::innov
+
+# ── src/sketch/ddsketch.rs (8) ──
+# Debt: bucket-index arithmetic.
+src/sketch/ddsketch.rs:151:45: replace > with >= in DdSketch::merge
+src/sketch/ddsketch.rs:52:9: replace DdSketch::alpha -> f64 with -1.0
+src/sketch/ddsketch.rs:52:9: replace DdSketch::alpha -> f64 with 0.0
+src/sketch/ddsketch.rs:52:9: replace DdSketch::alpha -> f64 with 1.0
+src/sketch/ddsketch.rs:67:27: replace > with == in DdSketch::collapse
+src/sketch/ddsketch.rs:67:27: replace > with >= in DdSketch::collapse
+src/sketch/ddsketch.rs:82:14: replace > with >= in DdSketch::update
+src/sketch/ddsketch.rs:85:21: replace < with <= in DdSketch::update
+
+# ── src/topology.rs (8) ──
+# Debt: remainder after the 2026-08-19 reference tests.
+src/topology.rs:124:31: replace += with *= in UnionFind::union
+src/topology.rs:191:46: replace > with >= in MapperGraph::persistence_diagram
+src/topology.rs:191:88: replace > with < in MapperGraph::persistence_diagram
+src/topology.rs:191:88: replace > with == in MapperGraph::persistence_diagram
+src/topology.rs:191:88: replace > with >= in MapperGraph::persistence_diagram
+src/topology.rs:424:15: replace > with >= in mapper
+src/topology.rs:437:29: replace + with * in mapper
+src/topology.rs:462:26: replace > with >= in mapper
+
+# ── src/clustering/community.rs (7) ──
+# Debt: remainder after the 2026-08-19 reference tests.
+src/clustering/community.rs:104:32: replace > with >= in leiden
+src/clustering/community.rs:106:25: replace > with >= in leiden
+src/clustering/community.rs:172:15: replace += with *= in detect
+src/clustering/community.rs:258:29: replace -= with += in refine
+src/clustering/community.rs:258:29: replace -= with /= in refine
+src/clustering/community.rs:259:30: replace -= with += in refine
+src/clustering/community.rs:259:30: replace -= with /= in refine
+
+# ── src/linalg.rs (4) ──
+# Debt.
+src/linalg.rs:109:25: replace + with * in jacobi_eigen
+src/linalg.rs:110:27: replace + with - in jacobi_eigen
+src/linalg.rs:110:37: replace * with / in jacobi_eigen
+src/linalg.rs:63:21: replace + with * in solve_upper_t
+
+# ── src/sparse.rs (4) ──
+# Debt.
+src/sparse.rs:110:18: replace < with <= in summarize_sparse
+src/sparse.rs:138:35: replace + with * in nearest_sparse
+src/sparse.rs:138:35: replace + with - in nearest_sparse
+src/sparse.rs:179:64: delete - in validate_csr
+
+# ── src/clustering/graph.rs (3) ──
+# Debt.
+src/clustering/graph.rs:104:30: replace > with >= in log_covariances
+src/clustering/graph.rs:125:21: replace + with * in knn_affinity_impl
+src/clustering/graph.rs:54:23: replace + with - in grassmann_sq
+
+# ── src/clustering/spectral.rs (2) ──
+# Debt.
+src/clustering/spectral.rs:104:46: replace * with / in spectral_core
+src/clustering/spectral.rs:48:10: replace > with >= in spectral
+
+# ── src/clustering/ward.rs (2) ──
+# Debt.
+src/clustering/ward.rs:167:22: replace > with >= in ward_hac_auto
+src/clustering/ward.rs:49:26: replace < with <= in dendrogram

@@ -613,6 +613,157 @@ mod tests {
         DenStream::new(2, eps, lambda, 0.5, 4.0).unwrap() // beta*mu = 2
     }
 
+    fn micro(w: f64, last_t: f64, t0: f64) -> Micro<Spherical<f64>> {
+        let mut cf = Spherical::new(2);
+        cf.push(&[0.0, 0.0], w);
+        Micro { cf, last_t, t0 }
+    }
+
+    /// ξ(t, t₀) is the weight an outlier micro-cluster created at `t₀` would have accumulated by
+    /// `t` if it had been fed one unit of weight every `Tp` ticks and faded in between — a
+    /// geometric series. `prune` evaluates the paper's closed form for that sum; summing the terms
+    /// is the independent reference, and the two agree only if every operator in the closed form is
+    /// the one the paper wrote.
+    fn xi_by_series(lambda: f64, t: f64, t0: f64, tp: f64) -> f64 {
+        let n = ((t - t0) / tp).round() as i64 + 1;
+        (0..n).map(|k| (-lambda * tp * k as f64).exp2()).sum()
+    }
+
+    /// λ = 0.5 with βμ = 2 gives Tp = ⌈(1/λ)·log₂(βμ/(βμ−1))⌉ = 2, so every fading factor below is
+    /// an exact power of two and the thresholds land on representable values.
+    fn pruner() -> DenStream<f64, Spherical<f64>> {
+        let d = DenStream::<f64, Spherical<f64>>::new(2, 1.0, 0.5, 0.5, 4.0).unwrap();
+        assert_eq!(
+            (d.tp, d.beta_mu),
+            (2.0, 2.0),
+            "the fixture's constants moved"
+        );
+        d
+    }
+
+    #[test]
+    fn the_outlier_prune_threshold_is_the_geometric_series_of_faded_weights() {
+        let mut d = pruner();
+        d.t = 4.0;
+        for (dt, expect_kept) in [(2.0, 1.5), (4.0, 1.75)] {
+            let xi = xi_by_series(d.lambda, d.t, d.t - dt, d.tp);
+            assert_eq!(xi, expect_kept, "the series reference itself moved");
+            // Exactly on the threshold survives (`w >= ξ`); a hair under it does not.
+            d.o = vec![
+                micro(xi, d.t, d.t - dt),
+                micro(xi - 1e-9, d.t, d.t - dt),
+                // ...and the fading half: half the weight, twice as stale, is the same faded weight.
+                micro(2.0 * xi, d.t - 2.0, d.t - dt),
+            ];
+            d.prune();
+            let kept: Vec<f64> = d.o.iter().map(|m| m.cf.weight()).collect();
+            assert_eq!(
+                kept,
+                vec![xi, 2.0 * xi],
+                "wrong outliers survived at Δt={dt}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_potential_prune_floor_is_beta_mu_after_fading() {
+        let mut d = pruner();
+        d.t = 4.0;
+        // fade(0.5, 4, 2) = 2^-1, so a stored 4.0 fades to exactly βμ = 2.0 and must survive.
+        d.p = vec![
+            micro(4.0, 2.0, 0.0),
+            micro(4.0 - 1e-9, 2.0, 0.0),
+            micro(2.0, 4.0, 0.0),
+        ];
+        d.prune();
+        assert_eq!(
+            d.p.iter().map(|m| m.cf.weight()).collect::<Vec<_>>(),
+            vec![4.0, 2.0],
+            "the βμ floor is not being applied to the faded weight"
+        );
+    }
+
+    /// Two micro-clusters are joined when their centroids are within `2ε`, i.e. squared distance
+    /// `4ε²`. Placing a pair exactly on that radius, and another a hair outside it, makes the
+    /// constant and the comparison decide the component count. `ε = 2`, not 1: at `ε = 1` the
+    /// radius is `4·ε² = 4/ε² = 4` and the fixture could not tell the two apart.
+    #[test]
+    fn the_offline_link_radius_is_exactly_two_epsilon() {
+        for (gap, want) in [(4.0, 1), (4.0 + 1e-6, 2)] {
+            let mut d = DenStream::<f64, Spherical<f64>>::new(2, 2.0, 0.5, 0.5, 4.0).unwrap();
+            d.t = 0.0;
+            let mut a = Spherical::new(2);
+            a.push(&[0.0, 0.0], 8.0);
+            let mut b = Spherical::new(2);
+            b.push(&[gap, 0.0], 8.0);
+            d.p = vec![
+                Micro {
+                    cf: a,
+                    last_t: 0.0,
+                    t0: 0.0,
+                },
+                Micro {
+                    cf: b,
+                    last_t: 0.0,
+                    t0: 0.0,
+                },
+            ];
+            d.cluster();
+            assert_eq!(d.n_clusters(), want, "centroids {gap} apart with eps=2");
+        }
+    }
+
+    /// A component is kept only when its **faded** weight reaches `μ`; on the boundary it is kept.
+    #[test]
+    fn a_component_exactly_on_mu_is_kept_and_one_below_it_is_noise() {
+        // mu = 4, fade(0.5, 2, 0) = 2^-1, so a stored 8.0 fades to exactly 4.0.
+        for (stored, want) in [(8.0, 1), (8.0 - 1e-6, 0)] {
+            let mut d = DenStream::<f64, Spherical<f64>>::new(2, 1.0, 0.5, 0.5, 4.0).unwrap();
+            d.t = 2.0;
+            let mut a = Spherical::new(2);
+            a.push(&[0.0, 0.0], stored);
+            d.p = vec![Micro {
+                cf: a,
+                last_t: 0.0,
+                t0: 0.0,
+            }];
+            d.cluster();
+            assert_eq!(
+                d.n_clusters(),
+                want,
+                "a component of faded weight {}",
+                stored / 2.0
+            );
+            assert_eq!(d.labels, vec![if want == 1 { 0 } else { -1 }]);
+        }
+    }
+
+    /// `predict` answers with the nearest potential micro-cluster's label only inside `ε`; the
+    /// boundary itself is inside.
+    #[test]
+    fn predict_labels_exactly_on_the_epsilon_boundary() {
+        let mut d = DenStream::<f64, Spherical<f64>>::new(2, 1.0, 0.5, 0.5, 4.0).unwrap();
+        d.t = 0.0;
+        let mut a = Spherical::new(2);
+        a.push(&[0.0, 0.0], 8.0);
+        d.p = vec![Micro {
+            cf: a,
+            last_t: 0.0,
+            t0: 0.0,
+        }];
+        d.cluster();
+        assert_eq!(
+            d.predict(&[1.0, 0.0]),
+            0,
+            "a point on the eps boundary is inside"
+        );
+        assert_eq!(
+            d.predict(&[1.0 + 1e-6, 0.0]),
+            -1,
+            "a point past it is noise"
+        );
+    }
+
     #[test]
     fn denstream_recovers_two_blobs() {
         let mut rng = SplitMix64::new(7);
