@@ -785,6 +785,44 @@ def test_save_load_roundtrip(blobs, tmp_path):
     assert loaded.n_clusters_ == est.n_clusters_
 
 
+def test_a_snapshot_written_by_0_6_0_still_loads():
+    """A committed snapshot from the released 0.6.0 wheel, loaded by the current build.
+
+    `test_save_load_roundtrip` writes and reads with the same build, so it cannot see a schema
+    break -- it would pass just as happily if `SCHEMA_VERSION` had been bumped and every older file
+    rejected. `CFTree` gained a field after 0.6.0 (`merged_since_rebalance`, `#[serde(default)]`),
+    and the claim that older snapshots survive it is only worth what a foreign-version file proves.
+
+    Regenerate with `tests/data/gen_snapshot.py`, whose docstring carries the invocation.
+    """
+    import json
+    from pathlib import Path
+
+    data = Path(__file__).parent / "data"
+    want = json.loads((data / "v2_0.6.0.json").read_text())
+    blob = (data / "v2_0.6.0.betula").read_bytes()
+    assert b"merged_since_rebalance" not in blob, (
+        "the fixture already carries the field whose absence it exists to exercise, so it was "
+        "written by a build at or after this one -- regenerate it from a released wheel, and run "
+        "the generator outside the repository: `uv run --no-project` inside it still resolves the "
+        "project's own .venv and silently snapshots the local build"
+    )
+
+    centres = [(0.0, 0.0), (6.0, 0.0), (0.0, 6.0)]
+    x = np.array(
+        [[cx + i * 0.1, cy + j * 0.1] for cx, cy in centres for i in range(10) for j in range(10)],
+        dtype=np.float64,
+    )
+
+    est = betula_cluster.Betula.load(str(data / "v2_0.6.0.betula"))
+
+    assert est.n_clusters_ == want["n_clusters_"]
+    assert est.n_leaves_ == want["n_leaves_"]
+    assert np.asarray(est.cluster_sizes_).tolist() == want["cluster_sizes_"]
+    assert np.allclose(np.asarray(est.cluster_centers_), np.asarray(want["cluster_centers_"]))
+    assert np.array_equal(np.asarray(est.predict(x)), np.asarray(want["labels"]))
+
+
 def test_pickle_roundtrip(blobs):
     import pickle
 
