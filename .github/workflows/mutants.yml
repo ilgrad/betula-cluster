@@ -37,6 +37,11 @@ jobs:
     timeout-minutes: 150
     strategy:
       fail-fast: false
+      # Capped below the account's 20-slot concurrency limit. Measured on run 32347677860: the
+      # uncapped 96-shard matrix took all 20 slots and left the CI run of the same commit queued
+      # for over two hours. Shards measured 500-1901 s each, so 12 at a time is ~2.7 h wall-clock
+      # -- free for a job that runs Mondays at 05:00 UTC, and it leaves eight slots for a push.
+      max-parallel: 12
       matrix:
         shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
                 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
@@ -60,29 +65,59 @@ jobs:
           path: mutants.out
 
   mutants-summary:
-    # One place to read the week's result instead of twelve. Fails the workflow if any shard left a
-    # mutant alive, so a surviving mutant is visible rather than buried in a per-shard artifact --
-    # which is how four survivors in src/distance.rs went unnoticed from July to August.
+    # One place to read the week's result instead of ninety-six. Fails on *new* survivors only,
+    # measured against the committed `mutants-baseline.txt`.
+    #
+    # It used to fail whenever any mutant survived, which sounds stricter but delivered no signal at
+    # all: the crate has never had an empty survivor set (some survivors are provably equivalent
+    # mutants, and no test can kill those), so the job was red every single week and nobody could
+    # tell a new hole from the standing debt -- which is how four survivors in src/distance.rs went
+    # unnoticed from July to August. A ratchet is the honest version: today's set is written down
+    # with its justifications, and red now means "this week added a survivor".
     name: mutants summary
     runs-on: ubuntu-latest
     needs: cargo-mutants
     if: always()
     steps:
+      - uses: actions/checkout@v7 # for mutants-baseline.txt
       - uses: actions/download-artifact@v8
         with:
           pattern: mutants-out-*
           path: shards
       - name: Collate
         run: |
+          # A shard whose artifact never arrived is invisible in a `cat shards/*/...`: the totals
+          # simply come out smaller and read as good news. Measured on run 32347677860 -- shard 39
+          # ran 88 minutes against a ~20-minute median, ended in failure, and uploaded nothing
+          # despite `if: always()`, so 95 of 96 shards collated into a number that looked complete.
+          got=$(ls -d shards/mutants-out-* 2>/dev/null | wc -l)
+          echo "shards collated: $got / 96" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$got" -ne 96 ]; then
+            for k in $(seq 0 95); do
+              [ -d "shards/mutants-out-$k" ] || echo "::error::shard $k produced no artifact -- its mutants are unmeasured"
+            done
+            exit 1
+          fi
           cat shards/*/missed.txt  2>/dev/null | sort -u > missed.txt  || true
           cat shards/*/timeout.txt 2>/dev/null | sort -u > timeout.txt || true
           cat shards/*/caught.txt  2>/dev/null | sort -u > caught.txt  || true
-          echo "caught:  $(wc -l < caught.txt)"  >> "$GITHUB_STEP_SUMMARY"
-          echo "missed:  $(wc -l < missed.txt)"  >> "$GITHUB_STEP_SUMMARY"
-          echo "timeout: $(wc -l < timeout.txt)" >> "$GITHUB_STEP_SUMMARY"
-          if [ -s missed.txt ]; then
-            { echo; echo '## Surviving mutants'; echo '```'; cat missed.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
-            echo "::error::$(wc -l < missed.txt) mutant(s) survived -- the tests do not constrain this code"
+          sed 's/#.*//' mutants-baseline.txt | sed 's/[[:space:]]*$//' | grep -v '^$' \
+            | sort -u > baseline.txt
+          comm -13 baseline.txt missed.txt > new_survivors.txt
+          comm -23 baseline.txt missed.txt > now_caught.txt
+          {
+            echo "caught:  $(wc -l < caught.txt)"
+            echo "missed:  $(wc -l < missed.txt)  (baseline: $(wc -l < baseline.txt))"
+            echo "timeout: $(wc -l < timeout.txt)"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ -s now_caught.txt ]; then
+            { echo; echo '## Baseline entries that are now caught -- trim them'; echo '```';
+              cat now_caught.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ -s new_survivors.txt ]; then
+            { echo; echo '## New surviving mutants'; echo '```'; cat new_survivors.txt; echo '```';
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::$(wc -l < new_survivors.txt) new mutant(s) survived -- the tests do not constrain this code"
             exit 1
           fi
       - uses: actions/upload-artifact@v7
@@ -93,6 +128,8 @@ jobs:
             missed.txt
             timeout.txt
             caught.txt
+            new_survivors.txt
+            now_caught.txt
 
   mutmut:
     name: mutmut (tuning.py + wrapper)

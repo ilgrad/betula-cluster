@@ -51,6 +51,22 @@ jobs:
       - name: coverage (llvm-cov, floor 95% lines; core + persistence + cli)
         run: cargo llvm-cov --features persistence,cli --summary-only --fail-under-lines 95
 
+  msrv:
+    # `rust-version = "1.85"` in Cargo.toml was a claim nothing checked -- the previous floor, 1.82,
+    # was never verified either. 1.85 is the Rust 2024 edition's own floor, and the dependency graph
+    # sits right on it (getrandom 0.4.3, proptest 1.11, wit-bindgen 0.57.1 all declare 1.85), so it
+    # is exactly the kind of number that rots silently. `Cargo.lock` is gitignored here, so this job
+    # resolves fresh and checks the floor a consumer would actually hit.
+    # Verified locally before landing: `cargo +1.85.0 check --all-features --all-targets` passes.
+    name: msrv (1.85)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.85.0
+      - uses: Swatinem/rust-cache@v2
+      - name: check on the declared minimum supported Rust version
+        run: cargo check --all-features --all-targets
+
   python-build:
     name: python (build · clippy)
     runs-on: ubuntu-latest
