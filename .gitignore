@@ -29,3 +29,8 @@ __pycache__/
 .vscode/
 # JOSS paper build artifact (paper.md / paper.bib are tracked)
 /paper/paper.pdf
+
+# Per-seed benchmark runs: intermediate artifacts of `bench/median_of_seeds.py`. The published
+# medians (results_*.csv) and their min/median/max (results_*_spread.csv) are committed; regenerate
+# these with `comprehensive.py --seed S --tag _sS` if you want to audit the reduction.
+bench/results_*_s[0-9].csv

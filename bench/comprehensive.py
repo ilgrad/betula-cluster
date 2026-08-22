@@ -109,10 +109,11 @@ def load_real(name: str, seed: int = 0):
 
 
 # ── methods ─────────────────────────────────────────────────────────────────────────────────────
-BETULA_KW = dict(threshold=0.0, max_leaves=4000, seed=0, n_jobs=1)
+# Everything except the seed, which every caller supplies from --seed.
+BETULA_KW = dict(threshold=0.0, max_leaves=4000, n_jobs=1)
 
 
-def methods(k: int, n: int) -> dict:
+def methods(k: int, n: int, seed: int = 0) -> dict:
     """name -> (fn(X) -> labels, scales_to_large)."""
     import betula_cluster as bc
     from sklearn.cluster import (
@@ -124,46 +125,49 @@ def methods(k: int, n: int) -> dict:
     )
     from sklearn.mixture import GaussianMixture
 
+    kw = {**BETULA_KW, "seed": seed}
     mcs = max(20, n // 400)
     return {
         "betula-kmeans": (
-            lambda X: bc.fit_predict(X, k, feature="spherical", method="kmeans", **BETULA_KW),
+            lambda X: bc.fit_predict(X, k, feature="spherical", method="kmeans", **kw),
             True,
         ),
         "betula-gmm": (
-            lambda X: bc.fit_predict(X, k, feature="diagonal", method="gmm", **BETULA_KW),
+            lambda X: bc.fit_predict(X, k, feature="diagonal", method="gmm", **kw),
             True,
         ),
         "betula-gmm-full": (
-            lambda X: bc.fit_predict(X, k, feature="full", method="gmm-full", **BETULA_KW),
+            lambda X: bc.fit_predict(X, k, feature="full", method="gmm-full", **kw),
             True,
         ),
         "betula-ward": (
-            lambda X: bc.fit_predict(X, k, feature="diagonal", method="ward", **BETULA_KW),
+            lambda X: bc.fit_predict(X, k, feature="diagonal", method="ward", **kw),
             True,
         ),
         "betula-spectral": (
-            lambda X: bc.fit_predict(X, k, method="spectral", **BETULA_KW),
+            lambda X: bc.fit_predict(X, k, method="spectral", **kw),
             True,
         ),
         "betula-leiden": (
             # community detection: moderate threshold (a fine graph over-splits); count is discovered
-            lambda X: bc.fit_predict(X, k, method="leiden", threshold=0.4, max_leaves=800, seed=0),
+            lambda X: bc.fit_predict(
+                X, k, method="leiden", threshold=0.4, max_leaves=800, seed=seed
+            ),
             True,
         ),
         "betula-hdbscan": (
             lambda X: bc.fit_predict(
-                X, method="hdbscan", min_cluster_size=mcs, min_samples=10, **BETULA_KW
+                X, method="hdbscan", min_cluster_size=mcs, min_samples=10, **kw
             ),
             True,
         ),
-        "sklearn-kmeans": (lambda X: KMeans(k, n_init=10, random_state=0).fit_predict(X), True),
+        "sklearn-kmeans": (lambda X: KMeans(k, n_init=10, random_state=seed).fit_predict(X), True),
         "sklearn-minibatch": (
-            lambda X: MiniBatchKMeans(k, n_init=3, random_state=0).fit_predict(X),
+            lambda X: MiniBatchKMeans(k, n_init=3, random_state=seed).fit_predict(X),
             True,
         ),
         "sklearn-birch": (lambda X: Birch(n_clusters=k).fit_predict(X), True),
-        "sklearn-gmm": (lambda X: GaussianMixture(k, random_state=0).fit(X).predict(X), True),
+        "sklearn-gmm": (lambda X: GaussianMixture(k, random_state=seed).fit(X).predict(X), True),
         "sklearn-ward": (lambda X: AgglomerativeClustering(n_clusters=k).fit_predict(X), False),
         "sklearn-hdbscan": (
             lambda X: HDBSCAN(min_cluster_size=mcs, min_samples=10).fit_predict(X),
@@ -202,11 +206,11 @@ def score(X, y, labels):
     return out
 
 
-def run_quality(n: int, datasets: list[str]) -> pd.DataFrame:
+def run_quality(n: int, datasets: list[str], seed: int = 0) -> pd.DataFrame:
     rows = []
     for ds in datasets:
-        X, y, k = gen_dataset(ds, n)
-        for name, (fn, _) in methods(k, n).items():
+        X, y, k = gen_dataset(ds, n, seed)
+        for name, (fn, _) in methods(k, n, seed).items():
             rec = {"dataset": ds, "method": name}
             try:
                 t0 = time.perf_counter()
@@ -222,18 +226,18 @@ def run_quality(n: int, datasets: list[str]) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def run_real(datasets: list[str]) -> pd.DataFrame:
+def run_real(datasets: list[str], seed: int = 0) -> pd.DataFrame:
     """Quality phase on real datasets (fixed/subsampled N). Same methods + metrics as `run_quality`."""
     rows = []
     for ds in datasets:
-        loaded = load_real(ds)
+        loaded = load_real(ds, seed)
         if loaded is None:  # download unavailable → already logged
             continue
         X, y, k = loaded
         print(f"[real] {ds}: N={len(X):,} d={X.shape[1]} k={k}")
         # Full d×d covariance GMMs are O(d^3) per component — infeasible past ~100 dims (e.g. MNIST).
         skip_full_cov = X.shape[1] > 100
-        for name, (fn, big) in methods(k, len(X)).items():
+        for name, (fn, big) in methods(k, len(X), seed).items():
             rec = {"dataset": ds, "n": len(X), "method": name}
             if (
                 not big and len(X) > 5000
@@ -259,7 +263,7 @@ def run_real(datasets: list[str]) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def run_real_hires(datasets: list[str]) -> pd.DataFrame:
+def run_real_hires(datasets: list[str], seed: int = 0) -> pd.DataFrame:
     """Real-dataset quality when betula is given **adequate resolution** instead of the bounded-memory
     ``max_leaves=4000``. On a small eval set (≤ 20 k rows) that cap is a self-handicap — betula's
     memory win lives at large ``N``, not here — so ``max_leaves`` is scaled to the set
@@ -271,12 +275,12 @@ def run_real_hires(datasets: list[str]) -> pd.DataFrame:
 
     rows = []
     for ds in datasets:
-        loaded = load_real(ds)
+        loaded = load_real(ds, seed)
         if loaded is None:
             continue
         X, y, k = loaded
         ml = min(len(X), 16_000)
-        kw = dict(threshold=0.0, max_leaves=ml, seed=0, n_jobs=1)
+        kw = dict(threshold=0.0, max_leaves=ml, seed=seed, n_jobs=1)
         skip_full = X.shape[1] > 100
         cand = [
             (
@@ -289,7 +293,10 @@ def run_real_hires(datasets: list[str]) -> pd.DataFrame:
                 "betula-gmm",
                 lambda X, k=k, kw=kw: bc.fit_predict(X, k, feature="diagonal", method="gmm", **kw),
             ),
-            ("sklearn-kmeans", lambda X, k=k: KMeans(k, n_init=10, random_state=0).fit_predict(X)),
+            (
+                "sklearn-kmeans",
+                lambda X, k=k, seed=seed: KMeans(k, n_init=10, random_state=seed).fit_predict(X),
+            ),
         ]
         if not skip_full:
             cand.append(
@@ -301,7 +308,12 @@ def run_real_hires(datasets: list[str]) -> pd.DataFrame:
                 )
             )
             cand.append(
-                ("sklearn-gmm", lambda X, k=k: GaussianMixture(k, random_state=0).fit(X).predict(X))
+                (
+                    "sklearn-gmm",
+                    lambda X, k=k, seed=seed: (
+                        GaussianMixture(k, random_state=seed).fit(X).predict(X)
+                    ),
+                )
             )
         print(f"[real-hires] {ds}: N={len(X):,} d={X.shape[1]} k={k} max_leaves={ml}")
         for name, fn in cand:
@@ -315,7 +327,7 @@ def run_real_hires(datasets: list[str]) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def run_real_normalize(datasets: list[str]) -> pd.DataFrame:
+def run_real_normalize(datasets: list[str], seed: int = 0) -> pd.DataFrame:
     """Effect of ``normalize=True`` (L2 row-normalization → cluster by *direction*) on real data.
 
     This is the high-dimensional fix: on raw pixels / embeddings the discriminative signal is in a
@@ -332,9 +344,10 @@ def run_real_normalize(datasets: list[str]) -> pd.DataFrame:
         ("betula-gmm", "diagonal", "gmm"),
         ("betula-ward", "diagonal", "ward"),
     ]
+    kw = {**BETULA_KW, "seed": seed}
     rows = []
     for ds in datasets:
-        loaded = load_real(ds)
+        loaded = load_real(ds, seed)
         if loaded is None:  # download unavailable → already logged
             continue
         X, y, k = loaded
@@ -342,7 +355,7 @@ def run_real_normalize(datasets: list[str]) -> pd.DataFrame:
             rec = {"dataset": ds, "n": len(X), "d": int(X.shape[1]), "method": name}
             for nz in (False, True):
                 labels = np.asarray(
-                    bc.fit_predict(X, k, feature=feat, method=meth, normalize=nz, **BETULA_KW)
+                    bc.fit_predict(X, k, feature=feat, method=meth, normalize=nz, **kw)
                 )
                 rec[f"ARI_norm_{'on' if nz else 'off'}"] = adjusted_rand_score(y, labels)
             rows.append(rec)
@@ -522,7 +535,39 @@ def make_plots(q: pd.DataFrame, s: pd.DataFrame, m: pd.DataFrame, qr: pd.DataFra
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--quick", action="store_true", help="smaller N for a fast smoke run")
+    ap.add_argument(
+        "--seed",
+        type=int,
+        default=0,
+        help="seed for the generated data, the betula heads and the scikit-learn baselines",
+    )
+    ap.add_argument(
+        "--tag",
+        default="",
+        help="suffix for the quality CSVs (e.g. --tag _s1); median them with median_of_seeds.py",
+    )
+    ap.add_argument(
+        "--quality-only",
+        action="store_true",
+        help="run only the seed-dependent quality suites; skip scaling/memory/sparse and the plots",
+    )
+    ap.add_argument(
+        "--plots-only",
+        action="store_true",
+        help="redraw the plots from the canonical CSVs (use after median_of_seeds.py, so the "
+        "figures show the published medians rather than whichever seed ran last)",
+    )
     args = ap.parse_args()
+
+    if args.plots_only:
+        make_plots(
+            *(
+                pd.read_csv(HERE / f"results_{n}.csv")
+                for n in ("quality", "scaling", "memory", "real")
+            )
+        )
+        print("redrew plots/*.png from the canonical CSVs")
+        return None, None, None
 
     qn = 8_000 if args.quick else 30_000
     sizes = [5_000, 20_000] if args.quick else [10_000, 50_000, 200_000, 1_000_000]
@@ -534,16 +579,24 @@ def main():
     datasets = ["blobs", "aniso", "varied", "moons", "circles", "highdim"]
     real_datasets = ["digits"] if args.quick else ["digits", "mnist", "covtype"]
 
-    print(f"[quality] N={qn:,}")
-    q = run_quality(qn, datasets)
-    q.to_csv(HERE / "results_quality.csv", index=False)
+    tag = args.tag
+    print(f"[quality] N={qn:,} seed={args.seed}")
+    q = run_quality(qn, datasets, args.seed)
+    q.to_csv(HERE / f"results_quality{tag}.csv", index=False)
     print(f"[real] quality on real datasets {real_datasets}")
-    qr = run_real(real_datasets)
-    qr.to_csv(HERE / "results_real.csv", index=False)
+    qr = run_real(real_datasets, args.seed)
+    qr.to_csv(HERE / f"results_real{tag}.csv", index=False)
     print("[real-hires] betula at adequate resolution (de-handicapped) on the small eval sets")
-    run_real_hires(real_datasets).to_csv(HERE / "results_real_hires.csv", index=False)
+    run_real_hires(real_datasets, args.seed).to_csv(
+        HERE / f"results_real_hires{tag}.csv", index=False
+    )
     print("[real-normalize] normalize=True effect (high-d fix vs tabular harm)")
-    run_real_normalize(real_datasets).to_csv(HERE / "results_real_normalize.csv", index=False)
+    run_real_normalize(real_datasets, args.seed).to_csv(
+        HERE / f"results_real_normalize{tag}.csv", index=False
+    )
+    if args.quality_only:
+        print(f"wrote the quality results_*{tag}.csv (speed / memory suites skipped)")
+        return q, None, None
     print(f"[scaling] sizes={sizes}")
     s = run_scaling(sizes)
     s.to_csv(HERE / "results_scaling.csv", index=False)

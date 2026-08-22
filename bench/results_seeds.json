@@ -1,0 +1,13 @@
+{
+  "seeds": [
+    0,
+    1,
+    2
+  ],
+  "tables": [
+    "results_quality",
+    "results_real",
+    "results_real_hires",
+    "results_real_normalize"
+  ]
+}
