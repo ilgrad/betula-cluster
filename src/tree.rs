@@ -46,6 +46,9 @@ pub struct CFTree<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDista
     /// clamped to within `k·σ` of its target microcluster before folding in, so outliers cannot
     /// stretch the centroid or radius. `None` = off (plain, non-robust updates).
     huber_k: Option<R>,
+    /// Entries merged by compaction since the last rebalance.
+    #[cfg_attr(feature = "persistence", serde(default))]
+    merged_since_rebalance: usize,
 }
 
 /// A microcluster must hold at least this many points before its scale is trusted enough to clip
@@ -85,6 +88,7 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> CF
             dist,
             abs,
             huber_k: None,
+            merged_since_rebalance: 0,
         }
     }
 
@@ -320,7 +324,11 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> CF
                 self.threshold = grown;
             }
             self.drop_merged(&alive);
-            self.reinsert();
+            self.merged_since_rebalance += merged;
+            if self.merged_since_rebalance >= self.max_leaves {
+                self.merged_since_rebalance = 0;
+                self.reinsert();
+            }
         }
         self.rebuilds += 1;
     }
