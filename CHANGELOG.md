@@ -10,8 +10,51 @@ All notable changes to this project are documented here. The format follows
 - **Rust 2024 edition; minimum supported Rust version 1.82 → 1.85.** The migration needed two source
   changes in total (a binding mode made explicit in `gmm_toeplitz.rs`); the rest is `rustfmt`'s 2024
   style edition collapsing short `if`/`else` onto one line. 1.85 is the edition's own floor.
+- **A rebuild no longer rebalances the whole tree every time it compacts.** 0.6.0 set the leaf count
+  exactly by merging the `k` closest sibling pairs, which is also the policy that grows the
+  absorption threshold by the smallest amount that reaches the count — so the 10 % headroom refilled
+  almost at once and the rebuild fired again. Each one then called the rebalance pass, which clears
+  the node and entry arenas and re-routes every surviving entry: on 1 M blobs at `max_leaves=4000`
+  that is 385 rebuilds × ~3600 entries ≈ 1.4 M descents *on top of* the 1 M point inserts, and it
+  made `fit` ~3.2× slower than 0.5.0 on the tree-dominated path. A profile hides it, because the
+  rebuild's cost *is* `descend` and `try_absorb`.
+
+  Compaction merges strictly inside a leaf, so mass is conserved per node and the tree is already
+  valid when it finishes — the rebalance is a re-partitioning of leaves that mix two clusters, not a
+  repair, and the drift it corrects accumulates with *merges* rather than with compactions. It now
+  runs once the merges since the last rebalance reach `max_leaves`. Measured on 1 M blobs at
+  `max_leaves=4000`, median of 5 fits, arms alternated on an idle machine: **0.743 s → 0.230 s**,
+  385 rebuilds → 31, leaf utilization 92.4 % → 92.6 %, ARI 0.8597 → 0.8598. Labels move wherever a
+  rebuild actually fires — three seeds each, median [min–max]:
+
+  | | 0.6.0 | this release |
+  |---|---|---|
+  | mnist-20k `kmeans` | 0.2275 [0.1719–0.2510] | 0.2571 [0.2275–0.3263] |
+  | mnist-20k `gmm` | 0.2842 [0.2547–0.2842] | 0.2788 [0.2668–0.2788] |
+  | mnist-20k `ward` | 0.3272 | 0.3666 |
+  | covtype-20k `kmeans` | 0.0528 [0.0506–0.1061] | 0.0878 [0.0755–0.0999] |
+  | covtype-20k `gmm` | 0.0843 [0.0782–0.0962] | 0.0882 [0.0820–0.1129] |
+  | covtype-20k `ward` | 0.0910 | 0.0910 |
+
+  digits does not move: at n = 1797 against a 4000-leaf budget it never rebuilds. Widening the
+  compaction margin to `max_leaves / 6` was measured as the alternative and rejected — it reaches
+  only 0.369 s and takes covtype utilization down to 83.7 %, which is the 90–99 % band the exact-count
+  compaction was written to provide. `CFTree` gains one `usize` field, `#[serde(default)]`, so
+  `persistence` snapshots written by 0.6.0 still load and `SCHEMA_VERSION` stays at 2 — verified by
+  a snapshot from the released 0.6.0 wheel, committed at `tests/data/v2_0.6.0.betula` alongside the
+  attributes it should reproduce. `test_save_load_roundtrip` writes and reads with the same build
+  and cannot see a schema break at all; dropping the `serde(default)` makes the new test fail with
+  `missing field merged_since_rebalance`, which is the claim itself.
 
 ### Fixed
+- **`predict` could not return a cluster whose radius is zero.** The Voronoi rule that `predict`
+  applies for the centroid heads (`kmeans`, `spherical-kmeans`, `ward`, …) filters out clusters with
+  no weight, but the stats helper it reads yields radii *before* weights for clusters — the opposite
+  of the order it uses for leaves — and the rule destructured it in leaf order. Every degenerate
+  cluster (a singleton, or one whose members coincide) was therefore dropped from the rule and became
+  unreachable: the point sitting exactly on such a centre was labelled with some other cluster, at a
+  distance three orders of magnitude larger. Only the filter was wrong; the centres themselves,
+  `cluster_sizes_` and `cluster_radii_` were always correct.
 - **Leiden was not reproducible: the same graph and the same `seed` gave different communities on
   successive calls in one process.** `refine` (and, on a tied graph, `one_level`) picked its target
   sub-community by scanning a `HashMap`, and kept whichever tied candidate the iterator produced
@@ -66,8 +109,42 @@ All notable changes to this project are documented here. The format follows
   unconstrained. Two tests now pin both. The fourth (`||`→`&&` in `VarianceIncrease::between`) was
   an equivalent mutant — with exactly one weight zero the formula already returns zero — so the
   guard is now written on the sum, `nab = na + nb`, matching `Radius::between` directly below it.
-  Same result for every input; the operator is simply no longer free. The Rust suite is 202 lib +
-  4 integration tests as a result (201 + 4 serial).
+  Same result for every input; the operator is simply no longer free.
+- **The mutation job failed whenever any mutant survived, which meant it never carried a signal.**
+  That sounds like the strict setting, and it is the useless one: the crate has never had an empty
+  survivor set — some survivors are provably equivalent mutants and no test can kill those — so the
+  job was red every single week and a new hole was indistinguishable from the standing debt, which
+  is exactly how the four `src/distance.rs` survivors above went unnoticed from July to August. It
+  now fails on survivors that are *not* in a committed `mutants-baseline.txt`. That file records the
+  set keyed `file:line:col`, grouped by module, each group carrying either the argument for why no
+  test can close it or the constraint a killing fixture would have to satisfy — a claim of
+  equivalence without an argument does not belong in it. The summary job reports both `comm`
+  directions, so an entry that has since been killed surfaces as "trim this" rather than quietly
+  padding the debt. Two failure modes of the job itself are closed with it: a shard that uploads no
+  artifact is now an error rather than a smaller total that reads as good news (run 32347677860 lost
+  shard 39 after 88 minutes against a ~20-minute median, and 95 of 96 collated into a number that
+  looked complete), and the matrix is capped at `max-parallel: 12`, below the account's 20-slot
+  limit, after the uncapped 96-shard run left ordinary CI of the same commit queued for two hours.
+- **Reference and boundary fixtures close 48 of the recorded survivors** — `mutants-baseline.txt`
+  goes from 361 entries to 313, with `src/tree.rs` at 22 → 2, `src/clustering/vmf.rs` at 38 → 19,
+  `src/clustering/gmm.rs` at 19 → 13, `src/clustering/nmf.rs` at 15 → 13 and
+  `src/clustering/kprototypes.rs` at 4 → 3. Each fixture is verified the only way that means
+  anything: the mutation is applied at its own `line:col`, with an assertion that the line still
+  holds what the entry says it does, and the test is confirmed to fail. Four of them closed
+  mechanisms nothing had constrained. `randomized_svd` had no reference check at all — the range finder is deliberately
+  insensitive to its own sketch, so an end-to-end NMF assertion cannot see whether the sketch or the
+  power iterations are computed correctly — and is now compared against a dense symmetric
+  eigendecomposition of `XᵀX` and the Eckart–Young optimum it yields. A rebuild's grown absorption
+  threshold, `widest · (1 + 4ε)`, decides absorption for the whole remainder of a run and was pinned
+  by nothing. And `split` seeded both its sides from a scan that, one `+`→`*` away, compares a child
+  with *itself*: harmless under `CentroidEuclidean`, where a self-distance is zero, but `Radius` and
+  `AverageIntercluster` both carry a child's own scatter into `between`, so a high-scatter child is
+  further from itself than any two children are from each other and the split degenerates into a
+  size tie-break that separates coincident entries. `spherical_lloyd` had the same shape of hole from
+  the other side: its independent reference carries the same `if !changed && it > 0 { break; }` line,
+  so no comparison against it can see that guard at all — what can is the Lloyd fixed-point condition
+  itself, asserted on a fixture slow enough to still be moving at the second assignment. The Rust
+  suite is 399 lib + 4 integration tests as a result.
 
 ## [0.6.0] — 2026-08-19
 
