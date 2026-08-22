@@ -1542,7 +1542,9 @@ impl Betula {
             Rule::Posterior => return mixture.map(PointRule::Posterior),
             Rule::Microcluster => return None,
         };
-        let (centers, weights, _radii, dim) = self.cluster_stats_any().ok()?;
+        // `cluster_stats_any` yields radii *before* weights (`F64Stats` swaps the two between the
+        // leaf and the cluster helper); reading them in leaf order drops every zero-radius cluster.
+        let (centers, _radii, weights, dim) = self.cluster_stats_any().ok()?;
         let mut labels = Vec::new();
         let mut rows = Vec::new();
         for (c, &w) in weights.iter().enumerate() {

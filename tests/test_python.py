@@ -376,6 +376,23 @@ def test_kmeans_labels_are_the_nearest_centre(method):
     assert np.array_equal(labels, live[d.argmin(1)])
 
 
+def test_predict_reaches_a_cluster_whose_radius_is_zero():
+    """A cluster holding one coincident group has radius 0; `predict` must still return it.
+
+    The Voronoi rule filters clusters on their *weight*, and the stats helper yields radii before
+    weights for clusters (the opposite of its leaf order). Reading them in leaf order drops every
+    zero-radius cluster from the rule, which makes it unreachable through `predict` even though it
+    owns the point sitting exactly on its centre.
+    """
+    rng = np.random.default_rng(0)
+    x = np.vstack([rng.normal(size=(300, 4)), np.full((3, 4), 40.0)])
+    est = betula_cluster.Betula(n_clusters=2, method="kmeans", max_leaves=64, seed=0).fit(x)
+    centers = np.asarray(est.cluster_centers_, dtype=np.float64)
+    outlier = int(np.argmin(((centers - 40.0) ** 2).sum(1)))
+    assert np.asarray(est.cluster_radii_)[outlier] == 0.0, "the outlier cluster is not degenerate"
+    assert est.predict(np.full((1, 4), 40.0))[0] == outlier
+
+
 def test_projection_components_are_canonical(nmf_topics):
     x, _ = nmf_topics
     est = betula_cluster.Betula(
