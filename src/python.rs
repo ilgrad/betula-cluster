@@ -11,8 +11,9 @@
 
 use numpy::ndarray::Array2;
 use numpy::{Element, IntoPyArray, PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2};
-use pyo3::exceptions::PyValueError;
+use pyo3::exceptions::{PyUserWarning, PyValueError};
 use pyo3::prelude::*;
+use std::ffi::CString;
 
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
@@ -46,6 +47,52 @@ enum Kind {
     },
     /// Scale-space KDE-mode clustering with persistence-selected scale (no `k`, no bandwidth).
     ScaleSpace,
+}
+
+impl Kind {
+    /// Whether the head partitions the leaves into a caller-supplied `k`. HDBSCAN, scale-space and
+    /// Leiden discover their own count, so a leaf budget stated relative to `k` says nothing there.
+    fn consumes_k(self) -> bool {
+        matches!(self, Kind::Parametric(m) if !matches!(m, Method::Leiden { .. }))
+    }
+}
+
+/// Leaves per requested cluster below which the summary is too coarse to carry `k` clusters.
+///
+/// Measured on the `ward` head over three seeds (`local/scratch/leaves_per_k_sweep.py`): on
+/// well-separated synthetic data the score is already at its plateau at ≈2 leaves per cluster
+/// (1.03× and 1.00× of the ratio-64 score at k=50 and k=200) and collapses to 0.71× / 0.45× at ≈1,
+/// while `digits` and `covtype` score 0.000 and 0.003 at ≈1. Lang's thesis reports the same floor
+/// from the other end (Sec. 5.5.4: k=5000 under a 10 000-leaf cap, "fewer than two cluster features
+/// per center"). It is a *floor*, not a recommendation — above it there is no universal direction,
+/// `covtype` peaking at ≈8 leaves per cluster and declining after.
+const MIN_LEAVES_PER_CLUSTER: usize = 2;
+
+/// Warn once per fit when the realised leaf count cannot support `n_clusters`.
+///
+/// The check uses the **realised** leaf count rather than `max_leaves`: the tree can settle well
+/// below its cap, and with `n < max_leaves` the cap is never the binding constraint at all.
+///
+/// Auto-`k` (`k == 0`) needs no separate arm — it selects a count from the leaves it has, and the
+/// ratio test is vacuously satisfied at `k == 0`. `k == 1` does need one: a single cluster
+/// separates nothing, so a one-leaf summary answers it exactly and the floor does not apply.
+/// `leaves == 0` likewise, since nothing was summarized at all.
+///
+/// Only call this for a head that partitions the summary into a caller-supplied `k` — the ratio is
+/// meaningless for one that discovers its own count. [`Kind::consumes_k`] is that predicate.
+fn warn_leaf_budget(py: Python<'_>, leaves: usize, k: usize, max_leaves: usize) -> PyResult<()> {
+    if k < 2 || leaves == 0 || leaves >= MIN_LEAVES_PER_CLUSTER * k {
+        return Ok(());
+    }
+    let msg = CString::new(format!(
+        "the CF-tree summarized the data into {leaves} leaves but n_clusters={k} was requested \
+         ({:.2} leaves per cluster). Below {MIN_LEAVES_PER_CLUSTER} the summary cannot separate \
+         that many clusters and the partition degrades. Raise max_leaves (currently {max_leaves}), \
+         lower threshold, or lower n_clusters.",
+        leaves as f64 / k as f64,
+    ))
+    .expect("the formatted warning contains no interior NUL");
+    PyErr::warn(py, &py.get_type::<PyUserWarning>(), &msg, 1)
 }
 
 /// Map the `method` keyword (+ HDBSCAN params) to an internal [`Kind`].
@@ -629,11 +676,12 @@ fn cluster<R: Real, C: ClusterFeature<R>>(
     seed: u64,
     n_jobs: usize,
     nmf_dim: Option<NmfSpec>,
-) -> Vec<i64> {
+) -> (Vec<i64>, usize) {
     let tree = build_tree::<R, C>(
         dim, branching, leaf_cap, threshold, max_leaves, route, absorb, flat, n, n_jobs,
     );
-    match kind {
+    let leaves = tree.num_leaves();
+    let labels = match kind {
         Kind::Parametric(method) => match nmf_dim {
             Some(spec) => {
                 // Reduce leaf centroids to CF-weighted NMF codes, cluster those; labels stay per-leaf.
@@ -663,7 +711,8 @@ fn cluster<R: Real, C: ClusterFeature<R>>(
                 res.labels[tree.nearest_entry(&flat[i * dim..(i + 1) * dim])] as i64
             })
         }
-    }
+    };
+    (labels, leaves)
 }
 
 /// Build the tree and label every row for a single element type `R`, with the GIL released during
@@ -688,7 +737,7 @@ fn run_oneshot<R: Real + Element>(
     n_jobs: usize,
     normalize: bool,
     nmf_dim: Option<NmfSpec>,
-) -> PyResult<Vec<i64>> {
+) -> PyResult<(Vec<i64>, usize)> {
     let (mut flat, n, dim) = to_flat(&data)?;
     if nmf_dim.is_some() {
         require_nonnegative(&flat)?;
@@ -801,7 +850,7 @@ fn fit_predict<'py>(
         tangent_rank,
     )?;
     let nmf_dim = parse_projection(projection, projection_dim, projection_max_iter)?;
-    let labels = if let Ok(a) = data.extract::<PyReadonlyArray2<'py, f64>>() {
+    let (labels, leaves) = if let Ok(a) = data.extract::<PyReadonlyArray2<'py, f64>>() {
         run_oneshot::<f64>(
             py, a, n_clusters, feature, kind, distance, absorb, chi2_p, chi2_scale, threshold,
             branching, leaf_cap, max_leaves, max_iter, seed, n_jobs, normalize, nmf_dim,
@@ -816,6 +865,9 @@ fn fit_predict<'py>(
             "data must be a 2-D float32 or float64 array",
         ));
     };
+    if kind.consumes_k() {
+        warn_leaf_budget(py, leaves, n_clusters, max_leaves)?;
+    }
     Ok(labels.into_pyarray(py))
 }
 
@@ -1565,7 +1617,11 @@ impl Betula {
     }
 
     /// Cluster the current leaf features (whichever dtype tree exists) and cache the labels.
-    fn finalize(&mut self) {
+    ///
+    /// Takes `py` only to raise the leaf-budget warning: this is the one place every estimator
+    /// entry point (`fit`, `fit_predict`, `partial_fit(None)`, and both CSR paths) funnels through,
+    /// so the rule lives here rather than being repeated at each of them.
+    fn finalize(&mut self, py: Python<'_>) -> PyResult<()> {
         let (kind, k, mi, seed, nmf) = (
             self.kind,
             self.n_clusters,
@@ -1601,6 +1657,10 @@ impl Betula {
                 self.rule = None;
             }
         }
+        if kind.consumes_k() {
+            warn_leaf_budget(py, self.n_leaves_(), k, self.max_leaves)?;
+        }
+        Ok(())
     }
 
     /// Cluster the leaves under pairwise constraints (COP-KMeans). `data` is the just-streamed array,
@@ -1853,7 +1913,8 @@ impl Betula {
                         "partial_fit() with no data before any rows were added",
                     ));
                 }
-                slf.finalize();
+                let py = slf.py();
+                slf.finalize(py)?;
             }
         }
         Ok(slf)
@@ -1866,7 +1927,8 @@ impl Betula {
     ) -> PyResult<PyRefMut<'py, Self>> {
         slf.reset();
         slf.stream(data)?;
-        slf.finalize();
+        let py = slf.py();
+        slf.finalize(py)?;
         Ok(slf)
     }
 
@@ -1915,7 +1977,7 @@ impl Betula {
     ) -> PyResult<Bound<'py, PyArray1<i64>>> {
         self.reset();
         self.stream(data)?;
-        self.finalize();
+        self.finalize(py)?;
         self.route_data(py, data)
     }
 
@@ -1964,6 +2026,7 @@ impl Betula {
 
     fn fit_csr(
         &mut self,
+        py: Python<'_>,
         data: PyReadonlyArray1<'_, f64>,
         indices: PyReadonlyArray1<'_, i64>,
         indptr: PyReadonlyArray1<'_, i64>,
@@ -1976,8 +2039,7 @@ impl Betula {
             indptr.as_slice()?,
             n_features,
         )?;
-        self.finalize();
-        Ok(())
+        self.finalize(py)
     }
 
     fn fit_predict_csr<'py>(
@@ -1991,7 +2053,7 @@ impl Betula {
         let (d, idx, ip) = (data.as_slice()?, indices.as_slice()?, indptr.as_slice()?);
         self.reset();
         self.stream_csr(d, idx, ip, n_features)?;
-        self.finalize();
+        self.finalize(py)?;
         Ok(self
             .route_csr_labels(d, idx, ip, n_features)?
             .into_pyarray(py))
@@ -3009,7 +3071,7 @@ impl PyKPrototypes {
             self.gamma,
         );
         let py = data.py();
-        Ok(py.detach(|| {
+        let model = py.detach(|| {
             let mut cards = vec![0usize; n_cat];
             for i in 0..n {
                 for (j, card) in cards.iter_mut().enumerate() {
@@ -3032,7 +3094,9 @@ impl PyKPrototypes {
                 n_num,
                 n_cat,
             }
-        }))
+        });
+        warn_leaf_budget(py, model.micros.len(), k, ml)?;
+        Ok(model)
     }
 }
 
@@ -3235,7 +3299,7 @@ fn fit_predict_sparse<'py>(
     if indptr.len() < 2 {
         return Err(PyValueError::new_err("data must have at least one row"));
     }
-    let labels = py.detach(|| {
+    let (labels, leaves) = py.detach(|| {
         let micros = summarize_sparse(
             data,
             indices,
@@ -3244,20 +3308,25 @@ fn fit_predict_sparse<'py>(
             threshold,
             max_leaves.max(1),
         );
+        let leaves = micros.len();
         let micro_labels = fit_head(&micros, n_clusters, m, max_iter, seed).labels;
         let means: Vec<Vec<f64>> = micros.iter().map(|c| c.mean().to_vec()).collect();
         let musq: Vec<f64> = means
             .iter()
             .map(|mu| mu.iter().map(|v| v * v).sum())
             .collect();
-        map_rows(indptr.len() - 1, |r| {
+        let labels = map_rows(indptr.len() - 1, |r| {
             let (lo, hi) = (indptr[r] as usize, indptr[r + 1] as usize);
             let val = &data[lo..hi];
             let idx: Vec<usize> = indices[lo..hi].iter().map(|&c| c as usize).collect();
             let x_sq: f64 = val.iter().map(|v| v * v).sum();
             micro_labels[nearest_sparse(&means, &musq, &idx, val, x_sq)] as i64
-        })
+        });
+        (labels, leaves)
     });
+    if Kind::Parametric(m).consumes_k() {
+        warn_leaf_budget(py, leaves, n_clusters, max_leaves)?;
+    }
     Ok(labels.into_pyarray(py))
 }
 

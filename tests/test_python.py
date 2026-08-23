@@ -5,6 +5,7 @@ and the streaming `Betula` estimator, plus the error contract.
 """
 
 import collections
+import warnings
 from math import comb
 
 import betula_cluster
@@ -1202,7 +1203,11 @@ def test_kprototypes_categorical_breaks_numeric_tie():
     x = np.c_[np.zeros((2 * n, 1)), np.array([0] * n + [1] * n, dtype=float)]
     y = np.array([0] * n + [1] * n)
     kp = betula_cluster.KPrototypes(n_clusters=2, categorical=[1], gamma=1.0, seed=2)
-    labels = np.asarray(kp.fit_predict(x))
+    # The numeric part is a single point, so the summary is exactly two micro-clusters -- one per
+    # requested cluster. That trips the leaf-budget floor, correctly: the partition here is entirely
+    # the summary's and the head has no freedom left. It happens to be the right answer anyway.
+    with pytest.warns(UserWarning, match=r"leaves per cluster"):
+        labels = np.asarray(kp.fit_predict(x))
     assert ari(labels, y) > 0.99
 
 
@@ -2329,3 +2334,87 @@ def test_predict_proba_raises_without_a_posterior():
     est = betula_cluster.Betula(n_clusters=3, method="ward", seed=0).fit(x)
     with pytest.raises(ValueError, match="predict_proba is only available"):
         est._est.predict_proba(x)
+
+
+# ── the leaf-budget warning ───────────────────────────────────────────────────────────────────────
+
+
+def _starved(n=400, d=4, k=60, seed=0):
+    """Data plus a leaf cap that forces fewer than two leaves per requested cluster."""
+    rng = np.random.default_rng(seed)
+    return rng.normal(size=(n, d)), k
+
+
+def test_leaf_budget_warning_fires_when_the_summary_cannot_carry_k():
+    """Under `max_leaves < 2k` the head is asked to split a summary too coarse to hold `k`
+    clusters. The message must carry both realised numbers, since the realised leaf count is what
+    the head sees and it can sit below the cap."""
+    x, k = _starved()
+    with pytest.warns(UserWarning, match=r"leaves per cluster") as rec:
+        betula_cluster.fit_predict(x, k, method="kmeans", max_leaves=40)
+    text = str(rec[0].message)
+    assert f"n_clusters={k}" in text
+    assert "max_leaves" in text
+
+
+def test_leaf_budget_warning_switches_on_exactly_at_two_leaves_per_cluster():
+    """Two per cluster is the floor, not a strict inequality: the sweep in
+    `local/scratch/leaves_per_k_sweep.py` puts well-separated data at its plateau there.
+
+    The boundary is read off the *realised* leaf count rather than assumed from `max_leaves` -- the
+    tree settles below its cap (91 leaves under a 100 cap here), so hard-coding the cap would test
+    the interior and never the edge. Both sides are asserted, which is what makes it a boundary
+    test and not two independent ones."""
+    rng = np.random.default_rng(0)
+    x = rng.normal(size=(4000, 4)) * 30.0  # spread out, so the tree fills most of its cap
+    probe = betula_cluster.Betula(n_clusters=2, method="kmeans", max_leaves=100, threshold=0.0)
+    leaves = probe.fit(x).n_leaves_
+    assert leaves >= 4  # the fixture is only a boundary if there is room either side
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", UserWarning)
+        betula_cluster.Betula(
+            n_clusters=leaves // 2, method="kmeans", max_leaves=100, threshold=0.0
+        ).fit(x)
+    with pytest.warns(UserWarning, match=r"leaves per cluster"):
+        betula_cluster.Betula(
+            n_clusters=leaves // 2 + 1, method="kmeans", max_leaves=100, threshold=0.0
+        ).fit(x)
+
+
+@pytest.mark.parametrize("method", ["hdbscan", "scale-space", "leiden"])
+def test_leaf_budget_warning_is_silent_for_heads_that_pick_their_own_k(method):
+    """`n_clusters` is ignored by these heads, so a budget stated relative to it says nothing."""
+    x, k = _starved()
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", UserWarning)
+        betula_cluster.fit_predict(x, k, method=method, max_leaves=40)
+
+
+def test_leaf_budget_warning_is_silent_for_auto_k():
+    """`n_clusters=0` selects the count by BIC from the leaves it actually has. The check has no
+    arm for it -- `leaves >= 2 * 0` is vacuously true -- so this pins the behaviour rather than a
+    branch, and would catch a future `k.max(1)` that quietly made auto-k warn."""
+    x, _ = _starved()
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", UserWarning)
+        betula_cluster.fit_predict(x, 0, method="gmm", max_leaves=40)
+
+
+def test_leaf_budget_warning_also_fires_on_the_estimator():
+    """`fit_predict` is re-exported from the extension while the estimator is wrapped, so the two
+    paths reach the check differently; both must warn."""
+    x, k = _starved()
+    with pytest.warns(UserWarning, match=r"leaves per cluster"):
+        betula_cluster.Betula(n_clusters=k, method="kmeans", max_leaves=40).fit_predict(x)
+
+
+def test_leaf_budget_warning_is_silent_for_a_single_cluster():
+    """`n_clusters=1` separates nothing, so a one-leaf summary answers it exactly and the floor does
+    not apply. Without this arm the check would tell a caller that one leaf cannot hold one
+    cluster."""
+    rng = np.random.default_rng(0)
+    x = rng.normal(scale=1e-9, size=(200, 3))  # collapses to a single leaf
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", UserWarning)
+        betula_cluster.fit_predict(x, 1, method="kmeans")
