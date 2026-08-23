@@ -667,11 +667,24 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> CF
             }
         }
 
+        // Each seed anchors its own group *by construction*. Deriving that from the comparison
+        // instead would assume `between(cf, cf) == 0`, which holds for D0/D1/D4 but not for D2: the
+        // average inter-point distance between a cluster and itself is `2·S/n`, not zero. A seed fat
+        // enough to be further from itself than from the other seed then joins the wrong group, and
+        // when every child does that the sibling is born with no children at all -- which `descend`
+        // later indexes into. Same root cause as the seed scan skipping `i == j`, one step later.
         let (mut g1, mut g2) = (Vec::new(), Vec::new());
         for (i, &c) in children.iter().enumerate() {
-            let d1 = self.dist.between(&cfs[i], &cfs[s1]);
-            let d2 = self.dist.between(&cfs[i], &cfs[s2]);
-            if d1 < d2 || (d1 == d2 && g1.len() <= g2.len()) {
+            let to_g1 = if i == s1 {
+                true
+            } else if i == s2 {
+                false
+            } else {
+                let d1 = self.dist.between(&cfs[i], &cfs[s1]);
+                let d2 = self.dist.between(&cfs[i], &cfs[s2]);
+                d1 < d2 || (d1 == d2 && g1.len() <= g2.len())
+            };
+            if to_g1 {
                 g1.push(c);
             } else {
                 g2.push(c);
@@ -713,7 +726,7 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> CF
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::distance::{CentroidEuclidean, Radius};
+    use crate::distance::{AverageIntercluster, CentroidEuclidean, Radius};
     use crate::feature::{Diagonal, Full, Spherical};
 
     fn close(a: f64, b: f64) -> bool {
@@ -729,6 +742,13 @@ mod tests {
         for id in 0..tree.nodes.len() {
             let node = &tree.nodes[id];
             if node.children.is_empty() {
+                // Only the root of an empty tree may hold nothing. Any other childless node is a
+                // split that put every child on one side, and `descend` indexes `children[0]`.
+                assert!(
+                    id == tree.root && node.leaf,
+                    "node {id} has no children (root is {})",
+                    tree.root
+                );
                 continue;
             }
             let mut cf = C::new(tree.dim);
@@ -1936,6 +1956,60 @@ mod tests {
         assert!(
             together(5_000_000, 4_900_000),
             "the split separated 5.0 from 4.9"
+        );
+    }
+
+    #[test]
+    fn a_split_never_leaves_one_group_empty() {
+        // The companion to the seed scan above, for the *assignment* half. Under `D2` a cluster's
+        // distance to itself is `2·S/n`, so a seed can measure further from itself than from the
+        // other seed and join the wrong group. Three entries in 1-D make that arithmetic explicit:
+        //
+        //   e0 = point at 0, e1 = point at 1, e2 = 10 points at 2 with S/n = 251
+        //   pairs   (0,1) = 1        (0,2) = 4 + 251 = 255      (1,2) = 1 + 251 = 252
+        //   so the seeds are (e0, e2) at 255, and for e2 itself
+        //   d(e2, e0) = 255  <  d(e2, e2) = 251 + 251 = 502   ⇒  e2 lands with e0.
+        //
+        // Every child then goes to group one and the sibling is created with no children, which is
+        // the state `descend` panics on the next time it walks the tree.
+        let e0 = Spherical::<f64>::from_moments(1.0, vec![0.0], 0.0);
+        let e1 = Spherical::<f64>::from_moments(1.0, vec![1.0], 0.0);
+        let e2 = Spherical::<f64>::from_moments(10.0, vec![2.0], 2510.0);
+
+        let mut tree: CFTree<f64, Spherical<f64>, _, _> = CFTree::new(
+            1,
+            4,
+            2,
+            0.0,
+            usize::MAX,
+            AverageIntercluster,
+            CentroidEuclidean,
+        );
+        let all = [e0, e1, e2];
+        let widest_pair = (0..all.len())
+            .flat_map(|i| ((i + 1)..all.len()).map(move |j| (i, j)))
+            .map(|(i, j)| tree.dist.between(&all[i], &all[j]))
+            .fold(0.0f64, f64::max);
+        let seed_self = tree.dist.between(&all[2], &all[2]);
+        assert!(
+            seed_self > widest_pair,
+            "the fat entry is not further from itself ({seed_self}) than the widest pair \
+             ({widest_pair}), so the misassignment cannot happen and the test is vacuous"
+        );
+
+        for cf in &all {
+            tree.insert_cf(cf.clone());
+        }
+        assert_eq!(
+            tree.num_leaves(),
+            all.len(),
+            "the fixture absorbed instead of splitting"
+        );
+        verify(&tree, 12); // 1 + 1 + 10 points of mass
+        assert_eq!(
+            leaf_partition(&tree).len(),
+            2,
+            "the split produced one non-empty group instead of two"
         );
     }
 
