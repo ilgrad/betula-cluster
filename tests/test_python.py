@@ -2469,3 +2469,79 @@ def test_unknown_absorber_names_the_whole_set():
         betula_cluster.fit_predict(x, 2, absorb="d3")
     with pytest.raises(ValueError, match=r"diameter"):
         betula_cluster.Betula(n_clusters=2, absorb="d3").fit(x)
+
+
+# ── BIRCH Phase 4 (refine=) ───────────────────────────────────────────────────────────────────────
+
+
+def _kmeans_cost(x, labels):
+    """Sum of squared distances to each point's own cluster mean -- the k-means objective of an
+    arbitrary partition, computed here independently of anything the engine reports."""
+    total = 0.0
+    for c in np.unique(labels):
+        block = x[labels == c]
+        total += float(((block - block.mean(0)) ** 2).sum())
+    return total
+
+
+def _blobs(n=5000, d=10, k=6, scale=1.5, seed=0):
+    """Deliberately *overlapping* blobs. Well-separated ones make the leaf summary lossless -- the
+    tree recovers the exact partition and Phase 4 starts at its fixed point, so a refinement fixture
+    built on them measures nothing. This is the regime where the summary actually costs something."""
+    rng = np.random.default_rng(seed)
+    centers = rng.normal(scale=scale, size=(k, d))
+    return rng.normal(size=(n, d)) + centers[rng.integers(k, size=n)]
+
+
+def test_refine_lowers_the_kmeans_objective_of_the_partition():
+    """Phase 3 optimizes over the leaf summary; Phase 4 optimizes over the raw points. A coarse
+    summary (30 leaves for 5000 overlapping points) leaves room to improve, and Lloyd is monotone."""
+    x = _blobs()
+    kw = dict(feature="spherical", method="kmeans", max_leaves=30, seed=0)
+    coarse = betula_cluster.fit_predict(x, 6, refine=0, **kw)
+    refined = betula_cluster.fit_predict(x, 6, refine=20, **kw)
+    assert _kmeans_cost(x, refined) < _kmeans_cost(x, coarse)
+
+
+def test_refine_is_ignored_by_a_head_with_no_centre_model():
+    """A mixture assigns by maximum posterior, not by nearest centre; sweeping centres would
+    substitute a partition the head never fits. The labels must be byte-identical."""
+    x = _blobs(seed=1)
+    kw = dict(feature="diagonal", method="gmm", max_leaves=30, seed=0)
+    plain = betula_cluster.fit_predict(x, 6, refine=0, **kw)
+    swept = betula_cluster.fit_predict(x, 6, refine=20, **kw)
+    assert np.array_equal(plain, swept)
+
+
+def test_the_estimator_refines_the_rule_predict_scores_against():
+    """`fit` is the in-memory entry point, so it has the rows Phase 4 needs. The refined estimator
+    must both relabel its training rows and carry the change into `predict` on fresh rows."""
+    x = _blobs(seed=2)
+    kw = dict(n_clusters=6, feature="spherical", method="kmeans", max_leaves=30, seed=0)
+    plain = betula_cluster.Betula(refine=0, **kw).fit(x)
+    refined = betula_cluster.Betula(refine=20, **kw).fit(x)
+    assert not np.array_equal(plain.predict(x), refined.predict(x))
+    assert _kmeans_cost(x, refined.predict(x)) < _kmeans_cost(x, plain.predict(x))
+
+
+def test_partial_fit_cannot_refine_and_says_so_by_leaving_the_centres_alone():
+    """Streaming keeps a tree, not the data, so there is no X left to sweep. `refine` must be inert
+    on that path rather than silently refining the last chunk only."""
+    x = _blobs(seed=3)
+    est = betula_cluster.Betula(
+        n_clusters=6, feature="spherical", method="kmeans", max_leaves=30, seed=0, refine=20
+    )
+    for chunk in np.array_split(x, 3):
+        est.partial_fit(chunk)
+    est.partial_fit()
+    streamed = est.predict(x)
+    plain = betula_cluster.Betula(
+        n_clusters=6, feature="spherical", method="kmeans", max_leaves=30, seed=0, refine=0
+    ).fit(x)
+    assert np.array_equal(streamed, plain.predict(x))
+
+
+def test_refine_survives_the_sklearn_parameter_protocol():
+    est = betula_cluster.Betula(refine=7)
+    assert est.get_params()["refine"] == 7
+    assert est.set_params(refine=3).get_params()["refine"] == 3

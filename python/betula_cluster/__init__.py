@@ -350,6 +350,7 @@ _DEFAULTS = {
     "projection": "none",
     "projection_dim": 64,
     "projection_max_iter": 100,
+    "refine": 0,
     "memory_budget_mb": None,
 }
 _PARAM_NAMES = tuple(_DEFAULTS)
@@ -404,6 +405,7 @@ class Betula:
         projection="none",
         projection_dim=64,
         projection_max_iter=100,
+        refine=0,
         memory_budget_mb=None,
     ):
         self.n_clusters = n_clusters
@@ -448,6 +450,10 @@ class Betula:
         # two converge at different rates, and one shared number made a larger head budget silently
         # pay for NMF sweeps too.
         self.projection_max_iter = projection_max_iter
+        # BIRCH Phase 4: Lloyd sweeps over the raw rows after the leaf clustering, warm-started from
+        # the CF centres. Centroid heads only (kmeans / spherical-kmeans), dense in-memory `fit` /
+        # `fit_predict` only. A better objective is not automatically a better partition. 0 = off.
+        self.refine = refine
         # When set, max_leaves is derived from this budget (+ dim + feature) at fit time: a target
         # for the CF-tree resident size (MiB), not total RSS. Most useful for streaming.
         self.memory_budget_mb = memory_budget_mb

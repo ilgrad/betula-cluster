@@ -7,6 +7,33 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **`refine=n`: BIRCH's Phase 4, which this crate never had.** `n` Lloyd sweeps over the raw rows,
+  warm-started from the Phase-3 centres. Off by default, centroid heads only (`kmeans`,
+  `spherical-kmeans` — a mixture assigns by maximum posterior and Ward/Spectral/Leiden by
+  microcluster, so sweeping centres would substitute a partition they never fit), and in-memory
+  `fit` / `fit_predict` only: `partial_fit` keeps a tree rather than the data, and the CSR path would
+  have to densify the matrix it exists to avoid. **Label-changing where enabled** — which is why it
+  is opt-in rather than a new default.
+
+  It pays exactly where the theory says: a summary coarse relative to the data. On MNIST
+  (20 000×784, k=10, `max_leaves=4000` → 3 779 leaves, median of seeds 0/1/2) twenty sweeps move ARI
+  0.275 → 0.318 and the k-means objective 11 778 133 → 11 707 368, for 4.3 s → 6.6 s.
+
+  **The acceptance target was not met, and the misses are the interesting part.** Against
+  `sklearn.cluster.KMeans(n_init=10)` (ARI 0.324, objective 11 703 801, 16.3 s) refinement lands at
+  2.5× the speed rather than the 3× asked for, and 0.03 % *above* the objective rather than at or
+  below it: one warm start from a lossy summary settles in a slightly worse basin than the best of
+  ten k-means++ restarts, and more sweeps cannot leave a basin. `digits` and `covtype` gain nothing
+  at all, structurally — `digits` at `max_leaves=4000` realises 1 797 leaves for 1 797 rows, so
+  Phase 3 already *is* exact k-means on the raw points and Phase 4 begins at its fixed point, while
+  `covtype`'s centres move by 4e-7 relative. MNIST at `max_leaves=16000` behaves like `digits` for
+  the same reason, and costs more than 4 000 leaves plus twenty sweeps.
+
+  The measurement also sharpens the caveat the feature ships with: on this benchmark a **lower
+  k-means objective goes with a worse partition**, twice. `covtype` — `n_init=10` objective 864 890 /
+  ARI 0.055, `n_init=1` objective 869 208 / ARI 0.093. `digits` — `n_init=10` 69 409 / 0.468,
+  `n_init=1` 69 749 / 0.555. `refine` optimizes the objective faithfully; `docs/USAGE.md` says
+  plainly that this is not the same as optimizing the answer.
 - **The full BIRCH absorption grid, and D3 implemented for the first time.** `absorb` accepted only
   `euclidean` and `chi2`; it now takes `manhattan` (D1), `average` (D2), `diameter` (D3), `ward` (D4)
   and `radius` (R) as well. D3 — the mean squared distance *within* the cell that results from the

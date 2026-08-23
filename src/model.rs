@@ -130,8 +130,12 @@ fn cluster_centroids<R: Real, C: ClusterFeature<R>>(
 /// What a fitted head does with a raw point. The three cases are mutually exclusive by
 /// construction, so no combination of them can be represented.
 enum Assignment<R: Real> {
-    /// Nearest of the `(label, centre)` pairs — the partition a centroid head *is*.
-    Centers(Vec<(usize, Vec<R>)>),
+    /// Nearest of the `(label, centre)` pairs — the partition a centroid head *is*. `unit` is the
+    /// head's own flag, kept so a later refinement re-normalizes the centres the same way the fit did.
+    Centers {
+        centers: Vec<(usize, Vec<R>)>,
+        unit: bool,
+    },
     /// Maximum posterior under the fitted mixture.
     Posterior(Mixture),
     /// Nearest leaf entry, then that entry's label.
@@ -169,9 +173,10 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> Mo
         let fit = fit_head(tree.leaf_features(), k, method, max_iter, seed);
         let n_clusters = distinct_count(&fit.labels);
         let assign = match (assignment_rule(method), fit.mixture) {
-            (Rule::Centroid { unit }, _) => {
-                Assignment::Centers(cluster_centroids(tree.leaf_features(), &fit.labels, unit))
-            }
+            (Rule::Centroid { unit }, _) => Assignment::Centers {
+                centers: cluster_centroids(tree.leaf_features(), &fit.labels, unit),
+                unit,
+            },
             (Rule::Posterior, Some(m)) => Assignment::Posterior(m),
             _ => Assignment::Microcluster,
         };
@@ -186,10 +191,32 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> Mo
     /// Cluster label of point `x` under the head's own assignment rule.
     pub fn predict(&self, x: &[R]) -> usize {
         match &self.assign {
-            Assignment::Centers(centers) => nearest_center(centers, x),
+            Assignment::Centers { centers, .. } => nearest_center(centers, x),
             Assignment::Posterior(mixture) => mixture.assign(x),
             Assignment::Microcluster => self.entry_labels[self.tree.nearest_entry(x)],
         }
+    }
+
+    /// BIRCH Phase 4 over the raw rows `flat` (`n × dim`), warm-started from the Phase-3 centres.
+    /// Returns the number of Lloyd sweeps run, `0` for a head that has no centre model — for
+    /// [`Rule::Posterior`] and [`Rule::Microcluster`] "nearest centre" is not the partition the head
+    /// defines, so a centre sweep would silently replace it with a different one.
+    pub fn refine(&mut self, flat: &[R], n: usize, dim: usize, iters: usize) -> usize {
+        let Assignment::Centers { centers, unit } = &mut self.assign else {
+            return 0;
+        };
+        if centers.first().is_none_or(|(_, c)| c.len() != dim) {
+            return 0;
+        }
+        let mut buf: Vec<R> = centers
+            .iter()
+            .flat_map(|(_, c)| c.iter().copied())
+            .collect();
+        let sweeps = refine_centers(&mut buf, flat, n, dim, *unit, iters);
+        for (i, (_, c)) in centers.iter_mut().enumerate() {
+            c.copy_from_slice(&buf[i * dim..(i + 1) * dim]);
+        }
+        sweeps
     }
 
     /// Number of clusters.
@@ -216,6 +243,83 @@ fn nearest_center<R: Real>(centers: &[(usize, Vec<R>)], x: &[R]) -> usize {
         }
     }
     centers[best].0
+}
+
+/// BIRCH Phase 4, never previously implemented here: Lloyd iterations over the **raw** points,
+/// warm-started from the Phase-3 centres. Returns the number of sweeps actually run, which is fewer
+/// than `iters` when the assignment stops moving.
+///
+/// The warm start is the point of it. scikit-learn pays `n_init` cold restarts to escape a bad
+/// seeding; a CF-tree summary is already a good seeding, so 1–3 sweeps reach a comparable objective
+/// at a fraction of the cost. It is `O(iters·n·k·d)` in time and `O(k·d)` in extra memory, so it
+/// touches the raw data again — which is why it is opt-in and why streaming cannot have it.
+///
+/// **A better objective is not a better partition.** On `covtype` scikit-learn's k-means reaches a
+/// lower within-cluster sum of squares than ours and a *worse* ARI (0.054 against 0.088), so
+/// refining toward that objective can move ARI either way. The caller decides.
+///
+/// A cluster that attracts no point keeps its previous centre rather than being re-seeded: dropping
+/// it would change `k` mid-refinement and re-seeding it is a second algorithm with its own seeding
+/// policy. `unit` re-normalizes each centre after the update, for the spherical head where the
+/// Euclidean argmin and the cosine argmax agree only on the unit sphere.
+pub(crate) fn refine_centers<R: Real>(
+    centers: &mut [R],
+    flat: &[R],
+    n: usize,
+    dim: usize,
+    unit: bool,
+    iters: usize,
+) -> usize {
+    let k = centers.len().checked_div(dim).unwrap_or(0);
+    if k == 0 || n == 0 || iters == 0 {
+        return 0;
+    }
+    let mut sums = vec![R::zero(); k * dim];
+    let mut counts = vec![0usize; k];
+    let mut owner = vec![usize::MAX; n];
+    for sweep in 0..iters {
+        sums.iter_mut().for_each(|v| *v = R::zero());
+        counts.iter_mut().for_each(|c| *c = 0);
+        let mut moved = false;
+        for i in 0..n {
+            let x = &flat[i * dim..(i + 1) * dim];
+            let mut best = 0;
+            let mut bd = R::infinity();
+            for c in 0..k {
+                let d = sq_euclidean(x, &centers[c * dim..(c + 1) * dim]);
+                if d < bd {
+                    bd = d;
+                    best = c;
+                }
+            }
+            moved |= owner[i] != best;
+            owner[i] = best;
+            counts[best] += 1;
+            for (j, &v) in x.iter().enumerate() {
+                sums[best * dim + j] = sums[best * dim + j] + v;
+            }
+        }
+        for c in 0..k {
+            if counts[c] == 0 {
+                continue;
+            }
+            let m = R::from_usize(counts[c]).unwrap();
+            let centre = &mut centers[c * dim..(c + 1) * dim];
+            for (j, v) in centre.iter_mut().enumerate() {
+                *v = sums[c * dim + j] / m;
+            }
+            if unit {
+                let norm = centre.iter().fold(R::zero(), |a, &v| a + v * v).sqrt();
+                if norm > R::zero() {
+                    centre.iter_mut().for_each(|v| *v = *v / norm);
+                }
+            }
+        }
+        if !moved {
+            return sweep + 1;
+        }
+    }
+    iters
 }
 
 /// The three things a mixture head returns that outlive the fit.
@@ -589,7 +693,7 @@ mod tests {
             let model = Model::fit(tree, 3, method, 100, 1);
             let ok = matches!(
                 (assignment_rule(method), &model.assign),
-                (Rule::Centroid { .. }, Assignment::Centers(_))
+                (Rule::Centroid { .. }, Assignment::Centers { .. })
                     | (Rule::Posterior, Assignment::Posterior(_))
                     | (Rule::Microcluster, Assignment::Microcluster)
             );
@@ -624,5 +728,113 @@ mod tests {
             micro,
             "the centroid rule agreed with the descent, so the fixture proves nothing"
         );
+    }
+
+    /// The four-corner square around each of two well-separated cells, so the exact per-cluster mean
+    /// is known in closed form and the fixture does not have to trust the routine that computes it.
+    fn two_squares() -> Vec<f64> {
+        vec![
+            0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 1.0, 1.0, // cell A, mean (0.5, 0.5)
+            10.0, 0.0, 10.0, 1.0, 11.0, 0.0, 11.0, 1.0, // cell B, mean (10.5, 0.5)
+        ]
+    }
+
+    #[test]
+    fn a_lloyd_sweep_lands_on_the_exact_group_means_and_then_stops() {
+        // Both centres start displaced but on the right side of the gap, so the very first
+        // assignment is already final: the second sweep can only confirm it. A routine that keeps
+        // sweeping regardless would return 10 here, and one that never updates would leave the 2.0.
+        let mut centers = vec![2.0, 0.5, 9.0, 0.5];
+        let sweeps = refine_centers(&mut centers, &two_squares(), 8, 2, false, 10);
+        assert_eq!(sweeps, 2, "the fixed point was not detected");
+        for (got, want) in centers.iter().zip([0.5, 0.5, 10.5, 0.5]) {
+            assert!((got - want).abs() < 1e-12, "{centers:?}");
+        }
+    }
+
+    #[test]
+    fn a_centre_that_attracts_no_point_keeps_its_position() {
+        // Three centres over two cells: the third is far enough that every point prefers one of the
+        // first two. The documented policy is to leave it where it is rather than re-seed it, which
+        // would be a second algorithm with its own seeding rule.
+        let mut centers = vec![0.0, 0.0, 10.0, 0.0, 500.0, 500.0];
+        refine_centers(&mut centers, &two_squares(), 8, 2, false, 10);
+        assert_eq!(
+            &centers[..4],
+            &[0.5, 0.5, 10.5, 0.5],
+            "the sweep did not run"
+        );
+        assert_eq!(&centers[4..], &[500.0, 500.0]);
+    }
+
+    #[test]
+    fn the_unit_flag_returns_each_refined_centre_to_the_sphere() {
+        // Raw means of points on the sphere sit strictly inside it, so an un-normalized update is
+        // visible as a norm below one — this asserts the re-projection, not merely that it ran.
+        let s = std::f64::consts::FRAC_1_SQRT_2;
+        let pts = vec![1.0, 0.0, s, s, 0.0, 1.0, -1.0, 0.0, -s, -s, 0.0, -1.0];
+        let mut centers = vec![1.0, 0.1, -1.0, -0.1];
+        refine_centers(&mut centers, &pts, 6, 2, true, 10);
+        for c in centers.chunks(2) {
+            let norm = (c[0] * c[0] + c[1] * c[1]).sqrt();
+            assert!((norm - 1.0).abs() < 1e-12, "norm = {norm}");
+        }
+    }
+
+    #[test]
+    fn refinement_lowers_the_k_means_objective_it_optimizes() {
+        // Phase 3 minimizes the objective over the *leaf summary*; Phase 4 minimizes it over the raw
+        // points. Lloyd is monotone, so the second can only improve on the first — and on a summary
+        // this coarse (16 leaves for 4 blobs) it has room to.
+        let mut rng = SplitMix64::new(11);
+        let centers = [[0.0, 0.0], [9.0, 0.0], [0.0, 9.0], [9.0, 9.0]];
+        let (pts, _) = blobs(&mut rng, 300, &centers, 1.4);
+        let flat: Vec<f64> = pts.iter().flatten().copied().collect();
+        let mut tree: CFTree<f64, Diagonal<f64>, _, _> =
+            CFTree::new(2, 4, 4, 4.0, 16, CentroidEuclidean, CentroidEuclidean);
+        for p in &pts {
+            tree.insert(p);
+        }
+        let mut model = Model::fit(tree, 4, Method::KMeans, 100, 3);
+        let wcss = |m: &Model<f64, Diagonal<f64>, _, _>| -> f64 {
+            let Assignment::Centers { centers, .. } = &m.assign else {
+                unreachable!("k-means is a centroid head")
+            };
+            pts.iter()
+                .map(|p| {
+                    centers
+                        .iter()
+                        .map(|(_, c)| sq_euclidean(p, c))
+                        .fold(f64::INFINITY, f64::min)
+                })
+                .sum()
+        };
+        let before = wcss(&model);
+        let sweeps = model.refine(&flat, pts.len(), 2, 20);
+        let after = wcss(&model);
+        assert!(sweeps > 0, "no sweep ran");
+        assert!(after < before, "{after} !< {before}");
+    }
+
+    #[test]
+    fn refinement_is_declined_by_every_head_without_a_centre_model() {
+        // A mixture assigns by maximum posterior and Ward/Spectral/Leiden by microcluster; sweeping
+        // centres over any of them would silently substitute the Voronoi partition they do not use.
+        let mut rng = SplitMix64::new(4);
+        let centers = [[0.0, 0.0], [8.0, 0.0], [0.0, 8.0]];
+        let (pts, _) = blobs(&mut rng, 200, &centers, 0.8);
+        let flat: Vec<f64> = pts.iter().flatten().copied().collect();
+        for method in [Method::Gmm, Method::Ward, Method::Spectral] {
+            let mut tree: CFTree<f64, Diagonal<f64>, _, _> =
+                CFTree::new(2, 16, 16, 0.05, 200, CentroidEuclidean, CentroidEuclidean);
+            for p in &pts {
+                tree.insert(p);
+            }
+            let mut model = Model::fit(tree, 3, method, 100, 2);
+            let before: Vec<usize> = pts.iter().map(|p| model.predict(p)).collect();
+            assert_eq!(model.refine(&flat, pts.len(), 2, 10), 0, "{method:?}");
+            let after: Vec<usize> = pts.iter().map(|p| model.predict(p)).collect();
+            assert_eq!(before, after, "{method:?} relabelled points");
+        }
     }
 }

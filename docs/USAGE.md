@@ -98,6 +98,43 @@ if your clusters differ wildly in size, and leave the default alone otherwise.
 (`leiden` reads the count off the graph — tune granularity with `resolution` γ, higher ⇒ more).
 For a robustness score per point, wrap any partitional head in `consensus` (see below).
 
+### Refining on the raw points — `refine`
+
+`refine=n` runs BIRCH's Phase 4: `n` Lloyd sweeps over the raw rows, warm-started from the Phase-3
+centres. It is **off by default**, applies only to the centroid heads (`kmeans`, `spherical-kmeans`),
+and only to the in-memory `fit` / `fit_predict` — `partial_fit` keeps a tree, not the data, and the
+sparse path would have to densify the matrix it exists to avoid.
+
+It pays where the summary is coarse relative to the data. MNIST (20 000×784, k=10, `max_leaves=4000`
+→ 3 779 leaves; median of seeds 0/1/2):
+
+| | ARI | k-means objective | time |
+|---|---|---|---|
+| `refine=0` | 0.275 | 11 778 133 | 4.3 s |
+| `refine=5` | 0.315 | 11 726 039 | 4.9 s |
+| `refine=20` | 0.318 | 11 707 368 | 6.6 s |
+| `sklearn KMeans(n_init=10)` | 0.324 | 11 703 801 | 16.3 s |
+
+Twenty sweeps close most of the gap to a ten-restart k-means for a 52 % time premium, at 2.5× its
+speed — but they do not close it: the objective stays 0.03 % above, because one warm start from a
+lossy summary lands in a slightly worse basin than the best of ten k-means++ restarts, and more
+sweeps cannot leave that basin.
+
+**Two regimes get nothing, for structural reasons rather than weak refinement.** When
+`max_leaves ≥ N` the tree holds one leaf per point — `digits` at `max_leaves=4000` realises 1 797
+leaves for 1 797 rows — so Phase 3 *is* exact k-means on the raw data and Phase 4 starts at its fixed
+point; the labels are bit-identical at every `refine`. Raising the budget does the same thing more
+gradually: MNIST at `max_leaves=16000` (15 664 leaves) reaches ARI 0.322 unrefined and refinement
+moves it 0.001, inside the seed spread — and costs 13.4 s to get there, more than 4 000 leaves plus
+twenty sweeps.
+
+**A lower objective is not a better partition, and on this benchmark it is reliably worse.** On
+`covtype`, `sklearn KMeans(n_init=10)` reaches the better objective (864 890 against our 868 263) and
+half the ARI (0.055 against 0.078); dropping it to `n_init=1` *worsens* its objective to 869 208 and
+*raises* its ARI to 0.093. `digits` shows the same inversion — `n_init=1` scores 0.555 at objective
+69 749, `n_init=10` scores 0.468 at 69 409. Refinement optimizes the objective faithfully; whether
+that is what you want is a property of your data, so measure it rather than assuming.
+
 ## Streaming / out-of-core — the `Betula` estimator
 
 Feed chunks with `partial_fit`, finalize with a no-arg `partial_fit()`, then `predict`. Memory stays

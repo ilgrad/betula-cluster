@@ -30,7 +30,7 @@ use crate::distance::{
 };
 use crate::feature::{ClusterFeature, Diagonal, FdSketch, Full, Spherical};
 use crate::mixture::Mixture;
-use crate::model::{Method, Model, Rule, assignment_rule, fit_head};
+use crate::model::{Method, Model, Rule, assignment_rule, fit_head, refine_centers};
 use crate::sparse::{nearest_sparse, summarize_sparse};
 use crate::stats::chi2_quantile;
 use crate::stream::{DbStream, DenStream};
@@ -695,6 +695,7 @@ fn cluster<R: Real, C: ClusterFeature<R>>(
     seed: u64,
     n_jobs: usize,
     nmf_dim: Option<NmfSpec>,
+    refine: usize,
 ) -> (Vec<i64>, usize) {
     let tree = build_tree::<R, C>(
         dim, branching, leaf_cap, threshold, max_leaves, route, absorb, flat, n, n_jobs,
@@ -711,7 +712,8 @@ fn cluster<R: Real, C: ClusterFeature<R>>(
                 })
             }
             None => {
-                let model = Model::fit(tree, k, method, max_iter, seed);
+                let mut model = Model::fit(tree, k, method, max_iter, seed);
+                model.refine(flat, n, dim, refine);
                 map_rows(n, |i| model.predict(&flat[i * dim..(i + 1) * dim]) as i64)
             }
         },
@@ -756,6 +758,7 @@ fn run_oneshot<R: Real + Element>(
     n_jobs: usize,
     normalize: bool,
     nmf_dim: Option<NmfSpec>,
+    refine: usize,
 ) -> PyResult<(Vec<i64>, usize)> {
     let (mut flat, n, dim) = to_flat(&data)?;
     if nmf_dim.is_some() {
@@ -777,19 +780,19 @@ fn run_oneshot<R: Real + Element>(
         match feature {
             "spherical" => Ok(cluster::<R, Spherical<R>>(
                 &flat, n, dim, n_clusters, kind, route, gate, thr, branching, leaf_cap, max_leaves,
-                max_iter, seed, n_jobs, nmf_dim,
+                max_iter, seed, n_jobs, nmf_dim, refine,
             )),
             "diagonal" => Ok(cluster::<R, Diagonal<R>>(
                 &flat, n, dim, n_clusters, kind, route, gate, thr, branching, leaf_cap, max_leaves,
-                max_iter, seed, n_jobs, nmf_dim,
+                max_iter, seed, n_jobs, nmf_dim, refine,
             )),
             "full" => Ok(cluster::<R, Full<R>>(
                 &flat, n, dim, n_clusters, kind, route, gate, thr, branching, leaf_cap, max_leaves,
-                max_iter, seed, n_jobs, nmf_dim,
+                max_iter, seed, n_jobs, nmf_dim, refine,
             )),
             "fd" => Ok(cluster::<R, FdSketch<R>>(
                 &flat, n, dim, n_clusters, kind, route, gate, thr, branching, leaf_cap, max_leaves,
-                max_iter, seed, n_jobs, nmf_dim,
+                max_iter, seed, n_jobs, nmf_dim, refine,
             )),
             _ => Err("feature must be 'spherical', 'diagonal', 'full' or 'fd'"),
         }
@@ -809,6 +812,12 @@ fn run_oneshot<R: Real + Element>(
 /// Mahalanobis-χ² gate at level `chi2_p` with within-cluster variance `chi2_scale` (required for
 /// `chi2`). `threshold` is read in the chosen criterion's own units — L1 for `"manhattan"`, squared
 /// for the rest, a χ²_dim quantile for `"chi2"` — so it does not transfer between them.
+///
+/// `refine` runs BIRCH's Phase 4 — that many Lloyd sweeps over the raw rows, warm-started from the
+/// Phase-3 centres — for the centroid heads (`"kmeans"`, `"spherical-kmeans"`); other heads ignore
+/// it, having no centre model to sweep. It trades a second pass over the data for a lower
+/// within-cluster sum of squares, which is not the same thing as a better partition: on `covtype`
+/// scikit-learn's k-means already reaches the lower objective and the worse ARI. Default `0` (off).
 #[pyfunction]
 #[pyo3(signature = (
     data, n_clusters = 8, feature = "diagonal", method = "gmm", threshold = 0.0,
@@ -816,7 +825,7 @@ fn run_oneshot<R: Real + Element>(
     min_samples = 5, min_cluster_size = 5, seed = 0, distance = "euclidean",
     absorb = "euclidean", chi2_p = 0.95, chi2_scale = 0.0, n_jobs = 1, normalize = false,
     resolution = 1.0, covariance_weight = 0.0, tangent_weight = 0.0, tangent_rank = 2,
-    projection = "none", projection_dim = 64, projection_max_iter = 100
+    projection = "none", projection_dim = 64, projection_max_iter = 100, refine = 0
 ))]
 #[allow(clippy::too_many_arguments)]
 fn fit_predict<'py>(
@@ -846,6 +855,7 @@ fn fit_predict<'py>(
     projection: &str,
     projection_dim: usize,
     projection_max_iter: usize,
+    refine: usize,
 ) -> PyResult<Bound<'py, PyArray1<i64>>> {
     let kind = parse_method(
         method,
@@ -860,12 +870,12 @@ fn fit_predict<'py>(
     let (labels, leaves) = if let Ok(a) = data.extract::<PyReadonlyArray2<'py, f64>>() {
         run_oneshot::<f64>(
             py, a, n_clusters, feature, kind, distance, absorb, chi2_p, chi2_scale, threshold,
-            branching, leaf_cap, max_leaves, max_iter, seed, n_jobs, normalize, nmf_dim,
+            branching, leaf_cap, max_leaves, max_iter, seed, n_jobs, normalize, nmf_dim, refine,
         )?
     } else if let Ok(a) = data.extract::<PyReadonlyArray2<'py, f32>>() {
         run_oneshot::<f32>(
             py, a, n_clusters, feature, kind, distance, absorb, chi2_p, chi2_scale, threshold,
-            branching, leaf_cap, max_leaves, max_iter, seed, n_jobs, normalize, nmf_dim,
+            branching, leaf_cap, max_leaves, max_iter, seed, n_jobs, normalize, nmf_dim, refine,
         )?
     } else {
         return Err(PyValueError::new_err(
@@ -1419,6 +1429,9 @@ struct Betula {
     /// keeps the microcluster route (see [`Model`]).
     #[serde(default)]
     rule: Option<PointRule>,
+    /// BIRCH Phase-4 Lloyd sweeps over the raw rows after the leaf clustering; `0` disables it.
+    #[serde(default)]
+    refine: usize,
 }
 
 /// Copy a 2-D array into a flat row-major `Vec<R>`, casting from the other float dtype if needed
@@ -1636,6 +1649,35 @@ impl Betula {
         (!labels.is_empty()).then_some(PointRule::Centers { labels, rows })
     }
 
+    /// BIRCH Phase 4 on the finalized centre rule: `refine` Lloyd sweeps over the rows just fitted,
+    /// warm-started from the Phase-3 centres. A no-op unless the head left a centre rule behind.
+    ///
+    /// Only the in-memory entry points can run it. `partial_fit` accumulates a tree, not the data,
+    /// so there is no `X` left to sweep; the CSR paths would have to densify the matrix they exist to
+    /// avoid. Both keep the summary centres, and the docs say so.
+    ///
+    /// The sweep runs in `f64` whatever the tree's dtype, because the rule's centres are `f64` and
+    /// [`PointRule::label_of`] already scores every row in `f64` — refining in `f32` would optimize a
+    /// different objective from the one that then labels the points.
+    fn refine_rule(&mut self, py: Python<'_>, data: &Bound<'_, PyAny>) -> PyResult<()> {
+        let Kind::Parametric(method) = self.kind else {
+            return Ok(());
+        };
+        let Rule::Centroid { unit } = assignment_rule(method) else {
+            return Ok(());
+        };
+        if self.refine == 0 || !matches!(self.rule, Some(PointRule::Centers { .. })) {
+            return Ok(());
+        }
+        let (flat, n, dim) = flat_as::<f64>(data, self.normalize)?;
+        self.check_dim(dim)?;
+        let iters = self.refine;
+        if let Some(PointRule::Centers { rows, .. }) = self.rule.as_mut() {
+            py.detach(|| refine_centers(rows, &flat, n, dim, unit, iters));
+        }
+        Ok(())
+    }
+
     /// Cluster the current leaf features (whichever dtype tree exists) and cache the labels.
     ///
     /// Takes `py` only to raise the leaf-budget warning: this is the one place every estimator
@@ -1812,7 +1854,8 @@ impl Betula {
         min_samples = 5, min_cluster_size = 5, seed = 0,
         distance = "euclidean", absorb = "euclidean", chi2_p = 0.95, chi2_scale = 0.0, decay = 1.0,
         normalize = false, huber_k = None, resolution = 1.0, covariance_weight = 0.0,
-        tangent_weight = 0.0, tangent_rank = 2, projection = "none", projection_dim = 64, projection_max_iter = 100
+        tangent_weight = 0.0, tangent_rank = 2, projection = "none", projection_dim = 64,
+        projection_max_iter = 100, refine = 0
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -1841,6 +1884,7 @@ impl Betula {
         projection: &str,
         projection_dim: usize,
         projection_max_iter: usize,
+        refine: usize,
     ) -> PyResult<Self> {
         let kind = parse_method(
             method,
@@ -1915,6 +1959,7 @@ impl Betula {
             nmf_components: None,
             nmf_reconstruction_err: None,
             rule: None,
+            refine,
         })
     }
 
@@ -1950,6 +1995,7 @@ impl Betula {
         slf.stream(data)?;
         let py = slf.py();
         slf.finalize(py)?;
+        slf.refine_rule(py, data)?;
         Ok(slf)
     }
 
@@ -1999,6 +2045,7 @@ impl Betula {
         self.reset();
         self.stream(data)?;
         self.finalize(py)?;
+        self.refine_rule(py, data)?;
         self.route_data(py, data)
     }
 
@@ -2209,7 +2256,11 @@ impl Betula {
         })
     }
 
-    /// Macro-cluster centroids — `(n_clusters, dim)`; requires a finalized clustering.
+    /// Macro-cluster centroids — `(n_clusters, dim)`; requires a finalized clustering. These are the
+    /// Phase-3 summary centroids, the mass-weighted mean of each cluster's leaves. `refine` moves the
+    /// centres `predict` scores against, not these: a Phase-4 sweep optimizes over raw points, so
+    /// pooling its result back into the summary would make the paired `cluster_radii_` /
+    /// `cluster_sizes_` describe a partition neither of them was computed under.
     #[getter]
     fn cluster_centers_<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray2<f64>>> {
         let (centers, _r, _w, dim) = self.cluster_stats_any()?;
@@ -2449,6 +2500,7 @@ impl Betula {
         d.set_item("covariance_weight", self.covariance_weight)?;
         d.set_item("tangent_weight", self.tangent_weight)?;
         d.set_item("tangent_rank", self.tangent_rank)?;
+        d.set_item("refine", self.refine)?;
         Ok(d)
     }
 
