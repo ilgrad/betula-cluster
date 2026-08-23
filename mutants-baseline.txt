@@ -17,7 +17,9 @@
 # rebuild-cost fix, and again 2026-08-21 whole-file), `src/clustering/gmm.rs` and
 # `src/clustering/nmf.rs` (2026-08-21, entry by entry), `src/clustering/kprototypes.rs` (2026-08-22,
 # entry by entry), `src/clustering/vmf.rs` (2026-08-22 entry by entry, then **2026-08-23 whole-file**
-# after the `log_iv` asymptotic branch). The entry-by-entry form is sound where the only change to the
+# after the `log_iv` asymptotic branch), and `src/clustering/nmf.rs` + `src/clustering/pca.rs`
+# together (**2026-08-24 whole-file**, after `NmfSpec` became `ProjectionSpec` and `project_pca` was
+# added). The entry-by-entry form is sound where the only change to the
 # file was *test* code: adding a test can kill a mutant but can never create one, so nothing outside
 # the recorded set needs re-measuring. It is not sound after a production edit -- re-measure the file
 # whole then, which also renumbers every `line:col` in that section.
@@ -445,12 +447,19 @@ src/feature.rs:68:61: replace + with - in SecondMoment<R>::add_scaled
 src/feature.rs:68:67: replace * with + in SecondMoment<R>::add_scaled
 src/feature.rs:68:67: replace * with / in SecondMoment<R>::add_scaled
 
-# ── src/clustering/nmf.rs (13) ──
-# Re-measured 2026-08-21, entry by entry against the full library suite. Two of the
-# fifteen this replaces are now caught: the second half of the power iteration, by a
-# reference check against a dense eigendecomposition of `XᵀX` and the Eckart-Young
-# optimum it gives; and the KL stopping rule, by a fixture scaled a thousandfold so the
-# `max(prev, 1)` clamp is above 1 and the tolerance's relative form is decidable.
+# ── src/clustering/nmf.rs (12) ──
+# Re-measured 2026-08-24, whole file, together with the new `src/clustering/pca.rs` beside it:
+# 374 mutants in 2 h at -j4, 308 caught / 19 missed / 47 unviable. A production edit landed here
+# (`NmfSpec` -> `ProjectionSpec`, and `project_pca` added), so an entry-by-entry patch would have
+# been unsound; the run also renumbers `project`, 696 -> 714.
+#
+# One entry from the 2026-08-21 list is gone because it is now caught: `106:42 replace * with /`,
+# closed by the Eckart-Young reference check. Seven more were measured as survivors in this very run
+# and are absent below because tests written straight afterwards kill them -- the five in `pca.rs`
+# and the two at `753:39` in `project_pca`. Each of those seven was re-checked by hand-applying the
+# mutant and running the module's tests, rather than by trusting that the new fixture must see it.
+#
+# `src/clustering/pca.rs` has no section: nothing in it survives.
 #
 # Not measured by this configuration, not survivors. `default = ["parallel"]`, so line 34
 # is the `#[cfg(not(feature = "parallel"))]` copy of `build_rows` and is not compiled at
@@ -465,16 +474,15 @@ src/clustering/nmf.rs:34:5: replace build_rows -> Vec<Vec<R>> with vec![vec![]]
 # and two power iterations with re-orthonormalization pull it onto the dominant subspace
 # wherever it started. Measured against the Eckart-Young optimum on a slowly decaying
 # spectrum (60x40, singular values ∝ 1/k², r = 4, sketch width l = 14), as residual over
-# optimum: unmutated 1.000000, `95:38` 1.000000, `106:42` 1.000009, `84:16` 1.000000,
-# `145:28` 1.000000. A ratio that moves by 9e-6 is below any tolerance defensible as
-# chosen in advance. `85:40` is the same from the other side: the seed only picks the
-# starting basis, so two seeds the mix collapses onto one stream return identical
-# triplets anyway and no assertion on the output can see the collapse.
+# optimum: unmutated 1.000000, `95:38` 1.000000, `84:16` 1.000000, `145:28` 1.000000.
+# A ratio that moves by less than 1e-5 is below any tolerance defensible as chosen in
+# advance. `85:40` is the same from the other side: the seed only picks the starting basis,
+# so two seeds the mix collapses onto one stream return identical triplets anyway and no
+# assertion on the output can see the collapse.
 src/clustering/nmf.rs:84:16: replace + with * in randomized_svd
 src/clustering/nmf.rs:85:40: replace ^ with & in randomized_svd
 src/clustering/nmf.rs:85:40: replace ^ with | in randomized_svd
 src/clustering/nmf.rs:95:38: replace * with / in randomized_svd
-src/clustering/nmf.rs:106:42: replace * with / in randomized_svd
 #
 # Believed equivalent -- the numerical-rank cutoff separates zero from √ε·σ_max. A Gram
 # eigenvalue that is noise comes out at ±ε·λ_max, so `λ.max(0).sqrt()` is either exactly
@@ -500,7 +508,7 @@ src/clustering/nmf.rs:116:51: replace + with - in randomized_svd
 # branch. The condition is on that fill, which is why
 # `a_projection_of_an_all_zero_matrix_reports_no_error_rather_than_infinity` pins it:
 # give the fill a floor that does not vanish with the data and this stops being equivalent.
-src/clustering/nmf.rs:696:40: replace > with >= in project
+src/clustering/nmf.rs:714:40: replace > with >= in project
 
 # ── src/mixture.rs (15) ──
 # Debt: `Mixture::log_joint` term arithmetic.

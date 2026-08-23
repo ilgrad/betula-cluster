@@ -2486,8 +2486,8 @@ def _kmeans_cost(x, labels):
 
 def _blobs(n=5000, d=10, k=6, scale=1.5, seed=0):
     """Deliberately *overlapping* blobs. Well-separated ones make the leaf summary lossless -- the
-    tree recovers the exact partition and Phase 4 starts at its fixed point, so a refinement fixture
-    built on them measures nothing. This is the regime where the summary actually costs something."""
+    tree recovers the exact partition and Phase 4 starts at its fixed point, so a refinement
+    fixture built on them measures nothing. This is the regime where the summary costs something."""
     rng = np.random.default_rng(seed)
     centers = rng.normal(scale=scale, size=(k, d))
     return rng.normal(size=(n, d)) + centers[rng.integers(k, size=n)]
@@ -2495,7 +2495,7 @@ def _blobs(n=5000, d=10, k=6, scale=1.5, seed=0):
 
 def test_refine_lowers_the_kmeans_objective_of_the_partition():
     """Phase 3 optimizes over the leaf summary; Phase 4 optimizes over the raw points. A coarse
-    summary (30 leaves for 5000 overlapping points) leaves room to improve, and Lloyd is monotone."""
+    summary (30 leaves for 5000 overlapping points) leaves room, and Lloyd is monotone."""
     x = _blobs()
     kw = dict(feature="spherical", method="kmeans", max_leaves=30, seed=0)
     coarse = betula_cluster.fit_predict(x, 6, refine=0, **kw)
@@ -2545,3 +2545,126 @@ def test_refine_survives_the_sklearn_parameter_protocol():
     est = betula_cluster.Betula(refine=7)
     assert est.get_params()["refine"] == 7
     assert est.set_params(refine=3).get_params()["refine"] == 3
+
+
+# ── projection="svd": CF-weighted PCA of the leaf summary ─────────────────────────────────────────
+
+
+def _topic_rows(n=1200, d=400, k=6, seed=0):
+    """Nonnegative sparse rows with a planted topic structure — the shape the text path sees, small
+    enough for a test. Each row draws its non-zeros from one topic's own vocabulary slice."""
+    rng = np.random.default_rng(seed)
+    y = rng.integers(k, size=n)
+    x = np.zeros((n, d))
+    width = d // k
+    for i, t in enumerate(y):
+        lo = t * width
+        cols = rng.integers(lo, lo + width, size=12)
+        x[i, cols] += rng.random(12)
+        x[i, rng.integers(d, size=3)] += 0.2 * rng.random(3)  # cross-topic noise
+    return x, y
+
+
+def test_svd_projection_beats_no_projection_on_planted_topics():
+    """The reason the projection exists: in high-d sparse space the raw geometry is uninformative,
+    and clustering CF-weighted principal codes recovers the planted structure instead."""
+    ari = pytest.importorskip("sklearn.metrics").adjusted_rand_score
+    x, y = _topic_rows(seed=2)
+    # A coarse budget on purpose: at 100+ leaves for 1200 rows this fixture is separable either way,
+    # and a test that both arms pass measures nothing.
+    kw = dict(feature="spherical", method="spherical-kmeans", max_leaves=20, seed=0)
+    plain = betula_cluster.fit_predict(x, 6, **kw)
+    coded = betula_cluster.fit_predict(x, 6, projection="svd", projection_dim=20, **kw)
+    assert ari(y, coded) > ari(y, plain)
+
+
+def test_the_svd_path_labels_a_row_by_its_own_code_not_by_its_leaf():
+    """The mechanism that separates `svd` from `weighted-nmf`: a PCA is a linear map, so a raw row
+    is encoded and scored by the head directly. An NMF code is a per-row nonnegative least squares,
+    so that path can only answer with the row's leaf's label, making the labelling constant on every
+    leaf. Finding one leaf that holds two different cluster labels proves the row route ran."""
+    x, _ = _topic_rows(seed=1)
+    est = betula_cluster.Betula(
+        n_clusters=6,
+        feature="spherical",
+        method="spherical-kmeans",
+        max_leaves=20,
+        seed=0,
+        projection="svd",
+        projection_dim=20,
+    )
+    labels = est.fit_predict(x)
+    leaves = np.asarray(est.assign_microclusters(x))
+    split = sum(len(np.unique(labels[leaves == leaf])) > 1 for leaf in np.unique(leaves))
+    assert split > 0, "every leaf was label-constant, so rows were routed rather than encoded"
+
+
+def test_the_nmf_path_stays_on_the_microcluster_route():
+    """The other half of the same claim, and the reason it is not free: an NMF projection has no
+    linear encoder, so its labelling is constant on every leaf by construction."""
+    x, _ = _topic_rows(seed=1)
+    est = betula_cluster.Betula(
+        n_clusters=6,
+        feature="spherical",
+        method="kmeans",
+        max_leaves=200,
+        seed=0,
+        projection="weighted-nmf",
+        projection_dim=20,
+    )
+    labels = est.fit_predict(x)
+    leaves = np.asarray(est.assign_microclusters(x))
+    assert all(len(np.unique(labels[leaves == leaf])) == 1 for leaf in np.unique(leaves))
+
+
+def test_svd_accepts_signed_data_that_nmf_must_reject():
+    x = np.random.default_rng(0).normal(size=(300, 12))
+    kw = dict(feature="spherical", method="kmeans", max_leaves=100, seed=0, projection_dim=4)
+    betula_cluster.fit_predict(x, 3, projection="svd", **kw)  # must not raise
+    with pytest.raises(ValueError, match=r"nonnegative"):
+        betula_cluster.fit_predict(x, 3, projection="weighted-nmf", **kw)
+
+
+def test_svd_components_are_an_orthonormal_basis_of_the_requested_rank():
+    """PCA components are right singular vectors: orthonormal by construction. A basis that failed
+    this would still produce codes, and every downstream distance would be silently skewed."""
+    x, _ = _topic_rows(seed=2)
+    est = betula_cluster.Betula(
+        n_clusters=6,
+        feature="spherical",
+        method="kmeans",
+        max_leaves=200,
+        seed=0,
+        projection="svd",
+        projection_dim=8,
+    )
+    est.fit(x)
+    v = est.components_
+    assert v.shape == (8, x.shape[1])
+    np.testing.assert_allclose(v @ v.T, np.eye(8), atol=1e-9)
+    assert 0.0 <= est.reconstruction_err_ <= 1.0
+
+
+def test_svd_predict_proba_still_agrees_with_predict():
+    """`predict_proba(X).argmax(1) == predict(X)` is a documented promise. On the projected path the
+    posterior has to be scored in code space, through the same encoder, or the two disagree."""
+    x, _ = _topic_rows(seed=3)
+    est = betula_cluster.Betula(
+        n_clusters=6,
+        feature="spherical",
+        method="gmm",
+        max_leaves=200,
+        seed=0,
+        projection="svd",
+        projection_dim=8,
+    )
+    est.fit(x)
+    np.testing.assert_array_equal(est.predict_proba(x).argmax(1), est.predict(x))
+
+
+def test_unknown_projection_names_the_whole_set():
+    x = np.random.default_rng(0).random((50, 6))
+    with pytest.raises(ValueError, match=r"'svd'"):
+        betula_cluster.fit_predict(x, 2, projection="pca")
+    with pytest.raises(ValueError, match=r"'svd'"):
+        betula_cluster.Betula(n_clusters=2, projection="pca").fit(x)

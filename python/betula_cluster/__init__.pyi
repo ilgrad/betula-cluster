@@ -32,7 +32,7 @@ __version__: str
 
 _FloatArray = NDArray[np.float64] | NDArray[np.float32]
 _Feature = Literal["spherical", "diagonal", "full", "fd"]
-_Projection = Literal["none", "weighted-nmf", "weighted-nmf-kl"]
+_Projection = Literal["none", "weighted-nmf", "weighted-nmf-kl", "svd"]
 _Method = Literal[
     "kmeans",
     "gmm",
@@ -147,6 +147,9 @@ def fit_predict_sparse(
     max_leaves: int = ...,
     max_iter: int = ...,
     seed: int = ...,
+    projection: _Projection = ...,
+    projection_dim: int = ...,
+    projection_max_iter: int = ...,
 ) -> NDArray[np.int64]:
     """One-shot O(nnz) clustering of a scipy.sparse matrix; one int64 label per row."""
 

@@ -474,29 +474,52 @@ isolated in its own subprocess (`bench/results_sparse.csv`):
 
 | reduction | clusterer | time | ARI |
 |---|---|---|---|
-| raw 2 000-D (none) | betula `fit_predict_sparse` (O(nnz)) | 9.9 s | 0.002 |
+| raw 2 000-D (none) | betula `fit_predict_sparse` (O(nnz)) | 8.6 s | 0.002 |
 | raw 2 000-D (none) | sklearn k-means | 1.9 s | 0.056 |
-| TruncatedSVD(50) | **betula** k-means | **0.39 s** | 0.119 |
-| TruncatedSVD(50) | sklearn k-means | 0.69 s | 0.130 |
-| NMF(20) | **betula** k-means | 2.43 s | **0.130** |
-| NMF(20) | sklearn k-means | 2.50 s | 0.124 |
+| **betula CF-weighted PCA(50)** | **betula** spherical k-means | 5.70 s | **0.164** |
+| TruncatedSVD(50) | sklearn k-means | **0.70 s** | 0.130 |
+| NMF(20) | **betula** k-means | 2.43 s | 0.130 |
+| NMF(20) | sklearn k-means | 2.48 s | 0.124 |
+
+The `betula-svd` row changed meaning. It used to call scikit-learn's `TruncatedSVD` and then
+cluster with betula, so it measured scikit-learn's reducer; it now runs betula's own
+`projection="svd"` — a CF-weighted PCA of the leaf summary — end to end in one call. The `betula-nmf`
+row still borrows scikit-learn's NMF, and says so.
+
+Quality against the leaf budget, since the harness pins `max_leaves=2048` for every sparse row and
+that is the whole cost here. Unlike the table above — which `bench/comprehensive.py` runs at `seed=0`
+only, like every other sparse row — this sweep is the **median of seeds 0/1/2**, one BLAS thread, so
+its 2048 cell (0.152, spread [0.135, 0.164]) reads lower than the 0.164 above: seed 0 is the top of
+that spread, not a different measurement.
+
+| `max_leaves` | ARI | time |
+|---|---|---|
+| 128 | 0.098 | 0.17 s |
+| 256 | 0.130 | 0.30 s |
+| 512 | 0.144 | 0.58 s |
+| 1024 | 0.150 | 2.35 s |
+| 2048 | 0.152 | 5.42 s |
 
 Read honestly:
 
 - **Raw high-dimensional TF-IDF is the wrong input for any compression / fast clusterer.** At
   `d = 2 000` Euclidean distances concentrate, so the O(nnz) sparse-native path (0.002, ≈ random) and
   even raw sklearn k-means (0.056) barely beat chance. The standard fix for sparse text is
-  **reduce-then-cluster**: project to a few dozen LSA / topic dimensions first (TruncatedSVD or NMF),
-  then cluster — which lifts every method far above the raw baselines.
-- **On the reduced features betula reaches parity when the reduction suits compression.** On NMF's 20
-  non-negative topic activations betula edges sklearn (0.130 vs 0.124) at 1.07× the speed; on SVD's 50
-  signed components it trails on quality (0.119 vs 0.130) while running 1.6× faster — clustering
-  ≤ 2 048 leaf microclusters instead of all 18 846 points loses more of the overlapping-topic
-  structure in the denser SVD space (mitigation: more leaves). This is the documented *small-N +
-  overlapping-density* regime; CF compression is built to pay off at large `N`, not at ~19 k rows.
-- Net: `fit_predict_sparse` is a **scale / bounded-memory** tool for very large sparse inputs, not a
-  quality lever on high-`d` text — for text, reduce dimensionality first and cluster the dense topic
-  vectors.
+  **reduce-then-cluster**, and `projection="svd"` now does it inside the same call.
+- **On quality the leaf-summary PCA wins; on time it does not.** 0.164 against `sklearn-svd`'s 0.130
+  at this budget, but 5.70 s against 0.70 s. The basis is not the compromise — labelling raw rows in
+  it scores 0.159 against 0.143 for `TruncatedSVD`'s own basis on the same rows, since the within-leaf
+  scatter the summary discards is isotropic under the spherical cluster feature and so moves no
+  direction. The time is the **leaf budget**: sweeping the rank from 1 to 100 moves the total by
+  1.2 s, while `max_leaves` 256 → 2048 moves it from 0.30 s to 5.4 s, because the sparse summarizer is
+  a flat leader pass that scores each row against every micro-cluster so far. At 256 leaves the same
+  call is 0.130 ARI in 0.30 s — scikit-learn's quality at 2.3× its speed.
+- **Use a cosine head on the codes.** `method="kmeans"` on the same codes scores 0.014 against
+  `spherical-kmeans`'s 0.152: the leading principal direction of a TF-IDF corpus is document length,
+  and only an angular objective ignores it.
+- Net: `fit_predict_sparse` alone is a **scale / bounded-memory** tool, not a quality lever on high-`d`
+  text. With `projection="svd"` it becomes the quality tool too, and the knob that matters is
+  `max_leaves`.
 
 ## Conclusions
 
@@ -513,8 +536,10 @@ Read honestly:
   no summary is needed: it beats every betula head there, and the compression-ratio defence does not
   hold. Its MNIST lead comes with no compression at all (20 000 subclusters for 20 000 points), so it
   buys nothing on the axis a CF-tree exists for.
-- **For sparse high-dimensional text**, reduce dimensionality first (TruncatedSVD / NMF / embeddings)
-  and cluster the dense topic vectors — raw TF-IDF concentrates and defeats every fast clusterer.
+- **For sparse high-dimensional text**, reduce dimensionality first — raw TF-IDF concentrates and
+  defeats every fast clusterer. `fit_predict_sparse(..., projection="svd", method="spherical-kmeans")`
+  does the reduction and the clustering in one call and tops the 20-newsgroups table (0.164); tune
+  `max_leaves` for the time you are willing to spend.
 - The numbers above are what the committed `bench/comprehensive.py` + `bench/median_of_seeds.py`
   (plus `bench/spectral_nonconvex.py`, `bench/toeplitz_ar_mixture.py`, `bench/nmf_cf_weighted.py`)
   produce; re-run them to regenerate every table and plot.

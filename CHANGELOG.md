@@ -7,6 +7,34 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **`projection="svd"`: a CF-weighted PCA of the leaf summary, and the one-call text pipeline.**
+  Clustering TF-IDF in its own geometry does not work — the sparse path scores ARI **0.003** on
+  20-newsgroups — and the standard fix is to reduce first. This does the reduction inside the same
+  call, factorizing the `M ≈ 10³` leaf centroids rather than the `N` documents: on 20-newsgroups
+  (18 846 × 2 000, k=20, rank 50, median of seeds 0/1/2) `fit_predict_sparse(..., projection="svd",
+  max_leaves=256)` scores **0.130 in 0.30 s**, against `TruncatedSVD(50)` + `KMeans` at 0.143 in
+  0.54 s; at `max_leaves=2048` it reaches **0.152 in 5.4 s**. Available on `fit_predict`, the
+  `Betula` estimator and `fit_predict_sparse`, and unlike the NMF projection it accepts signed data.
+
+  **The projection is only half of it — the other half is that a PCA is a linear map.** A raw row
+  encodes as `(x − x̄)Vᵀ`, so a projected fit keeps the head's own point rule instead of falling back
+  to "answer with the row's leaf's label". Measured on the same basis and the same rows, that
+  distinction alone is worth **0.062 ARI** (0.097 → 0.159). The NMF projection cannot be given the
+  same treatment: its code is the solution of a per-row nonnegative least squares, not a matrix
+  product, so it keeps the microcluster route and the docs now say why.
+
+  Two measured facts decide whether it works for a given corpus, both in `docs/USAGE.md`. Use a
+  **cosine head**: `method="kmeans"` on the same codes scores 0.014 against `spherical-kmeans`'s
+  0.152, because the leading principal direction of a TF-IDF corpus is document length. And **the
+  leaf budget is the cost, not the projection**: sweeping rank 1 → 100 moves the total by 1.2 s,
+  while `max_leaves` 256 → 2048 moves it from 0.30 s to 5.4 s, the sparse summarizer being quadratic
+  in the micro-cluster count.
+
+  The basis is not a compromise for being built from a summary. Labelling raw rows in it scores 0.159
+  against 0.143 for `TruncatedSVD`'s own basis on the same rows — under the spherical cluster feature
+  the discarded within-leaf scatter is isotropic, so it shifts eigenvalues and leaves the directions
+  alone. `bench/_worker.py`'s `betula-svd` row now runs betula's own reduction; it previously
+  borrowed scikit-learn's `TruncatedSVD` and so measured scikit-learn's reducer.
 - **`refine=n`: BIRCH's Phase 4, which this crate never had.** `n` Lloyd sweeps over the raw rows,
   warm-started from the Phase-3 centres. Off by default, centroid heads only (`kmeans`,
   `spherical-kmeans` — a mixture assigns by maximum posterior and Ward/Spectral/Leiden by

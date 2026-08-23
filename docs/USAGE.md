@@ -40,11 +40,13 @@ leaves every core distance at 0 and HDBSCAN\* degenerates to single linkage;
 ⇒ more communities), `covariance_weight` (Leiden β — a log-Euclidean covariance/shape term in the
 affinity, `feature="full"`; `0` = off, the centroid-only default), `tangent_weight` / `tangent_rank`
 (Leiden γ — a Grassmann tangent-subspace term of rank `tangent_rank` for manifold-aware communities,
-`feature="full"`; `0` = off), `projection` / `projection_dim` / `projection_max_iter` (**`"weighted-nmf"`**, or **`"weighted-nmf-kl"`** for count data, reduces
-the leaf centroids to `projection_dim` nonnegative CF-weighted NMF codes before the head — for
-**nonnegative** data only: TF-IDF / counts / spectrograms, dense or CSR; `"none"` = off. After a fit,
-`components_` gives the `(projection_dim, dim)` parts and `reconstruction_err_` the relative fit
-error), `seed`. `n_clusters=0` ⇒ automatic `k` for every parametric head (BIC for
+`feature="full"`; `0` = off), `projection` / `projection_dim` / `projection_max_iter` (reduce the leaf centroids to
+`projection_dim` codes before the head; `"none"` = off. **`"weighted-nmf"`**, or
+**`"weighted-nmf-kl"`** for count data, gives nonnegative CF-weighted NMF codes — for **nonnegative**
+data only: TF-IDF / counts / spectrograms, dense or CSR. **`"svd"`** gives a CF-weighted PCA, accepts
+signed data, and is the one-call text pipeline — see *Text: reduce and cluster in one call* below.
+After a fit, `components_` gives the `(projection_dim, dim)` parts and `reconstruction_err_` the
+relative fit error), `refine` (BIRCH Phase 4 — see below), `seed`. `n_clusters=0` ⇒ automatic `k` for every parametric head (BIC for
 k-means/GMM, dendrogram cut for Ward). `threshold="auto"` (dense only) drops the one knob users most
 often have to guess: a subsample pilot estimates a warm-start absorption radius, so the full fit
 starts near-converged instead of growing the threshold from zero.
@@ -295,6 +297,49 @@ from betula_cluster import fit_predict_sparse
 
 labels = fit_predict_sparse(X, n_clusters=20, threshold=0.5)   # kmeans by default; O(nnz) per row
 ```
+
+### Text: reduce and cluster in one call — `projection="svd"`
+
+Clustering TF-IDF in its own geometry does not work, and the size of the failure is worth stating:
+on 20-newsgroups the unprojected sparse path scores **ARI 0.003**. The standard fix is to reduce
+first, and `projection="svd"` does it inside the same call — a CF-weighted PCA of the **leaf
+summary**, so the factorization runs over `M ≈ 10³` micro-clusters rather than `N` documents.
+
+```python
+labels = fit_predict_sparse(
+    X, n_clusters=20, method="spherical-kmeans",   # cosine geometry on the codes -- see below
+    max_leaves=256, projection="svd", projection_dim=50,
+)
+```
+
+20-newsgroups TF-IDF (18 846 × 2 000, `k`=20, rank 50, median of seeds 0/1/2, one BLAS thread):
+
+| | ARI | time |
+|---|---|---|
+| sparse path, no projection | 0.003 | 8.1 s |
+| `projection="svd"`, `max_leaves=256` | 0.130 | 0.30 s |
+| `projection="svd"`, `max_leaves=512` | 0.144 | 0.58 s |
+| `projection="svd"`, `max_leaves=2048` | 0.152 | 5.4 s |
+| `TruncatedSVD(50)` + `KMeans` on the raw rows | 0.143 | 0.54 s |
+
+Two things decide whether this works for you.
+
+**Use a cosine head on the codes.** `method="kmeans"` on the same codes scores **0.014** against
+`spherical-kmeans`'s 0.152 — an eleven-fold difference, because the leading principal direction of a
+TF-IDF corpus is document length, and only an angular objective ignores it.
+
+**The leaf budget is the cost, not the projection.** Sweeping the rank from 1 to 100 moves the total
+by 1.2 s; sweeping `max_leaves` from 256 to 2048 moves it from 0.30 s to 5.4 s, because the sparse
+summarizer compares each row against every micro-cluster it has so far. Buy resolution deliberately.
+
+The basis is not a compromise for being built from a summary: labelling raw rows in it scores 0.159
+against 0.143 for `TruncatedSVD`'s own basis on the same rows. Under the spherical cluster feature the
+discarded within-leaf scatter is isotropic, so it shifts eigenvalues and leaves the directions alone.
+
+Unlike `weighted-nmf`, a PCA is a linear map, so each row is labelled by **its own** code
+(`(x − x̄)Vᵀ`, computed from its non-zeros) rather than by its micro-cluster's. That distinction is
+worth 0.062 ARI here, and it is why the NMF projection cannot be given the same treatment: its code
+is the solution of a per-row nonnegative least squares, not a matrix product.
 
 ## Hyperparameter tuning — memory-aware, dependency-free
 

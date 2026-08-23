@@ -74,7 +74,7 @@ fn gram_cols<R: Real>(w: &[Vec<R>], r: usize) -> Vec<Vec<R>> {
 ///
 /// Returns `(σ, U, V)` with `σ` descending, `U[k]` the `k`-th left vector (length `m`) and `V[k]` the
 /// `k`-th right vector (length `d`). Vectors are unit-norm; signs are arbitrary (as always for an SVD).
-fn randomized_svd<R: Real>(
+pub(crate) fn randomized_svd<R: Real>(
     x: &[Vec<R>],
     r: usize,
     seed: u64,
@@ -624,14 +624,24 @@ fn weighted_nmf_kl<R: Real>(
 /// threaded through every dispatch signature, and a bare `(usize, bool, usize)` at those call sites says
 /// nothing about which number is which.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct NmfSpec {
+pub(crate) struct ProjectionSpec {
     /// Target rank. Capped by the centroid matrix's own dimensions inside the solvers.
     pub rank: usize,
-    /// Minimize the generalized KL divergence (the Poisson model for counts) instead of Frobenius.
-    pub kl: bool,
-    /// Solver sweeps. Separate from the clustering head's budget — the two converge at different rates,
-    /// and sharing one number made a larger `max_iter` for the head silently pay for NMF sweeps too.
-    pub max_iter: usize,
+    /// Which factorization, and the parameters only that one has.
+    pub kind: ProjectionKind,
+}
+
+/// The two Phase-3 projections. Sum-typed rather than a rank plus a pair of flags, so a spec that
+/// asks for a solver budget on a projection that has no solver cannot be written down.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum ProjectionKind {
+    /// CF-weighted NMF. `kl` selects the generalized KL divergence (the Poisson model for counts)
+    /// over Frobenius. `max_iter` is the solver's own sweep budget, separate from the clustering
+    /// head's — the two converge at different rates, and sharing one number made a larger `max_iter`
+    /// for the head silently pay for NMF sweeps too.
+    Nmf { kl: bool, max_iter: usize },
+    /// CF-weighted PCA (see [`crate::clustering::pca`]). Direct: no sweeps to budget.
+    Svd,
 }
 
 /// The factorization of a set of leaf microclusters: per-leaf codes as single-point `Spherical` features
@@ -641,11 +651,15 @@ pub(crate) struct Projection<R: Real> {
     pub components: Vec<Vec<R>>,
     /// Relative reconstruction error `‖X̃ − W H‖_F / ‖X̃‖_F` of the weighted centroid matrix.
     pub reconstruction_err: R,
+    /// `Some(x̄)` exactly when the projection is a **linear** map and so can encode a raw row in
+    /// `O(d·r)` — the `svd` case, where the row keeps the head's own point rule. `None` for NMF,
+    /// whose code is the solution of a per-row nonnegative least squares, not a matrix product.
+    pub centre: Option<Vec<R>>,
 }
 
-/// Project leaf microclusters to `spec.rank`-dimensional CF-weighted NMF codes (Frobenius HALS, or the
-/// KL-divergence multiplicative variant for count data).
-pub(crate) fn project<R, C>(feats: &[C], spec: NmfSpec, seed: u64) -> Projection<R>
+/// Project leaf microclusters to `spec.rank` dimensions: CF-weighted NMF (Frobenius HALS, or the
+/// KL-divergence multiplicative variant for count data), or CF-weighted PCA.
+pub(crate) fn project<R, C>(feats: &[C], spec: ProjectionSpec, seed: u64) -> Projection<R>
 where
     R: Real,
     C: ClusterFeature<R>,
@@ -655,12 +669,16 @@ where
             coded: Vec::new(),
             components: Vec::new(),
             reconstruction_err: R::zero(),
+            centre: None,
         };
     }
+    let (kl, iters) = match spec.kind {
+        ProjectionKind::Svd => return project_pca(feats, spec.rank, seed),
+        ProjectionKind::Nmf { kl, max_iter } => (kl, max_iter.max(1)),
+    };
     let centroids: Vec<Vec<R>> = feats.iter().map(|f| f.mean().to_vec()).collect();
     let weights: Vec<R> = feats.iter().map(|f| f.weight()).collect();
-    let iters = spec.max_iter.max(1);
-    let (codes, components) = if spec.kl {
+    let (codes, components) = if kl {
         weighted_nmf_kl(&centroids, &weights, spec.rank, iters, seed)
     } else {
         weighted_nmf(&centroids, &weights, spec.rank, iters, seed)
@@ -670,7 +688,7 @@ where
     let d = centroids[0].len();
     let x: Vec<Vec<R>> = (0..centroids.len())
         .map(|j| {
-            let s = if spec.kl {
+            let s = if kl {
                 R::one()
             } else {
                 weights[j].max(R::zero()).sqrt()
@@ -680,7 +698,7 @@ where
         .collect();
     let w: Vec<Vec<R>> = (0..codes.len())
         .map(|j| {
-            let s = if spec.kl {
+            let s = if kl {
                 R::one()
             } else {
                 weights[j].max(R::zero()).sqrt()
@@ -709,6 +727,31 @@ where
             .collect(),
         components,
         reconstruction_err,
+        centre: None,
+    }
+}
+
+/// The `svd` arm of [`project`]: a CF-weighted PCA, with each leaf carried into code space by the
+/// same linear map that will later encode raw rows.
+fn project_pca<R, C>(feats: &[C], rank: usize, seed: u64) -> Projection<R>
+where
+    R: Real,
+    C: ClusterFeature<R>,
+{
+    let pca = crate::clustering::pca::weighted_pca(feats, rank, seed);
+    let mut code = Vec::new();
+    let coded = feats
+        .iter()
+        .map(|f| {
+            pca.encode(f.mean(), &mut code);
+            Spherical::from_moments(f.weight(), code.clone(), R::zero())
+        })
+        .collect();
+    Projection {
+        coded,
+        components: pca.basis,
+        reconstruction_err: (R::one() - pca.captured).max(R::zero()).sqrt(),
+        centre: Some(pca.centre),
     }
 }
 
@@ -833,10 +876,12 @@ mod tests {
         let feats = leaves(&cents);
         let out = project(
             &feats,
-            NmfSpec {
+            ProjectionSpec {
                 rank: 2,
-                kl: false,
-                max_iter: 100,
+                kind: ProjectionKind::Nmf {
+                    kl: false,
+                    max_iter: 100,
+                },
             },
             3,
         );
@@ -1287,10 +1332,12 @@ mod tests {
             .zip(&ws)
             .map(|(c, &w)| Spherical::from_moments(w, c.clone(), 0.0))
             .collect();
-        let spec = NmfSpec {
+        let spec = ProjectionSpec {
             rank: 2,
-            max_iter: 40,
-            kl: false,
+            kind: ProjectionKind::Nmf {
+                kl: false,
+                max_iter: 40,
+            },
         };
         let out: Projection<f64> = project(&feats, spec, 4);
 
@@ -1493,10 +1540,12 @@ mod tests {
         let feats: Vec<Spherical<f64>> = (0..4)
             .map(|_| Spherical::from_moments(1.0, vec![0.0; 3], 0.0))
             .collect();
-        let spec = NmfSpec {
+        let spec = ProjectionSpec {
             rank: 2,
-            max_iter: 20,
-            kl: false,
+            kind: ProjectionKind::Nmf {
+                kl: false,
+                max_iter: 20,
+            },
         };
         let out: Projection<f64> = project(&feats, spec, 7);
         assert!(
@@ -1505,6 +1554,40 @@ mod tests {
             out.reconstruction_err
         );
         assert_eq!(out.reconstruction_err, 0.0);
+    }
+
+    #[test]
+    fn the_svd_projection_reports_the_between_leaf_energy_it_left_behind() {
+        // `reconstruction_err = √(1 − captured)`, so it is 0 exactly when the basis spans the whole
+        // between-leaf scatter and strictly inside (0, 1) when it does not. Leaf means on a line
+        // through a *non-zero* grand mean make rank 1 sufficient and rank 1 of a two-axis fixture
+        // insufficient — the two halves together pin the `1 − captured` form against `1 + captured`
+        // (which is ≥ 1 and never zero) and `1 / captured` (which is ≥ 1 and never zero either).
+        let line: Vec<Spherical<f64>> = (-3..=3)
+            .map(|t| Spherical::from_moments(1.0, vec![t as f64 + 4.0, 2.0 * t as f64 - 1.0], 0.0))
+            .collect();
+        let spec = ProjectionSpec {
+            rank: 1,
+            kind: ProjectionKind::Svd,
+        };
+        let out: Projection<f64> = project(&line, spec, 7);
+        assert!(
+            out.reconstruction_err.abs() < 1e-8,
+            "{}",
+            out.reconstruction_err
+        );
+        assert_eq!(out.centre, Some(vec![4.0, -1.0]));
+
+        let mut rng = SplitMix64::new(11);
+        let plane: Vec<Spherical<f64>> = (0..64)
+            .map(|_| Spherical::from_moments(1.0, vec![rng.gauss() * 2.0, rng.gauss()], 0.0))
+            .collect();
+        let out: Projection<f64> = project(&plane, spec, 7);
+        assert!(
+            (0.2..0.7).contains(&out.reconstruction_err),
+            "{}",
+            out.reconstruction_err
+        );
     }
 
     /// NNDSVDar re-derived from Boutsidis & Gallopoulos (2008) and the `ar` fill this module
@@ -1819,10 +1902,12 @@ mod tests {
         // -- give the fill a floor that does not vanish with the data and the same line starts
         // reporting an infinite error on a matrix that was reconstructed exactly.
         let feats = leaves(&vec![vec![0.0; 4]; 6]);
-        let spec = NmfSpec {
+        let spec = ProjectionSpec {
             rank: 2,
-            max_iter: 40,
-            kl: false,
+            kind: ProjectionKind::Nmf {
+                kl: false,
+                max_iter: 40,
+            },
         };
         let out: Projection<f64> = project(&feats, spec, 4);
         assert_eq!(out.reconstruction_err, 0.0);

@@ -262,11 +262,26 @@ def main() -> dict:
             from sklearn.cluster import KMeans
 
             labels = np.asarray(KMeans(k, n_init=3, random_state=0).fit_predict(X))
-        elif method in ("betula-svd", "betula-nmf"):
+        elif method == "betula-svd":
             import betula_cluster as bc
 
-            reducer = method.split("-", 1)[1]
-            z = reduce_dims(X, reducer, 50 if reducer == "svd" else 20)
+            # betula's *own* reduction: a CF-weighted PCA of the leaf summary, in the same call. The
+            # row used to borrow sklearn's TruncatedSVD, which measured sklearn's reducer.
+            labels = np.asarray(
+                bc.fit_predict_sparse(
+                    X,
+                    n_clusters=k,
+                    method="spherical-kmeans",
+                    max_leaves=2048,
+                    seed=0,
+                    projection="svd",
+                    projection_dim=50,
+                )
+            )
+        elif method == "betula-nmf":
+            import betula_cluster as bc
+
+            z = reduce_dims(X, "nmf", 20)
             labels = np.asarray(
                 bc.fit_predict(
                     z, k, feature="spherical", method="kmeans", max_leaves=2048, seed=0, n_jobs=1

@@ -19,7 +19,7 @@ use std::ffi::CString;
 use rayon::prelude::*;
 
 use crate::clustering::hdbscan::hdbscan;
-use crate::clustering::nmf::NmfSpec;
+use crate::clustering::nmf::{Projection, ProjectionKind, ProjectionSpec};
 use crate::clustering::scalespace::scale_space;
 use crate::clustering::{
     ConstraintError, MixedCf, cop_kmeans, kprototypes, nearest_micro, summarize_mixed,
@@ -147,37 +147,44 @@ fn parse_method(
 /// soft responsibility matrix flattened `(resp, k)` (`None` otherwise) so `predict_proba` can read a
 /// true posterior without recomputing the E-step. HDBSCAN keeps `-1` for noise; parametric labels are
 /// cast to `i64`. Generic over the element type so it serves both the `f64` and `f32` trees.
-/// Resolve the optional Phase-3 projection to an `NmfSpec`, or `None`. `"weighted-nmf"` = Frobenius,
-/// `"weighted-nmf-kl"` = KL (count data), `"none"`/`""` off.
+/// The `projection` values this binding accepts, as one string so the parser and every error message
+/// cannot drift apart.
+const PROJECTION_CHOICES: &str =
+    "projection must be 'none', 'weighted-nmf', 'weighted-nmf-kl' or 'svd'";
+
+/// Resolve the optional Phase-3 projection, or `None`. `"weighted-nmf"` = Frobenius NMF,
+/// `"weighted-nmf-kl"` = KL NMF (count data), `"svd"` = CF-weighted PCA, `"none"`/`""` off.
 fn parse_projection(
     projection: &str,
     projection_dim: usize,
     projection_max_iter: usize,
-) -> PyResult<Option<NmfSpec>> {
-    let kl = match projection {
+) -> PyResult<Option<ProjectionSpec>> {
+    let kind = match projection {
         "none" | "" => return Ok(None),
-        "weighted-nmf" => false,
-        "weighted-nmf-kl" => true,
-        _ => {
-            return Err(PyValueError::new_err(
-                "projection must be 'none', 'weighted-nmf' or 'weighted-nmf-kl'",
-            ));
-        }
+        "weighted-nmf" => ProjectionKind::Nmf {
+            kl: false,
+            max_iter: projection_max_iter,
+        },
+        "weighted-nmf-kl" => ProjectionKind::Nmf {
+            kl: true,
+            max_iter: projection_max_iter,
+        },
+        "svd" => ProjectionKind::Svd,
+        _ => return Err(PyValueError::new_err(PROJECTION_CHOICES)),
     };
     if projection_dim == 0 {
         return Err(PyValueError::new_err(
-            "projection_dim must be > 0 for a 'weighted-nmf' projection",
+            "projection_dim must be > 0 for a projection",
         ));
     }
-    if projection_max_iter == 0 {
+    if projection_max_iter == 0 && matches!(kind, ProjectionKind::Nmf { .. }) {
         return Err(PyValueError::new_err(
             "projection_max_iter must be > 0 for a 'weighted-nmf' projection",
         ));
     }
-    Ok(Some(NmfSpec {
+    Ok(Some(ProjectionSpec {
         rank: projection_dim,
-        kl,
-        max_iter: projection_max_iter,
+        kind,
     }))
 }
 
@@ -248,6 +255,10 @@ struct Labelling {
     parts: Option<(Vec<Vec<f64>>, f64)>,
     /// The head's point-level density, for the generative heads.
     mixture: Option<Mixture>,
+    /// The point rule a *linear* projection leaves behind, already in code space. Built here because
+    /// this is the only place that holds the coded leaves; `None` off the projected path, where the
+    /// estimator derives the rule from the tree's own leaf statistics.
+    rule: Option<PointRule>,
 }
 
 /// Label leaf features, optionally projecting them to `nmf_dim`-dimensional CF-weighted NMF codes
@@ -259,14 +270,16 @@ fn label_features_proba<R: Real, C: ClusterFeature<R>>(
     k: usize,
     max_iter: usize,
     seed: u64,
-    nmf_dim: Option<NmfSpec>,
+    nmf_dim: Option<ProjectionSpec>,
 ) -> Labelling {
     match nmf_dim {
         Some(spec) => {
             let p = crate::clustering::nmf::project(feats, spec, seed);
-            // The head clustered NMF *codes*; its density lives in code space and cannot score a raw
-            // row, so the microcluster route stays the defined labelling on this path.
-            let (labels, proba, _) = dispatch_kind(&p.coded, kind, k, max_iter, seed);
+            // The head clustered *codes*, so its density lives in code space. A linear projection can
+            // carry a raw row there and keep the head's own point rule; an NMF cannot, and falls back
+            // to the microcluster route.
+            let (labels, proba, mixture) = dispatch_kind(&p.coded, kind, k, max_iter, seed);
+            let rule = projected_rule(&p, &labels, kind, mixture);
             let parts = p
                 .components
                 .iter()
@@ -281,6 +294,7 @@ fn label_features_proba<R: Real, C: ClusterFeature<R>>(
                 proba,
                 parts: Some((parts, p.reconstruction_err.to_f64().unwrap_or(f64::NAN))),
                 mixture: None,
+                rule,
             }
         }
         None => {
@@ -290,6 +304,7 @@ fn label_features_proba<R: Real, C: ClusterFeature<R>>(
                 proba,
                 parts: None,
                 mixture,
+                rule: None,
             }
         }
     }
@@ -347,6 +362,89 @@ enum PointRule {
     Centers { labels: Vec<i64>, rows: Vec<f64> },
     /// The fitted mixture; the label is its maximum-posterior component.
     Posterior(Mixture),
+    /// Encode the row through a linear projection — `(x − centre)·basisᵀ` — then apply `inner` in
+    /// code space. Only `projection="svd"` reaches this: a PCA *is* a matrix, so a raw row costs
+    /// `O(d·r)` to place in the space the head clustered. NMF codes are the solution of a per-row
+    /// nonnegative least squares, so that path keeps the microcluster route — which on 20-newsgroups
+    /// costs 0.062 ARI purely by answering with each row's leaf's label instead of the row's own.
+    Projected {
+        centre: Vec<f64>,
+        basis: Vec<Vec<f64>>,
+        inner: Box<PointRule>,
+    },
+}
+
+/// `(x − centre)·basisᵀ` — one row through a linear projection, in `f64` whatever the tree's dtype
+/// (the basis and the code-space model are `f64`, so encoding in `f32` would place the row in a
+/// slightly different space from the one the head clustered).
+fn encode_row<R: Real>(centre: &[f64], basis: &[Vec<f64>], x: &[R]) -> Vec<f64> {
+    basis
+        .iter()
+        .map(|v| {
+            x.iter()
+                .zip(centre)
+                .zip(v)
+                .map(|((&xi, &c), &vi)| (xi.to_f64().unwrap_or(0.0) - c) * vi)
+                .sum()
+        })
+        .collect()
+}
+
+/// A [`PointRule::Centers`] from pooled per-cluster statistics: one row per non-empty cluster,
+/// re-normalized to the sphere for the heads whose argmin is a cosine argmax. Empty clusters are
+/// dropped rather than emitted at the origin, where they would attract every point near it.
+fn centers_rule(centers: &[f64], weights: &[f64], dim: usize, unit: bool) -> Option<PointRule> {
+    let mut labels = Vec::new();
+    let mut rows = Vec::new();
+    for (c, &w) in weights.iter().enumerate() {
+        if w <= 0.0 {
+            continue;
+        }
+        let row = &centers[c * dim..(c + 1) * dim];
+        let scale = if unit {
+            let norm = row.iter().map(|v| v * v).sum::<f64>().sqrt();
+            if norm > 0.0 { 1.0 / norm } else { 1.0 }
+        } else {
+            1.0
+        };
+        labels.push(c as i64);
+        rows.extend(row.iter().map(|v| v * scale));
+    }
+    (!labels.is_empty()).then_some(PointRule::Centers { labels, rows })
+}
+
+/// The head's point rule *in code space*, wrapped in the encoder that takes a raw row there.
+///
+/// `None` unless the projection is a linear map (only `svd` is) and the head has a point model —
+/// otherwise the microcluster route stays the defined labelling, as it is for every NMF projection.
+fn projected_rule<R: Real>(
+    proj: &Projection<R>,
+    labels: &[i64],
+    kind: Kind,
+    mixture: Option<Mixture>,
+) -> Option<PointRule> {
+    let centre = proj.centre.as_ref()?;
+    let Kind::Parametric(method) = kind else {
+        return None;
+    };
+    let inner = match assignment_rule(method) {
+        Rule::Posterior => PointRule::Posterior(mixture?),
+        Rule::Microcluster => return None,
+        Rule::Centroid { unit } => {
+            let k = cluster_count_for_centers(labels);
+            let (centers, _radii, weights, dim) = compute_cluster_stats(&proj.coded, labels, k);
+            centers_rule(&centers, &weights, dim, unit)?
+        }
+    };
+    Some(PointRule::Projected {
+        centre: centre.iter().map(|&v| v.to_f64().unwrap_or(0.0)).collect(),
+        basis: proj
+            .components
+            .iter()
+            .map(|row| row.iter().map(|&v| v.to_f64().unwrap_or(0.0)).collect())
+            .collect(),
+        inner: Box::new(inner),
+    })
 }
 
 impl PointRule {
@@ -371,6 +469,11 @@ impl PointRule {
                 best
             }
             PointRule::Posterior(m) => m.assign_into(x, scratch) as i64,
+            PointRule::Projected {
+                centre,
+                basis,
+                inner,
+            } => inner.label_of(&encode_row(centre, basis, x), scratch),
         }
     }
 
@@ -386,6 +489,34 @@ impl PointRule {
     /// the dense `n × dim` matrix is never materialized (serial — the shared buffer precludes the
     /// parallel path).
     fn label_csr(&self, data: &[f64], indices: &[i64], indptr: &[i64], dim: usize) -> Vec<i64> {
+        if let PointRule::Projected {
+            centre,
+            basis,
+            inner,
+        } = self
+        {
+            // `(x − x̄)Vᵀ = xVᵀ − x̄Vᵀ`: the second term is one constant vector, and the first touches
+            // only the non-zeros. That keeps the projected sparse path at `O(nnz·r)` instead of the
+            // `O(n·d·r)` a densify-then-encode would cost — 60× fewer multiplies on 20-newsgroups.
+            let offset: Vec<f64> = basis
+                .iter()
+                .map(|v| -v.iter().zip(centre).map(|(&a, &b)| a * b).sum::<f64>())
+                .collect();
+            let mut scratch = Vec::new();
+            let mut out = Vec::with_capacity(indptr.len().saturating_sub(1));
+            for w in indptr.windows(2) {
+                let (lo, hi) = (w[0] as usize, w[1] as usize);
+                let mut code = offset.clone();
+                for k in lo..hi {
+                    let (c, v) = (indices[k] as usize, data[k]);
+                    for (z, b) in code.iter_mut().zip(basis) {
+                        *z += v * b[c];
+                    }
+                }
+                out.push(inner.label_of(&code, &mut scratch));
+            }
+            return out;
+        }
         let mut buf = vec![0.0f64; dim];
         let mut scratch = Vec::new();
         let mut out = Vec::with_capacity(indptr.len().saturating_sub(1));
@@ -405,6 +536,21 @@ impl PointRule {
     /// Per-row posterior `p(c | x)` flattened `n × k`, or `None` for a centroid rule, which has no
     /// calibrated posterior to report.
     fn proba_rows<R: Real>(&self, flat: &[R], n: usize, dim: usize) -> Option<(Vec<f64>, usize)> {
+        if let PointRule::Projected {
+            centre,
+            basis,
+            inner,
+        } = self
+        {
+            // Encode once into a flat code matrix, then let the code-space rule score it — so
+            // `predict_proba(X).argmax(1) == predict(X)` holds on this path too.
+            let r = basis.len();
+            let mut codes = Vec::with_capacity(n * r);
+            for i in 0..n {
+                codes.extend(encode_row(centre, basis, &flat[i * dim..(i + 1) * dim]));
+            }
+            return inner.proba_rows(&codes, n, r);
+        }
         let PointRule::Posterior(m) = self else {
             return None;
         };
@@ -694,7 +840,7 @@ fn cluster<R: Real, C: ClusterFeature<R>>(
     max_iter: usize,
     seed: u64,
     n_jobs: usize,
-    nmf_dim: Option<NmfSpec>,
+    nmf_dim: Option<ProjectionSpec>,
     refine: usize,
 ) -> (Vec<i64>, usize) {
     let tree = build_tree::<R, C>(
@@ -703,13 +849,18 @@ fn cluster<R: Real, C: ClusterFeature<R>>(
     let leaves = tree.num_leaves();
     let labels = match kind {
         Kind::Parametric(method) => match nmf_dim {
-            Some(spec) => {
-                // Reduce leaf centroids to CF-weighted NMF codes, cluster those; labels stay per-leaf.
-                let coded = crate::clustering::nmf::project(tree.leaf_features(), spec, seed).coded;
-                let entry_labels = fit_head(&coded, k, method, max_iter, seed).labels;
-                map_rows(n, |i| {
-                    entry_labels[tree.nearest_entry(&flat[i * dim..(i + 1) * dim])] as i64
-                })
+            Some(_) => {
+                // Reduce leaf centroids to codes and cluster those. A linear projection (`svd`) hands
+                // back a point rule, so each row is labelled by its own code; an NMF cannot, and the
+                // row inherits its leaf's label.
+                let out =
+                    label_features_proba(tree.leaf_features(), kind, k, max_iter, seed, nmf_dim);
+                match out.rule {
+                    Some(rule) => rule.label_rows(flat, n, dim),
+                    None => map_rows(n, |i| {
+                        out.labels[tree.nearest_entry(&flat[i * dim..(i + 1) * dim])]
+                    }),
+                }
             }
             None => {
                 let mut model = Model::fit(tree, k, method, max_iter, seed);
@@ -757,11 +908,11 @@ fn run_oneshot<R: Real + Element>(
     seed: u64,
     n_jobs: usize,
     normalize: bool,
-    nmf_dim: Option<NmfSpec>,
+    nmf_dim: Option<ProjectionSpec>,
     refine: usize,
 ) -> PyResult<(Vec<i64>, usize)> {
     let (mut flat, n, dim) = to_flat(&data)?;
-    if nmf_dim.is_some() {
+    if matches!(nmf_dim.map(|s| s.kind), Some(ProjectionKind::Nmf { .. })) {
         require_nonnegative(&flat)?;
     }
     // Directional heads cluster points on the unit sphere, so they always operate on L2-normalized
@@ -1024,7 +1175,7 @@ impl<R: Real> TreeState<R> {
         k: usize,
         max_iter: usize,
         seed: u64,
-        nmf_dim: Option<NmfSpec>,
+        nmf_dim: Option<ProjectionSpec>,
     ) -> Labelling {
         match self {
             TreeState::Spherical(t) => {
@@ -1409,6 +1560,9 @@ struct Betula {
     /// NMF solver sweeps, independent of the head's `max_iter`; kept for `get_params`.
     #[serde(default = "default_projection_max_iter")]
     nmf_max_iter: usize,
+    /// The projection of rank `nmf_dim` is a CF-weighted PCA rather than an NMF.
+    #[serde(default)]
+    projection_svd: bool,
     dim: usize,
     // The estimator holds an f64 *or* an f32 tree (chosen by the first input's dtype) — at most one
     // is ever `Some`. f32 halves the resident tree memory on high-d embeddings.
@@ -1611,6 +1765,24 @@ impl Betula {
         Ok(())
     }
 
+    /// The Phase-3 projection this estimator was configured with.
+    ///
+    /// The three stored fields are the wire format — a schema-versioned CBOR layout that older saved
+    /// models still have to load — so the sum type is rebuilt here rather than stored. Everything
+    /// above this function sees only [`ProjectionSpec`].
+    fn projection_spec(&self) -> Option<ProjectionSpec> {
+        let rank = self.nmf_dim?;
+        let kind = if self.projection_svd {
+            ProjectionKind::Svd
+        } else {
+            ProjectionKind::Nmf {
+                kl: self.nmf_kl,
+                max_iter: self.nmf_max_iter,
+            }
+        };
+        Some(ProjectionSpec { rank, kind })
+    }
+
     /// The point model the finalized head defines, or `None` when it has none, or when a projection
     /// replaced the feature space the rows live in — in both cases the microcluster route is the only
     /// defined labelling. Constrained runs never take this path: COP-KMeans labels satisfy pairwise
@@ -1630,23 +1802,7 @@ impl Betula {
         // `cluster_stats_any` yields radii *before* weights (`F64Stats` swaps the two between the
         // leaf and the cluster helper); reading them in leaf order drops every zero-radius cluster.
         let (centers, _radii, weights, dim) = self.cluster_stats_any().ok()?;
-        let mut labels = Vec::new();
-        let mut rows = Vec::new();
-        for (c, &w) in weights.iter().enumerate() {
-            if w <= 0.0 {
-                continue;
-            }
-            let row = &centers[c * dim..(c + 1) * dim];
-            let scale = if unit {
-                let norm = row.iter().map(|v| v * v).sum::<f64>().sqrt();
-                if norm > 0.0 { 1.0 / norm } else { 1.0 }
-            } else {
-                1.0
-            };
-            labels.push(c as i64);
-            rows.extend(row.iter().map(|v| v * scale));
-        }
-        (!labels.is_empty()).then_some(PointRule::Centers { labels, rows })
+        centers_rule(&centers, &weights, dim, unit)
     }
 
     /// BIRCH Phase 4 on the finalized centre rule: `refine` Lloyd sweeps over the rows just fitted,
@@ -1689,11 +1845,7 @@ impl Betula {
             self.n_clusters,
             self.max_iter,
             self.seed,
-            self.nmf_dim.map(|rank| NmfSpec {
-                rank,
-                kl: self.nmf_kl,
-                max_iter: self.nmf_max_iter,
-            }),
+            self.projection_spec(),
         );
         let result = if let Some(t) = &self.state64 {
             Some(t.label_proba(kind, k, mi, seed, nmf))
@@ -1709,7 +1861,7 @@ impl Betula {
                 let (components, err) = out.parts.unzip();
                 self.nmf_components = components;
                 self.nmf_reconstruction_err = err;
-                self.rule = self.point_rule(out.mixture);
+                self.rule = out.rule.or_else(|| self.point_rule(out.mixture));
             }
             None => {
                 self.labels = None;
@@ -1897,8 +2049,15 @@ impl Betula {
         )?;
         let proj = parse_projection(projection, projection_dim, projection_max_iter)?;
         let nmf_dim = proj.map(|p| p.rank);
-        let nmf_kl = proj.is_some_and(|p| p.kl);
-        let nmf_max_iter = proj.map_or(default_projection_max_iter(), |p| p.max_iter);
+        let nmf_kl = matches!(
+            proj.map(|p| p.kind),
+            Some(ProjectionKind::Nmf { kl: true, .. })
+        );
+        let projection_svd = matches!(proj.map(|p| p.kind), Some(ProjectionKind::Svd));
+        let nmf_max_iter = match proj.map(|p| p.kind) {
+            Some(ProjectionKind::Nmf { max_iter, .. }) => max_iter,
+            _ => default_projection_max_iter(),
+        };
         let route = parse_route(distance)?;
         if !matches!(feature, "spherical" | "diagonal" | "full" | "fd") {
             return Err(PyValueError::new_err(
@@ -1951,6 +2110,7 @@ impl Betula {
             nmf_dim,
             nmf_kl,
             nmf_max_iter,
+            projection_svd,
             dim: 0,
             state64: None,
             state32: None,
@@ -2234,7 +2394,7 @@ impl Betula {
     fn components_<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray2<f64>>> {
         let h = self.nmf_components.as_ref().ok_or_else(|| {
             PyValueError::new_err(
-                "components_ is only available after fit with projection='weighted-nmf' or 'weighted-nmf-kl'",
+                "components_ is only available after fit with a projection ('weighted-nmf', 'weighted-nmf-kl' or 'svd')",
             )
         })?;
         let (r, d) = (h.len(), h.first().map_or(0, |row| row.len()));
@@ -2251,7 +2411,7 @@ impl Betula {
     fn reconstruction_err_(&self) -> PyResult<f64> {
         self.nmf_reconstruction_err.ok_or_else(|| {
             PyValueError::new_err(
-                "reconstruction_err_ is only available after fit with projection='weighted-nmf' or 'weighted-nmf-kl'",
+                "reconstruction_err_ is only available after fit with a projection ('weighted-nmf', 'weighted-nmf-kl' or 'svd')",
             )
         })
     }
@@ -3345,10 +3505,18 @@ fn parse_parametric(method: &str) -> PyResult<Method> {
 /// are summarised into spherical micro-clusters touching only the non-zeros (flat leader pass, bounded
 /// by `max_leaves`), the micro-clusters are clustered by a parametric head, and each row is labelled by
 /// its nearest micro-cluster. See `sparse.rs` for the numerical trade-off of the sparse-native path.
+///
+/// `projection="svd"` makes this the one-call reduce-then-cluster pipeline for text: the leaf summary
+/// is reduced to `projection_dim` CF-weighted principal directions, the head clusters the codes, and
+/// each row is labelled by its **own** code — encoded from its non-zeros in `O(nnz·r)`, so the raw
+/// high-dimensional geometry is never clustered directly. `"weighted-nmf"` reduces the same way but
+/// keeps the micro-cluster route, its codes being a per-row nonnegative least squares rather than a
+/// matrix product.
 #[pyfunction]
 #[pyo3(signature = (
     data, indices, indptr, n_features, n_clusters = 8, method = "kmeans",
-    threshold = 0.0, max_leaves = 2048, max_iter = 100, seed = 0
+    threshold = 0.0, max_leaves = 2048, max_iter = 100, seed = 0,
+    projection = "none", projection_dim = 64, projection_max_iter = 100
 ))]
 #[allow(clippy::too_many_arguments)]
 fn fit_predict_sparse<'py>(
@@ -3363,9 +3531,16 @@ fn fit_predict_sparse<'py>(
     max_leaves: usize,
     max_iter: usize,
     seed: u64,
+    projection: &str,
+    projection_dim: usize,
+    projection_max_iter: usize,
 ) -> PyResult<Bound<'py, PyArray1<i64>>> {
     let m = parse_parametric(method)?;
+    let spec = parse_projection(projection, projection_dim, projection_max_iter)?;
     let data = data.as_slice()?;
+    if matches!(spec.map(|s| s.kind), Some(ProjectionKind::Nmf { .. })) {
+        require_nonnegative(data)?;
+    }
     let indices = indices.as_slice()?;
     let indptr = indptr.as_slice()?;
     validate_csr(data, indices, indptr, n_features)?;
@@ -3382,19 +3557,28 @@ fn fit_predict_sparse<'py>(
             max_leaves.max(1),
         );
         let leaves = micros.len();
-        let micro_labels = fit_head(&micros, n_clusters, m, max_iter, seed).labels;
-        let means: Vec<Vec<f64>> = micros.iter().map(|c| c.mean().to_vec()).collect();
-        let musq: Vec<f64> = means
-            .iter()
-            .map(|mu| mu.iter().map(|v| v * v).sum())
-            .collect();
-        let labels = map_rows(indptr.len() - 1, |r| {
-            let (lo, hi) = (indptr[r] as usize, indptr[r + 1] as usize);
-            let val = &data[lo..hi];
-            let idx: Vec<usize> = indices[lo..hi].iter().map(|&c| c as usize).collect();
-            let x_sq: f64 = val.iter().map(|v| v * v).sum();
-            micro_labels[nearest_sparse(&means, &musq, &idx, val, x_sq)] as i64
-        });
+        let kind = Kind::Parametric(m);
+        let out = label_features_proba(&micros, kind, n_clusters, max_iter, seed, spec);
+        // A linear projection labels each row from its own code, touching only the non-zeros; every
+        // other configuration routes the row to its nearest micro-cluster and reads that label.
+        let labels = match &out.rule {
+            Some(rule) => rule.label_csr(data, indices, indptr, n_features),
+            None => {
+                let micro_labels = out.labels;
+                let means: Vec<Vec<f64>> = micros.iter().map(|c| c.mean().to_vec()).collect();
+                let musq: Vec<f64> = means
+                    .iter()
+                    .map(|mu| mu.iter().map(|v| v * v).sum())
+                    .collect();
+                map_rows(indptr.len() - 1, |r| {
+                    let (lo, hi) = (indptr[r] as usize, indptr[r + 1] as usize);
+                    let val = &data[lo..hi];
+                    let idx: Vec<usize> = indices[lo..hi].iter().map(|&c| c as usize).collect();
+                    let x_sq: f64 = val.iter().map(|v| v * v).sum();
+                    micro_labels[nearest_sparse(&means, &musq, &idx, val, x_sq)]
+                })
+            }
+        };
         (labels, leaves)
     });
     if Kind::Parametric(m).consumes_k() {

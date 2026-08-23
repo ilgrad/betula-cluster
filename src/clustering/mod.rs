@@ -11,6 +11,7 @@ pub mod hdbscan;
 pub mod kmeans;
 pub mod kprototypes;
 pub mod nmf;
+pub(crate) mod pca;
 pub(crate) mod rng;
 pub mod scalespace;
 pub mod spectral;

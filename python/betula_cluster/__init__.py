@@ -295,7 +295,16 @@ def _to_csr(X):
 
 
 def fit_predict_sparse(
-    X, n_clusters=8, method="kmeans", threshold=0.0, max_leaves=2048, max_iter=100, seed=0
+    X,
+    n_clusters=8,
+    method="kmeans",
+    threshold=0.0,
+    max_leaves=2048,
+    max_iter=100,
+    seed=0,
+    projection="none",
+    projection_dim=64,
+    projection_max_iter=100,
 ):
     """One-shot ``O(nnz)`` clustering of a ``scipy.sparse`` matrix.
 
@@ -306,6 +315,12 @@ def fit_predict_sparse(
     the expanded squared-distance form for speed and so does **not** carry the dense path's
     cancellation-free guarantee (accurate for sparse rows far from the dense centroid; see the
     library docs). Returns one ``int64`` label per row.
+
+    ``projection="svd"`` turns this into the one-call reduce-then-cluster pipeline for text: the
+    leaf summary is reduced to ``projection_dim`` CF-weighted principal directions, the head
+    clusters the codes, and each row is labelled by its own code (encoded from its non-zeros).
+    Clustering the raw high-dimensional geometry directly is the thing to avoid here — see
+    ``docs/USAGE.md``.
     """
     csr = _to_csr(X)
     if csr is None:
@@ -320,6 +335,9 @@ def fit_predict_sparse(
         max_leaves=max_leaves,
         max_iter=max_iter,
         seed=seed,
+        projection=projection,
+        projection_dim=projection_dim,
+        projection_max_iter=projection_max_iter,
     )
 
 
