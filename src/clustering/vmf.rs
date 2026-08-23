@@ -12,16 +12,28 @@
 //!   re-normalized to the sphere. The objective is cohesion `Σ_c ‖R_c‖` (maximized).
 //! - [`movmf`] / [`movmf_auto`]: soft EM for a vMF mixture. Concentration `κ` is estimated with
 //!   the Banerjee et al. (2005) approximation `κ̂ ≈ R̄(d − R̄²)/(1 − R̄²)`; the normalizer
-//!   `C_d(κ)` uses a stable log-space series for `log I_ν(κ)` (no Bessel library).
+//!   `C_d(κ)` needs `log I_ν(κ)`, taken from a log-space power series at small `κ` and from the
+//!   DLMF 10.41.3 uniform asymptotic above `κ = 10⁴` (no Bessel library either way).
 
 use crate::clustering::rng::SplitMix64;
 use crate::feature::ClusterFeature;
 use crate::mixture::Mixture;
 use crate::types::Real;
 
-/// Concentration is capped for numerical stability: `κ·(d_i·μ_c)` stays representable, and the
-/// `log I_ν(κ)` series stays short. A cluster tighter than this is already effectively a point.
-const KAPPA_MAX: f64 = 1e4;
+/// Concentration cap where [`log_iv`] has an asymptotic branch (`dim ≥ 4`). Set by
+/// representability of `κ·(d_i·μ_c)`, not by the normalizer: the expansion is exact to roundoff
+/// well beyond this. A cluster tighter than this is already effectively a point.
+const KAPPA_MAX: f64 = 1e6;
+/// Concentration cap where the ascending series is the only evaluator (`dim ≤ 3`). Its own limit
+/// binds here: the `m > 200_000` stop fires before the peak term at `m ≈ κ/2`, so the series is
+/// silently wrong above `κ ≈ 4e5` and `O(κ)`-slow long before that.
+const KAPPA_MAX_SERIES: f64 = 1e4;
+/// Above this the uniform asymptotic expansion replaces the series in [`log_iv`]; three terms reach
+/// f64 roundoff from here up.
+const LOG_IV_ASYMPTOTIC_KAPPA: f64 = 1e4;
+/// …and only for orders this large. The expansion is written in `z = κ/ν` and divides by `ν`, so it
+/// is undefined at `ν = 0` and meaningless below; `ν = d/2 − 1`, so this is `dim ≥ 4`.
+const LOG_IV_ASYMPTOTIC_NU: f64 = 1.0;
 /// EM restarts kept by best data log-likelihood (mirrors the GMM head's restart budget).
 const MOVMF_N_INIT: u64 = 4;
 
@@ -51,11 +63,34 @@ fn ln_gamma(x: f64) -> f64 {
     0.5 * std::f64::consts::TAU.ln() + (x + 0.5) * t.ln() - t + a.ln()
 }
 
-/// `log I_ν(κ)` for `κ > 0`, `ν ≥ 0`, via the all-positive power series
+/// `log I_ν(κ)` by DLMF 10.41.3, the uniform asymptotic expansion for large order:
+/// `I_ν(νz) ~ e^{νη} / (√(2πν)·(1+z²)^{1/4}) · Σ_k U_k(p)/ν^k`, with `η = √(1+z²) + ln(z/(1+√(1+z²)))`
+/// and `p = 1/√(1+z²)`. Three terms are what f64 needs and no more: measured against 50-digit
+/// arithmetic over `ν ∈ [1, 2047]`, `κ ∈ [10⁴, 10⁶]`, keeping `U₀..U₂` lands within **0.8 ulp**
+/// (worst relative error 1.74e-16), while stopping at `U₁` costs ~300 ulps and `U₃` cannot be seen.
+///
+/// Divides by `ν`, so it holds only for `ν ≥ LOG_IV_ASYMPTOTIC_NU`.
+fn log_iv_asymptotic(nu: f64, kappa: f64) -> f64 {
+    let z = kappa / nu;
+    let w = (1.0 + z * z).sqrt();
+    let eta = w + (z / (1.0 + w)).ln();
+    let p = 1.0 / w;
+    let (p2, p3) = (p * p, p * p * p);
+    let u1 = (3.0 * p - 5.0 * p3) / 24.0;
+    let u2 = (81.0 * p2 - 462.0 * p2 * p2 + 385.0 * p3 * p3) / 1152.0;
+    let series = 1.0 + u1 / nu + u2 / (nu * nu);
+    nu * eta - 0.5 * (std::f64::consts::TAU * nu).ln() - 0.5 * w.ln() + series.ln()
+}
+
+/// `log I_ν(κ)` via the all-positive power series
 /// `I_ν(κ) = Σ_m (κ/2)^{2m+ν} / (m! Γ(ν+m+1))`. The `(κ/2)^ν` factor is pulled out and the
 /// term ratio `a_m/a_{m-1} = (κ/2)² / (m(ν+m))` is accumulated in log-space with an online
-/// log-sum-exp, so nothing overflows even for large `κ` (the peak term sits near `m ≈ κ/2`).
-pub(crate) fn log_iv(nu: f64, kappa: f64) -> f64 {
+/// log-sum-exp, so nothing overflows.
+///
+/// The peak term sits near `m ≈ κ/2`, so this costs `O(κ)` and its `m > 200_000` stop fires before
+/// the peak above `κ ≈ 4e5` — past that it is not merely slow but wrong. [`log_iv`] keeps it below
+/// that, and [`kappa_max`] keeps the low orders that have no alternative below it too.
+fn log_iv_series(nu: f64, kappa: f64) -> f64 {
     let half_ln = (kappa * 0.5).ln(); // ln(κ/2)
     let mut log_a = -ln_gamma(nu + 1.0); // log a_0  (a_0 = 1/Γ(ν+1))
     let mut max_log = log_a;
@@ -78,6 +113,18 @@ pub(crate) fn log_iv(nu: f64, kappa: f64) -> f64 {
     nu * half_ln + max_log + sum_exp.ln()
 }
 
+/// `log I_ν(κ)` for `κ > 0`, `ν ≥ −1/2`. Two evaluators, split where each stops being the better
+/// one: the ascending series below the branch point, DLMF 10.41.3 above it. They agree to 1e-13 at
+/// the seam. The order condition is not optional — `ν = d/2 − 1`, so `dim ≤ 3` has no asymptotic
+/// branch at all and stays on the series, which [`kappa_max`] keeps inside its valid range.
+pub(crate) fn log_iv(nu: f64, kappa: f64) -> f64 {
+    if nu >= LOG_IV_ASYMPTOTIC_NU && kappa >= LOG_IV_ASYMPTOTIC_KAPPA {
+        log_iv_asymptotic(nu, kappa)
+    } else {
+        log_iv_series(nu, kappa)
+    }
+}
+
 /// `log C_d(κ)` — the log normalizing constant of the vMF density on `S^{d-1}`:
 /// `C_d(κ) = κ^{d/2−1} / ((2π)^{d/2} I_{d/2−1}(κ))`.
 fn log_vmf_norm(dim: usize, kappa: f64) -> f64 {
@@ -86,11 +133,22 @@ fn log_vmf_norm(dim: usize, kappa: f64) -> f64 {
     nu * kappa.ln() - (d / 2.0) * std::f64::consts::TAU.ln() - log_iv(nu, kappa)
 }
 
+/// The largest concentration whose normalizer this crate evaluates accurately at `dim`. The cap is
+/// set by the evaluator, not by the model: `dim ≥ 4` gives `ν ≥ 1` and so an asymptotic branch in
+/// [`log_iv`], `dim ≤ 3` leaves the series as the only evaluator and its own limit binds.
+fn kappa_max(dim: usize) -> f64 {
+    if (dim as f64) / 2.0 - 1.0 >= LOG_IV_ASYMPTOTIC_NU {
+        KAPPA_MAX
+    } else {
+        KAPPA_MAX_SERIES
+    }
+}
+
 /// Banerjee et al. (2005) concentration estimate from the mean resultant length `R̄ = ‖R‖/n`.
 fn estimate_kappa(rbar: f64, dim: usize) -> f64 {
     let d = dim as f64;
     let r = rbar.clamp(1e-8, 1.0 - 1e-9);
-    ((r * (d - r * r)) / (1.0 - r * r)).clamp(1e-8, KAPPA_MAX)
+    ((r * (d - r * r)) / (1.0 - r * r)).clamp(1e-8, kappa_max(dim))
 }
 
 // ───────────────────────── shared helpers ─────────────────────────
@@ -537,6 +595,121 @@ mod tests {
     }
 
     #[test]
+    fn the_two_log_iv_branches_agree_at_the_seam() {
+        // One EM run evaluates κ on both sides of the branch point, so a step in `log I_ν` across it
+        // would enter the likelihood as a step. The tolerance is *relative*: `log I_390(1e4)` is
+        // ≈ 9.99e3, where an absolute 1e-13 is below f64 resolution and would be untestable.
+        // ν = d/2 − 1 for the dimensions the head runs at: d ∈ {4, 32, 128, 784}.
+        for &nu in &[1.0_f64, 15.0, 63.0, 390.0] {
+            let series = log_iv_series(nu, LOG_IV_ASYMPTOTIC_KAPPA);
+            let asym = log_iv_asymptotic(nu, LOG_IV_ASYMPTOTIC_KAPPA);
+            assert!(
+                (series - asym).abs() <= 1e-13 * series.abs().max(1.0),
+                "ν={nu}: series {series}, asymptotic {asym}, Δ {}",
+                series - asym
+            );
+        }
+    }
+
+    #[test]
+    fn the_asymptotic_branch_matches_high_precision_bessel_values() {
+        // The seam test only shows the two evaluators agree with *each other*; above the seam the
+        // series is unavailable, so accuracy there has to come from outside the crate. Golden values
+        // are `mp.log(mp.besseli(ν, κ))` at 50 decimal digits, `local/scratch/log_iv_goldens.py`.
+        // ν = 1 is the smallest order the branch accepts; ν = 390 is d = 784; ν = 2047 is d = 4096,
+        // LLM-embedding scale.
+        //
+        // The tolerance is picked from the measurement, not from taste. Over these ten points the
+        // f64 expression is worst-case 1.74e-16 relative — 0.8 ulp, i.e. correctly rounded — while
+        // dropping `U_2` costs 7.05e-14, about 300 ulps. 1e-15 sits between the two, so this fixture
+        // *does* see whether the `U_2` term is present. `p = 1/√(1+(κ/ν)²)` grows towards 1 as κ/ν
+        // falls, so `U_2`'s high powers of p only become observable at large ν: the ν = 4095 row
+        // (d = 8192, an embedding dimension that exists) is the one that pins the **p⁶** coefficient
+        // — flipping its sign moves that value by 1.28e-14, against 8.78e-17 for the correct
+        // expression, while at ν ≤ 2047 the same flip is invisible. The **p⁴** coefficient stays
+        // below f64 resolution everywhere in the branch domain, and no fixture can see it.
+        for &(nu, kappa, want) in &[
+            (1.0_f64, 1e4_f64, 9.994_475_853_778_931e3_f64),
+            (1.0, 1e6, 9.999_921_733_058_128e5),
+            (15.0, 1e4, 9.994_464_653_220_98e3),
+            (63.0, 1e4, 9.994_277_444_514_42e3),
+            (390.0, 1e4, 9.986_871_487_273_407e3),
+            (390.0, 1e5, 9.999_256_409_714_573e4),
+            (390.0, 391_305.151_076_038, 3.912_975_991_665_049e5),
+            (390.0, 1e6, 9.999_920_972_562_757e5),
+            (2047.0, 1e4, 9.785_677_739_677_381e3),
+            (2047.0, 1e6, 9.999_900_782_014_969e5),
+            (4095.0, 1e4, 9.167_153_606_949_618e3),
+        ] {
+            let got = log_iv(nu, kappa);
+            assert!(
+                (got - want).abs() <= 1e-15 * want.abs(),
+                "ν={nu}, κ={kappa}: got {got}, want {want}, rel {}",
+                (got - want).abs() / want.abs()
+            );
+        }
+    }
+
+    #[test]
+    fn low_orders_never_reach_the_asymptotic_branch() {
+        // Not a defensive guard: `movmf_once` runs at dim = 2 in this module's own fixtures and
+        // `log_iv(0.0, ·)` is called directly above. The expansion is written in z = κ/ν and divides
+        // by ν, so at ν ≤ 0 it is NaN rather than merely inaccurate.
+        for &nu in &[-0.5_f64, 0.0, 0.5] {
+            for &kappa in &[1.0_f64, LOG_IV_ASYMPTOTIC_KAPPA, KAPPA_MAX_SERIES] {
+                let got = log_iv(nu, kappa);
+                assert!(got.is_finite(), "ν={nu}, κ={kappa}: {got}");
+                assert_eq!(
+                    got,
+                    log_iv_series(nu, kappa),
+                    "ν={nu}, κ={kappa} took the asymptotic branch"
+                );
+            }
+        }
+        assert!(
+            !log_iv_asymptotic(0.0, LOG_IV_ASYMPTOTIC_KAPPA).is_finite(),
+            "the asymptotic branch is finite at ν = 0, so the guard has nothing to protect"
+        );
+    }
+
+    #[test]
+    fn the_concentration_cap_follows_the_evaluator_not_the_dimension() {
+        // The cap is a limit of the normalizer, not of the model. `log_iv` gains its O(1) branch at
+        // ν = d/2 − 1 ≥ 1, so from d = 4 up the cap is set by representability; below it the
+        // ascending series is the only evaluator and its own ceiling binds. A saturating resultant
+        // must therefore land on different numbers either side of d = 4.
+        assert_eq!(estimate_kappa(1.0, 784), KAPPA_MAX);
+        assert_eq!(estimate_kappa(1.0, 4), KAPPA_MAX);
+        assert_eq!(estimate_kappa(1.0, 3), KAPPA_MAX_SERIES);
+        assert_eq!(estimate_kappa(1.0, 2), KAPPA_MAX_SERIES);
+        const {
+            assert!(
+                KAPPA_MAX > KAPPA_MAX_SERIES,
+                "the two caps are equal, so the fixture cannot tell the branches apart"
+            )
+        };
+    }
+
+    #[test]
+    fn a_tight_high_dimensional_cluster_is_no_longer_pinned_to_the_cap() {
+        // Regression. The cap used to be 1e4, which in 784 dimensions binds from R̄ ≈ 0.9616 —
+        // ordinary for embedding data — and reported one identical κ for every cluster tighter than
+        // that. The Banerjee value here is 39× the old cap: exact rational arithmetic gives
+        // 782218997001/1999000 = 391305.151076038…, so a revert fails outright rather than drifting.
+        let got = estimate_kappa(0.999, 784);
+        assert!((got - 391_305.151_076_038).abs() < 1e-6, "κ = {got}");
+        assert!(
+            got < kappa_max(784),
+            "the fixture sits on the cap and so cannot see the estimate at all"
+        );
+        // …and the normalizer it feeds stays usable, which is the reason the cap could move.
+        assert!(
+            log_vmf_norm(784, got).is_finite(),
+            "log C_784(κ) is not finite"
+        );
+    }
+
+    #[test]
     fn a_fully_concentrated_resultant_stays_inside_the_kappa_range() {
         // R̄ = 1 is the pole of the Banerjee estimate: the denominator 1 − R̄² vanishes, and in one
         // dimension the numerator vanishes with it. Holding R̄ off the pole is what keeps that ratio
@@ -544,12 +717,12 @@ mod tests {
         for dim in 1..=5usize {
             let got = estimate_kappa(1.0, dim);
             assert!(
-                got.is_finite() && (1e-8..=KAPPA_MAX).contains(&got),
+                got.is_finite() && (1e-8..=kappa_max(dim)).contains(&got),
                 "dim {dim}: κ = {got}"
             );
         }
         assert!(
-            estimate_kappa(1.0, 1) < KAPPA_MAX,
+            estimate_kappa(1.0, 1) < kappa_max(1),
             "one dimension saturates the concentration cap, so the fixture never reaches the 0/0 \
              corner that only the degenerate sphere has"
         );
@@ -675,6 +848,9 @@ mod tests {
             "ARI = {}",
             ari(&res.labels, &truth)
         );
+        // An absolute bound on this fixture, not a fraction of `kappa_max(12)` — 25 points scattered
+        // at σ = 0.35 around each direction leave ‖μ_i‖ well inside the unit ball, so κ stays small.
+        // Re-normalizing each leaf would send it to the cap, whatever the cap happens to be.
         for &kap in &res.kappas {
             assert!(kap.is_finite() && kap < 9_000.0, "κ over-estimated: {kap}");
         }
@@ -1016,7 +1192,7 @@ mod tests {
                     0.0
                 };
                 let r = rbar.clamp(1e-8, 1.0 - 1e-9);
-                ((r * (dim as f64 - r * r)) / (1.0 - r * r)).clamp(1e-8, KAPPA_MAX)
+                ((r * (dim as f64 - r * r)) / (1.0 - r * r)).clamp(1e-8, kappa_max(dim))
             })
             .collect()
     }
@@ -1055,7 +1231,7 @@ mod tests {
              the fixture cannot tell one resultant from another"
         );
         assert!(
-            want.iter().all(|k| k.is_finite() && *k < KAPPA_MAX),
+            want.iter().all(|k| k.is_finite() && *k < kappa_max(dim)),
             "a reference κ sits on the clamp, where any resultant gives the same answer: {want:?}"
         );
 
