@@ -6,6 +6,61 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- **A `UserWarning` when the CF summary is too coarse to carry `n_clusters`.** Asking for `k`
+  clusters from fewer than `2k` leaves silently produced a worse partition with no signal; the
+  warning names the realised leaf count, `k`, their ratio and the current `max_leaves`, and points
+  at the three parameters that fix it. Fires from every entry point that partitions a summary into a
+  caller-supplied `k` — the `fit_predict` function, the `Betula` estimator (dense and CSR),
+  `fit_predict_sparse` and `KPrototypes` — and stays silent for auto-`k` and for the heads that
+  discover their own count (`hdbscan`, `scale-space`, `leiden`).
+
+  The threshold is measured, not assumed: over three seeds on the `ward` head, well-separated data
+  is already at its plateau ARI at ≈2 leaves per cluster and loses 29 % (k=50) / 55 % (k=200) of it
+  at ≈1, while `digits` and `covtype` score 0.000 and 0.003 at ≈1. Lang's thesis reports the same
+  floor from the other end (Sec. 5.5.4). It is a *floor*, not a recommendation — `covtype` peaks at
+  ≈8 leaves per cluster and declines after — and the check reads the **realised** leaf count, since
+  the tree routinely settles below its cap and at `n < max_leaves` the cap never binds at all.
+
+### Changed
+- **`min_samples` now counts the microcluster itself** in `method="hdbscan"`, so `min_samples=1`
+  leaves every core distance at 0 and HDBSCAN\* degenerates to single linkage. The convention is a
+  genuine split in the field — Campello, Moulavi & Sander's Def. 3.1, `sklearn.cluster.HDBSCAN` and
+  ELKI (whose parameter reads "including this point") all include the object, while
+  `scikit-learn-contrib/hdbscan` excludes it — and it was previously stated nowhere: not in the Rust
+  docs, the `.pyi` or `docs/USAGE.md`. The shipped behaviour was the *exclusive* one, so
+  `min_samples=5` acted like the standard `min_samples=6`, and the published benchmark compared our
+  effective 11 against `sklearn-hdbscan`'s 10.
+
+  Aligning with the majority — and with the library this project mirrors and benchmarks against —
+  makes the comparison like-for-like. **This relabels `method="hdbscan"` output**: to keep the old
+  behaviour, add one to `min_samples`. The convention is now pinned by a test on the core distances
+  themselves rather than inferred from a downstream partition.
+
+  The four quality tables were re-measured over three seeds after the change. Cell by cell against
+  the previous run, **only `betula-hdbscan` rows moved** — every other method reproduced to the last
+  digit on every metric — so the deltas are attributable to this and nothing else. `digits` goes from
+  a loss to a win (ARI 0.146 → **0.164** against `sklearn-hdbscan`'s 0.149, both zero-spread, with
+  the noise fraction down from 0.620 to 0.580); `blobs` 0.142 → 0.154 and `varied` 0.519 → 0.536;
+  `aniso` 0.569 → 0.568 and `covtype` +0.0001 are ties; MNIST stays all-noise.
+
+### Fixed
+- **`distance="average"` panicked with an index-out-of-bounds instead of clustering.** A node split
+  picks the farthest pair of children as seeds and then assigns every child to the nearer seed —
+  which silently assumes `between(cf, cf) == 0`. That holds for `euclidean`, `manhattan` and `ward`,
+  but not for `average` (D2): the average inter-point distance between a cluster and *itself* is
+  `2·S/n`, not zero. A seed with enough of its own scatter therefore measured further from itself
+  than from the other seed and joined the wrong group; once every child did that, the sibling node
+  was created with no children, and the next `descend` indexed `children[0]` on it. Reproduced on
+  `load_digits` at `max_leaves ≥ 800` with any `feature`.
+
+  The seeds now anchor their own groups by construction, so both sides are non-empty whatever the
+  routing measure does — the same root cause the seed scan already guards against by skipping
+  `i == j`, one step later in the same function. This is the second half of that fix, and it is what
+  the non-metric CF distances of the planned linkage and Bregman work need in order to be safe.
+  **Labels are unchanged on every metric route** (48/48 `(dataset × feature × head × distance ×
+  seed)` label arrays hash identically across the fix), so nothing published moves.
+
 ## [0.7.0] — 2026-08-23
 
 ### Changed
