@@ -35,7 +35,7 @@ with peak RSS sampled from `/proc/self/statm`. Full methodology, every metric, a
 > three seeds, so a margin below that is a tie and is written as one here.
 
 - ⚡🪶 **Always faster — and lighter — at scale (the unconditional win).** betula labels **1 M points
-  in 0.23 s**: 11.5× faster than scikit-learn KMeans, 17× vs GaussianMixture, 36× vs Birch — and
+  in 0.24 s**: 13× faster than scikit-learn KMeans, 18× vs GaussianMixture, 35× vs Birch — and
   streams **10 M in a flat ~60 MB** where an in-core KMeans needs **~5.0 GB** (**82× less**, and the
   gap grows without bound). This holds for *every* method at *every* size.
 - 🎯 **Parity on the centroid heads, ahead on the structured ones.** betula's k-means ties
@@ -47,15 +47,17 @@ with peak RSS sampled from `/proc/self/statm`. Full methodology, every metric, a
   claim there is *scaling* (cost set by `max_leaves`, not `N`), not a constant factor.
 - 🌍 **Real data, and two losses stated plainly.** betula's diagonal GMM overtakes scikit-learn on hard
   `covtype` (**0.094 vs 0.080** at adequate leaf resolution) and it clusters **full covtype (581 k
-  rows) 5.7× faster** at matching ARI (0.050 vs 0.049). But `sklearn-birch` beats **every** betula
-  head on both `covtype` (0.131) and MNIST (0.426 vs 0.377), and that is not a leaf-budget artefact —
-  it was tested in both directions. HDBSCAN-on-CF likewise trails raw HDBSCAN on overlapping density.
+  rows) 6.0× faster** at matching ARI (0.050 vs 0.049). But `sklearn-birch` beats **every** betula
+  head on both `covtype` (0.131) and MNIST (0.426 vs 0.377). On `covtype` that is a loss on the merits
+  — tested in both directions, and the mechanism is the leaf budget's unequal cell *mass*; on MNIST
+  Birch simply does not compress (20 000 subclusters for 20 000 points), and at equal compression the
+  gap falls from 0.059 to 0.010. HDBSCAN-on-CF likewise trails raw HDBSCAN on overlapping density.
   [`bench/RESULTS.md`](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md) reports
   both rather than hiding them.
 
 | ![Fit time vs N](https://raw.githubusercontent.com/ilgrad/betula-cluster/main/bench/plots/scaling_time.png) | ![Peak memory vs N](https://raw.githubusercontent.com/ilgrad/betula-cluster/main/bench/plots/memory_streaming.png) |
 |:--:|:--:|
-| Phase-3 clusters only the ~2 000 leaf microclusters, not the raw points, so every head finishes 1 M points in **under 0.7 s** (k-means in 0.23 s). | The CF-tree is capped by `max_leaves`, so streaming memory stays **flat** — it clusters data larger than RAM. |
+| Phase-3 clusters only the ~2 000 leaf microclusters, not the raw points, so every head finishes 1 M points in **under 0.7 s** (k-means in 0.24 s). | The CF-tree is capped by `max_leaves`, so streaming memory stays **flat** — it clusters data larger than RAM. |
 
 ## Why
 

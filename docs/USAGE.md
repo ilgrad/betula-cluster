@@ -30,7 +30,11 @@ it is now a wash — 0.302 → 0.335, inside the seed spread and sign-flipping b
 tree-rebuild fix removed most of the Euclidean collapse it used to compensate for. Leave it off for
 tabular data where magnitude is signal: it takes covtype ward to **−0.049**, worse than random),
 `n_jobs` (parallel shard+merge tree build — `>1` gives ~4–5× on large
-`N`), `threshold`, `branching`, `leaf_cap`, `max_leaves`, `max_iter`, `min_samples`,
+`N`), `threshold`, `branching`, `leaf_cap`, `max_leaves`, `max_iter`, `min_samples`
+(for `method="hdbscan"`, the core-distance neighbourhood **counting the microcluster itself** —
+the convention of Campello's Def. 3.1, `sklearn.cluster.HDBSCAN` and ELKI, so `min_samples=1`
+leaves every core distance at 0 and HDBSCAN\* degenerates to single linkage;
+`scikit-learn-contrib/hdbscan` excludes it, where the same number means one neighbour more),
 `min_cluster_size`, `resolution` (Leiden γ — granularity for `method="leiden"` / `"leiden-cpm"`, higher
 ⇒ more communities), `covariance_weight` (Leiden β — a log-Euclidean covariance/shape term in the
 affinity, `feature="full"`; `0` = off, the centroid-only default), `tangent_weight` / `tangent_rank`
@@ -80,6 +84,22 @@ for chunk in stream_of_arrays:        # each chunk is a 2-D float64 array
 est.partial_fit()                     # finalize the global clustering over everything seen
 labels = est.predict(X_query)         # est.n_clusters_ / est.n_leaves_ / est.effective_max_leaves_
 ```
+
+### Sizing `max_leaves` against `n_clusters`
+
+The summary has to be finer than the partition you ask of it. Below **two leaves per cluster** the
+head has essentially no freedom — every cluster is one leaf and the answer is the tree's, not the
+head's — and quality collapses: over three seeds on the `ward` head, well-separated synthetic data
+loses 29 % (`k`=50) and 55 % (`k`=200) of its achievable ARI at ≈1 leaf per cluster, while `digits`
+and `covtype` score 0.000 and 0.003 there. betula raises a `UserWarning` naming the realised leaf
+count, `n_clusters` and the current `max_leaves` whenever it lands under that floor.
+
+Two is a **floor, not a target**. More resolution is not monotonically better: on `covtype` the same
+sweep peaks at ≈8 leaves per cluster and declines after, while `digits` keeps improving to ≈60. If the
+warning fires, raise `max_leaves` (or lower `threshold`, or lower `n_clusters`) — then tune the ratio
+on your own data rather than assuming higher is better. The warning reads the **realised** leaf count,
+not the cap: the tree routinely settles below `max_leaves`, and when `N < max_leaves` the cap never
+binds at all.
 
 ## Soft assignment, coresets, diagnostics, drift
 

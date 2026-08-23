@@ -1,7 +1,7 @@
 # Benchmark: betula-cluster vs scikit-learn — quality · speed · memory
 
-> **Provenance — read before quoting a number.** Re-measured **2026-08-22** against the working tree
-> at `cdcc5a2`, released as **0.7.0**. Every quality table is the **median of seeds 0, 1, 2**, and
+> **Provenance — read before quoting a number.** Re-measured **2026-08-23** against the working tree
+> after 0.7.0. Every quality table is the **median of seeds 0, 1, 2**, and
 > each ships its own
 > min/median/max sidecar (`results_*_spread.csv`); the speed, memory, scale and sparse tables are a
 > single run, since `bench/_worker.py` pins `seed=0` for them and they are seed-invariant by
@@ -9,9 +9,13 @@
 > build; every number on it has been replaced, several of them downwards. This page is re-measured as
 > a whole, not patched cell by cell.
 >
-> One caveat stated rather than hidden: the extension used for these runs predates 0.7.0's vMF
-> concentration-cap fix by about an hour. No table here exercises `method="vmf"` — verified by grep
-> over every `results_*.csv` — so no number moves with it.
+> This edition re-ran the four quality tables after the `min_samples` convention change (the head now
+> counts the microcluster itself, matching `sklearn.cluster.HDBSCAN`; see the changelog's
+> `[Unreleased]`). Cell-by-cell against the previous run,
+> **only `betula-hdbscan` rows moved** — every other method reproduced to the last digit on every
+> metric, which is what makes the hdbscan deltas below attributable to that one change. No table here
+> exercises `method="vmf"` (verified by grep over every `results_*.csv`), so 0.7.0's vMF
+> concentration-cap fix moves nothing on this page.
 
 Reproduce: `python bench/comprehensive.py --quality-only --seed S --tag _sS` for S ∈ {1, 2}, then
 `python bench/comprehensive.py --seed 0 --tag _s0` (the full run, which also writes
@@ -20,6 +24,9 @@ and finally `python bench/comprehensive.py --plots-only`. Order matters: `--plot
 canonical CSVs, so run before the median step it draws one seed instead of the published medians.
 Export `OMP/OPENBLAS/MKL/NUMEXPR_NUM_THREADS=1` explicitly — `comprehensive.py` uses
 `os.environ.setdefault`, so an exported `OMP_NUM_THREADS=8` wins and silently un-pins BLAS. The
+harness needs `scikit-learn pandas matplotlib scipy seaborn`; `seaborn` is imported only inside
+`make_plots`, which runs *last*, so without it every CSV is still written and only the plot step
+raises — check `plots/*.png` mtimes rather than trusting a run that printed its tables. The
 supplementary studies are separate scripts: `bench/spectral_nonconvex.py` (spectral timing),
 `bench/toeplitz_ar_mixture.py` (the `gmm-toeplitz` showcase) and `bench/nmf_cf_weighted.py`
 (CF-weighted NMF). Every cell is guarded and failures are recorded, not hidden; both **wins and
@@ -27,8 +34,8 @@ losses** are reported below.
 
 ## TL;DR (honest)
 
-- **Always faster, always lighter — on every row below.** betula labels 1 M points in **0.23 s**
-  (11.5× faster than scikit-learn KMeans, 17× vs GaussianMixture, 36× vs Birch) and streams 10 M in a
+- **Always faster, always lighter — on every row below.** betula labels 1 M points in **0.24 s**
+  (13× faster than scikit-learn KMeans, 18× vs GaussianMixture, 35× vs Birch) and streams 10 M in a
   flat **~60 MB** where an in-core KMeans needs **~5.0 GB** (**82× less**, and the gap grows without
   bound). This is the unconditional win: it holds for every method at every size, and it is what a
   bounded-memory compression engine is built to deliver.
@@ -38,9 +45,12 @@ losses** are reported below.
   (**0.575 vs 0.463**, via the high-dimensional covariance floor); the **spectral** and **HDBSCAN**
   heads hit ARI **1.00** on moons and circles.
 - **Two losses stated plainly.** On `covtype` and MNIST, `sklearn-birch` beats **every** betula head —
-  0.131 vs a best of 0.091, and 0.426 vs 0.377 — and this is not a leaf-budget artefact (measured
-  both ways; see *The `covtype` loss*). HDBSCAN-on-CF also trails raw HDBSCAN on overlapping density
-  (blobs 0.142 vs 0.324, `varied` 0.519 vs 0.802).
+  0.131 vs a best of 0.091, and 0.426 vs 0.377. On `covtype` that is a loss on the merits (not a
+  leaf-budget artefact, measured both ways) and the mechanism is now known: the leaf budget produces
+  cells of far more unequal mass than a radius threshold does. On MNIST most of the gap is the price
+  of compression — Birch returns 20 000 subclusters for 20 000 points and compresses nothing, and at
+  equal (non-)compression the 0.059 gap falls to 0.010. See *The `covtype` loss*. HDBSCAN-on-CF also
+  trails raw HDBSCAN on overlapping density (blobs 0.154 vs 0.324, `varied` 0.536 vs 0.802).
 - **A capability no mainstream library ships:** `method="gmm-toeplitz"` — an AR/Toeplitz-structured
   covariance GMM for ordered stationary signals — recovers a mixture of AR processes that differ *only*
   in autocovariance (ARI **1.00** at long windows) exactly where both diagonal (blind) and full
@@ -70,7 +80,7 @@ Absolute times vary by machine; the *ratios* far less.
 | Python / NumPy / SciPy / scikit-learn | 3.14.7 / 2.5.2 / 1.18.1 / 1.9.0 |
 | matplotlib / pandas | 3.11.1 / 3.0.5 |
 | Rust | rustc 1.98.0 |
-| betula-cluster | 0.7.0 (working tree at `cdcc5a2`), `maturin --release` (LTO, `codegen-units=1`); **portable** wheel (no `target-cpu=native`) |
+| betula-cluster | 0.7.0 + unreleased changes (working tree), `maturin --release` (LTO, `codegen-units=1`); **portable** wheel (no `target-cpu=native`) |
 | BLAS threads | 1 (`OMP/OPENBLAS/MKL/NUMEXPR_NUM_THREADS=1`) — comparable single-thread timings |
 
 ## Methodology
@@ -104,7 +114,7 @@ Median of seeds 0/1/2 (`results_quality.csv`; spreads in `results_quality_spread
 | **betula-ward** | 0.776 | 0.573 | 0.663 | **0.641** | 0.014 | 1.00 |
 | **betula-spectral** | 0.754 | 0.422 | 0.652 | **1.00** | **1.00** | 1.00 |
 | **betula-leiden** (auto-`k`) | 0.722 | 0.465 | 0.633 | 0.512 | 0.007 | 1.00 |
-| **betula-hdbscan** | 0.142 | 0.569 | 0.519 | **1.00** | **1.00** | 1.00 |
+| **betula-hdbscan** | 0.154 | 0.568 | 0.536 | **1.00** | **1.00** | 1.00 |
 | sklearn-kmeans | 0.794 | 0.545 | 0.670 | 0.484 | −0.000 | 1.00 |
 | sklearn-minibatch | 0.694 | 0.547 | 0.665 | 0.484 | −0.000 | 1.00 |
 | sklearn-birch | 0.748 | 0.554 | 0.460 | 0.616 | 0.005 | 1.00 |
@@ -128,9 +138,12 @@ Reading it honestly:
 - **betula-leiden** discovers the community count with **no `k`** — strong on separable community
   structure (highdim 1.00, blobs 0.722) but, being a modularity community-detector rather than a
   general partitioner, it over-splits elongated manifolds (moons 0.512). Use spectral for those.
-- The honest weak spot: **HDBSCAN-on-CF on overlapping density.** blobs 0.142 vs raw HDBSCAN's 0.324,
-  `varied` 0.519 vs 0.802. Both are the wrong tool for overlapping Gaussians, and the CF approximation
+- The honest weak spot: **HDBSCAN-on-CF on overlapping density.** blobs 0.154 vs raw HDBSCAN's 0.324,
+  `varied` 0.536 vs 0.802. Both are the wrong tool for overlapping Gaussians, and the CF approximation
   widens the gap. Use a parametric head for blobs; HDBSCAN-CF / spectral for density / non-convex.
+  These two cells are also the least stable in the whole table — betula-hdbscan's three-seed range is
+  0.142–0.327 on blobs and **0.057–0.567** on `varied` — so read them as a regime that does not have a
+  stable answer, not as a single number.
 
 ### Non-convex: spectral clustering that scales (N = 30 000)
 
@@ -165,21 +178,26 @@ the scaling shape — `O(N)` build, flat memory — is unchanged.
 
 | method | time @ 1 M | vs betula-kmeans |
 |---|---|---|
-| **betula-kmeans** | **0.230 s** | 1× |
-| betula-gmm | 0.274 s | 1.2× |
-| betula-gmm-full | 0.327 s | 1.4× |
-| betula-ward | 0.379 s | 1.6× |
-| betula-hdbscan | 0.653 s | 2.8× |
-| sklearn-minibatch | 2.57 s | 11.2× |
-| sklearn-kmeans | 2.65 s | 11.5× |
-| sklearn-gmm | 3.84 s | 16.7× |
-| sklearn-birch | 8.28 s | **36×** |
+| **betula-kmeans** | **0.242 s** | 1× |
+| betula-gmm | 0.292 s | 1.2× |
+| betula-gmm-full | 0.339 s | 1.4× |
+| betula-ward | 0.404 s | 1.7× |
+| betula-hdbscan | 0.681 s | 2.8× |
+| sklearn-minibatch | 2.91 s | 12.0× |
+| sklearn-kmeans | 3.10 s | 12.8× |
+| sklearn-gmm | 4.31 s | 17.8× |
+| sklearn-birch | 8.59 s | **35×** |
 | sklearn-ward, sklearn-hdbscan | (O(N²) — cannot reach 1 M) | — |
 
 All five betula heads finish a million points in **under 0.7 s**; full-covariance GMM runs **4 EM
-restarts** (for robustness against local optima) **in parallel**, finishing in **0.327 s** — 11.7×
+restarts** (for robustness against local optima) **in parallel**, finishing in **0.339 s** — 12.7×
 faster than scikit-learn's GMM. betula-ward does the equivalent of `O(N²)` agglomerative at 1 M in
-**0.379 s**, where scikit-learn's Agglomerative cannot run past ~10 k at all.
+**0.404 s**, where scikit-learn's Agglomerative cannot run past ~10 k at all.
+
+This table is a **single run** — `bench/_worker.py` pins `seed=0` for the speed phase, so it is
+seed-invariant by construction, but it is one timing sample and the ratios move by a few percent
+between editions (the previous one read 0.230 s / 11.5× / 36×). Quote the order of magnitude, not the
+third digit.
 
 ## Memory — streaming stays bounded
 
@@ -190,19 +208,20 @@ array) vs an in-core KMeans that must hold all of `X` (20-D):
 
 | N | betula (streaming) | sklearn KMeans (one-shot) | ratio |
 |---|---|---|---|
-| 500 k | 60.5 MB | 407 MB | 6.7× |
-| 1 M | 60.2 MB | 647 MB | 10.7× |
-| 2 M | 60.2 MB | 1.13 GB | 18.7× |
-| 5 M | 60.3 MB | 2.57 GB | 42.5× |
+| 500 k | 60.1 MB | 407 MB | 6.8× |
+| 1 M | 60.4 MB | 647 MB | 10.7× |
+| 2 M | 60.1 MB | 1.13 GB | 18.7× |
+| 5 M | 60.5 MB | 2.57 GB | 42.4× |
 | 10 M | **60.3 MB** | **4.97 GB** | **82×** |
 
 betula's footprint is **flat in N** — the CF-tree is bounded by `max_leaves`, so it clusters streams
 larger than RAM. Any in-core method's memory grows linearly with `N` (it must hold `X`), and
 Agglomerative's pairwise-distance matrix is O(N²) — **~1 GB at just 10 k points**, OOM beyond.
 
-`results_memory.csv` also carries a time column; its sklearn 10 M cell (8.7 s) is *lower* than its
-5 M cell (18.0 s), which is an allocator / page-fault artefact of the one-shot path at that size and
-not a measurement this page draws any conclusion from.
+`results_memory.csv` also carries a time column; its sklearn 10 M cell (10.3 s) is *lower* than its
+5 M cell (19.6 s), which is an allocator / page-fault artefact of the one-shot path at that size and
+not a measurement this page draws any conclusion from. It reproduced across editions, so it is a
+property of the path and not a one-off.
 
 ## Real datasets — bounded 4 000-leaf budget
 
@@ -228,7 +247,7 @@ Median of seeds 0/1/2 (`results_real.csv`; spreads in `results_real_spread.csv`)
 | sklearn-ward | 0.664 | — | — |
 | **betula-spectral** | 0.653 | 0.037 | 0.155 |
 | **betula-leiden** | 0.781 | 0.056 | 0.005 |
-| **betula-hdbscan** | 0.146 | 0.051 | 0.000 |
+| **betula-hdbscan** | **0.164** | 0.051 | 0.000 |
 | sklearn-hdbscan | 0.149 | — | — |
 | sklearn-birch | 0.664 | **0.131** | **0.426** |
 
@@ -243,13 +262,20 @@ Reading it honestly:
   `normalize=True`, not the raw-Euclidean median. The real win here is the **full GMM: 0.575 vs
   scikit-learn's 0.463**, where the high-dimensional covariance floor keeps all 10 components
   populated and an unregularized full GMM collapses one. `betula-leiden` leads the whole table at
-  0.781 with no `k` supplied.
+  0.781 with no `k` supplied. **HDBSCAN is now a win too — 0.164 against `sklearn-hdbscan`'s 0.149,
+  both zero-spread across three seeds** — and it is the first edition where that comparison is
+  like-for-like: betula used to exclude the object from its own `min_samples` neighbourhood, so
+  `min_samples=5` acted like 6 and the published row compared an effective 11 against
+  `sklearn.cluster.HDBSCAN`'s 10. Aligning the convention also cut the noise fraction from 0.620 to
+  0.580.
 - **covtype (54-D):** a genuinely hard set — every method scores low. betula's diagonal GMM beats
   scikit-learn's full GMM (0.088 vs 0.080) and betula-kmeans beats sklearn-kmeans (0.088 vs 0.054),
   but `sklearn-birch` at **0.131** beats every betula head. See below.
 - **MNIST (784-D):** raw Euclidean k-means scores **0.302** against scikit-learn's 0.324 — in 784
   dimensions distances concentrate (concentration of measure). `normalize=True` closes it (two
-  sections down). `sklearn-birch` leads here too, 0.426 against betula-ward's 0.377.
+  sections down). `sklearn-birch` leads here too, 0.426 against betula-ward's 0.377 — but at
+  **20 000 subclusters for 20 000 points**, i.e. no compression at all against betula's 5.3×; give
+  betula the same non-compression and it reaches 0.416. See below.
 
 ### The `covtype` loss to `sklearn-birch` is real, not a budget artefact
 
@@ -264,9 +290,59 @@ does not survive measurement, tested in both directions:
 - Across seeds the ranges do not overlap: Birch's minimum (0.119) exceeds every betula head's maximum
   (0.101 for spectral, 0.093 for ward).
 
-So this is a loss on the merits, recorded as one. The likely mechanism is Birch's radius-threshold
-absorption criterion versus betula's leaf-budget criterion, which is a different partition of the same
-space; that hypothesis is not yet tested and is not claimed here.
+So this is a loss on the merits, recorded as one. The mechanism is below — it *is* the absorption
+criterion, and it is now measured rather than conjectured.
+
+### The mechanism: cell **shape**, not weighting and not compression
+
+A BIRCH-family pipeline has two parts, so a 2×2 isolates them (`local/scratch/birch_gap_mechanism.py`,
+`max_leaves=4000`, seeds 0/1/2, both sides assigned by nearest centre so only one thing differs):
+
+| | covtype | mnist |
+|---|---|---|
+| **A** betula leaves + mass-weighted (the shipped path) | 0.0861 | 0.3667 |
+| **B** betula leaves + *unweighted* agglomerative | 0.0274 | 0.0125 |
+| **C** Birch subclusters + unweighted (Birch, reproduced — ARI 1.0000 against its own labels) | 0.1306 | 0.4257 |
+
+**Mass weighting is not our deficit, it is our largest asset.** Holding the leaf set fixed and only
+removing the weights costs **−0.059** on covtype and **−0.354** on MNIST. The entire gap — and more —
+sits in the *summary*: B → C moves +0.103 and +0.413.
+
+Two further measurements say what is wrong with the summary (`local/scratch/birch_gap_followup.py`):
+
+- **covtype — the leaf masses are far more skewed.** At matched cell counts (betula 3 602, Birch 4 222):
+
+  | | median | p99 | max | singletons | Gini | mass in heaviest 1 % |
+  |---|---|---|---|---|---|---|
+  | Birch @ `threshold=1.0` | 3.0 | 24 | 63 | 23.4 % | 0.476 | **6.6 %** |
+  | betula leaves | 2.0 | 70 | 295 | 45.3 % | 0.683 | **23.2 %** |
+
+  A radius threshold produces cells of roughly equal *extent*; a leaf budget produces cells of wildly
+  unequal *mass*. Nearly half of betula's budget goes to singleton leaves, which summarize nothing,
+  while 36 cells hold a quarter of the data at a radius that blurs class boundaries. Cell purity
+  differs by only 0.024 (0.7915 vs 0.8158) — far too little to explain 0.046 of outcome, so it is the
+  shape and not the purity that the linkage is following.
+- **MNIST — most of that "loss" is the cost of compression, and Birch pays none of it.** In 784
+  standardized dimensions the typical pairwise distance is ≈ √(2·784) ≈ 39.6, so Birch's radius
+  threshold absorbs nothing: it returns **20 000 subclusters for 20 000 points** at both
+  `threshold=0.5` and `1.0`, purity 1.0000. It is not compressing MNIST at all. Give betula the same
+  non-compression and the gap nearly closes:
+
+  | betula-ward `max_leaves` | realised leaves | compression | ARI |
+  |---|---|---|---|
+  | 4 000 | 3 779 | 5.29× | 0.3667 |
+  | 8 000 | 7 666 | 2.61× | 0.3591 |
+  | 16 000 | 15 664 | 1.28× | 0.4069 |
+  | 20 000 | 20 000 | 1.00× | **0.4159** |
+
+  Against Birch's 0.4257 the published **0.059 gap becomes 0.010 at equal compression** — so ~83 % of
+  the MNIST row is the price betula pays for a 5.3× summary that Birch never pays because it never
+  builds one.
+
+The actionable half of this is covtype's mass skew, which is a property of the leaf-budget criterion
+and not of the CF or of the head. It is tracked as its own task (mass-balanced leaf budget); the
+MNIST row is not a defect to fix but a comparison that has to be read with its compression ratios
+attached.
 
 ### De-handicapped: betula at adequate leaf resolution
 
@@ -318,10 +394,10 @@ Clustering a **real** half-million-row dataset, each run isolated in its own sub
 
 | method | time | peak RSS | ARI |
 |---|---|---|---|
-| **betula-kmeans** | **1.91 s** | 0.92 GB | 0.050 |
-| sklearn-kmeans | 10.86 s | 0.93 GB | 0.049 |
+| **betula-kmeans** | **2.08 s** | 0.91 GB | 0.050 |
+| sklearn-kmeans | 12.46 s | 0.93 GB | 0.049 |
 
-betula-kmeans clusters the full 581 k-row covtype **5.7× faster** than scikit-learn KMeans — at the
+betula-kmeans clusters the full 581 k-row covtype **6.0× faster** than scikit-learn KMeans — at the
 same memory and a matching ARI (0.050 vs 0.049), on real data rather than blobs.
 
 ## Structured covariance — `gmm-toeplitz` / `gmm-toeplitz-full` on stationary signals
@@ -398,12 +474,12 @@ isolated in its own subprocess (`bench/results_sparse.csv`):
 
 | reduction | clusterer | time | ARI |
 |---|---|---|---|
-| raw 2 000-D (none) | betula `fit_predict_sparse` (O(nnz)) | 7.9 s | 0.002 |
-| raw 2 000-D (none) | sklearn k-means | 1.7 s | 0.056 |
-| TruncatedSVD(50) | **betula** k-means | **0.38 s** | 0.119 |
-| TruncatedSVD(50) | sklearn k-means | 0.62 s | 0.130 |
-| NMF(20) | **betula** k-means | 2.05 s | **0.130** |
-| NMF(20) | sklearn k-means | 2.20 s | 0.124 |
+| raw 2 000-D (none) | betula `fit_predict_sparse` (O(nnz)) | 9.9 s | 0.002 |
+| raw 2 000-D (none) | sklearn k-means | 1.9 s | 0.056 |
+| TruncatedSVD(50) | **betula** k-means | **0.39 s** | 0.119 |
+| TruncatedSVD(50) | sklearn k-means | 0.69 s | 0.130 |
+| NMF(20) | **betula** k-means | 2.43 s | **0.130** |
+| NMF(20) | sklearn k-means | 2.50 s | 0.124 |
 
 Read honestly:
 
@@ -433,8 +509,10 @@ Read honestly:
 - **Use raw scikit-learn** when `N` is small enough to fit comfortably and you want the canonical
   point-level algorithm with no compression — at small `N` the two-phase overhead removes betula's
   speed edge, and raw HDBSCAN is stronger on overlapping density.
-- **Use `sklearn-birch`** if `covtype`-like or MNIST-like all-methods quality at ~20 k rows is the only
-  criterion: it beats every betula head on both, and the compression-ratio defence does not hold.
+- **Use `sklearn-birch`** if `covtype`-like all-methods quality at ~20 k rows is the only criterion and
+  no summary is needed: it beats every betula head there, and the compression-ratio defence does not
+  hold. Its MNIST lead comes with no compression at all (20 000 subclusters for 20 000 points), so it
+  buys nothing on the axis a CF-tree exists for.
 - **For sparse high-dimensional text**, reduce dimensionality first (TruncatedSVD / NMF / embeddings)
   and cluster the dense topic vectors — raw TF-IDF concentrates and defeats every fast clusterer.
 - The numbers above are what the committed `bench/comprehensive.py` + `bench/median_of_seeds.py`
