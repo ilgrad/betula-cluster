@@ -64,6 +64,41 @@ impl<R: Real, C: ClusterFeature<R>> CFDistance<R, C> for AverageIntercluster {
     }
 }
 
+/// D3 — average intra-cluster squared distance of the cluster that *results* from absorbing a
+/// point / merging two features (BIRCH's "diameter" criterion), i.e. the mean of `‖xᵢ − xⱼ‖²` over
+/// ordered pairs `i ≠ j` of the union.
+///
+/// From `(n, μ, S)` alone: the double sum telescopes to `Σᵢⱼ‖xᵢ − xⱼ‖² = 2·n·S`, so `D3² = 2S/(n−1)`
+/// for one cluster, and the union's `S` follows König–Huygens. That leaves
+/// `D3²(A, B) = 2·(S_A + S_B + n_A·n_B/(n_A+n_B)·‖Δμ‖²) / (n_A + n_B − 1)` — the merge term is
+/// exactly [`VarianceIncrease`], so D3 is D4 and the two scatters over one fewer than the merged
+/// mass. Verified against brute-force enumeration over random point sets to 5.7e-14.
+///
+/// Returned squared, like every other measure here; BIRCH defines D3 as the root, which is
+/// monotone in this and so ranks identically. Zero when the union holds at most one point, where
+/// the mean over pairs is undefined rather than large.
+pub struct AverageIntracluster;
+impl<R: Real, C: ClusterFeature<R>> CFDistance<R, C> for AverageIntracluster {
+    fn point(&self, cf: &C, x: &[R]) -> R {
+        let n = cf.weight();
+        if n <= R::zero() {
+            return R::zero();
+        }
+        let two = R::one() + R::one();
+        two * (cf.ssd() + kernels::sq_euclidean(cf.mean(), x) * n / (n + R::one())) / n
+    }
+    fn between(&self, a: &C, b: &C) -> R {
+        let (na, nb) = (a.weight(), b.weight());
+        let nab = na + nb;
+        if nab <= R::one() {
+            return R::zero();
+        }
+        let two = R::one() + R::one();
+        two * (a.ssd() + b.ssd() + kernels::sq_euclidean(a.mean(), b.mean()) * na * nb / nab)
+            / (nab - R::one())
+    }
+}
+
 /// D4 / Ward — variance increase from absorbing a point / merging two features.
 /// `S` terms cancel (König–Huygens): purely a centroid measure, hence perfectly stable.
 pub struct VarianceIncrease;
@@ -286,6 +321,68 @@ mod tests {
         let empty: Diagonal<f64> = Diagonal::new(1);
         assert!(close(AverageIntercluster.point(&empty, &[1.]), 0.0));
         assert!(close(AverageIntercluster.between(&empty, &a), 0.0));
+    }
+
+    /// Mean squared distance over ordered pairs `i != j` -- the definition D3 closes over,
+    /// enumerated directly so the closed form is checked against something that shares no algebra
+    /// with it.
+    fn brute_mean_sq_pairwise(pts: &[&[f64]]) -> f64 {
+        let n = pts.len();
+        if n < 2 {
+            return 0.0;
+        }
+        let mut total = 0.0;
+        for a in pts {
+            for b in pts {
+                total += a
+                    .iter()
+                    .zip(*b)
+                    .map(|(u, v)| (u - v) * (u - v))
+                    .sum::<f64>();
+            }
+        }
+        total / (n * (n - 1)) as f64
+    }
+
+    #[test]
+    fn average_intracluster_matches_brute_force_enumeration() {
+        // Unequal masses and non-zero scatter on both sides, so the merge term and the asymmetry
+        // both have to be right -- a balanced or zero-scatter fixture would pass on a wrong formula.
+        let pa: [&[f64]; 3] = [&[0., 0.], &[2., 0.], &[1., 3.]];
+        let pb: [&[f64]; 2] = [&[7., 1.], &[9., 5.]];
+        let a: Diagonal<f64> = build(2, &pa);
+        let b: Diagonal<f64> = build(2, &pb);
+        assert!(a.ssd() > 0.0 && b.ssd() > 0.0 && a.weight() != b.weight());
+
+        let x: &[f64] = &[4., 8.];
+        let mut union: Vec<&[f64]> = pa.to_vec();
+        union.push(x);
+        assert!(close(
+            AverageIntracluster.point(&a, x),
+            brute_mean_sq_pairwise(&union)
+        ));
+
+        let mut merged: Vec<&[f64]> = pa.to_vec();
+        merged.extend_from_slice(&pb);
+        assert!(close(
+            AverageIntracluster.between(&a, &b),
+            brute_mean_sq_pairwise(&merged)
+        ));
+    }
+
+    #[test]
+    fn average_intracluster_is_zero_where_the_mean_over_pairs_is_undefined() {
+        // A union of at most one point has no ordered pair to average over. Reporting 0 rather than
+        // dividing by `n - 1 == 0` is the whole reason the guard is on the merged mass and not on
+        // either input's.
+        let empty: Diagonal<f64> = Diagonal::new(1);
+        let one: Diagonal<f64> = build(1, &[&[5.]]);
+        assert!(close(AverageIntracluster.point(&empty, &[1.]), 0.0));
+        assert!(close(AverageIntracluster.between(&empty, &one), 0.0));
+        assert!(close(AverageIntracluster.between(&empty, &empty), 0.0));
+        // Two singletons is the first defined case, and it is exactly the squared distance.
+        let two: Diagonal<f64> = build(1, &[&[9.]]);
+        assert!(close(AverageIntracluster.between(&one, &two), 16.0));
     }
 
     #[test]

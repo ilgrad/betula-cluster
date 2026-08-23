@@ -50,7 +50,7 @@ _Method = Literal[
     "scale-space",
 ]
 _Distance = Literal["euclidean", "manhattan", "ward", "average"]
-_Absorb = Literal["euclidean", "chi2"]
+_Absorb = Literal["euclidean", "manhattan", "average", "diameter", "ward", "radius", "chi2"]
 _Lens = Literal["density", "radius", "l2norm", "coordinate", "eccentricity"]
 _Repr = Literal["medoid", "boundary", "outlier", "diverse"]
 _Strategy = Literal["uncertain", "outlier"]

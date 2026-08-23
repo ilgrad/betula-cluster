@@ -25,8 +25,8 @@ use crate::clustering::{
     ConstraintError, MixedCf, cop_kmeans, kprototypes, nearest_micro, summarize_mixed,
 };
 use crate::distance::{
-    AverageIntercluster, CFDistance, CentroidEuclidean, CentroidManhattan, MahalanobisChi2,
-    VarianceIncrease,
+    AverageIntercluster, AverageIntracluster, CFDistance, CentroidEuclidean, CentroidManhattan,
+    MahalanobisChi2, Radius, VarianceIncrease,
 };
 use crate::feature::{ClusterFeature, Diagonal, FdSketch, Full, Spherical};
 use crate::mixture::Mixture;
@@ -563,9 +563,18 @@ fn normalize_rows<R: Real>(flat: &mut [R], n: usize, dim: usize) {
 
 /// Absorption criterion chosen at runtime, so the binding keeps a single tree type instead of one
 /// per (feature × absorber) combination (the routing distance is the separate [`RouteKind`]).
+///
+/// The BIRCH grid D0–D4 and R, plus this crate's mass-invariant χ² gate. Every variant except
+/// `Chi2` reads `threshold` in its own units — D1 is an L1 distance, the rest are squared — so the
+/// same number means different things across them and a threshold tuned for one does not transfer.
 #[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 enum AbsorbKind<R> {
     Euclidean,
+    Manhattan,
+    Average,
+    Diameter,
+    Ward,
+    Radius,
     Chi2(MahalanobisChi2<R>),
 }
 
@@ -573,12 +582,22 @@ impl<R: Real, C: ClusterFeature<R>> CFDistance<R, C> for AbsorbKind<R> {
     fn point(&self, cf: &C, x: &[R]) -> R {
         match self {
             AbsorbKind::Euclidean => CentroidEuclidean.point(cf, x),
+            AbsorbKind::Manhattan => CentroidManhattan.point(cf, x),
+            AbsorbKind::Average => AverageIntercluster.point(cf, x),
+            AbsorbKind::Diameter => AverageIntracluster.point(cf, x),
+            AbsorbKind::Ward => VarianceIncrease.point(cf, x),
+            AbsorbKind::Radius => Radius.point(cf, x),
             AbsorbKind::Chi2(m) => m.point(cf, x),
         }
     }
     fn between(&self, a: &C, b: &C) -> R {
         match self {
             AbsorbKind::Euclidean => CentroidEuclidean.between(a, b),
+            AbsorbKind::Manhattan => CentroidManhattan.between(a, b),
+            AbsorbKind::Average => AverageIntercluster.between(a, b),
+            AbsorbKind::Diameter => AverageIntracluster.between(a, b),
+            AbsorbKind::Ward => VarianceIncrease.between(a, b),
+            AbsorbKind::Radius => Radius.between(a, b),
             AbsorbKind::Chi2(m) => m.between(a, b),
         }
     }
@@ -754,25 +773,7 @@ fn run_oneshot<R: Real + Element>(
     }
     let route = parse_route(distance)?;
     py.detach(|| {
-        // Resolve the absorption gate. χ² uses a user-supplied within-cluster variance scale `s₀`
-        // (auto-estimating it from the data picks up between-cluster spread and makes the gate too
-        // loose), and a χ²-quantile threshold; euclidean keeps the user's squared-distance
-        // threshold unchanged (the default path is computationally identical to before).
-        let (gate, thr) = match absorb {
-            "euclidean" => (AbsorbKind::Euclidean, R::from_f64(threshold).unwrap()),
-            "chi2" => {
-                if chi2_scale <= 0.0 {
-                    return Err(
-                        "absorb='chi2' requires chi2_scale > 0 (the within-cluster variance scale)",
-                    );
-                }
-                let s0 = R::from_f64(chi2_scale).unwrap();
-                let kappa = R::from_usize(dim + 2).unwrap();
-                let q = R::from_f64(chi2_quantile(dim, chi2_p)).unwrap();
-                (AbsorbKind::Chi2(MahalanobisChi2::new(s0, kappa)), q)
-            }
-            _ => return Err("absorb must be 'euclidean' or 'chi2'"),
-        };
+        let (gate, thr) = resolve_gate::<R>(absorb, dim, chi2_p, chi2_scale, threshold)?;
         match feature {
             "spherical" => Ok(cluster::<R, Spherical<R>>(
                 &flat, n, dim, n_clusters, kind, route, gate, thr, branching, leaf_cap, max_leaves,
@@ -799,9 +800,15 @@ fn run_oneshot<R: Real + Element>(
 /// Cluster the rows of a 2-D float32 or float64 array; returns one int64 label per row (`-1` =
 /// noise, produced only by `method="hdbscan"`). `float32` input is clustered in `f32` (half the
 /// memory, no upcast). With `n_clusters=0` and `method="gmm"`/`"gmm-full"` the component count is
-/// selected automatically by BIC. `absorb="chi2"` switches the CF-tree's absorption to a
-/// mass-invariant Mahalanobis-χ² gate at level `chi2_p` with within-cluster variance `chi2_scale`
-/// (required for `chi2`; `absorb="euclidean"` is the default and unchanged).
+/// selected automatically by BIC.
+///
+/// `absorb` selects the CF-tree's absorption criterion — the full BIRCH grid plus this crate's own
+/// gate: `"euclidean"` (D0, the default), `"manhattan"` (D1), `"average"` (D2, inter-cluster),
+/// `"diameter"` (D3, intra-cluster of the merged cell), `"ward"` (D4, variance increase),
+/// `"radius"` (R, the merged cell's mean squared radius), and `"chi2"`, a mass-invariant
+/// Mahalanobis-χ² gate at level `chi2_p` with within-cluster variance `chi2_scale` (required for
+/// `chi2`). `threshold` is read in the chosen criterion's own units — L1 for `"manhattan"`, squared
+/// for the rest, a χ²_dim quantile for `"chi2"` — so it does not transfer between them.
 #[pyfunction]
 #[pyo3(signature = (
     data, n_clusters = 8, feature = "diagonal", method = "gmm", threshold = 0.0,
@@ -875,6 +882,11 @@ fn fit_predict<'py>(
 
 type BetulaTree<R, C> = CFTree<R, C, RouteKind, AbsorbKind<R>>;
 
+/// The `absorb` values this binding accepts, as one string so the parser and every error message
+/// cannot drift apart.
+const ABSORB_CHOICES: &str = "absorb must be 'euclidean', 'manhattan', 'average', 'diameter', \
+                              'ward', 'radius' or 'chi2'";
+
 /// Resolve the absorption gate and effective threshold for element type `R` (shared by the one-shot
 /// path and the streaming estimator). χ² uses the user-supplied within-cluster scale `chi2_scale`;
 /// euclidean keeps the user's squared-distance threshold (so the default path is unchanged).
@@ -885,8 +897,16 @@ fn resolve_gate<R: Real>(
     chi2_scale: f64,
     threshold: f64,
 ) -> Result<(AbsorbKind<R>, R), &'static str> {
+    // Every geometric criterion takes the caller's threshold verbatim, in its own units; only χ²
+    // substitutes one, because its scale is a χ²_dim quantile rather than a distance.
+    let thr = R::from_f64(threshold).unwrap();
     match absorb {
-        "euclidean" => Ok((AbsorbKind::Euclidean, R::from_f64(threshold).unwrap())),
+        "euclidean" => Ok((AbsorbKind::Euclidean, thr)),
+        "manhattan" => Ok((AbsorbKind::Manhattan, thr)),
+        "average" => Ok((AbsorbKind::Average, thr)),
+        "diameter" => Ok((AbsorbKind::Diameter, thr)),
+        "ward" => Ok((AbsorbKind::Ward, thr)),
+        "radius" => Ok((AbsorbKind::Radius, thr)),
         "chi2" => {
             if chi2_scale <= 0.0 {
                 return Err(
@@ -898,7 +918,7 @@ fn resolve_gate<R: Real>(
             let q = R::from_f64(chi2_quantile(dim, chi2_p)).unwrap();
             Ok((AbsorbKind::Chi2(MahalanobisChi2::new(s0, kappa)), q))
         }
-        _ => Err("absorb must be 'euclidean' or 'chi2'"),
+        _ => Err(ABSORB_CHOICES),
     }
 }
 
@@ -1841,10 +1861,11 @@ impl Betula {
                 "feature must be 'spherical', 'diagonal', 'full' or 'fd'",
             ));
         }
-        if !matches!(absorb, "euclidean" | "chi2") {
-            return Err(PyValueError::new_err(
-                "absorb must be 'euclidean' or 'chi2'",
-            ));
+        if !matches!(
+            absorb,
+            "euclidean" | "manhattan" | "average" | "diameter" | "ward" | "radius" | "chi2"
+        ) {
+            return Err(PyValueError::new_err(ABSORB_CHOICES));
         }
         if absorb == "chi2" && chi2_scale <= 0.0 {
             return Err(PyValueError::new_err(

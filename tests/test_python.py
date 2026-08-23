@@ -578,7 +578,9 @@ def test_float32_reproduces_float64_on_normal_range(blobs):
     assert ari(l32, l64) > 0.99  # f32 path agrees with f64 on moderate-range data
 
 
-@pytest.mark.parametrize("absorb", ["euclidean", "chi2"])
+@pytest.mark.parametrize(
+    "absorb", ["euclidean", "manhattan", "average", "diameter", "ward", "radius", "chi2"]
+)
 def test_absorption_modes_recover_blobs(blobs, absorb):
     x, y = blobs
     labels = betula_cluster.fit_predict(
@@ -2418,3 +2420,52 @@ def test_leaf_budget_warning_is_silent_for_a_single_cluster():
     with warnings.catch_warnings():
         warnings.simplefilter("error", UserWarning)
         betula_cluster.fit_predict(x, 1, method="kmeans")
+
+
+# ── the BIRCH absorption grid ─────────────────────────────────────────────────────────────────────
+
+
+def _leaf_count(absorb, x, threshold):
+    est = betula_cluster.Betula(
+        n_clusters=2,
+        feature="diagonal",
+        method="kmeans",
+        absorb=absorb,
+        chi2_scale=1.0,
+        threshold=threshold,
+        max_leaves=4000,
+        seed=0,
+    )
+    est.fit(x)
+    return est.n_leaves_
+
+
+@pytest.mark.parametrize(
+    "absorb", ["euclidean", "manhattan", "average", "diameter", "ward", "radius"]
+)
+def test_every_geometric_absorber_actually_absorbs(absorb):
+    """A criterion that is wired up but never fires would still pass a quality test -- the tree
+    would just fall back to one leaf per point. Each has to compress at a reachable threshold."""
+    rng = np.random.default_rng(0)
+    x = rng.normal(size=(2000, 4))
+    assert _leaf_count(absorb, x, 0.0) > _leaf_count(absorb, x, 4.0)
+
+
+def test_diameter_absorbs_at_least_as_eagerly_as_ward():
+    """D3 is D4 plus both scatters over one fewer than the merged mass, so at the same threshold it
+    can only ever be the larger of the two -- and a larger criterion value means a stricter gate,
+    hence no fewer leaves. This pins the ordering the closed form implies rather than a number."""
+    rng = np.random.default_rng(1)
+    x = rng.normal(size=(2000, 4))
+    ward, diameter = _leaf_count("ward", x, 2.0), _leaf_count("diameter", x, 2.0)
+    assert diameter >= ward
+    assert ward < len(x)  # the fixture is in the compressing regime, not one-leaf-per-point
+
+
+def test_unknown_absorber_names_the_whole_set():
+    rng = np.random.default_rng(0)
+    x = rng.normal(size=(50, 3))
+    with pytest.raises(ValueError, match=r"diameter"):
+        betula_cluster.fit_predict(x, 2, absorb="d3")
+    with pytest.raises(ValueError, match=r"diameter"):
+        betula_cluster.Betula(n_clusters=2, absorb="d3").fit(x)

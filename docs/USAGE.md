@@ -21,8 +21,9 @@ labels = betula_cluster.fit_predict(X, method="hdbscan", min_samples=10, min_clu
 
 Keyword args: `feature ∈ {spherical, diagonal, full, fd}`, `method ∈ {kmeans, gmm, gmm-full, ward, spectral, leiden, leiden-cpm, spherical-kmeans, vmf, gmm-toeplitz, gmm-toeplitz-full, gmm-toeplitz-gs, hdbscan, scale-space}`,
 `distance ∈ {euclidean, manhattan, ward, average}` (routing measure),
-`absorb ∈ {euclidean, chi2}` (`chi2` = mass-invariant Mahalanobis gate at level `chi2_p` with
-`chi2_scale` = within-cluster variance; fixes the BIRCH size-imbalance bug), `decay` (EWMA factor
+`absorb ∈ {euclidean, manhattan, average, diameter, ward, radius, chi2}` (see *Absorption criteria*
+below; `chi2` = mass-invariant Mahalanobis gate at level `chi2_p` with `chi2_scale` = within-cluster
+variance; fixes the BIRCH size-imbalance bug), `decay` (EWMA factor
 for streaming concept drift), `normalize` (L2-normalize rows → cluster by *direction*; on the unit
 sphere squared-Euclidean is monotone in cosine, so the tree clusters by angle. It earns its keep on
 `digits`-64 (k-means **0.467 → 0.569**, ward **0.643 → 0.699**, median of three seeds); on MNIST-784
@@ -47,6 +48,35 @@ error), `seed`. `n_clusters=0` ⇒ automatic `k` for every parametric head (BIC 
 k-means/GMM, dendrogram cut for Ward). `threshold="auto"` (dense only) drops the one knob users most
 often have to guess: a subsample pilot estimates a warm-start absorption radius, so the full fit
 starts near-converged instead of growing the threshold from zero.
+
+### Absorption criteria
+
+`absorb` decides when a point joins an existing leaf rather than starting a new one — the single
+choice that shapes the whole summary. The full BIRCH grid is available, plus this crate's own gate:
+
+| `absorb` | BIRCH name | what it measures | `threshold` units |
+|---|---|---|---|
+| `euclidean` *(default)* | D0 | squared distance to the centroid | squared |
+| `manhattan` | D1 | L1 distance to the centroid | **L1, not squared** |
+| `average` | D2 | mean squared distance between the two clusters' points | squared |
+| `diameter` | D3 | mean squared distance *within* the merged cell | squared |
+| `ward` | D4 | variance increase from the merge | squared |
+| `radius` | R | mean squared radius of the merged cell | squared |
+| `chi2` | — | Mahalanobis-χ² with a variance prior | χ²`dim` quantile via `chi2_p` |
+
+`threshold` is read in the chosen criterion's own units, so a value tuned for one does **not**
+transfer to another — retune when you switch. `D2`, `D3` and `R` read the leaves' second moments, so
+they grow with a cell's scatter; `D0`, `D1` and `D4` are centroid-only and therefore the most
+numerically stable.
+
+**The default is deliberate, and the alternatives optimise a different objective.** Lang's thesis
+tunes absorption for minimum variance and finds D4 × D2 best on Gaussian data; this crate chose
+mass-invariance instead, because the variance-minimising criteria inherit BIRCH's size-imbalance bug
+(scikit-learn [#22854](https://github.com/scikit-learn/scikit-learn/issues/22854) — a large cluster
+swallows a distant point because its average radius barely moves). The two objectives genuinely
+conflict: our own measurements have the radius criterion over-absorbing exactly where `euclidean` and
+`chi2` correctly reject. Pick `radius` or `diameter` if you want BIRCH's published behaviour, `chi2`
+if your clusters differ wildly in size, and leave the default alone otherwise.
 
 ### Choosing a head
 
