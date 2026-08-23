@@ -7,6 +7,27 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **The full BIRCH absorption grid, and D3 implemented for the first time.** `absorb` accepted only
+  `euclidean` and `chi2`; it now takes `manhattan` (D1), `average` (D2), `diameter` (D3), `ward` (D4)
+  and `radius` (R) as well. D3 — the mean squared distance *within* the cell that results from the
+  merge — did not exist in `src/distance.rs` at all, so a third of the criteria a BIRCH paper refers
+  to were unreachable.
+
+  D3 closes over `(n, μ, S)` because the double sum telescopes: `Σᵢⱼ‖xᵢ−xⱼ‖² = 2·n·S`, leaving
+  `D3²(A,B) = 2·(S_A + S_B + n_A·n_B/(n_A+n_B)·‖Δμ‖²)/(n_A+n_B−1)` — D4's merge term and the two
+  scatters over one fewer than the merged mass. Checked against brute-force enumeration of the
+  underlying points, both in a Rust fixture and over random point sets to 5.7e-14.
+
+  **The default does not move**, and `docs/USAGE.md` now says why rather than leaving it implicit:
+  the thesis tunes absorption for minimum variance and prefers D4/D2, while this crate chose
+  mass-invariance, and the two objectives genuinely conflict — the variance-minimising criteria
+  inherit the BIRCH size-imbalance bug that `chi2` exists to fix. `threshold` is read in each
+  criterion's own units (L1 for `manhattan`, squared for the rest, a χ² quantile for `chi2`), so it
+  does not transfer between them; the table in `docs/USAGE.md` states the units per criterion.
+
+  The one-shot path had carried a verbatim copy of the estimator's gate resolution, which would have
+  meant adding every criterion twice; it now calls the same `resolve_gate`, and the accepted-value
+  list exists once so the parser and the error messages cannot drift apart.
 - **A `UserWarning` when the CF summary is too coarse to carry `n_clusters`.** Asking for `k`
   clusters from fewer than `2k` leaves silently produced a worse partition with no signal; the
   warning names the realised leaf count, `k`, their ratio and the current `max_leaves`, and points
