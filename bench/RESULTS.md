@@ -1,15 +1,15 @@
 # Benchmark: betula-cluster vs scikit-learn — quality · speed · memory
 
 > **Provenance — read before quoting a number.** Re-measured **2026-08-22** against the working tree
-> at `cdcc5a2` — 0.6.0 plus everything under `[Unreleased]`. Every quality table is the **median of seeds 0, 1,
-> 2**, and each ships its own
+> at `cdcc5a2`, released as **0.7.0**. Every quality table is the **median of seeds 0, 1, 2**, and
+> each ships its own
 > min/median/max sidecar (`results_*_spread.csv`); the speed, memory, scale and sparse tables are a
 > single run, since `bench/_worker.py` pins `seed=0` for them and they are seed-invariant by
 > construction. The previous edition of this page was a single run of 2026-07-18 against a **0.2.0**
 > build; every number on it has been replaced, several of them downwards. This page is re-measured as
 > a whole, not patched cell by cell.
 >
-> One caveat stated rather than hidden: the extension used for these runs predates the vMF
+> One caveat stated rather than hidden: the extension used for these runs predates 0.7.0's vMF
 > concentration-cap fix by about an hour. No table here exercises `method="vmf"` — verified by grep
 > over every `results_*.csv` — so no number moves with it.
 
@@ -70,7 +70,7 @@ Absolute times vary by machine; the *ratios* far less.
 | Python / NumPy / SciPy / scikit-learn | 3.14.7 / 2.5.2 / 1.18.1 / 1.9.0 |
 | matplotlib / pandas | 3.11.1 / 3.0.5 |
 | Rust | rustc 1.98.0 |
-| betula-cluster | working tree at `cdcc5a2` (0.6.0 + `[Unreleased]`), `maturin --release` (LTO, `codegen-units=1`); **portable** wheel (no `target-cpu=native`) |
+| betula-cluster | 0.7.0 (working tree at `cdcc5a2`), `maturin --release` (LTO, `codegen-units=1`); **portable** wheel (no `target-cpu=native`) |
 | BLAS threads | 1 (`OMP/OPENBLAS/MKL/NUMEXPR_NUM_THREADS=1`) — comparable single-thread timings |
 
 ## Methodology

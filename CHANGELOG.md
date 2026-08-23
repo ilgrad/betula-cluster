@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-08-23
+
 ### Changed
 - **Rust 2024 edition; minimum supported Rust version 1.82 → 1.85.** The migration needed two source
   changes in total (a binding mode made explicit in `gmm_toeplitz.rs`); the rest is `rustfmt`'s 2024
@@ -713,7 +715,8 @@ First public release.
   far below `max_leaves`), and rebuilds reinsert in reverse-DFS leaf order. The CF-tree build is now
   byte-for-byte the reference (`betulars`) tree shape and at speed parity with matched build flags.
 
-[Unreleased]: https://github.com/ilgrad/betula-cluster/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/ilgrad/betula-cluster/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/ilgrad/betula-cluster/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/ilgrad/betula-cluster/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/ilgrad/betula-cluster/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/ilgrad/betula-cluster/compare/v0.3.0...v0.4.0
