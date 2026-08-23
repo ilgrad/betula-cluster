@@ -82,8 +82,32 @@ fn new_cluster(
     birth.len() - 1
 }
 
+/// Distance from each of `m` objects to its `min_samples`-th nearest neighbour, **counting the
+/// object itself** — so `min_samples = 1` is 0 everywhere and mutual reachability degenerates to
+/// `dist`.
+///
+/// The convention is a genuine split in the field and is therefore chosen here rather than assumed:
+/// Campello, Moulavi & Sander's Def. 3.1, ELKI (whose parameter says "including this point") and
+/// `sklearn.cluster.HDBSCAN` all include the object; `scikit-learn-contrib/hdbscan` excludes it, so
+/// the same argument there means one neighbour more.
+fn core_distances(m: usize, min_samples: usize, dist: impl Fn(usize, usize) -> f64) -> Vec<f64> {
+    let k = min_samples.clamp(1, m);
+    (0..m)
+        .map(|i| {
+            let mut ds: Vec<f64> = (0..m).map(|j| dist(i, j)).collect();
+            ds.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            ds[k - 1]
+        })
+        .collect()
+}
+
 /// Cluster `features` with HDBSCAN*. `min_samples` sets the core-distance neighbourhood and
 /// `min_cluster_size` the smallest admissible cluster.
+///
+/// `min_samples` **counts the feature itself**, matching Campello's Def. 3.1,
+/// `sklearn.cluster.HDBSCAN` and ELKI, so `min_samples = 1` leaves every core distance at 0 and
+/// HDBSCAN\* degenerates to single linkage. `scikit-learn-contrib/hdbscan` uses the exclusive
+/// convention, where the same argument means one neighbour more.
 pub fn hdbscan<R: Real, C: ClusterFeature<R>>(
     features: &[C],
     min_samples: usize,
@@ -113,14 +137,7 @@ pub fn hdbscan<R: Real, C: ClusterFeature<R>>(
         .collect();
     let dist = |i: usize, j: usize| -> f64 { crate::kernels::sq_euclidean(&mu[i], &mu[j]).sqrt() };
 
-    // core distance = distance to the k-th nearest neighbour
-    let k = min_samples.clamp(1, m - 1);
-    let mut core = vec![0.0f64; m];
-    for (i, ci) in core.iter_mut().enumerate() {
-        let mut ds: Vec<f64> = (0..m).filter(|&j| j != i).map(|j| dist(i, j)).collect();
-        ds.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        *ci = ds[k - 1];
-    }
+    let core = core_distances(m, min_samples, dist);
     let mreach = |i: usize, j: usize| -> f64 { core[i].max(core[j]).max(dist(i, j)) };
 
     // Prim minimum spanning tree over mutual reachability
@@ -409,14 +426,7 @@ mod tests {
                 .sum::<f64>()
                 .sqrt()
         };
-        let k = min_samples.clamp(1, m - 1);
-        let core: Vec<f64> = (0..m)
-            .map(|i| {
-                let mut ds: Vec<f64> = (0..m).filter(|&j| j != i).map(|j| dist(i, j)).collect();
-                ds.sort_by(|a, b| a.partial_cmp(b).unwrap());
-                ds[k - 1]
-            })
-            .collect();
+        let core: Vec<f64> = super::core_distances(m, min_samples, dist);
 
         fn root_of(p: &mut [usize], x: usize) -> usize {
             let mut r = x;
@@ -588,6 +598,35 @@ mod tests {
                 }
             })
             .collect()
+    }
+
+    #[test]
+    fn min_samples_counts_the_object_itself() {
+        // Four points on a line at 0, 1, 3, 6, so every neighbour rank is a distinct number and the
+        // two conventions cannot coincide by accident. Sorted distances, self included:
+        //
+        //   from 0: 0 1 3 6      from 1: 0 1 2 5      from 3: 0 2 3 3      from 6: 0 3 5 6
+        //
+        // The inclusive convention (Campello Def. 3.1, ELKI, `sklearn.cluster.HDBSCAN`) reads off
+        // column `min_samples`; the exclusive one (`scikit-learn-contrib/hdbscan`) drops the leading
+        // zero and reads one column further. `min_samples = 1` is the sharpest discriminator of the
+        // two: inclusive gives 0 everywhere, which makes mutual reachability the plain distance.
+        const LINE: [f64; 4] = [0.0, 1.0, 3.0, 6.0];
+        let d = |i: usize, j: usize| (LINE[i] - LINE[j]).abs();
+
+        assert_eq!(
+            core_distances(4, 1, d),
+            vec![0.0, 0.0, 0.0, 0.0],
+            "min_samples = 1 must be the object itself, i.e. core distance 0"
+        );
+        assert_eq!(
+            core_distances(4, 2, d),
+            vec![1.0, 1.0, 2.0, 3.0],
+            "min_samples = 2 must be the nearest *other* object"
+        );
+        assert_eq!(core_distances(4, 3, d), vec![3.0, 2.0, 3.0, 5.0]);
+        // Asking for more neighbours than exist saturates rather than panicking.
+        assert_eq!(core_distances(4, 99, d), core_distances(4, 4, d));
     }
 
     /// Nested structure at three scales: two tight blobs a short hop apart, a third far away, and
