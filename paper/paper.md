@@ -60,9 +60,9 @@ head. The closest widely used tool, scikit-learn's `Birch`
 downstream head, and offers no bounded-memory streaming interface. Measured
 against scikit-learn on standardized data, `betula-cluster` reaches
 parity-or-better cluster quality (for example, k-means adjusted Rand index
-$0.861$ vs $0.861$ on Gaussian blobs) while running 15–40$\times$ faster at
-$N = 10^6$, and it clusters a $10^7$-point stream with peak memory held near
-57 MB, where an in-core k-means requires about 5 GB. These properties make it useful for researchers
+$0.793$ vs $0.794$ on Gaussian blobs, median of three seeds) while running
+11–36$\times$ faster at $N = 10^6$, and it clusters a $10^7$-point stream with
+peak memory held near 60 MB, where an in-core k-means requires about 5 GB. These properties make it useful for researchers
 and engineers clustering large embedding corpora, high-throughput tabular
 streams, and data sets that do not fit in memory.
 

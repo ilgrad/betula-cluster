@@ -53,8 +53,10 @@ recovered count drops below `k`. A per-dimension floor on each component's covar
 $10^{-3}\,(\Sigma_\text{global})_{dd}$ — relative to the global *per-dimension* variance (not the mean
 scale, which between-cluster separation inflates), with off-diagonals / orientation left untouched —
 keeps every $\Sigma_k$ well-conditioned. On 64-dimensional `digits` it holds all 10 components (an
-unfloored fit starves one to 9) and raises full-covariance ARI $0.39 \to 0.51$, past scikit-learn's
-`GaussianMixture` (0.40), while low-dimensional and rotated-anisotropic fits are unchanged. The
+unfloored fit starves one to 9) and the floored full-covariance head reaches ARI **0.575** against
+scikit-learn's `GaussianMixture` at **0.463** (median of seeds 0/1/2), while low-dimensional and
+rotated-anisotropic fits are unchanged. The unfloored figure of 0.39 that this pair was first measured
+against dates from a 0.2.0 build and has not been re-taken; the floored-vs-scikit-learn gap has. The
 diagonal GMM floors its per-dimension variance the same way ($10^{-3}\,(\Sigma_\text{global})_{dd}$).
 
 ## Toeplitz / AR covariance for stationary signals
@@ -95,7 +97,7 @@ exactly where $N_k \ll d$. A ridge (the within-leaf variance plus $10^{-6}\,r^{\
 strictly PD; a Cholesky factor gives the exact multivariate-Gaussian log-density
 $-\tfrac12(d\ln 2\pi + \ln|\Sigma| + \delta^\top\Sigma^{-1}\delta)$. Cost is $O(d^2)$ parameters and $O(d^3)$
 per component (vs AR's $O(d\,w)$), so it is the opt-in rung for signals a low-order AR cannot fit: on a
-long-lag-echo mixture ($K\in\{16,28,40\}>w_{\max}=10$) it reaches ARI $0.70\!\to\!0.97$ as the window grows
+long-lag-echo mixture ($K\in\{16,28,40\}>w_{\max}=10$) it reaches ARI $0.73\!\to\!1.00$ as the window grows
 where the AR head sits at chance, and it matches the AR head on AR-generated signals
 (`bench/toeplitz_ar_mixture.py`).
 
@@ -170,8 +172,9 @@ fit). That gauge freedom is harmless for the reconstruction but not for us: $W$ 
 **Euclidean feature vector** for the Phase-3 head, where a per-component scale is a per-dimension weight,
 so the head silently clusters along whichever component drew the largest number. The returned
 factorization is therefore canonical — $\lVert H_k \rVert_2 = 1$ with the scale absorbed into $W$, and
-components ordered by descending energy. Measured on a 4-topic nonnegative mixture over 8 seeds: median
-ARI **0.63 → 1.00** and seed spread **0.37 → 0.00**. Convergence is tested on the **size of the update** — the total coordinate movement of a sweep, against
+components ordered by descending energy. Measured on a 4-topic nonnegative mixture over 8 seeds, at
+$N = 8\,000 / 40\,000 / 160\,000$: median ARI **0.81 / 0.99 / 0.97 → 1.00** and seed spread
+**±0.37 → ±0.00**. The gain is determinism, not accuracy in the mean. Convergence is tested on the **size of the update** — the total coordinate movement of a sweep, against
 the first sweep's — not on the size of the objective. A relative test on the residual never fires here:
 HALS converges sublinearly, so it keeps buying more than $\texttt{tol}$ of relative improvement for
 hundreds of sweeps and the iteration budget ends up the only brake. The movement is scale-free, does
@@ -194,10 +197,25 @@ concentrated, over-estimates `κ`, and fragments the mixture.
 
 **Concentration.** The vMF concentration uses the Banerjee et al. (2005) closed form
 `κ̂ ≈ R̄(d − R̄²)/(1 − R̄²)`, which avoids inverting the Bessel ratio. The normalizer
-`C_d(κ) = κ^{d/2−1} / ((2π)^{d/2} I_{d/2−1}(κ))` still needs `log I_ν(κ)`; we take it from the
-all-positive power series in log-space — pull out `(κ/2)^ν`, accumulate the term ratio
-`(κ/2)² / (m(ν+m))` with an online log-sum-exp — which is stable for large `κ` and needs no Bessel
-library (the crate stays NumPy-only). `κ` is capped for numerical safety.
+`C_d(κ) = κ^{d/2−1} / ((2π)^{d/2} I_{d/2−1}(κ))` still needs `log I_ν(κ)`, and no Bessel library is
+pulled in for it (the crate stays NumPy-only) — two evaluators are split at `κ = 10⁴`:
+
+- **below**, the all-positive power series in log-space — pull out `(κ/2)^ν`, accumulate the term
+  ratio `(κ/2)² / (m(ν+m))` with an online log-sum-exp. Nothing overflows, but the peak term sits at
+  `m ≈ κ/2`, so the cost is `O(κ)` and the loop's own stop truncates *before* the peak above
+  `κ ≈ 4·10⁵`. Large `κ` is not a stability problem for this series; it is a cost problem that turns
+  into a correctness problem.
+- **above**, DLMF 10.41.3, the uniform asymptotic expansion for large order, in `O(1)`:
+  `I_ν(νz) ~ e^{νη}/(√(2πν)·(1+z²)^{1/4}) · Σₖ Uₖ(p)/ν^k` with `η = √(1+z²) + ln(z/(1+√(1+z²)))` and
+  `p = 1/√(1+z²)`. Three terms (`U₀..U₂`) are exactly what f64 needs from `κ = 10⁴` up: measured
+  against 50-digit arithmetic over `ν ∈ [1, 2047]`, the f64 result lands within **0.8 ulp**, while
+  stopping at `U₁` costs some 300 ulps and a fourth term changes nothing.
+
+The expansion is written in `z = κ/ν` and divides by `ν = d/2 − 1`, so it exists only for `d ≥ 4`.
+Below that the series is the sole evaluator, and the concentration cap is what keeps it in range:
+**10⁶ for `d ≥ 4`, 10⁴ for `d ≤ 3`**. The cap is a limit of the normalizer, not of the model — a
+cluster tighter than it is already effectively a point. Extending `d ≤ 3` would need a separate
+small-order expansion and its own validation.
 
 The EM E-step is the exact expected log-likelihood of a leaf's points under component `c`,
 `n_i·[ln π_c + log C_d(κ_c)] + κ_c · μ_c · R_i` with `R_i = n_i μ_i` the raw resultant, so a
@@ -336,8 +354,8 @@ stable CF from scratch and then adds everything betulars leaves to the user:
 - auto-vectorized distance kernels (tight inline reductions) and rayon-parallel build + labeling.
 
 The concrete, reproducible quality/speed/memory comparison is against the labeled scikit-learn
-clusterers practitioners actually reach for: at **matching ARI**, betula labels 1 M points **~37×
-faster** than `sklearn.cluster.Birch` (8.3 s → 0.22 s) and **~13×** faster than `KMeans`, while
+clusterers practitioners actually reach for: at **matching ARI**, betula labels 1 M points **36×
+faster** than `sklearn.cluster.Birch` (8.28 s → 0.23 s) and **11.5×** faster than `KMeans`, while
 streaming memory stays flat at ~60 MB; see [`bench/RESULTS.md`](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md) and the
 [method-comparison notebook](https://github.com/ilgrad/betula-cluster/blob/main/examples/04_method_comparison.ipynb). (betulars produces no labels, so
 it is not in that comparison; on the raw Phase-1 *build* the two are at parity — betula-cluster builds

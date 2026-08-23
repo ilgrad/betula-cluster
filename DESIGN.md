@@ -138,8 +138,8 @@ zero dispatch cost; Python/CLI pick variants via enums.
 
 ## Status
 
-**Done & verified** — 352 Rust unit + 4 integration tests (default features; the `cli` binary adds
-8 more, and 351 + 4 run with `--no-default-features`) + a 228-case `pytest` suite (Python wrapper at 100 % line coverage, Rust ≥95 %
+**Done & verified** — 404 Rust unit + 4 integration tests (default features; the `cli` binary adds
+8 more, and 402 + 4 run with `--no-default-features`) + a 230-case `pytest` suite (Python wrapper at 100 % line coverage, Rust ≥95 %
 CI-enforced via `cargo llvm-cov`); `clippy -D warnings` + `fmt` clean (across `parallel`, serial,
 `persistence`, `cli`, and `python` feature sets); GitHub Actions CI (Rust gate
 + Python build/pytest on 3.11–3.14) and a multi-platform wheel-release workflow (`.github/workflows/`);

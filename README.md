@@ -20,7 +20,7 @@
 pip install betula-cluster
 ```
 
-**Verified:** a **228-case** Python suite at **100% wrapper coverage** + **356** Rust tests,
+**Verified:** a **230-case** Python suite at **100% wrapper coverage** + **408** Rust tests,
 `clippy -D warnings` + `fmt` clean across all feature sets, CI on CPython 3.11–3.14 (one abi3 wheel).
 
 ## At a glance — honest benchmarks
@@ -29,31 +29,33 @@ Measured against scikit-learn on `StandardScaler`-normalized data, each method i
 with peak RSS sampled from `/proc/self/statm`. Full methodology, every metric, and all tables (wins
 **and** losses) live in [**`bench/RESULTS.md`**](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md).
 
-> **These numbers were measured on 2026-07-18 against a 0.2.0 build.** 0.6.0 changed how every head
-> labels a point, so the **quality** figures below are pending re-measurement; the speed and memory
-> ratios are set by clustering `M ≪ N` microclusters and are the least affected. The measured 0.6.0
-> deltas are in [`CHANGELOG.md`](https://github.com/ilgrad/betula-cluster/blob/main/CHANGELOG.md) § 0.6.0.
+> **Re-measured 2026-08-22.** Every quality figure is the **median of seeds 0, 1, 2** — clustering
+> quality is seed-dependent and a single run is not a result. Ranges per cell are in
+> `bench/results_*_spread.csv`; on the synthetic sets every row moves by more than 0.05 ARI across the
+> three seeds, so a margin below that is a tie and is written as one here.
 
 - ⚡🪶 **Always faster — and lighter — at scale (the unconditional win).** betula labels **1 M points
-  in 0.22 s**: 13× faster than scikit-learn KMeans, 23× vs GaussianMixture, 37× vs Birch — and streams
-  **10 M in a flat ~60 MB** where an in-core KMeans needs **~5 GB** (**≈83× less**, and the gap grows
-  without bound). This holds for *every* method at *every* size.
-- 🎯 **Quality at parity — or better — on most tasks.** betula's k-means is at **exact** parity with
-  scikit-learn (blobs 0.861 = 0.861); full-covariance GMM matches it on anisotropic data (0.90 vs
-  0.90) and **beats** scikit-learn's GMM on real 64-D `digits` (**0.51 vs 0.40**, via the
-  high-dimensional covariance floor); betula-ward clusters 1 M in 0.30 s where `O(N²)` sklearn-ward
+  in 0.23 s**: 11.5× faster than scikit-learn KMeans, 17× vs GaussianMixture, 36× vs Birch — and
+  streams **10 M in a flat ~60 MB** where an in-core KMeans needs **~5.0 GB** (**82× less**, and the
+  gap grows without bound). This holds for *every* method at *every* size.
+- 🎯 **Parity on the centroid heads, ahead on the structured ones.** betula's k-means ties
+  scikit-learn (blobs 0.793 vs 0.794, `digits` 0.467 vs 0.468); full-covariance GMM **beats** it on
+  anisotropic data (**0.961 vs 0.902**) and on real 64-D `digits` (**0.575 vs 0.463**, via the
+  high-dimensional covariance floor); betula-ward clusters 1 M in 0.38 s where `O(N²)` sklearn-ward
   can't run past ~10 k; and on non-convex moons & circles the **spectral** and HDBSCAN heads hit
-  **ARI 1.00** — spectral matching scikit-learn's `SpectralClustering` at **3–5× the speed**.
-- 🌍 **Real data, honest trade-offs.** On `digits` betula-kmeans leads (0.57 vs 0.47); given adequate
-  leaf resolution its diagonal GMM overtakes scikit-learn on hard `covtype` too (**0.096 vs 0.080**);
-  it clusters **full covtype (581 k rows) ~5.8× faster** at matching ARI; in 784-D MNIST
-  `normalize=True` **beats** scikit-learn (0.33 vs 0.32). Where a compression method costs some
-  quality — raw-Euclidean k-means in 784-D, HDBSCAN on overlapping blobs — `bench/RESULTS.md` reports
-  it rather than hides it.
+  **ARI 1.00**. Spectral matches `SpectralClustering`'s quality at 1.0–1.5× its speed — the durable
+  claim there is *scaling* (cost set by `max_leaves`, not `N`), not a constant factor.
+- 🌍 **Real data, and two losses stated plainly.** betula's diagonal GMM overtakes scikit-learn on hard
+  `covtype` (**0.094 vs 0.080** at adequate leaf resolution) and it clusters **full covtype (581 k
+  rows) 5.7× faster** at matching ARI (0.050 vs 0.049). But `sklearn-birch` beats **every** betula
+  head on both `covtype` (0.131) and MNIST (0.426 vs 0.377), and that is not a leaf-budget artefact —
+  it was tested in both directions. HDBSCAN-on-CF likewise trails raw HDBSCAN on overlapping density.
+  [`bench/RESULTS.md`](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md) reports
+  both rather than hiding them.
 
 | ![Fit time vs N](https://raw.githubusercontent.com/ilgrad/betula-cluster/main/bench/plots/scaling_time.png) | ![Peak memory vs N](https://raw.githubusercontent.com/ilgrad/betula-cluster/main/bench/plots/memory_streaming.png) |
 |:--:|:--:|
-| Phase-3 clusters only the ~2 000 leaf microclusters, not the raw points, so every head finishes 1 M points in **under ½ s**. | The CF-tree is capped by `max_leaves`, so streaming memory stays **flat** — it clusters data larger than RAM. |
+| Phase-3 clusters only the ~2 000 leaf microclusters, not the raw points, so every head finishes 1 M points in **under 0.7 s** (k-means in 0.23 s). | The CF-tree is capped by `max_leaves`, so streaming memory stays **flat** — it clusters data larger than RAM. |
 
 ## Why
 
@@ -225,7 +227,7 @@ And six **end-to-end use cases** (each scored against ground truth):
 - [**Benchmarks**](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md) — methodology, every metric, all tables, honest wins & losses.
 - [**Design**](https://github.com/ilgrad/betula-cluster/blob/main/DESIGN.md) — internal design, invariants, and testing strategy.
 
-Verified: **352** Rust unit + 4 integration tests (plus 8 for the CLI binary) + a **228-case**
+Verified: **404** Rust unit + 4 integration tests (plus 8 for the CLI binary) + a **230-case**
 Python suite at **100%** wrapper coverage (Rust ≥95%, CI-enforced), `clippy -D warnings` + `fmt`
 clean across all feature sets, on Python 3.11–3.14 (single abi3 wheel).
 

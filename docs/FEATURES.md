@@ -99,7 +99,8 @@ A capability-by-capability reference. For runnable code see [`USAGE.md`](USAGE.m
   **canonical** factorization — component rows unit-L2, ordered by descending
   energy. That last part is load-bearing, not cosmetic: NMF is invariant to `(W D, D⁻¹H)`, so an
   unpinned split lets one component's arbitrary scale dominate the Euclidean geometry the head then
-  clusters (measured: median ARI 0.63 → 1.00, seed spread 0.37 → 0.00 across 8 seeds). `components_`
+  clusters (measured over 8 seeds at N = 8k/40k/160k: median ARI 0.81/0.99/0.97 → 1.00, seed spread
+  ±0.37 → ±0.00 — the gain is determinism, not accuracy in the mean). `components_`
   and `reconstruction_err_` expose the parts and the fit; `projection_max_iter` is the solver's own
   budget, independent of the head's `max_iter`. Dense **and** sparse CSR input; signed input is
   rejected, not shifted. See [`MATH.md`](MATH.md).

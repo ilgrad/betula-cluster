@@ -47,6 +47,24 @@ All notable changes to this project are documented here. The format follows
   `missing field merged_since_rebalance`, which is the claim itself.
 
 ### Fixed
+- **The `vmf` head reported the same concentration for every tight cluster in high dimension.** `κ`
+  was clamped at `10⁴`, which in 784 dimensions binds from `R̄ ≈ 0.9616` — ordinary for embedding
+  data. At `R̄ = 0.99` the clamp understated the Banerjee estimate 3.9×, and at `R̄ = 0.999` 39×
+  (true `κ ≈ 3.91·10⁵`, reported `10⁴`). Every saturated component therefore carried an identical,
+  wrong `κ`, which biases `movmf_auto`'s BIC uniformly and can move the `k` it selects.
+
+  The comment blamed numerical stability; the cause was cost. `log I_ν(κ)` came from an ascending
+  power series whose peak term sits at `m ≈ κ/2`, so it is `O(κ)` inside the EM loop, and its own
+  `m > 200_000` stop truncates *before* the peak above `κ ≈ 4·10⁵` — raising the cap alone would have
+  traded a wrong answer for a slow one and then for a wrong one again. `log_iv` now branches at
+  `κ = 10⁴` to DLMF 10.41.3, the uniform asymptotic expansion for large order, which is `O(1)` and
+  correctly rounded there — measured against 50-digit arithmetic over `ν ∈ [1, 2047]`,
+  `κ ∈ [10⁴, 10⁶]`, the f64 result is within **0.8 ulp**. The cap rises to `10⁶`, set by
+  representability rather than by the normalizer. The expansion divides by `ν = d/2 − 1` and so does
+  not exist below `d = 4`; there the series remains the only evaluator and the cap stays at `10⁴`.
+
+  **Labels move for `vmf` in high dimension**, and `n_clusters=0` can select a different component
+  count. No published benchmark table uses the head, so no committed number changes.
 - **`predict` could not return a cluster whose radius is zero.** The Voronoi rule that `predict`
   applies for the centroid heads (`kmeans`, `spherical-kmeans`, `ward`, …) filters out clusters with
   no weight, but the stats helper it reads yields radii *before* weights for clusters — the opposite
@@ -69,18 +87,28 @@ All notable changes to this project are documented here. The format follows
   against the same build reproduces all nine to the last digit, so no published benchmark number moves
   with this fix.
 - **Documentation shipped with 0.6.0 still described 0.5.0.** The verified-suite line in `README.md`
-  and `DESIGN.md` claimed 185 Rust + a 213-case Python suite; the tree now carries **352 Rust unit +
-  4 integration tests** (351 + 4 with `--no-default-features`, 8 more for the `cli` binary) and a
-  **228-case** Python suite (227 passed / 1 skipped without the optional `scipy` / `networkx` test
+  and `DESIGN.md` claimed 185 Rust + a 213-case Python suite; the tree now carries **404 Rust unit +
+  4 integration tests** (402 + 4 with `--no-default-features`, 8 more for the `cli` binary) and a
+  **230-case** Python suite (229 passed / 1 skipped without the optional `scipy` / `networkx` test
   dependencies). `DESIGN.md` also still described `predict_proba` as the per-leaf responsibility
   matrix, which 0.6.0 replaced with scoring the row itself under the fitted mixture, and its crate
   layout predated `src/mixture.rs`. `docs/api.md` omitted `consensus` / `ConsensusResult` although
   both are exported from `__all__`; `SECURITY.md` still named `0.1.x` as the supported line.
-- **Benchmark and notebook outputs are now stamped with the build they were measured on.**
-  `bench/RESULTS.md`, every `bench/results_*.csv`, the four plots and the 23 notebooks are a single
-  run of 2026-07-18 against a 0.2.0 build, taken before 0.6.0 changed how each head labels a point.
-  No number was altered — the pages now say what they are, and point at the 0.6.0 deltas recorded
-  below. Re-measurement is pending.
+- **Every published benchmark number is re-measured, and several move down.** `bench/RESULTS.md`, all
+  eight `results_*.csv`, the four plots and the README headline were a single run of 2026-07-18
+  against a 0.2.0 build. They are now the **median of seeds 0, 1, 2** against this tree, with per-cell
+  min/median/max in new `results_*_spread.csv` sidecars and the seed list in `results_seeds.json` —
+  because on the synthetic sets every row moves by more than 0.05 ARI across three seeds, and the old
+  single-run page had in several places published the top of that range. Corrections worth naming:
+  `digits` k-means is a **tie** (0.467 vs scikit-learn's 0.468, not 0.568 vs 0.468); the spectral head
+  matches `SpectralClustering` at **1.0–1.5×** its speed, not 3–5× (betula's time barely moved,
+  scikit-learn's fell threefold between versions); `normalize=True` on MNIST is now a **wash** — its
+  0.203 baseline is gone and the off-vs-on sign flips between seeds — though it still earns its place
+  on `digits` (k-means 0.467 → 0.569); and CF-weighted NMF is **slower** than scikit-learn's at every
+  `N` measured, its win being the ±0.00 seed spread against ±0.37. The `covtype` loss to
+  `sklearn-birch` is confirmed as a loss on the merits: matching Birch's compression ratio leaves its
+  ARI unchanged (0.132 vs 0.131) and handing betula Birch's 11 774 leaves makes every head worse. The
+  23 notebooks still carry 0.2.0-era outputs and their provenance banners still say so.
 - References to `../../math_improove/` in `DESIGN.md`, `src/distance.rs`, `src/feature.rs` and
   `src/stats.rs` pointed outside the repository; they now say the working notes are local-only.
 - **CI on macOS and Windows broke the moment `.python-version` was added.** That job builds a
