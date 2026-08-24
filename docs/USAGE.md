@@ -21,7 +21,7 @@ labels = betula_cluster.fit_predict(X, method="hdbscan", min_samples=10, min_clu
 
 Keyword args: `feature ∈ {spherical, diagonal, full, fd}`, `method ∈ {kmeans, gmm, gmm-full, ward, spectral, leiden, leiden-cpm, spherical-kmeans, vmf, gmm-toeplitz, gmm-toeplitz-full, gmm-toeplitz-gs, hdbscan, scale-space}`,
 `distance ∈ {euclidean, manhattan, ward, average}` (routing measure),
-`absorb ∈ {euclidean, manhattan, average, diameter, ward, radius, chi2}` (see *Absorption criteria*
+`absorb ∈ {euclidean, manhattan, average, diameter, ward, radius, chi2, subspace}` (see *Absorption criteria*
 below; `chi2` = mass-invariant Mahalanobis gate at level `chi2_p` with `chi2_scale` = within-cluster
 variance; fixes the BIRCH size-imbalance bug), `decay` (EWMA factor
 for streaming concept drift), `normalize` (L2-normalize rows → cluster by *direction*; on the unit
@@ -65,6 +65,7 @@ choice that shapes the whole summary. The full BIRCH grid is available, plus thi
 | `ward` | D4 | variance increase from the merge | squared |
 | `radius` | R | mean squared radius of the merged cell | squared |
 | `chi2` | — | Mahalanobis-χ² with a variance prior | χ²`dim` quantile via `chi2_p` |
+| `subspace` | — | the same gate read on the leaf's own low-rank basis | χ²`dim` quantile via `chi2_p` |
 
 `threshold` is read in the chosen criterion's own units, so a value tuned for one does **not**
 transfer to another — retune when you switch. `D2`, `D3` and `R` read the leaves' second moments, so
@@ -79,6 +80,25 @@ swallows a distant point because its average radius barely moves). The two objec
 conflict: our own measurements have the radius criterion over-absorbing exactly where `euclidean` and
 `chi2` correctly reject. Pick `radius` or `diameter` if you want BIRCH's published behaviour, `chi2`
 if your clusters differ wildly in size, and leave the default alone otherwise.
+
+**`subspace` reads the same χ² gate on the leaf's own basis, and only `feature="fd"` has one.** Every
+other feature model falls back to `chi2`, so the option changes nothing unless you asked for the
+Frequent-Directions sketch. It takes the same `chi2_p` and `chi2_scale`, in the same units.
+
+Use it when your clusters differ in *orientation* more than in *location*. On a fixture where six
+rank-5 subspaces share a single centre — so centroid distance carries no information at all — leaf
+purity goes **0.820 → 0.938** (median of seeds 0/1/2, `max_leaves=2000`, `chi2_scale=0.01`, ranges
+disjoint), and on well-separated blobs it reaches the same ARI 1.0 with **6 leaves instead of 99**.
+
+**On MNIST-20k it is a loss**, and that is the case to weigh it against: ARI 0.250–0.260 against
+`chi2`'s 0.274–0.291 at every scale tried, with more leaves and ~20 % more time (the gate costs
+`O(ℓ²d)` per decision against `O(d)`, which shows at `d=784` and not at `d=100`). Real image data at
+leaf scale did not have the structure the gate is built to find.
+
+One caveat worth stating because it bounds what the option can currently buy: on that concentric
+fixture *both* gates score ARI ≈ 0.05 while purity is 0.82–0.96. Every head here assigns by centroid,
+so a better-oriented summary has nothing to consume it — `subspace` improves the tree, not yet the
+answer.
 
 ### Choosing a head
 

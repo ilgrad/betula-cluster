@@ -7,6 +7,26 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **`absorb="subspace"`: the χ² gate read on the leaf's own low-rank basis.** Only `feature="fd"`
+  carries a basis, so every other feature model falls back to `chi2` and the option changes nothing
+  unless you asked for the Frequent-Directions sketch. Same `chi2_p` and `chi2_scale`, same units.
+  Under the same Normal-Inverse-Gamma prior the effective covariance is `Σ_eff = a·FᵀF + b·I`, and
+  Woodbury reduces its inverse to one `ℓ×ℓ` solve — no `d×d` matrix is ever formed. Gram-Schmidt on
+  the sketch rows would be cheaper and would be wrong: FD rows are orthogonal only immediately after
+  a `reduce()`, and leaves are queried in between.
+
+  **It works where orientation is the only signal, and loses on MNIST.** On six rank-5 subspaces
+  sharing one centre — centroid distance carrying no information whatsoever — leaf purity goes
+  **0.820 → 0.938** (median of seeds 0/1/2, `max_leaves=2000`, `chi2_scale=0.01`, seed ranges
+  disjoint), and on separated blobs it reaches the same ARI 1.0000 with **6 leaves against 99**, a
+  16× smaller summary at identical quality. On MNIST-20k (784-D, `StandardScaler`, k=10) it scores
+  ARI **0.250–0.260 against `chi2`'s 0.274–0.291** at every scale tried, with more leaves and ~20 %
+  more time. Opt-in, default untouched, and `docs/USAGE.md` states the loss.
+
+  **The bound worth knowing is not the gate's.** On that concentric fixture *both* gates reach purity
+  0.82–0.96 and ARI ≈ 0.05: every head here assigns by centroid, and there every centroid coincides.
+  A better-oriented summary currently has nothing that can read it, which is why this is not a
+  candidate default.
 - **`projection="svd"`: a CF-weighted PCA of the leaf summary, and the one-call text pipeline.**
   Clustering TF-IDF in its own geometry does not work — the sparse path scores ARI **0.003** on
   20-newsgroups — and the standard fix is to reduce first. This does the reduction inside the same
@@ -161,6 +181,12 @@ All notable changes to this project are documented here. The format follows
   `aniso` 0.569 → 0.568 and `covtype` +0.0001 are ties; MNIST stays all-noise.
 
 ### Fixed
+- **`absorb` was validated in two places that had to agree and did not.** The `Betula` estimator
+  restated the accepted names and the `chi2_scale > 0` rule inline, next to `resolve_gate`'s own copy
+  of both. Adding a gate to one left the other rejecting it — precisely the drift the shared
+  `ABSORB_CHOICES` constant exists to prevent, which it could not, because it shared only the message
+  and not the set. The eager check now delegates to `resolve_gate` and discards the gate it builds,
+  so the names and the rule have exactly one owner. No behaviour change for existing values.
 - **`method="hdbscan"` counted `min_samples` and `min_cluster_size` in leaves, not in points.**
   `hdbscan.rs` thresholded a leaf count while its stability term used point mass, so the two
   arguments meant one thing on a summary and another on one-feature-per-point, and nothing said so.

@@ -26,7 +26,7 @@ use crate::clustering::{
 };
 use crate::distance::{
     AverageIntercluster, AverageIntracluster, CFDistance, CentroidEuclidean, CentroidManhattan,
-    MahalanobisChi2, Radius, VarianceIncrease,
+    MahalanobisChi2, Radius, SubspaceChi2, VarianceIncrease,
 };
 use crate::feature::{ClusterFeature, Diagonal, FdSketch, Full, Spherical};
 use crate::mixture::Mixture;
@@ -722,6 +722,7 @@ enum AbsorbKind<R> {
     Ward,
     Radius,
     Chi2(MahalanobisChi2<R>),
+    Subspace(SubspaceChi2<R>),
 }
 
 impl<R: Real, C: ClusterFeature<R>> CFDistance<R, C> for AbsorbKind<R> {
@@ -734,6 +735,7 @@ impl<R: Real, C: ClusterFeature<R>> CFDistance<R, C> for AbsorbKind<R> {
             AbsorbKind::Ward => VarianceIncrease.point(cf, x),
             AbsorbKind::Radius => Radius.point(cf, x),
             AbsorbKind::Chi2(m) => m.point(cf, x),
+            AbsorbKind::Subspace(m) => m.point(cf, x),
         }
     }
     fn between(&self, a: &C, b: &C) -> R {
@@ -745,6 +747,7 @@ impl<R: Real, C: ClusterFeature<R>> CFDistance<R, C> for AbsorbKind<R> {
             AbsorbKind::Ward => VarianceIncrease.between(a, b),
             AbsorbKind::Radius => Radius.between(a, b),
             AbsorbKind::Chi2(m) => m.between(a, b),
+            AbsorbKind::Subspace(m) => m.between(a, b),
         }
     }
 }
@@ -1046,7 +1049,7 @@ type BetulaTree<R, C> = CFTree<R, C, RouteKind, AbsorbKind<R>>;
 /// The `absorb` values this binding accepts, as one string so the parser and every error message
 /// cannot drift apart.
 const ABSORB_CHOICES: &str = "absorb must be 'euclidean', 'manhattan', 'average', 'diameter', \
-                              'ward', 'radius' or 'chi2'";
+                              'ward', 'radius', 'chi2' or 'subspace'";
 
 /// Resolve the absorption gate and effective threshold for element type `R` (shared by the one-shot
 /// path and the streaming estimator). χ² uses the user-supplied within-cluster scale `chi2_scale`;
@@ -1078,6 +1081,19 @@ fn resolve_gate<R: Real>(
             let kappa = R::from_usize(dim + 2).unwrap();
             let q = R::from_f64(chi2_quantile(dim, chi2_p)).unwrap();
             Ok((AbsorbKind::Chi2(MahalanobisChi2::new(s0, kappa)), q))
+        }
+        // Same units and the same prior as `chi2`; it differs only in reading the leaf's own basis
+        // where the feature model carries one, so it shares the argument validation verbatim.
+        "subspace" => {
+            if chi2_scale <= 0.0 {
+                return Err(
+                    "absorb='subspace' requires chi2_scale > 0 (the within-cluster variance scale)",
+                );
+            }
+            let s0 = R::from_f64(chi2_scale).unwrap();
+            let kappa = R::from_usize(dim + 2).unwrap();
+            let q = R::from_f64(chi2_quantile(dim, chi2_p)).unwrap();
+            Ok((AbsorbKind::Subspace(SubspaceChi2::new(s0, kappa)), q))
         }
         _ => Err(ABSORB_CHOICES),
     }
@@ -2064,17 +2080,12 @@ impl Betula {
                 "feature must be 'spherical', 'diagonal', 'full' or 'fd'",
             ));
         }
-        if !matches!(
-            absorb,
-            "euclidean" | "manhattan" | "average" | "diameter" | "ward" | "radius" | "chi2"
-        ) {
-            return Err(PyValueError::new_err(ABSORB_CHOICES));
-        }
-        if absorb == "chi2" && chi2_scale <= 0.0 {
-            return Err(PyValueError::new_err(
-                "absorb='chi2' requires chi2_scale > 0 (the within-cluster variance scale)",
-            ));
-        }
+        // The estimator rejects a bad `absorb` at construction, before any data has fixed `dim`, but
+        // the accepted names and the χ²-scale rule belong to `resolve_gate`. Ask it with a
+        // placeholder `dim` and drop the gate it builds, rather than restating them here where the
+        // two lists had already drifted apart.
+        resolve_gate::<f64>(absorb, 1, chi2_p, chi2_scale, threshold)
+            .map_err(PyValueError::new_err)?;
         if let Some(k) = huber_k {
             if k <= 0.0 || k.is_nan() {
                 return Err(PyValueError::new_err(

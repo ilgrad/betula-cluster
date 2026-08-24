@@ -579,7 +579,8 @@ def test_float32_reproduces_float64_on_normal_range(blobs):
 
 
 @pytest.mark.parametrize(
-    "absorb", ["euclidean", "manhattan", "average", "diameter", "ward", "radius", "chi2"]
+    "absorb",
+    ["euclidean", "manhattan", "average", "diameter", "ward", "radius", "chi2", "subspace"],
 )
 def test_absorption_modes_recover_blobs(blobs, absorb):
     x, y = blobs
@@ -616,6 +617,59 @@ def test_chi2_without_scale_raises(blobs):
     x, _ = blobs
     with pytest.raises(ValueError):
         betula_cluster.fit_predict(x, 4, method="gmm", absorb="chi2")  # chi2_scale defaults to 0
+
+
+def test_subspace_without_scale_raises(blobs):
+    x, _ = blobs
+    with pytest.raises(ValueError, match=r"subspace"):
+        betula_cluster.fit_predict(x, 4, method="gmm", absorb="subspace")
+
+
+def _concentric_subspaces(n, d, k, rank, seed):
+    """k clusters sharing one centre, each isotropic inside its own random rank-`rank` subspace.
+
+    Every centroid coincides, so a gate that reads only the distance to a leaf's mean has no signal
+    to work with and only the orientation of the leaf's own basis can separate them.
+    """
+    rng = np.random.default_rng(seed)
+    blocks, truth = [], []
+    for i in range(k):
+        basis = np.linalg.qr(rng.standard_normal((d, rank)))[0].T
+        blocks.append(
+            rng.standard_normal((n // k, rank)) @ basis + 0.05 * rng.standard_normal((n // k, d))
+        )
+        truth.append(np.full(n // k, i))
+    x = np.vstack(blocks)
+    return (x - x.mean(0)) / (x.std(0) + 1e-12), np.concatenate(truth)
+
+
+def _leaf_purity(truth, leaves):
+    """Weighted fraction of points sharing their leaf's majority true class."""
+    by_leaf = collections.defaultdict(collections.Counter)
+    for t, leaf in zip(map(int, truth), map(int, leaves), strict=True):
+        by_leaf[leaf][t] += 1
+    return sum(c.most_common(1)[0][1] for c in by_leaf.values()) / len(truth)
+
+
+def test_subspace_gate_beats_chi2_where_only_orientation_separates():
+    x, truth = _concentric_subspaces(3000, 40, 3, 3, seed=0)
+    got = {}
+    for absorb in ("chi2", "subspace"):
+        est = betula_cluster.Betula(
+            n_clusters=3,
+            feature="fd",
+            method="kmeans",
+            absorb=absorb,
+            chi2_scale=0.01,
+            max_leaves=300,
+            seed=0,
+        )
+        est.fit(x)
+        got[absorb] = (_leaf_purity(truth, est.assign_microclusters(x)), est.n_leaves_)
+    (pure_chi2, n_chi2), (pure_sub, n_sub) = got["chi2"], got["subspace"]
+    # A gate that merely splits more finely buys purity for free, so the counts have to stay close.
+    assert n_sub <= 1.3 * n_chi2, f"subspace bought purity with leaves: {n_sub} vs {n_chi2}"
+    assert pure_sub > pure_chi2, f"subspace {pure_sub:.4f} did not beat chi2 {pure_chi2:.4f}"
 
 
 @pytest.mark.parametrize("distance", ["euclidean", "manhattan", "ward", "average"])

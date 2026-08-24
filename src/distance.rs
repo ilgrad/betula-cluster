@@ -5,8 +5,9 @@
 //! path). All forms are derived from `(n, μ, S)` and were verified algebraically against the
 //! classic BIRCH forms in `math_improove/02-distance-equivalence` (local-only working notes).
 
-use crate::feature::{ClusterFeature, Full};
+use crate::feature::{ClusterFeature, Full, SecondMoment};
 use crate::kernels;
+use crate::linalg;
 use crate::types::Real;
 
 /// A distance / absorption criterion over clustering features of model `C`.
@@ -211,10 +212,118 @@ impl<R: Real, C: ClusterFeature<R>> CFDistance<R, C> for MahalanobisChi2<R> {
     }
 }
 
+/// Absorption gate on the leaf's **own low-rank subspace** — the χ² gate measured on `ℓ + 1`
+/// effective dimensions instead of `d`.
+///
+/// Motivation is measured, not assumed: on MNIST-20k the relative contrast of distances to a class
+/// model triples (0.446 → 1.423) and argmin accuracy goes 0.805 → 0.968 when the distance is taken
+/// off a rank-40 class subspace instead of to the class mean. Concentration in high `d` is a
+/// property of the *leaf model*, not of the data, so a leaf that already carries a basis should use
+/// it to decide absorption.
+///
+/// Only [`FdSketch`](crate::feature::FdSketch) carries one — it reports
+/// [`SecondMoment::LowRank`], whose rows `f_r` satisfy `Σ = Σ_r f_r f_rᵀ`. For every other feature
+/// model this falls back to [`MahalanobisChi2`], so the gate is well defined for all of them and
+/// `absorb="subspace"` only *means* anything with `feature="fd"`.
+///
+/// Under the same Normal-Inverse-Gamma prior the diagonal gate uses, the effective covariance is
+/// the posterior mean `Σ_eff = (S + κ·s₀·I)/(n + κ) = a·FᵀF + b·I` with `a = n/(n+κ)` and
+/// `b = κ·s₀/(n+κ)`. Its inverse never forms a `d×d` matrix — Woodbury reduces it to one `ℓ×ℓ`
+/// solve:
+///
+/// ```text
+/// d_L(y) = (1/b)·[ ‖y‖² − (F y)ᵀ G⁻¹ (F y) ],   G = (b/a)·I_ℓ + F Fᵀ,   y = x − μ
+/// ```
+///
+/// At rank 0 the correction vanishes and `d_L(y) = ‖y‖²(n+κ)/(κ·s₀)`, which is exactly what
+/// [`MahalanobisChi2`] returns on a leaf with no scatter — so the two agree by construction where
+/// they overlap, and this one adds the off-diagonal structure the diagonal gate cannot see.
+///
+/// Threshold is read in the same units: `stats::chi2_quantile(dim, p)`.
+///
+/// Cost is `O(ℓ²d)` per decision, against `O(d)` for the diagonal gate. That is deliberate for now —
+/// the question this answers is whether leaf-discovered subspaces are accurate enough to be worth
+/// anything at all, and `G` is recomputed per call rather than cached on the leaf.
+#[derive(Clone, Copy)]
+#[cfg_attr(feature = "persistence", derive(serde::Serialize, serde::Deserialize))]
+pub struct SubspaceChi2<R> {
+    diagonal: MahalanobisChi2<R>,
+}
+
+impl<R: Real> SubspaceChi2<R> {
+    /// Same arguments as [`MahalanobisChi2::new`]: `s₀` the fallback per-dimension variance and
+    /// `κ` the prior strength in pseudo-points.
+    pub fn new(prior_scale: R, prior_count: R) -> Self {
+        Self {
+            diagonal: MahalanobisChi2::new(prior_scale, prior_count),
+        }
+    }
+
+    fn subspace_sq<C: ClusterFeature<R>>(&self, cf: &C, x: &[R], rows: &[Vec<R>]) -> R {
+        let n = cf.weight();
+        let denom = n + self.diagonal.prior_count;
+        let b = self.diagonal.prior_count * self.diagonal.prior_scale / denom;
+        if b <= R::zero() {
+            return self.diagonal.maha_sq(cf, x);
+        }
+        let y: Vec<R> = x.iter().zip(cf.mean()).map(|(&xj, &mj)| xj - mj).collect();
+        let iso = y.iter().map(|&v| v * v).fold(R::zero(), |s, v| s + v) / b;
+
+        let a = n / denom;
+        if rows.is_empty() || a <= R::zero() {
+            return iso; // no basis, or no mass behind it — the prior is all there is
+        }
+
+        // G = (b/a)·I + F Fᵀ, and F y, both ℓ-sized.
+        let ridge = b / a;
+        let l = rows.len();
+        let mut g = vec![vec![R::zero(); l]; l];
+        let mut fy = vec![R::zero(); l];
+        for i in 0..l {
+            fy[i] = rows[i]
+                .iter()
+                .zip(&y)
+                .map(|(&f, &v)| f * v)
+                .fold(R::zero(), |s, v| s + v);
+            for j in 0..=i {
+                let dot = rows[i]
+                    .iter()
+                    .zip(&rows[j])
+                    .map(|(&p, &q)| p * q)
+                    .fold(R::zero(), |s, v| s + v);
+                g[i][j] = dot;
+                g[j][i] = dot;
+            }
+            g[i][i] = g[i][i] + ridge;
+        }
+
+        // `G` is symmetric positive definite (`F Fᵀ` is PSD and `ridge > 0`), so a failed Cholesky
+        // means rounding, not a modelling error — fall back to the isotropic term rather than
+        // returning something arbitrary.
+        let Some(chol) = linalg::cholesky_lower(&g) else {
+            return iso;
+        };
+        let correction = linalg::mahalanobis_sq_from_chol(&chol, &fy);
+        (iso - correction / b).max(R::zero())
+    }
+}
+
+impl<R: Real, C: ClusterFeature<R>> CFDistance<R, C> for SubspaceChi2<R> {
+    fn point(&self, cf: &C, x: &[R]) -> R {
+        match cf.second_moment() {
+            SecondMoment::LowRank(rows) => self.subspace_sq(cf, x, &rows),
+            SecondMoment::Dense(_) => self.diagonal.maha_sq(cf, x),
+        }
+    }
+    fn between(&self, a: &C, b: &C) -> R {
+        self.point(a, b.mean())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::feature::{Diagonal, Full, Spherical};
+    use crate::feature::{Diagonal, FdSketch, Full, Spherical};
     use crate::stats::chi2_quantile;
 
     fn close(a: f64, b: f64) -> bool {
@@ -457,5 +566,87 @@ mod tests {
     fn radius_point_empty_guard() {
         let empty: Spherical<f64> = Spherical::new(1);
         assert!(close(Radius.point(&empty, &[1.]), 0.0));
+    }
+
+    /// `yᵀ(a·FᵀF + b·I)⁻¹y` the slow way: materialise the `d×d` matrix and invert it. Independent of
+    /// the Woodbury path under test, which never forms a `d×d` matrix at all.
+    fn dense_maha_sq(cf: &FdSketch<f64>, x: &[f64], s0: f64, kappa: f64) -> f64 {
+        let SecondMoment::LowRank(rows) = cf.second_moment() else {
+            unreachable!("FdSketch reports LowRank")
+        };
+        let (n, d) = (cf.weight(), x.len());
+        let (a, b) = (n / (n + kappa), kappa * s0 / (n + kappa));
+        let mut m = vec![vec![0.0; d]; d];
+        for f in &rows {
+            for i in 0..d {
+                for j in 0..d {
+                    m[i][j] += a * f[i] * f[j];
+                }
+            }
+        }
+        for (i, mi) in m.iter_mut().enumerate() {
+            mi[i] += b;
+        }
+        let y: Vec<f64> = x.iter().zip(cf.mean()).map(|(&xj, &mj)| xj - mj).collect();
+        let chol = linalg::cholesky_lower(&m).expect("Σ_eff is positive definite for b > 0");
+        linalg::mahalanobis_sq_from_chol(&chol, &y)
+    }
+
+    #[test]
+    fn subspace_chi2_matches_the_dense_inverse() {
+        let (s0, kappa) = (0.5, 4.0);
+        let mut fd: FdSketch<f64> = FdSketch::with_ell(3, 3);
+        for p in [
+            [1.0, 2.0, 0.5],
+            [-1.0, -2.0, 0.5],
+            [2.0, 1.0, -1.5],
+            [0.0, 3.0, 1.0],
+        ] {
+            fd.push(&p, 1.0);
+        }
+        let gate = SubspaceChi2::new(s0, kappa);
+        for probe in [[0.0, 0.0, 0.0], [3.0, -1.0, 2.0], [-2.5, 0.5, 4.0]] {
+            let want = dense_maha_sq(&fd, &probe, s0, kappa);
+            assert!(
+                (gate.point(&fd, &probe) - want).abs() < 1e-9,
+                "probe {probe:?}: Woodbury {} vs dense {want}",
+                gate.point(&fd, &probe)
+            );
+        }
+    }
+
+    #[test]
+    fn subspace_chi2_falls_back_to_the_diagonal_gate() {
+        // A feature with a `Dense` second moment carries no basis, so the two gates must agree
+        // exactly — `absorb="subspace"` is only a different gate for `feature="fd"`.
+        let c: Diagonal<f64> = build(2, &[&[0., 0.], &[2., 6.]]);
+        let (s0, kappa) = (0.25, 3.0);
+        assert!(close(
+            SubspaceChi2::new(s0, kappa).point(&c, &[1.5, -2.]),
+            MahalanobisChi2::new(s0, kappa).point(&c, &[1.5, -2.]),
+        ));
+    }
+
+    #[test]
+    fn subspace_chi2_sees_a_direction_the_diagonal_gate_cannot() {
+        // Mass strung along (1,1)/√2, so per-dimension variance is equal in both coordinates and the
+        // diagonal gate is blind to the orientation. Two probes at the same Euclidean distance —
+        // one along the leaf's own direction, one across it — must therefore tie under the diagonal
+        // gate and separate under the subspace one. This is the entire claim being tested.
+        let mut fd: FdSketch<f64> = FdSketch::with_ell(2, 2);
+        for t in [-3.0, -1.0, 1.0, 3.0] {
+            fd.push(&[t, t], 1.0);
+        }
+        let (along, across) = ([2.0, 2.0], [2.0, -2.0]);
+        let diag = MahalanobisChi2::new(0.1, 2.0);
+        assert!(close(diag.point(&fd, &along), diag.point(&fd, &across)));
+
+        let sub = SubspaceChi2::new(0.1, 2.0);
+        assert!(
+            sub.point(&fd, &along) < 0.5 * sub.point(&fd, &across),
+            "along {} should be far cheaper than across {}",
+            sub.point(&fd, &along),
+            sub.point(&fd, &across),
+        );
     }
 }
