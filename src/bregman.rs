@@ -345,8 +345,11 @@ impl<R: Real, B: BregmanDivergence<R>> CFDistance<R, BregmanCf<R, B>> for Bregma
 /// stability of the closed form rather than of the difference. At `φ(t) = t²` it collapses to
 /// `(n_A n_B / n_AB)‖Δμ‖²`, which is [`crate::distance::VarianceIncrease`].
 ///
-/// **Not reducible for `d ≥ 2` outside squared Euclidean** (task 43), so an agglomerative head over
-/// this needs Anderberg, not the nearest-neighbour chain `ward.rs` uses.
+/// **Not reducible for `d ≥ 2` outside squared Euclidean**, so an agglomerative head over this
+/// needs Anderberg, not the nearest-neighbour chain `ward.rs` uses. That is measured rather than
+/// feared: at `d = 20, m = 12` a chain builds a different dendrogram in 1.0 % of Itakura–Saito
+/// instances and 1.2 % of exponential ones, the rate grows with `m`, and when it fires the answer
+/// is destroyed (ARI 0.10 at `k = 4`, one cell at −0.11). `docs/adr/002-bregman-ward-anderberg.md`.
 pub struct BregmanIncrease<B> {
     div: PhantomData<B>,
 }

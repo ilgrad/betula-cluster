@@ -7,6 +7,50 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **`bregman`: the cluster feature, generalised from squared Euclidean to any Bregman divergence.**
+  For `d_φ(x,y) = φ(x) − φ(y) − ⟨∇φ(y), x−y⟩` the within-cluster Bregman information
+  `S_φ = Σ w_i d_φ(x_i, μ)` obeys exactly the identities the Euclidean scatter does — Maxima
+  residual 0 for a generic differentiable `φ` — and the mean merge is *unchanged*, which is
+  Banerjee's characterisation rather than a coincidence: the arithmetic mean is the right-sided
+  Bregman centroid for every `φ`. So `(n, μ, S_φ)` is a commutative monoid for every `φ` and the tree
+  machinery is untouched.
+
+  The trait's shape is dictated by a measurement. `Σ w φ(x) − W φ(μ)` is the exact analogue of
+  BIRCH's `SS − n μ²` and cancels the same way — but the recurrence alone does not save you either,
+  since both of its new terms evaluate `d_φ` at arguments that nearly coincide, and expanding `d_φ`
+  from its definition subtracts two nearly equal values of `φ` one level down. On the logistic
+  divergence at a tight cluster the naive form loses **everything** (relative error 1) and the
+  expanded recurrence *diverges*, returning an information **10¹¹ times too large**. So
+  `BregmanDivergence` requires a hand-written cancellation-free `divergence()` whose contract is
+  accuracy when `x ≈ y`, and keeps `phi()` as a test oracle for well-separated arguments only.
+
+  Ships `SquaredEuclidean`, `KullbackLeibler`, `ItakuraSaito` and `Logistic`; `BregmanCf`
+  implementing `ClusterFeature`; and the two measures a tree needs — `BregmanCentroid` (D0_φ,
+  routing) and `BregmanIncrease` (D4_φ, absorption). Both live in `bregman` rather than `distance`
+  because, unlike everything there, they are not feature-agnostic: they have to know which `φ` built
+  the feature. The regression test that matters is that `φ(t) = t²` reproduces the shipped
+  `Spherical` feature and that D4_φ collapses to `VarianceIncrease` — the generalisation must not
+  have changed the Euclidean answer.
+
+  Rust-only for now; k-means, the agglomerative head and Bregman-EM are not written, and nothing is
+  wired into `Method` or the Python API yet.
+- **ADR 002 — a Bregman-Ward HAC must use Anderberg, not the nearest-neighbour chain.** NN-chain is
+  exact only for a *reducible* linkage, and generalising Ward's criterion to a Bregman divergence
+  does not preserve reducibility. Measured rather than assumed: **zero** violations at `d = 1` across
+  213 million admissible triples and 16 different `φ`, and violations from `d = 2` for every `φ`
+  except squared Euclidean. Inside every pooled counterexample, **no coordinate ever violated its own
+  1-D reducibility** — the failure is purely that reducibility is not preserved under addition.
+  `φ(t) = tᵖ` is clean at `p = 1.99` and `p = 2.0` and already violates at `p = 2.01`, so there is no
+  safe neighbourhood of `t²`.
+
+  It costs a wrong dendrogram, not a wrong triple: against exact Anderberg over 3 000 instances per
+  cell, squared Euclidean differs in **0** of 9 cells, while Itakura–Saito at `d = 20, m = 12`
+  differs in **1.0 %** and the exponential divergence in **1.2 %** — a rate that grows with `m`, on a
+  head that runs at `m` in the thousands — and when it fires the answer is destroyed rather than
+  perturbed (ARI 0.10 at `k = 4`, one cell at −0.11). The coordinate-wise chain proposed as a cheaper
+  rescue is refuted separately: a single coordinate's nearest pair matches the pooled nearest pair
+  2.4 %–6.5 % of the time against a 1.52 % chance rate. `clustering::ward_hac` is unaffected — it is
+  Euclidean, and its control row is clean at every dimension and size.
 - **Windowed stream queries, and the measurement that says why they are not done by subtraction.**
   CluStream (Aggarwal et al., VLDB 2003) answers "cluster the window `[t₀, t₁]`" by keeping
   snapshots and **subtracting** the one at `t₀` from the one at `t₁`. Cluster-feature additivity
