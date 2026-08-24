@@ -32,7 +32,7 @@ tree-rebuild fix removed most of the Euclidean collapse it used to compensate fo
 tabular data where magnitude is signal: it takes covtype ward to **−0.049**, worse than random),
 `n_jobs` (parallel shard+merge tree build — `>1` gives ~4–5× on large
 `N`), `threshold`, `branching`, `leaf_cap`, `max_leaves`, `max_iter`, `min_samples`
-(for `method="hdbscan"`, the core-distance neighbourhood **counting the microcluster itself** —
+(for `method="hdbscan"`, the core-distance neighbourhood **counting the point itself** —
 the convention of Campello's Def. 3.1, `sklearn.cluster.HDBSCAN` and ELKI, so `min_samples=1`
 leaves every core distance at 0 and HDBSCAN\* degenerates to single linkage;
 `scikit-learn-contrib/hdbscan` excludes it, where the same number means one neighbour more),
@@ -99,6 +99,28 @@ if your clusters differ wildly in size, and leave the default alone otherwise.
 `n_clusters=0` auto-selects `k` for the parametric heads; `leiden` / `hdbscan` always discover it
 (`leiden` reads the count off the graph — tune granularity with `resolution` γ, higher ⇒ more).
 For a robustness score per point, wrap any partitional head in `consensus` (see below).
+
+### `min_samples` on a summary — `hdbscan`
+
+`min_samples` and `min_cluster_size` are counted in **points**, not in leaves: a leaf contributes its
+whole weight, so both arguments mean the same thing whether the head sees one feature per point or a
+summary of a million of them. Transfer them from `sklearn.cluster.HDBSCAN` unchanged.
+
+What does *not* transfer is a *small* `min_samples`. HDBSCAN\* separates overlapping densities
+through the core distance — the radius enclosing `min_samples` points. A single leaf already holds
+`N / max_leaves` points at one coordinate, so any `min_samples` below that leaf mass is enclosed at
+radius zero, every core distance collapses, and mutual reachability degenerates to plain distance,
+i.e. single linkage, which chains through overlaps. Measured on six overlapping 2-D Gaussians,
+N = 100 000, `min_cluster_size = 250` (ARI, clusters found):
+
+| `min_samples` | 10 | 100 | 1 000 |
+|---|---:|---:|---:|
+| `max_leaves = 2 000` (leaf mass 50) | 0.478 (3) | 0.566 (4) | 0.785 (5) |
+| `max_leaves = 8 000` (leaf mass 12) | 0.566 (4) | 0.799 (5) | **0.843** (6) |
+
+So set `min_samples` comfortably above `N / max_leaves`, or raise `max_leaves` until the leaf mass
+falls below the `min_samples` you want. On well-separated clusters neither matters; on overlapping
+ones it is the difference between finding three clusters and finding six.
 
 ### Refining on the raw points — `refine`
 

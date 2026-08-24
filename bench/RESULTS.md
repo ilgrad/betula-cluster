@@ -554,34 +554,66 @@ uv run --with faiss-cpu --with fast-hdbscan --with scikit-learn --with pandas \
 ```
 
 Single-threaded, seed 0, `max_leaves = 2000`, one subprocess per row so peak RSS is that method's own.
+`min_samples = 10` and `min_cluster_size = n/400` are handed to every method identically, in points.
 
 | contest | n | method | time | peak RSS | clusters found | ARI |
 |---|---:|---|---:|---:|---:|---:|
 | k-means, `highdim`, k=8 | 200 000 | **betula-kmeans** | 0.21 s | 220 MB | 8 | **1.000** |
 | | 200 000 | faiss-kmeans | **0.05 s** | 208 MB | 8 | 0.630 |
-| | 200 000 | sklearn-kmeans | 1.43 s | 266 MB | 8 | 1.000 |
-| | 1 000 000 | **betula-kmeans** | 0.84 s | 538 MB | 8 | **1.000** |
+| | 200 000 | sklearn-kmeans | 1.44 s | 266 MB | 8 | 1.000 |
+| | 1 000 000 | **betula-kmeans** | 0.85 s | 538 MB | 8 | **1.000** |
 | | 1 000 000 | faiss-kmeans | **0.10 s** | 538 MB | 8 | 0.624 |
-| | 1 000 000 | sklearn-kmeans | 5.47 s | 655 MB | 8 | 1.000 |
-| HDBSCAN, `blobs`, k=6 | 100 000 | **betula-hdbscan** | **0.13 s** | **163 MB** | 3 | 0.478 |
-| | 100 000 | fast-hdbscan | 1.42 s | 316 MB | 6 | **0.910** |
-| | 500 000 | **betula-hdbscan** | **0.22 s** | **176 MB** | 2 | 0.143 |
-| | 500 000 | fast-hdbscan | 2.92 s | 425 MB | 6 | **0.892** |
+| | 1 000 000 | sklearn-kmeans | 5.38 s | 655 MB | 8 | 1.000 |
+| HDBSCAN, `blobs`, k=6 | 100 000 | **betula-hdbscan** | **0.16 s** | **163 MB** | 3 | 0.478 |
+| | 100 000 | fast-hdbscan | 1.43 s | 316 MB | 6 | **0.910** |
+| | 500 000 | **betula-hdbscan** | **0.25 s** | **176 MB** | 3 | 0.478 |
+| | 500 000 | fast-hdbscan | 2.93 s | 425 MB | 6 | **0.892** |
 
 Both contests are losses on one axis and wins on another, and both are recorded as such rather than
-dropped:
+dropped.
 
-- **FAISS is 4.5×–8.3× faster and does not recover the partition** (0.62–0.63 against betula's 1.000).
-  It runs a fixed 25 Lloyd iterations from a single random init in float32 with its own SIMD kernels.
-  So the defensible claim against FAISS is quality-per-second, not raw throughput — and the gap is
-  still worth attacking, which is what task #73 is for.
-- **`fast_hdbscan` finds all six clusters and betula finds two or three.** betula is ~10× faster and
-  uses half the memory, but 0.478 and 0.143 on well-separated low-dimensional blobs is far outside
-  what the CF summary should cost. Task #72 owns it, together with a units trap found on the way: on
-  the summary route `min_cluster_size` and `min_samples` are counted in **leaves**, not points
-  (`hdbscan.rs:225` thresholds a leaf count while stability at `:228` uses point mass), so the
-  point-level value a scikit-learn user would pass — 1 250 here — asks for more leaves than the budget
-  holds and returns **zero clusters with no warning**. The table above passes the leaf-equivalent.
+**FAISS is 4.5×–8.3× faster and does not recover the partition** (0.62–0.63 against betula's 1.000).
+It runs a fixed 25 Lloyd iterations from a single random init in float32 with its own SIMD kernels. So
+the defensible claim against FAISS is quality-per-second, not raw throughput — and the gap is still
+worth attacking, which is what task #73 is for.
+
+**`fast_hdbscan` finds all six clusters at every setting; betula needs a much larger `min_samples`
+and a much larger leaf budget to get there.** The `blobs` fixture is not the easy case its name
+suggests: six centres drawn uniformly from `[-10, 10]²` with unit spread, then standardized, leaves
+the closest pair **0.37 apart at unit width** — heavily overlapping, which is the regime this page
+already credits raw HDBSCAN with owning. Swept on n = 100 000 with `min_cluster_size = 250`:
+
+| `min_samples` | 10 | 100 | 1 000 | 2 000 |
+|---|---:|---:|---:|---:|
+| fast-hdbscan | **0.910** (6) | 0.900 (6) | 0.845 (6) | 0.762 (5) |
+| betula, `max_leaves` 2 000 | 0.478 (3) | 0.566 (4) | 0.785 (5) | 0.762 (5) |
+| betula, `max_leaves` 8 000 | 0.566 (4) | 0.799 (5) | **0.843** (6) | 0.764 (5) |
+
+So best-against-best the gap is 0.910 in ~1.4 s against 0.843 in 2.1 s, not the 0.910-against-0.478
+the contest row shows — and the shape of the table is the mechanism. HDBSCAN\* separates overlapping
+densities through the core distance, the radius enclosing `min_samples` points. Over raw points that
+radius is small and varies with local density; over leaf centroids a single leaf already holds
+n/`max_leaves` = 50 points, so any `min_samples` below that is enclosed at **distance zero**, every
+core distance collapses, and mutual reachability degenerates to plain distance — single linkage,
+which chains straight through the overlap. Raising `min_samples` past the leaf mass, or raising
+`max_leaves` until the leaf mass drops below `min_samples`, restores the estimate; both columns of the
+table move for that one reason.
+
+That points at the fix rather than at a tuning note: the leaf is not a point, and its own mass should
+be enclosed at its own radius, which the cluster feature already carries as `√(ssd/weight)`. Task #72
+owns it.
+
+The units trap found on the way is fixed as of this edition, and was the more serious half. On the
+summary route `min_cluster_size` and `min_samples` used to be counted in **leaves**: `hdbscan.rs`
+thresholded `node_size`, a leaf count, while stability used `node_mass`, a point count. The
+point-level value a scikit-learn user passes — 1 250 at n = 500 000 — therefore asked for 1 250 of
+2 000 leaves and returned **zero clusters, ARI 0.0000, with no warning**; it was also not scale-free,
+since the threshold changed meaning whenever `max_leaves` did. Both arguments now count points. The
+n = 500 000 row moved 0.000 → 0.478, which is exactly the n = 100 000 row: the same question now gets
+the same answer at both scales.
+
+One caveat on the timings: `fast_hdbscan` is numba-compiled, so its first call in a cold process pays
+JIT — measured at 9.0 s against 0.3 s once the on-disk cache is warm. The table above is warm-cache.
 
 ### The scoreboard
 
@@ -617,8 +649,9 @@ three `20news` rows the sparse leader pass owns (task #71).
   speed edge, and raw HDBSCAN is stronger on overlapping density.
 - **Use FAISS** if k-means throughput is the only criterion and an approximate partition is
   acceptable, and **`fast_hdbscan`** for density clustering in low dimension when the data fits in
-  memory: each beats betula outright on its own axis, and betula's answer is quality-per-second in
-  the first case and speed-and-memory-per-answer in the second.
+  memory and the densities overlap: each beats betula outright on its own axis. betula's answer is
+  quality-per-second in the first case, and in the second it needs `min_samples` above the mass of a
+  single leaf — the summary erases the small-radius density estimate HDBSCAN\* runs on.
 - **Use `sklearn-birch`** if `covtype`-like all-methods quality at ~20 k rows is the only criterion and
   no summary is needed: it beats every betula head there, and the compression-ratio defence does not
   hold. Its MNIST lead comes with no compression at all (20 000 subclusters for 20 000 points), so it

@@ -82,21 +82,40 @@ fn new_cluster(
     birth.len() - 1
 }
 
-/// Distance from each of `m` objects to its `min_samples`-th nearest neighbour, **counting the
-/// object itself** — so `min_samples = 1` is 0 everywhere and mutual reachability degenerates to
-/// `dist`.
+/// Radius around each of `m` objects that encloses `min_samples` points' worth of `mass`,
+/// **counting the object itself** — so `min_samples = 1` is 0 everywhere and mutual reachability
+/// degenerates to `dist`.
 ///
-/// The convention is a genuine split in the field and is therefore chosen here rather than assumed:
-/// Campello, Moulavi & Sander's Def. 3.1, ELKI (whose parameter says "including this point") and
-/// `sklearn.cluster.HDBSCAN` all include the object; `scikit-learn-contrib/hdbscan` excludes it, so
-/// the same argument there means one neighbour more.
-fn core_distances(m: usize, min_samples: usize, dist: impl Fn(usize, usize) -> f64) -> Vec<f64> {
-    let k = min_samples.clamp(1, m);
+/// The self-inclusion convention is a genuine split in the field and is therefore chosen here rather
+/// than assumed: Campello, Moulavi & Sander's Def. 3.1, ELKI (whose parameter says "including this
+/// point") and `sklearn.cluster.HDBSCAN` all include the object; `scikit-learn-contrib/hdbscan`
+/// excludes it, so the same argument there means one neighbour more.
+///
+/// On unit `mass` this is exactly the `min_samples`-th smallest distance. Weighted, it is the
+/// smallest radius whose enclosed weight reaches `min_samples`, which is the same density estimate
+/// asked of a summary rather than of the points it stands for. When the total mass never reaches
+/// `min_samples` the radius saturates at the farthest object, matching the unweighted clamp to `m`.
+fn core_distances(
+    m: usize,
+    min_samples: usize,
+    mass: &[f64],
+    dist: impl Fn(usize, usize) -> f64,
+) -> Vec<f64> {
+    let need = min_samples.max(1) as f64;
     (0..m)
         .map(|i| {
-            let mut ds: Vec<f64> = (0..m).map(|j| dist(i, j)).collect();
-            ds.sort_by(|a, b| a.partial_cmp(b).unwrap());
-            ds[k - 1]
+            let mut ds: Vec<(f64, f64)> = (0..m).map(|j| (dist(i, j), mass[j])).collect();
+            ds.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+            let mut enclosed = 0.0;
+            let mut radius = 0.0;
+            for (d, w) in ds {
+                enclosed += w;
+                radius = d;
+                if enclosed >= need {
+                    break;
+                }
+            }
+            radius
         })
         .collect()
 }
@@ -104,7 +123,12 @@ fn core_distances(m: usize, min_samples: usize, dist: impl Fn(usize, usize) -> f
 /// Cluster `features` with HDBSCAN*. `min_samples` sets the core-distance neighbourhood and
 /// `min_cluster_size` the smallest admissible cluster.
 ///
-/// `min_samples` **counts the feature itself**, matching Campello's Def. 3.1,
+/// Both are counted in **points**, never in features: a feature contributes its `weight()`, so the
+/// two arguments mean the same thing whether they are handed one feature per point or a leaf
+/// summary of a million of them. On unit weights every quantity below is an integer count and the
+/// behaviour is the textbook one.
+///
+/// `min_samples` **counts the feature's own mass**, matching Campello's Def. 3.1,
 /// `sklearn.cluster.HDBSCAN` and ELKI, so `min_samples = 1` leaves every core distance at 0 and
 /// HDBSCAN\* degenerates to single linkage. `scikit-learn-contrib/hdbscan` uses the exclusive
 /// convention, where the same argument means one neighbour more.
@@ -137,7 +161,7 @@ pub fn hdbscan<R: Real, C: ClusterFeature<R>>(
         .collect();
     let dist = |i: usize, j: usize| -> f64 { crate::kernels::sq_euclidean(&mu[i], &mu[j]).sqrt() };
 
-    let core = core_distances(m, min_samples, dist);
+    let core = core_distances(m, min_samples, &mass, dist);
     let mreach = |i: usize, j: usize| -> f64 { core[i].max(core[j]).max(dist(i, j)) };
 
     // Prim minimum spanning tree over mutual reachability
@@ -178,11 +202,7 @@ pub fn hdbscan<R: Real, C: ClusterFeature<R>>(
     let mut children: Vec<(usize, usize)> = vec![(usize::MAX, usize::MAX); total];
     let mut node_dist = vec![0.0f64; total];
     let mut node_mass = vec![0.0f64; total];
-    let mut node_size = vec![0usize; total];
-    for i in 0..m {
-        node_mass[i] = mass[i];
-        node_size[i] = 1;
-    }
+    node_mass[..m].copy_from_slice(&mass[..m]);
     let mut comp_node: Vec<usize> = (0..m).collect();
     let mut uf = UnionFind::new(m);
     let mut next = m;
@@ -195,7 +215,6 @@ pub fn hdbscan<R: Real, C: ClusterFeature<R>>(
         children[id] = (na, nb);
         node_dist[id] = w;
         node_mass[id] = node_mass[na] + node_mass[nb];
-        node_size[id] = node_size[na] + node_size[nb];
         let r = uf.union(ra, rb);
         comp_node[r] = id;
     }
@@ -222,8 +241,9 @@ pub fn hdbscan<R: Real, C: ClusterFeature<R>>(
         }
         let (l, r) = children[nd];
         let split = lam(nd);
-        let lbig = node_size[l] >= min_cluster_size;
-        let rbig = node_size[r] >= min_cluster_size;
+        let want = min_cluster_size as f64;
+        let lbig = node_mass[l] >= want;
+        let rbig = node_mass[r] >= want;
         if lbig && rbig {
             stab[c] += (split - birth[c]) * node_mass[nd];
             let cl = new_cluster(&mut birth, &mut stab, &mut kids, split);
@@ -426,7 +446,7 @@ mod tests {
                 .sum::<f64>()
                 .sqrt()
         };
-        let core: Vec<f64> = super::core_distances(m, min_samples, dist);
+        let core: Vec<f64> = super::core_distances(m, min_samples, mass, dist);
 
         fn root_of(p: &mut [usize], x: usize) -> usize {
             let mut r = x;
@@ -463,11 +483,7 @@ mod tests {
         let mut children = vec![(usize::MAX, usize::MAX); total];
         let mut node_dist = vec![0.0f64; total];
         let mut node_mass = vec![0.0f64; total];
-        let mut node_size = vec![0usize; total];
-        for i in 0..m {
-            node_mass[i] = mass[i];
-            node_size[i] = 1;
-        }
+        node_mass[..m].copy_from_slice(&mass[..m]);
         let mut uf: Vec<usize> = (0..m).collect();
         let mut comp_node: Vec<usize> = (0..m).collect();
         let mut next = m;
@@ -477,7 +493,6 @@ mod tests {
             children[next] = (na, nb);
             node_dist[next] = w;
             node_mass[next] = node_mass[na] + node_mass[nb];
-            node_size[next] = node_size[na] + node_size[nb];
             uf[ra] = rb;
             comp_node[rb] = next;
             next += 1;
@@ -512,8 +527,8 @@ mod tests {
                 f64::INFINITY
             };
             let (lbig, rbig) = (
-                node_size[l] >= min_cluster_size,
-                node_size[r] >= min_cluster_size,
+                node_mass[l] >= min_cluster_size as f64,
+                node_mass[r] >= min_cluster_size as f64,
             );
             let fresh =
                 |b: f64, birth: &mut Vec<f64>, stab: &mut Vec<f64>, kids: &mut Vec<Vec<usize>>| {
@@ -613,20 +628,76 @@ mod tests {
         // two: inclusive gives 0 everywhere, which makes mutual reachability the plain distance.
         const LINE: [f64; 4] = [0.0, 1.0, 3.0, 6.0];
         let d = |i: usize, j: usize| (LINE[i] - LINE[j]).abs();
+        let unit = [1.0; 4];
 
         assert_eq!(
-            core_distances(4, 1, d),
+            core_distances(4, 1, &unit, d),
             vec![0.0, 0.0, 0.0, 0.0],
             "min_samples = 1 must be the object itself, i.e. core distance 0"
         );
         assert_eq!(
-            core_distances(4, 2, d),
+            core_distances(4, 2, &unit, d),
             vec![1.0, 1.0, 2.0, 3.0],
             "min_samples = 2 must be the nearest *other* object"
         );
-        assert_eq!(core_distances(4, 3, d), vec![3.0, 2.0, 3.0, 5.0]);
+        assert_eq!(core_distances(4, 3, &unit, d), vec![3.0, 2.0, 3.0, 5.0]);
         // Asking for more neighbours than exist saturates rather than panicking.
-        assert_eq!(core_distances(4, 99, d), core_distances(4, 4, d));
+        assert_eq!(
+            core_distances(4, 99, &unit, d),
+            core_distances(4, 4, &unit, d)
+        );
+    }
+
+    #[test]
+    fn a_core_radius_encloses_min_samples_points_of_mass_not_min_samples_features() {
+        // Same line, but object 1 now stands for eight points and the rest for one each. A radius
+        // that has to enclose four *points* therefore stops at object 1 for everyone who reaches it,
+        // where the feature-counting rule would have kept walking to the fourth-nearest feature.
+        //
+        //   from 0: (0, w1) (1, w8) -> 1+8 = 9 >= 4 at distance 1, and 1 alone is not enough
+        //   from 1: (0, w8)         -> 8 >= 4 at distance 0
+        //   from 3: (0, w1) (2, w8) -> 9 >= 4 at distance 2
+        //   from 6: (0, w1) (3, w1) (5, w8) -> 10 >= 4 at distance 5, object 1 being 5 away
+        const LINE: [f64; 4] = [0.0, 1.0, 3.0, 6.0];
+        let d = |i: usize, j: usize| (LINE[i] - LINE[j]).abs();
+        let heavy = [1.0, 8.0, 1.0, 1.0];
+
+        assert_eq!(
+            core_distances(4, 4, &heavy, d),
+            vec![1.0, 0.0, 2.0, 5.0],
+            "the radius must be driven by enclosed mass"
+        );
+        // The fixture can see the difference: on unit weights the same call reads off the fourth
+        // column instead, and disagrees in every position but one.
+        assert_eq!(core_distances(4, 4, &[1.0; 4], d), vec![6.0, 5.0, 3.0, 6.0]);
+    }
+
+    #[test]
+    fn min_cluster_size_admits_a_cluster_on_the_points_it_holds_not_the_features_it_spans() {
+        // Two well-separated groups of two leaves, each leaf standing for 50 points. Asking for
+        // clusters of at least 60 points is a question the data answers twice over — 100 points a
+        // side — but only four features exist, so a rule that counted features would find `4 < 60`
+        // at every split, birth no cluster at all, and return every leaf as noise with no warning.
+        // That silent all-noise return is the failure this fixture exists to forbid.
+        use crate::feature::{ClusterFeature, Spherical};
+        let leaf = |x: f64, w: usize| {
+            let mut c = Spherical::<f64>::new(2);
+            for _ in 0..w {
+                c.push(&[x, 0.0], 1.0);
+            }
+            c
+        };
+        let feats = vec![leaf(0.0, 50), leaf(0.1, 50), leaf(10.0, 50), leaf(10.1, 50)];
+
+        let res = hdbscan(&feats, 1, 60);
+        assert_eq!(res.n_clusters, 2, "labels = {:?}", res.labels);
+        assert_eq!(res.labels[0], res.labels[1]);
+        assert_eq!(res.labels[2], res.labels[3]);
+        assert_ne!(res.labels[0], res.labels[2]);
+
+        // The same call one point past the total mass of either side finds nothing, which is what
+        // "too large" is supposed to look like: 201 points cannot be had from 100.
+        assert_eq!(hdbscan(&feats, 1, 201).n_clusters, 0);
     }
 
     /// Nested structure at three scales: two tight blobs a short hop apart, a third far away, and

@@ -75,19 +75,13 @@ def fit(method: str, X, k: int):
     if method == "betula-hdbscan":
         import betula_cluster as bc
 
-        # `min_cluster_size` counts *leaves* on the summary route (`hdbscan.rs` thresholds
-        # `node_size`, which is a leaf count, while stability uses `node_mass`), so the raw
-        # point-level value the other libraries take would ask for more leaves than the budget
-        # holds and label everything noise. Convert through the mean leaf mass so both sides are
-        # asked for a cluster of the same size in points. See gap #72.
-        leaves = 2000
         return bc.fit_predict(
             X,
             method="hdbscan",
-            min_cluster_size=max(2, round(min_points(n) * leaves / n)),
+            min_cluster_size=min_points(n),
             min_samples=10,
             threshold=0.0,
-            max_leaves=leaves,
+            max_leaves=2000,
             n_jobs=1,
         )
     if method == "faiss-kmeans":

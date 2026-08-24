@@ -161,6 +161,27 @@ All notable changes to this project are documented here. The format follows
   `aniso` 0.569 → 0.568 and `covtype` +0.0001 are ties; MNIST stays all-noise.
 
 ### Fixed
+- **`method="hdbscan"` counted `min_samples` and `min_cluster_size` in leaves, not in points.**
+  `hdbscan.rs` thresholded a leaf count while its stability term used point mass, so the two
+  arguments meant one thing on a summary and another on one-feature-per-point, and nothing said so.
+  The failure that surfaced it: at `N = 500 000`, `max_leaves = 2000` and the point-level
+  `min_cluster_size = 1250` a `sklearn.cluster.HDBSCAN` user would transfer unchanged, the head asked
+  for 1 250 of 2 000 leaves, found no admissible split anywhere, and returned **every point as noise
+  with no warning** — ARI 0.000. The threshold was also not scale-free, changing meaning whenever
+  `max_leaves` changed, which is a tuning knob rather than a property of the data.
+
+  Both arguments now count points: the cluster-size gate reads the same `node_mass` the stability
+  term already used, and the core distance is the smallest radius enclosing `min_samples` points'
+  worth of weight rather than the `min_samples`-th nearest feature. On unit weights — one feature per
+  point — every quantity is an integer count and the behaviour is byte-identical, so nothing changes
+  for `threshold=0.0, max_leaves >= N`. **On a summary the labels change**, and for the better: the
+  `n = 500 000` blobs benchmark row moves 0.000 → 0.478, which is exactly its `n = 100 000` value —
+  the same question now gets the same answer at both scales.
+
+  A second finding, measured but not fixed here (task #72): `min_samples` below a single leaf's mass
+  is enclosed at radius zero, which collapses every core distance and degenerates HDBSCAN\* to single
+  linkage. Set it above `N / max_leaves`; `docs/USAGE.md` now carries the curve and
+  `bench/RESULTS.md` the comparison against `fast_hdbscan` that exposed it.
 - **`distance="average"` panicked with an index-out-of-bounds instead of clustering.** A node split
   picks the farthest pair of children as seeds and then assigns every child to the nearer seed —
   which silently assumes `between(cf, cf) == 0`. That holds for `euclidean`, `manhattan` and `ward`,
