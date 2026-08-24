@@ -316,6 +316,7 @@ All over the microclusters the tree already holds (no extra data passes):
 proba = est.predict_proba(X_query)            # (n, k): the point's own mixture posterior (argmax == predict); centroid-softmax heuristic for the non-generative heads
 conf  = est.assignment_confidence(X_query)    # (n,) in [0, 1] — low flags boundary / ambiguous points
 coreset = est.export_coreset()                # coreset.centers / .weights / .radii — fit any weighted model on these
+coreset = est.export_coreset(size=500, k=8)   # …or a (k, eps)-coreset of 500 leaves; see below
 report  = est.diagnostics()                   # compression_ratio, radius p50/p90/p99, cluster mass spread, n_rebuilds
 reps    = est.representatives(X_query, cluster_id=0, method="medoid")   # or "boundary" / "outlier" / "diverse"
 profile = est.cluster_profile(0)              # JSON-able geometry + nearest clusters (e.g. to LLM-name a cluster)
@@ -358,6 +359,43 @@ rather than at the largest relative jump in merge height. The old rule was the e
 dendrogram's clothing, and it fails exactly where the paper says it does: on two far groups of two
 nearby subclusters each, the tallest relative jump is the one that joins the far groups, so it
 reported `k = 2` on every seed where the variance ratio reports the true 4.
+
+## A coreset with a guarantee — `export_coreset(size=…)`
+
+`export_coreset()` with no arguments is the streaming summary it always was: every leaf, at its own
+mass, in one `O(n_leaves)` pass. Passing a `size` subsamples it by **sensitivity sampling**
+(Feldman & Langberg, STOC 2011) and turns the word *coreset* into a claim: every candidate solution
+scores within `(1 ± ε)` of its score on the full summary, not just the one this estimator fitted.
+
+The error is two independent halves, and the API keeps them apart because they fail differently.
+
+**Summarization** — present in both modes. With `Δ = coreset.offset = Σᵢ Sᵢ`, the summary's cost
+`ĉost(C) = Σᵢ (Sᵢ + nᵢ‖μᵢ − C‖²)` is *exactly* the cost of sending every point of a leaf to the
+centre nearest that leaf's centroid, so it can only over-charge, and by a bounded amount:
+
+$$0 \le \hat{c}(C) - c(C) \le 4\sqrt{\Delta \cdot c(C)} + 4\Delta \qquad \text{for every } C, \text{ every } k$$
+
+That is a relative error of `4√ρ + 4ρ` at `ρ = Δ / c(C)`, and `c(C) ≥ OPT_k` bounds it uniformly.
+`Δ` is known exactly; `OPT_k` is not, so `coreset.summary_epsilon(alpha)` makes you name the
+approximation factor you assume rather than picking one for you — `reference_cost` upper-bounds
+`OPT_k`, so `summary_epsilon(1.0)` is optimistic, not a certificate.
+
+**Sampling** — only when `size` is given. Since `ĉost(C) = Δ + Σᵢ nᵢ‖μᵢ − C‖²` and `Δ` does not
+depend on `C`, the sample only has to be a coreset of the weighted set `{(μᵢ, nᵢ)}`; `offset`
+carries the constant instead of losing it, and `coreset.cost(centers)` adds it back so you cannot
+forget. Sensitivity sampling attains the optimal worst-case size `Õ(k·ε⁻²·min(√k, ε⁻²))` — matching
+the STOC 2022 lower bound — and `Õ(k/ε²)` on stable instances (arXiv 2405.01339).
+
+```python
+cs = est.export_coreset(size=500, k=8)
+cs.centers.shape          # (<= 500, d)
+cs.cost(candidate_centers)  # weighted cost + offset
+cs.summary_epsilon(1.0)   # optimistic; pass the alpha you can defend
+cs.total_sensitivity      # 10 + 4k when the reference solution left no cluster empty
+```
+
+A `size` at or above the leaf count returns every leaf exactly, with no sampling error — not a
+noisy redraw of something already held exactly.
 
 ## The other four linkages — `average` / `weighted` / `centroid` / `median`
 

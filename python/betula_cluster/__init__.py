@@ -143,11 +143,49 @@ class Coreset:
     centers: np.ndarray  # (n_microclusters, dim) mass-weighted centroids
     weights: np.ndarray  # (n_microclusters,) effective point mass
     radii: np.ndarray  # (n_microclusters,) RMS radius sqrt(ssd / weight)
+    offset: float = 0.0  # Δ = Σᵢ Sᵢ over *every* leaf, sampled or not
+    reference_cost: float | None = None  # ĉost of the α-approximate solution; None if unsampled
+    total_sensitivity: float | None = None  # S = Σᵢ sᵢ ≈ 10 + 4k; None if unsampled
+    n_leaves: int | None = None  # leaves the tree held before sampling; None if unsampled
 
     @property
     def n_points(self) -> float:
         """Total mass (≈ number of points summarized)."""
         return float(self.weights.sum())
+
+    def cost(self, centers) -> float:
+        """``Σⱼ wⱼ·d²(xⱼ, C) + offset`` — this coreset's estimate of the summary's k-means cost.
+
+        A method rather than a formula in the docs because ``offset`` is easy to forget and
+        forgetting it understates every cost by the same constant, which looks like nothing until
+        two costs from different coresets are compared.
+        """
+        c = np.asarray(centers, dtype=np.float64)
+        x = np.asarray(self.centers, dtype=np.float64)
+        d2 = (x * x).sum(1)[:, None] - 2.0 * x @ c.T + (c * c).sum(1)[None, :]
+        np.maximum(d2, 0.0, out=d2)
+        return float((np.asarray(self.weights, dtype=np.float64) * d2.min(1)).sum() + self.offset)
+
+    def summary_epsilon(self, alpha: float) -> float:
+        """Relative summarization error ``4√ρ + 4ρ`` at ``ρ = alpha · offset / reference_cost``.
+
+        ``alpha`` is required, not defaulted. ``reference_cost`` is the cost of an α-approximate
+        solution and therefore **upper**-bounds ``OPT_k``, so ``offset / reference_cost``
+        *under*-states the true ``ρ = Δ/OPT_k`` and ``summary_epsilon(1.0)`` is an optimistic
+        reading rather than a certificate. The shipped seeding is k-means++ with greedy trials,
+        whose ``O(log k)`` guarantee holds in expectation, not for the run in hand — so pass the
+        factor you can defend.
+
+        Covers the summary only; sampling error sits on top of it and is what ``size`` buys down.
+        """
+        if self.reference_cost is None:
+            raise ValueError(
+                "summary_epsilon needs a sampled coreset — call export_coreset(size=…)"
+            )
+        if not (self.reference_cost > 0.0):
+            return 0.0
+        rho = max(alpha * self.offset / self.reference_cost, 0.0)
+        return 4.0 * rho**0.5 + 4.0 * rho
 
 
 @dataclass(frozen=True)
@@ -971,15 +1009,65 @@ class Betula:
         return rows
 
     # ── coreset / soft assignment / diagnostics ──────────────────────────────────────────────────
-    def export_coreset(self):
-        """The CF-tree leaves as a weighted-point :class:`Coreset` (centers, weights, radii) — a
-        compact streaming summary of all data seen. Fit any weighted clustering / model on it rather
-        than the raw points. Requires a built model."""
+    def export_coreset(self, size=None, k=None, seed=None):
+        """The leaf summary as a weighted-point :class:`Coreset`, optionally sampled down to
+        ``size`` points with a provable ``(k, ε)`` guarantee. Requires a built tree only —
+        ``partial_fit`` is enough, since which head this estimator fitted does not enter it.
+
+        With ``size=None`` this returns every leaf at its own mass: the streaming summary, exactly
+        as before, in one ``O(n_leaves)`` pass. Pass a ``size`` and the leaves are subsampled by
+        **sensitivity sampling** (Feldman & Langberg 2011), which costs one weighted k-means over
+        the leaves and fills in ``reference_cost`` / ``total_sensitivity``.
+
+        The error has two independent halves, and neither is folded into the other.
+
+        **Summarization**, present in both modes. With ``Δ = offset = Σᵢ Sᵢ``, the summary's cost
+        ``ĉost(C) = Σᵢ (Sᵢ + nᵢ‖μᵢ − C‖²)`` satisfies, for every candidate ``C`` and every ``k``::
+
+            0 ≤ ĉost(C) − cost(C) ≤ 4·√(Δ · cost(C)) + 4·Δ
+
+        — a relative error of ``4√ρ + 4ρ`` at ``ρ = Δ/cost(C)``, and ``cost(C) ≥ OPT_k`` bounds it
+        uniformly. :meth:`Coreset.summary_epsilon` evaluates it, and makes you name the ``α`` it
+        assumes. This is what makes the word "coreset" here a claim rather than a label.
+
+        **Sampling**, present only when ``size`` is given. ``ĉost(C) = Δ + Σᵢ nᵢ‖μᵢ − C‖²`` and
+        ``Δ`` does not depend on ``C``, so the sample only has to be a coreset of the weighted set
+        ``{(μᵢ, nᵢ)}`` — ``offset`` carries the constant instead of losing it. Sensitivity sampling
+        attains the optimal worst-case size ``Õ(k·ε⁻²·min(√k, ε⁻²))``, matching the STOC 2022 lower
+        bound, and ``Õ(k/ε²)`` on stable instances (arXiv 2405.01339).
+
+        ``size`` at or above the leaf count returns every leaf exactly, with no sampling error,
+        rather than a noisy redraw of something already held exactly. ``k`` defaults to
+        ``n_clusters`` and ``seed`` to this estimator's.
+        """
         est = self._require_fit()
+        if size is None:
+            w = np.asarray(est.microcluster_weights_, dtype=np.float64)
+            r = np.asarray(est.microcluster_radii_, dtype=np.float64)
+            return Coreset(
+                centers=est.microcluster_centers_,
+                weights=est.microcluster_weights_,
+                radii=est.microcluster_radii_,
+                offset=float((w * r * r).sum()),
+                n_leaves=int(w.size),
+            )
+        if k is None:
+            k = self.n_clusters if self.n_clusters and self.n_clusters > 0 else 8
+        if k < 1:
+            raise ValueError("k must be >= 1")
+        if size < 1:
+            raise ValueError("size must be >= 1")
+        pts, weights, offset, ref, sens, n_leaves, radii = est.export_coreset_(
+            int(k), int(size), int(self.seed if seed is None else seed)
+        )
         return Coreset(
-            centers=est.microcluster_centers_,
-            weights=est.microcluster_weights_,
-            radii=est.microcluster_radii_,
+            centers=pts,
+            weights=weights,
+            radii=radii,
+            offset=offset,
+            reference_cost=ref,
+            total_sensitivity=sens,
+            n_leaves=n_leaves,
         )
 
     @property

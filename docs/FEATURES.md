@@ -68,8 +68,9 @@ A capability-by-capability reference. For runnable code see [`USAGE.md`](USAGE.m
   mixture for the GMM, **vMF** and Toeplitz heads, so `predict_proba(X).argmax(1) == predict(X)`; a
   documented centroid-distance softmax *heuristic* for k-means / Ward / spectral / Leiden / HDBSCAN),
   `assignment_confidence`,
-  `microcluster_proba_` (per-microcluster GMM responsibilities, GMM heads only), `export_coreset` (the
-  leaves as weighted points), `diagnostics`, `representatives`, `cluster_profile`.
+  `microcluster_proba_` (per-microcluster GMM responsibilities, GMM heads only), `export_coreset` (the leaves as weighted points, or with `size=` a
+  sensitivity-sampled `(k, ε)`-coreset carrying the `4√ρ + 4ρ` summarization bound it satisfies),
+  `diagnostics`, `representatives`, `cluster_profile`.
 - **`DenStream`** — a separate streaming density clusterer (Cao et al., SDM 2006) over *fading*
   micro-clusters, for evolving streams where old data should decay out: `partial_fit` chunks, then
   `predict` (`-1` = noise). Reuses the same numerically stable CFs (decay is exact and leaves the

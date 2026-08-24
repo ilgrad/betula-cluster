@@ -2501,6 +2501,87 @@ def test_projected_fit_still_reports_a_leaf_level_posterior():
     assert np.allclose(proba.sum(axis=1), 1.0)
 
 
+# ── export_coreset ────────────────────────────────────────────────────────────────────────────────
+
+
+def _summary_cost(est, centers):
+    """`sum_i (S_i + n_i d^2(mu_i, C))` over every leaf — what a coreset has to reproduce.
+
+    `S_i = w_i r_i^2` exactly, since `microcluster_radii_` is the leaf RMS radius.
+    """
+    mu = np.asarray(est.microcluster_centers_, dtype=np.float64)
+    w = np.asarray(est.microcluster_weights_, dtype=np.float64)
+    r = np.asarray(est.microcluster_radii_, dtype=np.float64)
+    d2 = (mu * mu).sum(1)[:, None] - 2.0 * mu @ centers.T + (centers * centers).sum(1)[None, :]
+    return float((w * r * r).sum() + (w * np.maximum(d2, 0.0).min(1)).sum())
+
+
+def test_export_coreset_scores_every_candidate_solution_within_epsilon(blobs):
+    """The acceptance criterion itself: a coreset that only reproduces the solution its
+    sensitivities were derived from is not a coreset, so the check sweeps candidates it has never
+    seen."""
+    x, _ = blobs
+    est = betula_cluster.Betula(n_clusters=4, method="kmeans", max_leaves=800, seed=0).fit(x)
+    cs = est.export_coreset(size=400, k=4)
+    rng = np.random.default_rng(3)
+    lo, hi = x.min(0), x.max(0)
+    worst = 0.0
+    for _ in range(40):
+        centers = rng.uniform(lo, hi, size=(4, x.shape[1]))
+        want = _summary_cost(est, centers)
+        worst = max(worst, abs(cs.cost(centers) - want) / want)
+    assert worst < 0.10, f"worst relative error {worst}"
+
+
+def test_export_coreset_at_the_leaf_count_is_the_summary_exactly(blobs):
+    x, _ = blobs
+    est = betula_cluster.Betula(n_clusters=4, max_leaves=200, seed=0).fit(x)
+    cs = est.export_coreset(size=10_000, k=4)
+    assert cs.centers.shape[0] == cs.n_leaves == est.n_leaves_
+    centers = np.asarray(est.cluster_centers_, dtype=np.float64)
+    assert cs.cost(centers) == pytest.approx(_summary_cost(est, centers), rel=1e-9)
+
+
+def test_export_coreset_total_sensitivity_is_the_ten_plus_four_k_of_the_derivation(blobs):
+    x, _ = blobs
+    est = betula_cluster.Betula(n_clusters=4, max_leaves=400, seed=0).fit(x)
+    for k in (2, 5, 9):
+        assert est.export_coreset(size=100, k=k).total_sensitivity == pytest.approx(10.0 + 4.0 * k)
+
+
+def test_export_coreset_needs_only_a_tree_not_a_finalized_head(blobs):
+    """The guarantee is over candidate solutions, so it cannot depend on which head was fitted —
+    and the API must not pretend otherwise by demanding one."""
+    x, _ = blobs
+    est = betula_cluster.Betula(n_clusters=4, max_leaves=200)
+    est.partial_fit(x)
+    cs = est.export_coreset(size=50, k=4)
+    assert cs.centers.shape[0] > 0 and cs.offset > 0.0
+
+
+def test_export_coreset_without_a_size_is_the_unsampled_summary_it_always_was(blobs):
+    """The zero-argument call is the pre-existing streaming summary and must stay free of the
+    weighted k-means the sampled path needs — so the guarantee numbers it cannot compute are
+    absent rather than faked."""
+    x, _ = blobs
+    est = betula_cluster.Betula(n_clusters=4, max_leaves=200, seed=0).fit(x)
+    cs = est.export_coreset()
+    assert np.array_equal(cs.weights, est.microcluster_weights_)
+    assert cs.n_points == pytest.approx(len(x))
+    assert cs.offset > 0.0
+    assert cs.reference_cost is None and cs.total_sensitivity is None
+    with pytest.raises(ValueError, match="needs a sampled coreset"):
+        cs.summary_epsilon(1.0)
+
+
+@pytest.mark.parametrize(("size", "k"), [(0, 4), (-1, 4), (10, 0)])
+def test_export_coreset_rejects_a_degenerate_request(blobs, size, k):
+    x, _ = blobs
+    est = betula_cluster.Betula(n_clusters=4, max_leaves=200, seed=0).fit(x)
+    with pytest.raises(ValueError):
+        est.export_coreset(size=size, k=k)
+
+
 # ── the four non-Ward linkages ────────────────────────────────────────────────────────────────────
 
 

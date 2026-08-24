@@ -691,6 +691,32 @@ fn compute_validity<R: Real, C: ClusterFeature<R>>(
     )
 }
 
+/// `(points, weights, offset, reference_cost, total_sensitivity, n_leaves, radii)` as Python
+/// sees it.
+type CoresetPy<'py> = (
+    Bound<'py, PyArray2<f64>>,
+    Bound<'py, PyArray1<f64>>,
+    f64,
+    f64,
+    f64,
+    usize,
+    Bound<'py, PyArray1<f64>>,
+);
+
+/// What a coreset export carries across the binding: the sample, and the three numbers its
+/// guarantee is stated in terms of. A struct rather than a seven-tuple because the three scalars
+/// are not interchangeable and a positional mix-up between them would be silent.
+struct CoresetOut {
+    points: Vec<f64>,
+    weights: Vec<f64>,
+    radii: Vec<f64>,
+    dim: usize,
+    offset: f64,
+    reference_cost: f64,
+    total_sensitivity: f64,
+    n_leaves: usize,
+}
+
 /// Copy the rows of a (non-empty) 2-D array into a flat row-major buffer; returns `(flat, n, dim)`.
 /// Generic over the element type so `f32` inputs are clustered in `f32` (no `f64` upcast).
 fn to_flat<R: Real + Element>(data: &PyReadonlyArray2<'_, R>) -> PyResult<(Vec<R>, usize, usize)> {
@@ -1446,6 +1472,59 @@ impl<R: Real> TreeState<R> {
         }
     }
 
+    /// Sensitivity-sampling coreset over the leaf summary. Returns the sampled means flattened
+    /// row-major, their weights, the point dimension, and the three scalars the guarantee is stated
+    /// in terms of.
+    fn coreset(&self, k: usize, size: usize, seed: u64) -> CoresetOut {
+        fn build<R: Real, C: ClusterFeature<R>>(
+            feats: &[C],
+            k: usize,
+            size: usize,
+            seed: u64,
+        ) -> CoresetOut {
+            let cs = crate::coreset::sensitivity_coreset(feats, k, size, seed);
+            let dim = feats.first().map_or(0, |f| f.dim());
+            let mut points = Vec::with_capacity(cs.points.len() * dim);
+            for p in &cs.points {
+                points.extend(p.iter().map(|v| v.to_f64().unwrap_or(0.0)));
+            }
+            // The retained leaves' own RMS radii, not a property of the sampling weights: a
+            // sampled leaf still summarises exactly the points it absorbed.
+            let radii = cs
+                .indices
+                .iter()
+                .map(|&i| {
+                    let w = feats[i].weight().to_f64().unwrap_or(0.0);
+                    if w > 0.0 {
+                        (feats[i].ssd().to_f64().unwrap_or(0.0) / w).max(0.0).sqrt()
+                    } else {
+                        0.0
+                    }
+                })
+                .collect();
+            CoresetOut {
+                points,
+                weights: cs
+                    .weights
+                    .iter()
+                    .map(|w| w.to_f64().unwrap_or(0.0))
+                    .collect(),
+                radii,
+                dim,
+                offset: cs.offset.to_f64().unwrap_or(0.0),
+                reference_cost: cs.reference_cost.to_f64().unwrap_or(0.0),
+                total_sensitivity: cs.total_sensitivity,
+                n_leaves: cs.n_leaves,
+            }
+        }
+        match self {
+            TreeState::Spherical(t) => build(t.leaf_features(), k, size, seed),
+            TreeState::Diagonal(t) => build(t.leaf_features(), k, size, seed),
+            TreeState::Full(t) => build(t.leaf_features(), k, size, seed),
+            TreeState::Fd(t) => build(t.leaf_features(), k, size, seed),
+        }
+    }
+
     /// Mapper topological-skeleton graph over the leaf microclusters.
     fn mapper(&self, p: &MapperParams) -> MapperGraph {
         match self {
@@ -2091,6 +2170,19 @@ impl Betula {
         }
     }
 
+    /// Sensitivity-sampling coreset over the tree's leaves. Needs only a built tree, not a
+    /// finalized head: the guarantee is over candidate solutions, so it does not depend on which
+    /// one this estimator happens to have fitted.
+    fn coreset_any(&self, k: usize, size: usize, seed: u64) -> PyResult<CoresetOut> {
+        if let Some(t) = &self.state64 {
+            Ok(t.coreset(k, size, seed))
+        } else if let Some(t) = &self.state32 {
+            Ok(t.coreset(k, size, seed))
+        } else {
+            Err(PyValueError::new_err("not fitted"))
+        }
+    }
+
     /// The three internal validity indices; errors if the clustering has not been finalized.
     fn validity_any(&self) -> PyResult<(f64, f64, f64)> {
         let labels = self.labels.as_ref().ok_or_else(|| {
@@ -2559,6 +2651,31 @@ impl Betula {
     /// finalized clustering.
     fn validity_(&self) -> PyResult<(f64, f64, f64)> {
         self.validity_any()
+    }
+
+    /// `(points, weights, offset, reference_cost, total_sensitivity, n_leaves, radii)` for a
+    /// sensitivity-sampling coreset of `size` leaves aimed at `k` centres.
+    #[pyo3(signature = (k, size, seed))]
+    fn export_coreset_<'py>(
+        &self,
+        py: Python<'py>,
+        k: usize,
+        size: usize,
+        seed: u64,
+    ) -> PyResult<CoresetPy<'py>> {
+        let out = self.coreset_any(k, size, seed)?;
+        let rows = out.points.len().checked_div(out.dim).unwrap_or(0);
+        let points = Array2::from_shape_vec((rows, out.dim), out.points)
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        Ok((
+            points.into_pyarray(py),
+            PyArray1::from_vec(py, out.weights),
+            out.offset,
+            out.reference_cost,
+            out.total_sensitivity,
+            out.n_leaves,
+            PyArray1::from_vec(py, out.radii),
+        ))
     }
 
     /// Per-row outlier score: distance to the assigned cluster centroid divided by that cluster's

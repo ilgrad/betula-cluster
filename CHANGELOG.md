@@ -7,6 +7,52 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **`export_coreset(size=…)`: the word "coreset" turned into a claim.** `export_coreset()` has
+  always returned the leaf summary and always called it a coreset; nothing checked that it was one.
+  It now carries the two bounds that make the name earned, and they are kept apart on purpose,
+  because the summary and the sample fail in different ways and folding either into the other makes
+  both unfalsifiable.
+
+  **Summarization**, reported in both modes as `coreset.offset` = `Δ = Σᵢ Sᵢ`. The summary's cost
+  `ĉost(C) = Σᵢ (Sᵢ + nᵢ‖μᵢ − C‖²)` is *exactly* the cost of sending every point of a leaf to the
+  centre nearest that leaf's centroid — the CF identity makes it exact, not an estimate — so it can
+  only over-charge, and boundedly:
+
+  ```text
+  0 ≤ ĉost(C) − cost(C) ≤ 4·√(Δ · cost(C)) + 4·Δ         for every C, every k
+  ```
+
+  The proof is one triangle inequality (`‖p − c_i‖ ≤ 2‖p − μᵢ‖ + ‖p − c*‖`, using only that `c_i`
+  is nearest to `μᵢ`) plus Cauchy–Schwarz on the cross term. The relative form is `4√ρ + 4ρ` at
+  `ρ = Δ/cost(C)`, and `cost(C) ≥ OPT_k` bounds it uniformly. `Coreset.summary_epsilon(alpha)`
+  evaluates it and **requires** the approximation factor as an argument: `reference_cost`
+  upper-bounds `OPT_k`, so `Δ/reference_cost` under-states `ρ` and `summary_epsilon(1.0)` is an
+  optimistic reading, not a certificate. Defaulting that argument would have hidden exactly the
+  assumption the bound stands on.
+
+  **Sampling**, only when `size` is given. `ĉost(C) = Δ + Σᵢ nᵢ‖μᵢ − C‖²` and `Δ` does not depend
+  on `C`, so the sample only has to be a coreset of the weighted point set `{(μᵢ, nᵢ)}` — a
+  standard object the published theory covers verbatim — and `offset` carries the constant rather
+  than losing it. The construction is sensitivity sampling (Feldman & Langberg, STOC 2011) from an
+  α-approximate solution over the leaves, `sᵢ = 8·cᵢ/Ctot + 2·(nᵢ/Wⱼ)·(Cⱼ/Ctot) + 4·(nᵢ/Wⱼ)`, whose
+  total is `10 + 4k` — asserted, since a value away from it means the reference solution left a
+  cluster empty. Sensitivity sampling is now known to attain the *optimal* worst-case coreset size
+  `Õ(k·ε⁻²·min(√k, ε⁻²))`, matching the STOC 2022 lower bound, and `Õ(k/ε²)` on `Ω(1)`-stable
+  instances (arXiv 2405.01339) — which is why it replaced BICO's ring hierarchy in the design.
+
+  `Coreset.cost(centers)` adds the offset for you. That is deliberate: forgetting it understates
+  every cost by the same constant, which is invisible until two coresets are compared.
+
+  `export_coreset()` with no arguments is unchanged and still free — same three arrays, same single
+  `O(n_leaves)` pass, no k-means. The guarantee numbers it cannot compute are `None` rather than
+  faked. A `size` at or above the leaf count returns every leaf exactly instead of a noisy redraw of
+  something already held exactly.
+
+  The `(k, ε)` property is tested the way it is claimed: over candidate solutions the sensitivities
+  never saw, on both sides of the binding. Also asserted — that the summary never *under*-estimates,
+  that the derived bound holds against the actual points, that the bound is not vacuous on the
+  fixture it is checked on, that the estimator is unbiased over 80 seeds, and that a larger sample
+  is a better one.
 - **The four non-Ward linkages: `average`, `weighted`, `centroid`, `median`.** `method="ward"` was
   the only hierarchical head, because the nearest-neighbour chain that drives it is valid only for a
   *reducible* linkage — and centroid and median linkage are not reducible, they invert. The four

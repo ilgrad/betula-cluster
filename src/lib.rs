@@ -6,6 +6,7 @@
 //! positive semi-definite by construction.
 
 pub mod clustering;
+pub mod coreset;
 pub mod distance;
 pub mod feature;
 pub mod kernels;
