@@ -4,6 +4,7 @@
 //! A density head (HDBSCAN-on-CF, [`hdbscan`]) clusters the leaf microclusters directly.
 
 pub mod agglomerative;
+pub mod bregman;
 pub mod community;
 pub mod gmm;
 pub mod gmm_toeplitz;
@@ -22,6 +23,7 @@ pub mod vmf;
 pub mod ward;
 
 pub use agglomerative::{Agglomerative, Linkage, agglomerative, agglomerative_auto};
+pub use bregman::{bregman_agglomerative, bregman_kmeans};
 pub use community::{Community, Objective, leiden};
 pub use gmm::{Gmm, GmmFull, gmm_diagonal, gmm_diagonal_auto, gmm_full, gmm_full_auto};
 pub use gmm_toeplitz::{

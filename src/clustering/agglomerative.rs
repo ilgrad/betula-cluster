@@ -150,29 +150,60 @@ impl<R: Real> Node<R> {
 }
 
 /// One agglomeration step: cluster `from` is merged into cluster `into` at linkage `height`.
-struct Merge<R> {
-    into: usize,
-    from: usize,
+pub(crate) struct Merge<R> {
+    pub(crate) into: usize,
+    pub(crate) from: usize,
     #[cfg_attr(not(test), allow(dead_code))]
-    height: R,
+    pub(crate) height: R,
 }
 
 /// Full dendrogram by Anderberg's algorithm; merges come out in agglomeration order.
 fn dendrogram<R: Real, C: ClusterFeature<R>>(features: &[C], linkage: Linkage) -> Vec<Merge<R>> {
-    let m = features.len();
     let mut node: Vec<Node<R>> = features.iter().map(Node::leaf).collect();
+    anderberg(
+        &mut node,
+        |a, b| linkage.value(a, b),
+        |nodes, a, b| {
+            let absorbed = Node {
+                mass: nodes[b].mass,
+                mean: nodes[b].mean.clone(),
+                spread: nodes[b].spread,
+            };
+            nodes[a].absorb(&absorbed, linkage);
+        },
+    )
+}
+
+/// Anderberg's algorithm over an arbitrary cluster representation.
+///
+/// One global minimum per step over a lazily repaired nearest-neighbour cache: `O(m²·d)` expected,
+/// `O(m³·d)` adversarial, `O(m·d)` space. It assumes **nothing** about the linkage — in particular
+/// not reducibility — which is why it, rather than the nearest-neighbour chain in
+/// [`ward`](super::ward), is what the non-reducible linkages have to use. Centroid and median need
+/// it because they invert (Müllner 2011); Bregman-Ward needs it because it is not reducible for
+/// `d ≥ 2` outside squared Euclidean (`docs/adr/002-bregman-ward-anderberg.md`).
+///
+/// `dist` is the linkage value between two live clusters. `absorb(nodes, a, b)` merges `b` into `a`
+/// in place; it takes the whole slice and both indices rather than two references so the caller
+/// owns the split borrow, which is where every representation differs.
+pub(crate) fn anderberg<R: Real, N>(
+    node: &mut [N],
+    dist: impl Fn(&N, &N) -> R,
+    mut absorb: impl FnMut(&mut [N], usize, usize),
+) -> Vec<Merge<R>> {
+    let m = node.len();
     let mut alive = vec![true; m];
     let mut nn = vec![usize::MAX; m];
     let mut nnd = vec![R::infinity(); m];
 
     // `nn[i]` is the nearest live cluster to `i`; the relation is not symmetric, so every live
     // cluster keeps its own. The global minimum of `nnd` over live clusters is the closest pair.
-    let rescan = |node: &[Node<R>], alive: &[bool], i: usize| -> (usize, R) {
+    let rescan = |node: &[N], alive: &[bool], i: usize| -> (usize, R) {
         let mut best = usize::MAX;
         let mut best_d = R::infinity();
         for (j, &live) in alive.iter().enumerate() {
             if live && j != i {
-                let d = linkage.value(&node[i], &node[j]);
+                let d = dist(&node[i], &node[j]);
                 if d < best_d {
                     best_d = d;
                     best = j;
@@ -183,7 +214,7 @@ fn dendrogram<R: Real, C: ClusterFeature<R>>(features: &[C], linkage: Linkage) -
     };
 
     for i in 0..m {
-        let (b, d) = rescan(&node, &alive, i);
+        let (b, d) = rescan(node, &alive, i);
         nn[i] = b;
         nnd[i] = d;
     }
@@ -203,12 +234,7 @@ fn dendrogram<R: Real, C: ClusterFeature<R>>(features: &[C], linkage: Linkage) -
         }
         let b = nn[a];
 
-        let absorbed = Node {
-            mass: node[b].mass,
-            mean: node[b].mean.clone(),
-            spread: node[b].spread,
-        };
-        node[a].absorb(&absorbed, linkage);
+        absorb(node, a, b);
         alive[b] = false;
         merges.push(Merge {
             into: a,
@@ -216,7 +242,7 @@ fn dendrogram<R: Real, C: ClusterFeature<R>>(features: &[C], linkage: Linkage) -
             height: best,
         });
 
-        let (na, da) = rescan(&node, &alive, a);
+        let (na, da) = rescan(node, &alive, a);
         nn[a] = na;
         nnd[a] = da;
         for c in 0..m {
@@ -226,11 +252,11 @@ fn dendrogram<R: Real, C: ClusterFeature<R>>(features: &[C], linkage: Linkage) -
             if nn[c] == a || nn[c] == b {
                 // `c`'s neighbour either died or changed shape; its cached distance can only be
                 // trusted downwards, so it has to be found again.
-                let (nc, dc) = rescan(&node, &alive, c);
+                let (nc, dc) = rescan(node, &alive, c);
                 nn[c] = nc;
                 nnd[c] = dc;
             } else {
-                let d = linkage.value(&node[a], &node[c]);
+                let d = dist(&node[a], &node[c]);
                 if d < nnd[c] {
                     nnd[c] = d;
                     nn[c] = a;
@@ -242,7 +268,7 @@ fn dendrogram<R: Real, C: ClusterFeature<R>>(features: &[C], linkage: Linkage) -
 }
 
 /// Union-find root with path compression.
-fn uf_find(parent: &mut [usize], x: usize) -> usize {
+pub(crate) fn uf_find(parent: &mut [usize], x: usize) -> usize {
     let mut root = x;
     while parent[root] != root {
         root = parent[root];
@@ -258,7 +284,7 @@ fn uf_find(parent: &mut [usize], x: usize) -> usize {
 
 /// Apply the first `t` merges and return contiguous `0..(m − t)` labels. The prefix is a valid
 /// horizontal cut without sorting, because Anderberg agglomerates in globally-minimal order.
-fn labels_at<R: Real>(m: usize, merges: &[Merge<R>], t: usize) -> Vec<usize> {
+pub(crate) fn labels_at<R: Real>(m: usize, merges: &[Merge<R>], t: usize) -> Vec<usize> {
     let mut parent: Vec<usize> = (0..m).collect();
     for mg in merges.iter().take(t) {
         let ra = uf_find(&mut parent, mg.into);

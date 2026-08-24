@@ -32,8 +32,22 @@ All notable changes to this project are documented here. The format follows
   `Spherical` feature and that D4_φ collapses to `VarianceIncrease` — the generalisation must not
   have changed the Euclidean answer.
 
-  Rust-only for now; k-means, the agglomerative head and Bregman-EM are not written, and nothing is
-  wired into `Method` or the Python API yet.
+  Two Phase-3 heads over that summary: `clustering::bregman_kmeans` and
+  `clustering::bregman_agglomerative`. Both are exact on the leaf summary for the same reason the
+  Euclidean ones are -- the bias-variance identity holds for every `φ`, so a leaf is scored against a
+  candidate centre without revisiting a point -- and the k-means seeding uses the whole leaf potential
+  `S_i + n_i·d_φ(μ_i, c)` rather than the centroid's share alone. Two things deliberately do *not*
+  carry over: `d_φ` is not a metric, so the Hamerly bounds that accelerate the Euclidean k-means have
+  no analogue and the Lloyd loop is the plain one; and Bregman-Ward is not reducible, so the
+  agglomerative head runs Anderberg (see ADR 002 below). At `φ(t) = t²` the agglomerative head
+  reproduces the shipped Euclidean Ward labels exactly, at every `k` tested.
+
+  The Anderberg driver added in 0.7.0 for the non-reducible Euclidean linkages is now node-agnostic
+  and shared by both, rather than duplicated -- a behaviour-preserving change, pinned by the existing
+  SciPy and Lance-Williams cross-checks.
+
+  Rust-only for now; Bregman-EM is not written, and nothing is wired into `Method` or the Python API
+  yet.
 - **ADR 002 — a Bregman-Ward HAC must use Anderberg, not the nearest-neighbour chain.** NN-chain is
   exact only for a *reducible* linkage, and generalising Ward's criterion to a Bregman divergence
   does not preserve reducibility. Measured rather than assumed: **zero** violations at `d = 1` across
