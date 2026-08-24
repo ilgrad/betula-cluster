@@ -61,13 +61,27 @@ impl UnionFind {
     }
 }
 
-fn collect_leaves(nd: usize, m: usize, children: &[(usize, usize)], out: &mut Vec<usize>) {
-    if nd < m {
-        out.push(nd);
-        return;
+/// The leaves under `nd`, where ids below `m` are leaves and the rest are merges.
+///
+/// Expands each node at most once. On a dendrogram that costs nothing — every node is the child of
+/// exactly one merge, so nothing is ever skipped — but it is what bounds the walk when `children`
+/// is *not* a tree: a merge whose two sides are the same node expands into two copies of it, and
+/// two copies of its children, for `2^depth` visits and an output that outgrows memory. Ids always
+/// decrease on the way down, so the blowup is re-visiting rather than cycling and a depth or
+/// downward-only bound would not catch it.
+fn collect_leaves(nd: usize, m: usize, children: &[(usize, usize)]) -> Vec<usize> {
+    let mut out = Vec::new();
+    let mut seen = vec![false; children.len()];
+    let mut stack = vec![nd];
+    while let Some(x) = stack.pop() {
+        if x < m {
+            out.push(x);
+        } else if !std::mem::replace(&mut seen[x], true) {
+            stack.push(children[x].0);
+            stack.push(children[x].1);
+        }
     }
-    collect_leaves(children[nd].0, m, children, out);
-    collect_leaves(children[nd].1, m, children, out);
+    out
 }
 
 fn new_cluster(
@@ -234,10 +248,17 @@ pub fn hdbscan<R: Real, C: ClusterFeature<R>>(
     let mut point_cluster = vec![0usize; m];
     new_cluster(&mut birth, &mut stab, &mut kids, 0.0); // root cluster 0
 
+    // Each of the `2m` dendrogram nodes is condensed once. That is a property of the tree, not a
+    // safety margin: a merge whose two sides are the same node would otherwise push it twice under
+    // two different cluster ids, doubling `stack`, `birth`, `stab` and `kids` at every level.
+    let mut condensed = vec![false; total];
     let mut stack = vec![(root, 0usize)];
     while let Some((nd, c)) = stack.pop() {
         if nd < m {
             continue; // single point — stays in c
+        }
+        if std::mem::replace(&mut condensed[nd], true) {
+            continue;
         }
         let (l, r) = children[nd];
         let split = lam(nd);
@@ -250,36 +271,26 @@ pub fn hdbscan<R: Real, C: ClusterFeature<R>>(
             let cr = new_cluster(&mut birth, &mut stab, &mut kids, split);
             kids[c].push(cl);
             kids[c].push(cr);
-            let mut lp = Vec::new();
-            collect_leaves(l, m, &children, &mut lp);
-            for &p in &lp {
+            for p in collect_leaves(l, m, &children) {
                 point_cluster[p] = cl;
             }
-            let mut rp = Vec::new();
-            collect_leaves(r, m, &children, &mut rp);
-            for &p in &rp {
+            for p in collect_leaves(r, m, &children) {
                 point_cluster[p] = cr;
             }
             stack.push((l, cl));
             stack.push((r, cr));
         } else if lbig {
-            let mut rp = Vec::new();
-            collect_leaves(r, m, &children, &mut rp);
-            for &p in &rp {
+            for p in collect_leaves(r, m, &children) {
                 stab[c] += (split - birth[c]) * mass[p];
             }
             stack.push((l, c));
         } else if rbig {
-            let mut lp = Vec::new();
-            collect_leaves(l, m, &children, &mut lp);
-            for &p in &lp {
+            for p in collect_leaves(l, m, &children) {
                 stab[c] += (split - birth[c]) * mass[p];
             }
             stack.push((r, c));
         } else {
-            let mut all = Vec::new();
-            collect_leaves(nd, m, &children, &mut all);
-            for &p in &all {
+            for p in collect_leaves(nd, m, &children) {
                 stab[c] += (split - birth[c]) * mass[p];
             }
         }
@@ -613,6 +624,32 @@ mod tests {
                 }
             })
             .collect()
+    }
+
+    #[test]
+    fn a_walk_over_a_node_that_is_its_own_two_children_stays_linear_instead_of_doubling() {
+        // The shape a broken union-find produces: every merge joins the same component to itself,
+        // so `children[id] = (id - 1, id - 1)` all the way down to one leaf. Ids still decrease, so
+        // the walk never cycles — it re-visits, and re-visiting doubles. Twenty levels is 2^20
+        // leaves out of a three-leaf dendrogram, which is small enough to fail an assertion rather
+        // than the machine; the mutant that first produced this shape reached 17 GB.
+        let m = 3;
+        let mut children = vec![(usize::MAX, usize::MAX); m];
+        children.push((0, 0));
+        for id in m + 1..m + 20 {
+            children.push((id - 1, id - 1));
+        }
+        let root = children.len() - 1;
+
+        let out = collect_leaves(root, m, &children);
+        // Length first: the doubling version returns 2^20 of these, and asserting on the vector
+        // itself would print every one of them.
+        assert_eq!(
+            out.len(),
+            2,
+            "one leaf, reached once down each of the two sides"
+        );
+        assert!(out.iter().all(|&p| p == 0));
     }
 
     #[test]
