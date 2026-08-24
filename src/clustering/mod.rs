@@ -23,7 +23,7 @@ pub mod vmf;
 pub mod ward;
 
 pub use agglomerative::{Agglomerative, Linkage, agglomerative, agglomerative_auto};
-pub use bregman::{bregman_agglomerative, bregman_kmeans};
+pub use bregman::{BregmanMixture, bregman_agglomerative, bregman_em, bregman_kmeans};
 pub use community::{Community, Objective, leiden};
 pub use gmm::{Gmm, GmmFull, gmm_diagonal, gmm_diagonal_auto, gmm_full, gmm_full_auto};
 pub use gmm_toeplitz::{

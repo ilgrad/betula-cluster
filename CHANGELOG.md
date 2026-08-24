@@ -46,8 +46,27 @@ All notable changes to this project are documented here. The format follows
   and shared by both, rather than duplicated -- a behaviour-preserving change, pinned by the existing
   SciPy and Lance-Williams cross-checks.
 
-  Rust-only for now; Bregman-EM is not written, and nothing is wired into `Method` or the Python API
-  yet.
+  `clustering::bregman_em` closes the family: soft Bregman clustering is EM for the matching regular
+  exponential family (Banerjee's bijection), so it is the diagonal-GMM skeleton with `d_φ` where the
+  Mahalanobis term was. Two things about it are worth stating.
+
+  `E_{x∈leaf}[d_φ(x, μ_k)] = S_i/n_i + d_φ(μ_i, μ_k)` is **exact** for every `φ`, so the expected
+  complete-data log-likelihood needs no approximation of the within-leaf shape at all; tying the
+  responsibilities within a leaf is the only approximation, which makes this exact *variational* EM
+  with a monotone lower bound. A consequence that is testable and surprising: `S_i/n_i` is the same
+  for every `k`, so **given the centres a leaf's internal spread cannot move its responsibilities** —
+  only the value of the bound. (The fitted result still depends on `S`, through the k-means++ warm
+  start.)
+
+  And `beta`, the shared inverse dispersion, is a parameter rather than a fitted quantity — fitting
+  it needs the family's log-partition function, which has no form generic in `φ`. It is also what
+  decides whether the head can separate anything, because at fixed dispersion separation is measured
+  in *nats of divergence*, not in coordinates. Itakura–Saito is scale-invariant, so three groups whose
+  centres look far apart can be 0.33 nats apart, and a `β = 1` mixture correctly reports that they
+  overlap and collapses all three means onto the global mean. That is the model being honest rather
+  than the optimiser failing, and there is a test pinning both halves of it.
+
+  Rust-only for now; nothing is wired into `Method` or the Python API yet.
 - **ADR 002 — a Bregman-Ward HAC must use Anderberg, not the nearest-neighbour chain.** NN-chain is
   exact only for a *reducible* linkage, and generalising Ward's criterion to a Bregman divergence
   does not preserve reducibility. Measured rather than assumed: **zero** violations at `d = 1` across

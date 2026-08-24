@@ -247,6 +247,164 @@ fn dendrogram<R: Real, B: BregmanDivergence<R>>(features: &[BregmanCf<R, B>]) ->
     )
 }
 
+/// Lloyd iterations spent on the k-means warm start, independent of the EM budget so that
+/// raising `max_iter` refines the same fit instead of starting from a different one. Matches the
+/// Gaussian heads' constant.
+const WARM_START_ITERS: usize = 50;
+
+/// A fitted soft Bregman mixture.
+///
+/// The bijection is Banerjee et al.'s: every regular exponential family has a unique Bregman
+/// divergence with `p(x | θ_k) = exp(−d_φ(x, μ_k))·b_φ(x)`, and `b_φ` does not depend on `k`. So
+/// soft Bregman clustering *is* EM for that family, and this is the diagonal-GMM head's structure
+/// with `d_φ` where the Mahalanobis term was.
+pub struct BregmanMixture<R: Real> {
+    /// Hard label (argmax responsibility) per input feature.
+    pub labels: Vec<usize>,
+    /// Soft responsibilities `[feature][component]`.
+    pub resp: Vec<Vec<R>>,
+    /// Mixture weights `π_k`.
+    pub weights: Vec<R>,
+    /// Component means `μ_k` — the Bregman centroids, hence the plain weighted arithmetic means.
+    pub means: Vec<Vec<R>>,
+    /// The evidence lower bound at convergence, up to the `Σ_x log b_φ(x)` term that no choice of
+    /// model can change. See [`bregman_em`] for why this is a bound and not the likelihood.
+    pub elbo: R,
+}
+
+/// Fit a `k`-component soft Bregman mixture to `features`, warm-started from [`bregman_kmeans`].
+///
+/// `beta` is the **inverse dispersion**: the model is `p(x | k) ∝ exp(−β·d_φ(x, μ_k))·b_φ(x)`, and
+/// `β = 1` is Banerjee et al.'s soft Bregman clustering exactly. It is a parameter rather than a
+/// fitted quantity because fitting it needs the family's log-partition function, which has no form
+/// generic in `φ`; shared across components it is a constant in the M-step and shifts the bound by
+/// a constant, so nothing here depends on knowing it.
+///
+/// **It is also the knob that decides whether the head can separate anything at all.** Without it
+/// the mixture runs at a fixed temperature, and separation is measured in *nats of divergence*, not
+/// in coordinates. Itakura–Saito is scale-invariant — `d(ax, ay) = d(x, y)` — so three groups whose
+/// centres look far apart at `[6, 12, 4]`, `[18, 11, 10]` and `[19, 19, 18]` are only ≈ 0.33 nats
+/// apart, `exp(−0.33) = 0.72`, and a `β = 1` mixture correctly reports that they overlap almost
+/// completely and collapses all three means onto the global mean. That is the model being honest,
+/// not the optimiser failing. Raise `β` until the responsibilities are as sharp as the application
+/// needs, or use a divergence whose scale matches the question.
+///
+/// **What is exact and what is bounded.** The E-step needs `E_{x∈leaf}[·]`, and the leaf carries
+/// only `(n, μ, S_φ)`. Two facts settle what that buys:
+///
+/// - `E_{x∈leaf}[d_φ(x, μ_k)] = S_i/n_i + d_φ(μ_i, μ_k)` — the bias–variance identity, **exact** for
+///   every `φ`. So the expected complete-data log-likelihood is computable from the summary with no
+///   approximation of the within-leaf shape at all.
+/// - The *observed*-data log-likelihood needs `E[log Σ_k …]`, which is not linear and is not
+///   recoverable from three moments. Tying the responsibilities within a leaf is the only
+///   approximation made, and it makes this exact **variational** EM: `elbo` is a true lower bound on
+///   the point-level log-likelihood, and it increases monotonically.
+///
+/// One consequence is worth stating because it is testable and surprising: `S_i/n_i` is the same for
+/// every `k`, so it cancels in the E-step's normalisation. **Given the centres, a leaf's internal
+/// spread does not move its responsibilities at all** — only the value of the bound. The fitted
+/// result still depends on `S`, because the k-means++ warm start samples on the leaf potential
+/// `S_i + n_i·d_φ`, which is where a coarse leaf earns its extra seeding weight; the independence is
+/// a property of the E-step, not of the whole fit.
+pub fn bregman_em<R: Real, B: BregmanDivergence<R>>(
+    features: &[BregmanCf<R, B>],
+    k: usize,
+    beta: R,
+    max_iter: usize,
+    seed: u64,
+) -> BregmanMixture<R> {
+    assert!(k >= 1, "k must be >= 1");
+    assert!(
+        beta > R::zero() && beta.is_finite(),
+        "beta must be positive"
+    );
+    assert!(features.len() >= k, "need at least k features");
+    let div = B::default();
+    let dim = features[0].dim();
+    let m = features.len();
+    let means: Vec<Vec<R>> = features.iter().map(|f| f.mean().to_vec()).collect();
+    let mass: Vec<R> = features.iter().map(ClusterFeature::weight).collect();
+    let info: Vec<R> = features.iter().map(ClusterFeature::ssd).collect();
+    let total: R = mass.iter().copied().sum();
+
+    let warm = bregman_kmeans(features, k, WARM_START_ITERS, 1, seed);
+    let mut centres = warm.centers;
+    let mut pi = vec![R::one() / R::from_usize(k).unwrap(); k];
+    let mut resp = vec![vec![R::zero(); k]; m];
+    let mut elbo = R::neg_infinity();
+    // Keeps a component that loses all its mass from producing NaN weights; it simply stops
+    // competing rather than poisoning the normalisation.
+    let floor = R::from_f64(1e-300).unwrap();
+
+    for _ in 0..max_iter.max(1) {
+        let mut bound = R::zero();
+        for i in 0..m {
+            let logs: Vec<R> = (0..k)
+                .map(|c| pi[c].max(floor).ln() - beta * div.vector(&means[i], &centres[c]))
+                .collect();
+            let hi = logs.iter().copied().fold(R::neg_infinity(), R::max);
+            let sum: R = logs.iter().map(|&l| (l - hi).exp()).sum();
+            let lse = hi + sum.ln();
+            for (c, r) in resp[i].iter_mut().enumerate() {
+                *r = (logs[c] - lse).exp();
+            }
+            // The bound the leaf contributes: its mass times the tied log-mixture value, less the
+            // internal information every component pays equally.
+            bound = bound + mass[i] * lse - beta * info[i];
+        }
+
+        let mut nk = vec![R::zero(); k];
+        let mut sums = vec![vec![R::zero(); dim]; k];
+        for i in 0..m {
+            for c in 0..k {
+                let w = mass[i] * resp[i][c];
+                nk[c] = nk[c] + w;
+                for (s, &x) in sums[c].iter_mut().zip(&means[i]) {
+                    *s = *s + w * x;
+                }
+            }
+        }
+        for c in 0..k {
+            pi[c] = if total > R::zero() {
+                nk[c] / total
+            } else {
+                R::zero()
+            };
+            if nk[c] > R::zero() {
+                for (t, &s) in centres[c].iter_mut().zip(&sums[c]) {
+                    *t = s / nk[c];
+                }
+            }
+        }
+
+        let improved = bound - elbo;
+        elbo = bound;
+        if improved.abs() <= R::from_f64(1e-10).unwrap() * bound.abs().max(R::one()) {
+            break;
+        }
+    }
+
+    let labels = resp
+        .iter()
+        .map(|r| {
+            r.iter()
+                .enumerate()
+                .fold((0usize, R::neg_infinity()), |(bi, bv), (i, &v)| {
+                    if v > bv { (i, v) } else { (bi, bv) }
+                })
+                .0
+        })
+        .collect();
+
+    BregmanMixture {
+        labels,
+        resp,
+        weights: pi,
+        means: centres,
+        elbo,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -409,6 +567,119 @@ mod tests {
             coarse_potential > tight_potential,
             "{coarse_potential} vs {tight_potential}"
         );
+    }
+
+    #[test]
+    fn bregman_em_recovers_the_groups_and_its_bound_only_goes_up() {
+        let mut rng = Lcg(26);
+        let (cfs, truth) = clustered::<SquaredEuclidean>(&mut rng, 3, 30, 3, 0.02);
+        let fit = bregman_em(&cfs, 3, 1.0, 200, 5);
+        assert!(grouped_correctly(&fit.labels, &truth), "{:?}", fit.labels);
+        assert!(fit.elbo.is_finite());
+        assert!((fit.weights.iter().sum::<f64>() - 1.0).abs() < 1e-9);
+        for r in &fit.resp {
+            assert!((r.iter().sum::<f64>() - 1.0).abs() < 1e-9);
+        }
+
+        // Variational EM never decreases its bound, so a longer run cannot score worse — and the
+        // warm start has its own budget, so raising `max_iter` refines the same fit rather than
+        // starting a different one.
+        let mut prev = f64::NEG_INFINITY;
+        for iters in [1, 2, 3, 5, 10, 40] {
+            let e = bregman_em(&cfs, 3, 1.0, iters, 5).elbo;
+            assert!(
+                e >= prev - 1e-9 * e.abs().max(1.0),
+                "{e} after {iters} iterations < {prev}"
+            );
+            prev = e;
+        }
+    }
+
+    #[test]
+    fn beta_is_what_lets_a_scale_invariant_divergence_separate_anything() {
+        // Itakura-Saito is scale-invariant, so groups that look far apart in coordinates can be a
+        // fraction of a nat apart in divergence. At beta = 1 the mixture correctly reports that they
+        // overlap and collapses; raising beta sharpens the same geometry until it separates. This is
+        // the documented limitation, pinned so it cannot be mistaken for a defect later.
+        let mut rng = Lcg(29);
+        let (cfs, truth) = clustered::<ItakuraSaito>(&mut rng, 3, 30, 3, 0.02);
+
+        let flat = bregman_em(&cfs, 3, 1.0, 200, 5);
+        assert!(
+            !grouped_correctly(&flat.labels, &truth),
+            "beta = 1 was expected to under-separate this fixture"
+        );
+        let spread = flat.resp[0].iter().cloned().fold(0.0f64, f64::max);
+        assert!(
+            spread < 0.9,
+            "responsibilities were already sharp: {spread}"
+        );
+
+        let sharp = bregman_em(&cfs, 3, 200.0, 200, 5);
+        assert!(
+            grouped_correctly(&sharp.labels, &truth),
+            "{:?}",
+            sharp.labels
+        );
+        let peak = sharp.resp[0].iter().cloned().fold(0.0f64, f64::max);
+        assert!(peak > 0.99, "raising beta did not sharpen: {peak}");
+    }
+
+    #[test]
+    fn given_the_centres_a_leaf_s_spread_cannot_move_its_responsibilities() {
+        // E[d_φ(x, μ_k)] = S_i/n_i + d_φ(μ_i, μ_k), and S_i/n_i is the same for every k, so it
+        // cancels in the E-step's normalisation. Stated as the identity that makes it true: the
+        // *difference* of expected divergences between any two centres is a function of the mean
+        // alone. (The fitted result does still depend on S -- the k-means++ warm start samples on
+        // the leaf potential -- so this is asserted where it holds, on the E-step.)
+        let mut rng = Lcg(27);
+        let dim = 3;
+        let mut tight = BregmanCf::<f64, KullbackLeibler>::new(dim);
+        let centre: Vec<f64> = (0..dim).map(|_| rng.span(2.0, 9.0)).collect();
+        tight.push(&centre, 4.0);
+
+        let mut coarse = BregmanCf::<f64, KullbackLeibler>::new(dim);
+        let lo: Vec<f64> = centre.iter().map(|&x| x * 0.7).collect();
+        let hi: Vec<f64> = centre.iter().map(|&x| x * 1.3).collect();
+        coarse.push(&lo, 2.0);
+        coarse.push(&hi, 2.0);
+
+        assert!((coarse.weight() - tight.weight()).abs() < 1e-12);
+        for (a, b) in coarse.mean().iter().zip(tight.mean()) {
+            assert!((a - b).abs() <= 1e-12 * b.abs(), "{a} vs {b}");
+        }
+        assert!(coarse.ssd() > 0.0 && tight.ssd() == 0.0);
+
+        for _ in 0..50 {
+            let c1: Vec<f64> = (0..dim).map(|_| rng.span(1.0, 12.0)).collect();
+            let c2: Vec<f64> = (0..dim).map(|_| rng.span(1.0, 12.0)).collect();
+            let gap_tight =
+                (tight.information_about(&c1) - tight.information_about(&c2)) / tight.weight();
+            let gap_coarse =
+                (coarse.information_about(&c1) - coarse.information_about(&c2)) / coarse.weight();
+            assert!(
+                (gap_tight - gap_coarse).abs() <= 1e-9 * gap_tight.abs().max(1.0),
+                "{gap_tight} vs {gap_coarse}"
+            );
+        }
+
+        // And the spread is not free: it costs the bound, since every component pays it.
+        let mut rng = Lcg(28);
+        let (leaves, _) = clustered::<KullbackLeibler>(&mut rng, 3, 12, 2, 0.02);
+        let widened: Vec<BregmanCf<f64, KullbackLeibler>> = leaves
+            .iter()
+            .map(|cf| {
+                let mut wide = BregmanCf::<f64, KullbackLeibler>::new(cf.dim());
+                let lo: Vec<f64> = cf.mean().iter().map(|&x| x * 0.7).collect();
+                let hi: Vec<f64> = cf.mean().iter().map(|&x| x * 1.3).collect();
+                wide.push(&lo, cf.weight() / 2.0);
+                wide.push(&hi, cf.weight() / 2.0);
+                wide
+            })
+            .collect();
+        let a = bregman_em(&leaves, 3, 1.0, 100, 3);
+        let b = bregman_em(&widened, 3, 1.0, 100, 3);
+        assert!(b.elbo < a.elbo, "{} vs {}", b.elbo, a.elbo);
     }
 
     #[test]
