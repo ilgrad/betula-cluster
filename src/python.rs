@@ -3032,12 +3032,12 @@ impl PyWindowStream {
                 "times must carry one timestamp per row of data",
             ));
         }
-        if let Some(ws) = &self.inner
-            && ws.dim() != dim
-        {
-            return Err(PyValueError::new_err(
-                "dimension mismatch with previously streamed data",
-            ));
+        if let Some(ws) = &self.inner {
+            if ws.dim() != dim {
+                return Err(PyValueError::new_err(
+                    "dimension mismatch with previously streamed data",
+                ));
+            }
         }
         if self.inner.is_none() {
             self.inner = Some(WindowStream::new(
