@@ -14,7 +14,10 @@ Shared M-step folds within-CF spread into the component covariance:
 Metric: Adjusted Rand Index of the ORIGINAL points (each point inherits its CF's label)
 vs ground truth.  Baselines: full-data GMM-EM (gold) and hard k-means on the CFs.
 """
+
 from __future__ import annotations
+
+import argparse
 
 import numpy as np
 
@@ -124,8 +127,12 @@ def build_cfs(x, assign, m, d):
         sigs.append(np.atleast_2d(np.cov(pts.T, bias=True)) if len(pts) > 1 else np.zeros((d, d)))
         ids.append(j)
     remap = {j: i for i, j in enumerate(ids)}
-    return (np.array(ns, float), np.array(mus), np.array(sigs),
-            np.array([remap[j] for j in assign]))
+    return (
+        np.array(ns, float),
+        np.array(mus),
+        np.array(sigs),
+        np.array([remap[j] for j in assign]),
+    )
 
 
 # ---------- GMM on CFs, shared init, three E-step variants ----------
@@ -164,10 +171,14 @@ def kmeans_cf(n_i, mu_i, k, init_mu, iters=100):
     for _ in range(iters):
         d2 = ((mu_i[:, None, :] - mu[None, :, :]) ** 2).sum(2)
         a = d2.argmin(1)
-        newmu = np.array([
-            (n_i[a == c, None] * mu_i[a == c]).sum(0) / n_i[a == c].sum()
-            if np.any(a == c) else mu[c] for c in range(k)
-        ])
+        newmu = np.array(
+            [
+                (n_i[a == c, None] * mu_i[a == c]).sum(0) / n_i[a == c].sum()
+                if np.any(a == c)
+                else mu[c]
+                for c in range(k)
+            ]
+        )
         if np.allclose(newmu, mu):
             break
         mu = newmu
@@ -196,17 +207,14 @@ def gen(n, k, sep, rng, imbalance=False):
     return np.vstack(xs), np.concatenate(ys)
 
 
-def main():
-    rng = np.random.default_rng(SEED)
+def one_seed(seed: int) -> dict[tuple, dict[str, float]]:
+    """Every scenario at one seed. Keyed by `(imbalance, sep, m)`."""
     K, N, D = 4, 20000, 2
-    print(f"GMM clustering on CF summaries — ARI vs ground truth (K={K}, N={N}, d={D})")
-    print(f"{'scenario':<26}{'gold(raw)':>10}{'kmeans-CF':>10}"
-          f"{'A:plugin':>10}{'B:conv':>9}{'C:explog':>10}")
-    print("-" * 75)
+    out = {}
     for imb in (False, True):
         for sep in (2.5, 4.0, 6.0):
             for m in (40, 150):
-                rng = np.random.default_rng(SEED + int(sep * 10) + m + (1000 if imb else 0))
+                rng = np.random.default_rng(seed + int(sep * 10) + m + (1000 if imb else 0))
                 x, y = gen(N, K, sep, rng, imbalance=imb)
                 gold = ari(y, gmm_raw(x, K, rng))
                 assign = kmeans(x, m, rng)
@@ -214,18 +222,57 @@ def main():
                 # shared init for all CF-GMM variants
                 mu0 = kmeanspp(mu_i, K, rng, weights=n_i)
                 cov0 = np.stack([np.cov(mu_i.T, aweights=n_i, bias=True) + 1e-6 * np.eye(D)] * K)
-                pi0 = np.full(K, 1 / K)
-                init = (mu0, cov0, pi0)
-                res = {}
+                init = (mu0, cov0, np.full(K, 1 / K))
+                row = {"gold": gold, "kmeans": ari(y, kmeans_cf(n_i, mu_i, K, mu0)[pt2cf])}
                 for v in ("A", "B", "C"):
-                    cf_lab = gmm_cf(n_i, mu_i, sig_i, K, init, v)
-                    res[v] = ari(y, cf_lab[pt2cf])
-                km = ari(y, kmeans_cf(n_i, mu_i, K, mu0)[pt2cf])
-                tag = f"{'imb' if imb else 'bal'} sep={sep} m={m}"
-                print(f"{tag:<26}{gold:>10.3f}{km:>10.3f}"
-                      f"{res['A']:>10.3f}{res['B']:>9.3f}{res['C']:>10.3f}")
+                    row[v] = ari(y, gmm_cf(n_i, mu_i, sig_i, K, init, v)[pt2cf])
+                out[(imb, sep, m)] = row
+    return out
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--seeds", type=int, nargs="+", default=[SEED, SEED + 1, SEED + 2])
+    args = ap.parse_args()
+
+    runs = [one_seed(s) for s in args.seeds]
+    cols = ("gold", "kmeans", "A", "B", "C")
+    print("GMM clustering on CF summaries — ARI vs ground truth (K=4, N=20000, d=2)")
+    print(f"median of {len(runs)} seeds {args.seeds}; [min, max] beneath each median")
+    print(
+        f"{'scenario':<26}{'gold(raw)':>10}{'kmeans-CF':>10}"
+        f"{'A:plugin':>10}{'B:conv':>9}{'C:explog':>10}"
+    )
+    print("-" * 75)
+    for key in runs[0]:
+        imb, sep, m = key
+        med = {c: float(np.median([r[key][c] for r in runs])) for c in cols}
+        rng_ = {c: (min(r[key][c] for r in runs), max(r[key][c] for r in runs)) for c in cols}
+        tag = f"{'imb' if imb else 'bal'} sep={sep} m={m}"
+        print(f"{tag:<26}" + "".join(f"{med[c]:>{10 if c != 'B' else 9}.3f}" for c in cols))
+        print(
+            f"{'':<26}"
+            + "".join(
+                f"{rng_[c][0]:.2f}-{rng_[c][1]:.2f}".rjust(10 if c != "B" else 9) for c in cols
+            )
+        )
+
+    # Which variant wins how often, over every (scenario x seed) cell rather than over the medians —
+    # a variant that wins narrowly everywhere and a variant that wins hugely once are different
+    # results, and averaging the table first hides the difference.
+    cells = [(r, key) for r in runs for key in r]
+    print("\nper-cell verdict over", len(cells), "scenario x seed cells:")
+    for v in ("A", "B", "C"):
+        best = sum(1 for r, key in cells if r[key][v] >= max(r[key][w] for w in "ABC") - 1e-12)
+        gap = float(np.median([r[key]["gold"] - r[key][v] for r, key in cells]))
+        print(
+            f"  {v}: best or tied in {best}/{len(cells)}, median shortfall against gold {gap:+.3f}"
+        )
+
     print("\nHigher ARI = better. A/B/C share identical init + M-step; only the E-step differs.")
-    print("Looking for: which CF E-step gets closest to gold(raw) and beats k-means, esp. coarse m.")
+    print(
+        "Looking for: which CF E-step gets closest to gold(raw) and beats k-means, esp. coarse m."
+    )
 
 
 if __name__ == "__main__":

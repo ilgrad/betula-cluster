@@ -31,7 +31,9 @@ mpmath reference, where the classic $(N, LS, SS)$ form loses all significant dig
 Running EM on the leaf CFs, each leaf is a mini-Gaussian $\mathcal{N}(\mu_i, \Sigma_i)$. The textbook / paper move
 treats it by **convolution** — $\mathcal{N}(\mu_i \mid \mu_k, \Sigma_k + \Sigma_i)$ — which inflates each component by the
 leaf's own spread and **washes out components on a coarse CF-tree**. betula-cluster instead uses the
-**expected log-likelihood** responsibility (measured to give higher ARI — `research/RESULTS-estep.md`):
+**expected log-likelihood** responsibility, which is measured to beat the convolution on ARI and is
+the correct expected log-likelihood under the leaf model; against the simpler plug-in that drops the
+trace it is a wash outside coarse, overlapping summaries (`research/RESULTS-estep.md`, three seeds):
 
 $$
 \log r_{ik} = \log \pi_k + \log \mathcal{N}(\mu_i \mid \mu_k, \Sigma_k) - \tfrac{1}{2}\mathrm{tr}(\Sigma_k^{-1}\Sigma_i) \qquad \text{(then log-sum-exp normalized)}
