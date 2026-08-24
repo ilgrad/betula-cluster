@@ -541,6 +541,69 @@ Read honestly:
   text. With `projection="svd"` it becomes the quality tool too, and the knob that matters is
   `max_leaves`.
 
+## Specialist baselines — FAISS and `fast_hdbscan`
+
+Everything above measures betula against scikit-learn, which is the right *default* comparison and
+the wrong *hardest* one. `bench/external_baselines.py` asks two questions of the strongest specialist
+on each axis instead. Neither library is a project dependency and neither may become one; both are
+pulled per invocation:
+
+```bash
+uv run --with faiss-cpu --with fast-hdbscan --with scikit-learn --with pandas \
+    python bench/external_baselines.py
+```
+
+Single-threaded, seed 0, `max_leaves = 2000`, one subprocess per row so peak RSS is that method's own.
+
+| contest | n | method | time | peak RSS | clusters found | ARI |
+|---|---:|---|---:|---:|---:|---:|
+| k-means, `highdim`, k=8 | 200 000 | **betula-kmeans** | 0.21 s | 220 MB | 8 | **1.000** |
+| | 200 000 | faiss-kmeans | **0.05 s** | 208 MB | 8 | 0.630 |
+| | 200 000 | sklearn-kmeans | 1.43 s | 266 MB | 8 | 1.000 |
+| | 1 000 000 | **betula-kmeans** | 0.84 s | 538 MB | 8 | **1.000** |
+| | 1 000 000 | faiss-kmeans | **0.10 s** | 538 MB | 8 | 0.624 |
+| | 1 000 000 | sklearn-kmeans | 5.47 s | 655 MB | 8 | 1.000 |
+| HDBSCAN, `blobs`, k=6 | 100 000 | **betula-hdbscan** | **0.13 s** | **163 MB** | 3 | 0.478 |
+| | 100 000 | fast-hdbscan | 1.42 s | 316 MB | 6 | **0.910** |
+| | 500 000 | **betula-hdbscan** | **0.22 s** | **176 MB** | 2 | 0.143 |
+| | 500 000 | fast-hdbscan | 2.92 s | 425 MB | 6 | **0.892** |
+
+Both contests are losses on one axis and wins on another, and both are recorded as such rather than
+dropped:
+
+- **FAISS is 4.5×–8.3× faster and does not recover the partition** (0.62–0.63 against betula's 1.000).
+  It runs a fixed 25 Lloyd iterations from a single random init in float32 with its own SIMD kernels.
+  So the defensible claim against FAISS is quality-per-second, not raw throughput — and the gap is
+  still worth attacking, which is what task #73 is for.
+- **`fast_hdbscan` finds all six clusters and betula finds two or three.** betula is ~10× faster and
+  uses half the memory, but 0.478 and 0.143 on well-separated low-dimensional blobs is far outside
+  what the CF summary should cost. Task #72 owns it, together with a units trap found on the way: on
+  the summary route `min_cluster_size` and `min_samples` are counted in **leaves**, not points
+  (`hdbscan.rs:225` thresholds a leaf count while stability at `:228` uses point mass), so the
+  point-level value a scikit-learn user would pass — 1 250 here — asks for more leaves than the budget
+  holds and returns **zero clusters with no warning**. The table above passes the leaf-equivalent.
+
+### The scoreboard
+
+`bench/scoreboard.py` reads every committed `results_*.csv`, pairs each betula row against its rivals
+three ways — `vs-same` (like-for-like algorithm), `vs-best` (each side's champion on a slice, chosen
+by its **worst** seed so a lucky median cannot absorb a real gap), `vs-external` (the table above) —
+and prints one verdict per cell under the tie rule this page already states: a difference smaller than
+the wider of the two cells' three-seed spreads is not a result. Tables with no spread sidecar are
+single runs by construction and fall back to a per-axis tolerance.
+
+```
+## quality — 8 win · 54 tie · 6 loss
+## speed   — 31 win · 2 tie · 5 loss
+## memory  — 30 win · 4 tie · 0 loss
+```
+
+`bench/scoreboard.json` records those 140 verdicts; `--check` re-derives them and exits non-zero if
+any cell got worse or vanished, and `--update` is the deliberate act of accepting a new board. The
+six quality losses are the `covtype` and `digits` rows discussed above, the raw-TF-IDF `20news` row,
+MNIST k-means, and the two `fast_hdbscan` cells; the five speed losses are the two FAISS cells and the
+three `20news` rows the sparse leader pass owns (task #71).
+
 ## Conclusions
 
 - **Use betula** when data is large or streaming, memory is bounded, or you want one numerically
@@ -552,6 +615,10 @@ Read honestly:
 - **Use raw scikit-learn** when `N` is small enough to fit comfortably and you want the canonical
   point-level algorithm with no compression — at small `N` the two-phase overhead removes betula's
   speed edge, and raw HDBSCAN is stronger on overlapping density.
+- **Use FAISS** if k-means throughput is the only criterion and an approximate partition is
+  acceptable, and **`fast_hdbscan`** for density clustering in low dimension when the data fits in
+  memory: each beats betula outright on its own axis, and betula's answer is quality-per-second in
+  the first case and speed-and-memory-per-answer in the second.
 - **Use `sklearn-birch`** if `covtype`-like all-methods quality at ~20 k rows is the only criterion and
   no summary is needed: it beats every betula head there, and the compression-ratio defence does not
   hold. Its MNIST lead comes with no compression at all (20 000 subclusters for 20 000 points), so it
