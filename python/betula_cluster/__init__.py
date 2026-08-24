@@ -783,6 +783,28 @@ class Betula:
             info["mean_cluster_radius"] = float(cradii.mean()) if cradii.size else 0.0
         return info
 
+    def validity(self):
+        """Internal validity indices of the fitted partition, scored on the leaf summary.
+
+        Returns ``calinski_harabasz`` (higher is better), ``davies_bouldin`` (lower is better) and
+        ``medoid_silhouette`` (higher is better, capped at 1). All three cost
+        ``O(n_leaves · k · d)`` rather than the ``O(N²)`` an exact silhouette over the points would
+        — the sum of squared distances inside a leaf is ``S_i + n_i‖μ_i − c‖²`` exactly, so no
+        point ever has to be revisited.
+
+        Caveats worth reading before using any of them to choose ``k``: Calinski–Harabasz is exact
+        but undefined at ``k = 1``; Davies–Bouldin is the RMS-dispersion variant, not the classical
+        mean-distance one; the medoid silhouette is the index of the summary, not of the points.
+        None of the three can report "there is no structure here" — for that, fit with
+        ``n_clusters=0`` on a mixture head and let BIC answer.
+        """
+        ch, db, ms = self._require_fit().validity_()
+        return {
+            "calinski_harabasz": ch,
+            "davies_bouldin": db,
+            "medoid_silhouette": ms,
+        }
+
     def find_outliers(self, X, top_k=100):
         """Row indices of the ``top_k`` most outlying points (highest score first)."""
         scores = np.asarray(self.outlier_scores(X))

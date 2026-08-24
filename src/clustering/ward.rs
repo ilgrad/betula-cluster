@@ -137,9 +137,19 @@ pub fn ward_hac<R: Real, C: ClusterFeature<R>>(features: &[C], k: usize) -> Ward
     }
 }
 
-/// Ward-HAC with automatic cluster count: cut the dendrogram at the largest *relative* jump in
-/// merge height within `[k_min, k_max]` (well-separated clusters are expensive to merge, so the
-/// height spikes when the cut crosses a true cluster boundary).
+/// Ward-HAC with automatic cluster count: score every horizontal cut in `[k_min, k_max]` by the
+/// Calinski–Harabasz variance-ratio criterion and keep the best.
+///
+/// This used to cut at the largest *relative* jump in merge height, which is the elbow criterion
+/// wearing a dendrogram — and Schubert, *Stop using the elbow criterion for k-means* (SIGKDD
+/// Explorations 25(1), 2023) is a direct argument against it: the elbow has no null model, is not
+/// scale-free, and on the paper's own examples picks a `k` that the variance ratio does not. CH is
+/// the first alternative the paper names, it is exact on cluster features
+/// ([`crate::validity::calinski_harabasz`]), and scoring 19 cuts costs `O(k_max·m·d)` — nothing
+/// against the `O(m²)` dendrogram that already had to be built.
+///
+/// CH is undefined at `k = 1`, so this cannot report "no structure"; `n_clusters = 0` on a mixture
+/// head, where BIC *can*, remains the criterion for that question.
 pub fn ward_hac_auto<R: Real, C: ClusterFeature<R>>(
     features: &[C],
     k_min: usize,
@@ -153,27 +163,19 @@ pub fn ward_hac_auto<R: Real, C: ClusterFeature<R>>(
     let k_hi = k_max.min(m).max(1);
     let k_lo = k_min.max(1).min(k_hi);
 
-    // The merge that reduces k → k-1 is `merges[m - k]`; compare its height to the previous merge.
-    // Valid only for k ∈ [2, m-1] (need both a next and a previous merge).
-    let lo = k_lo.max(2);
-    let hi = k_hi.min(m.saturating_sub(1));
-    let mut best_k = k_lo;
-    if lo <= hi {
-        let tiny = R::from_f64(1e-12).unwrap();
-        let mut best_score = R::neg_infinity();
-        for k in lo..=hi {
-            let t = m - k;
-            let score = merges[t].height / merges[t - 1].height.max(tiny);
-            if score > best_score {
-                best_score = score;
-                best_k = k;
-            }
+    // `k_lo` is the fallback for the degenerate sweeps CH cannot score: a single feature, or a
+    // range that collapses below k = 2.
+    let mut best = labels_at(m, &merges, m - k_lo);
+    let mut best_score = f64::NEG_INFINITY;
+    for k in k_lo.max(2)..=k_hi {
+        let labels = labels_at(m, &merges, m - k);
+        let score = crate::validity::calinski_harabasz(features, &labels, k);
+        if score > best_score {
+            best_score = score;
+            best = labels;
         }
     }
-    let best_k = best_k.max(1).min(m);
-    WardHac {
-        labels: labels_at(m, &merges, m - best_k),
-    }
+    WardHac { labels: best }
 }
 
 #[cfg(test)]
@@ -218,6 +220,24 @@ mod tests {
         let k: HashSet<usize> = labels.iter().copied().collect();
         assert_eq!(k.len(), 4, "selected k = {}", k.len());
         assert!(ari(&labels, &truth) > 0.95);
+    }
+
+    #[test]
+    fn auto_k_survives_the_nested_scales_the_elbow_criterion_cannot_see() {
+        // Two far groups of two nearby subclusters each. The tallest *relative* jump in merge
+        // height is the one that joins the far groups, so the elbow criterion this selector used
+        // to run reports k = 2 on every seed; the variance ratio reports the true 4.
+        for seed in [1u64, 2, 3] {
+            let mut rng = SplitMix64::new(seed);
+            let centers = [[0.0, 0.0], [2.0, 0.0], [30.0, 0.0], [32.0, 0.0]];
+            let (pts, truth) = blobs(&mut rng, 400, &centers, 0.4);
+            let (micros, point_to_micro) = grid_micros(&pts, 0.3);
+            let w = ward_hac_auto(&micros, 1, 8);
+            let labels: Vec<usize> = point_to_micro.iter().map(|&m| w.labels[m]).collect();
+            let k: HashSet<usize> = labels.iter().copied().collect();
+            assert_eq!(k.len(), 4, "seed {seed} selected k = {}", k.len());
+            assert!(ari(&labels, &truth) > 0.95, "seed {seed}");
+        }
     }
 
     #[test]

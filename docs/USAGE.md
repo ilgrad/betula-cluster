@@ -325,6 +325,40 @@ snap = est.snapshot()                         # cluster geometry now; later, det
 drift = betula_cluster.Betula.compare_snapshots(snap, est_next.snapshot())  # matched clusters: centroid shifts / mass ratios
 ```
 
+### Internal validity — `validity()`
+
+```python
+est.validity()
+# {'calinski_harabasz': 8143.2, 'davies_bouldin': 0.41, 'medoid_silhouette': 0.93}
+```
+
+Three indices off the leaf summary, all in $O(\ell k d)$ — there is no second pass over the data
+and no $O(N^2)$ term, because the sum of squared distances inside a leaf is
+$S_i + n_i\lVert\mu_i - c\rVert^2$ exactly. On a fine tree (`threshold=0` with a leaf budget above
+$N$) `calinski_harabasz` reproduces scikit-learn's point-level `calinski_harabasz_score` to
+floating-point noise; the test suite asserts it.
+
+Read the caveats before selecting `k` with any of them:
+
+| index | direction | status on cluster features |
+|---|---|---|
+| `calinski_harabasz` | higher is better | **exact**; undefined at `k = 1` |
+| `davies_bouldin` | lower is better | the **RMS**-dispersion variant, $\sigma_j=\sqrt{E\lVert x-c_j\rVert^2}$ — the classical mean-distance form is not a function of a cluster feature at all |
+| `medoid_silhouette` | higher is better, ≤ 1 | the index **of the summary**: a per-leaf ratio weighted by leaf mass, which converges to the point-level value only as the leaves shrink |
+
+**None of the three can say "there is no structure here."** Schubert, *Stop using the elbow
+criterion for k-means* (SIGKDD Explorations 25(1), 2023), Table 1 shows the distance-based indices
+reporting 3–22 clusters in pure noise where BIC correctly reports one. Calinski–Harabasz is
+undefined at `k = 1`, which is the same limitation stated honestly. For the "is there anything here
+at all" question, fit with `n_clusters=0` on a mixture head and let BIC answer — that path is
+unchanged and is the authority.
+
+`method="ward"` with `n_clusters=0` now cuts the dendrogram at the best Calinski–Harabasz score
+rather than at the largest relative jump in merge height. The old rule was the elbow criterion in a
+dendrogram's clothing, and it fails exactly where the paper says it does: on two far groups of two
+nearby subclusters each, the tallest relative jump is the one that joins the far groups, so it
+reported `k = 2` on every seed where the variance ratio reports the true 4.
+
 ## Topological structure — `mapper()`
 
 A TDA-Mapper skeleton over the microclusters: non-convex shape, **branch points**, and **bridges**

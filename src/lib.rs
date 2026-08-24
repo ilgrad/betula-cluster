@@ -19,6 +19,7 @@ pub mod stream;
 pub mod topology;
 pub mod tree;
 pub mod types;
+pub mod validity;
 
 #[cfg(feature = "python")]
 mod python;

@@ -139,7 +139,9 @@ A capability-by-capability reference. For runnable code see [`USAGE.md`](USAGE.m
   tree.
 - Dataset-structure inspection (not just labels) — the estimator exposes its microcluster and
   cluster geometry (`microcluster_centers_` / `_weights_` / `_radii_`, `cluster_centers_` /
-  `_radii_` / `_sizes_`) and, on top of it, `summary()`, `outlier_scores(X)` (distance to the
+  `_radii_` / `_sizes_`) and, on top of it, `summary()`, `validity()` (Calinski–Harabasz,
+  Davies–Bouldin and the medoid silhouette in $O(\ell k d)$ off the leaf summary, no second pass
+  over the points and no $O(N^2)$ term), `outlier_scores(X)` (distance to the
   assigned centroid ÷ cluster radius), `find_outliers`, `find_near_duplicates` (unscored groups),
   `near_duplicate_pairs(X, threshold)` (scored cosine pairs, exact within each leaf-block — the
   scalable counterpart to an $O(N^2)$ all-pairs scan), `sample_representatives`, and

@@ -653,6 +653,32 @@ fn compute_cluster_stats<R: Real, C: ClusterFeature<R>>(
     (centers, radii, weights, dim)
 }
 
+/// The three internal validity indices over the labelled leaves, as
+/// `(calinski_harabasz, davies_bouldin, medoid_silhouette)`.
+///
+/// Noise leaves (`label < 0`, HDBSCAN) are dropped rather than pooled into a cluster of their own:
+/// noise is not a cluster, and scoring it as one would make every index a function of how much of
+/// the data the head declined to label.
+fn compute_validity<R: Real, C: ClusterFeature<R>>(
+    feats: &[C],
+    labels: &[i64],
+    k: usize,
+) -> (f64, f64, f64) {
+    let mut kept: Vec<C> = Vec::with_capacity(feats.len());
+    let mut kept_labels: Vec<usize> = Vec::with_capacity(feats.len());
+    for (f, &l) in feats.iter().zip(labels) {
+        if l >= 0 {
+            kept.push(f.clone());
+            kept_labels.push(l as usize);
+        }
+    }
+    (
+        crate::validity::calinski_harabasz(&kept, &kept_labels, k),
+        crate::validity::davies_bouldin(&kept, &kept_labels, k),
+        crate::validity::medoid_silhouette(&kept, &kept_labels, k),
+    )
+}
+
 /// Copy the rows of a (non-empty) 2-D array into a flat row-major buffer; returns `(flat, n, dim)`.
 /// Generic over the element type so `f32` inputs are clustered in `f32` (no `f64` upcast).
 fn to_flat<R: Real + Element>(data: &PyReadonlyArray2<'_, R>) -> PyResult<(Vec<R>, usize, usize)> {
@@ -1398,6 +1424,16 @@ impl<R: Real> TreeState<R> {
         }
     }
 
+    /// `(calinski_harabasz, davies_bouldin, medoid_silhouette)` over the labelled leaves.
+    fn validity(&self, labels: &[i64], k: usize) -> (f64, f64, f64) {
+        match self {
+            TreeState::Spherical(t) => compute_validity(t.leaf_features(), labels, k),
+            TreeState::Diagonal(t) => compute_validity(t.leaf_features(), labels, k),
+            TreeState::Full(t) => compute_validity(t.leaf_features(), labels, k),
+            TreeState::Fd(t) => compute_validity(t.leaf_features(), labels, k),
+        }
+    }
+
     /// Mapper topological-skeleton graph over the leaf microclusters.
     fn mapper(&self, p: &MapperParams) -> MapperGraph {
         match self {
@@ -2042,6 +2078,23 @@ impl Betula {
             Err(PyValueError::new_err("not fitted"))
         }
     }
+
+    /// The three internal validity indices; errors if the clustering has not been finalized.
+    fn validity_any(&self) -> PyResult<(f64, f64, f64)> {
+        let labels = self.labels.as_ref().ok_or_else(|| {
+            PyValueError::new_err(
+                "finalize first (fit / fit_predict / partial_fit with no args) before scoring clusters",
+            )
+        })?;
+        let k = cluster_count_for_centers(labels);
+        if let Some(t) = &self.state64 {
+            Ok(t.validity(labels, k))
+        } else if let Some(t) = &self.state32 {
+            Ok(t.validity(labels, k))
+        } else {
+            Err(PyValueError::new_err("not fitted"))
+        }
+    }
 }
 
 #[pymethods]
@@ -2488,6 +2541,12 @@ impl Betula {
     #[getter]
     fn cluster_sizes_<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray1<f64>>> {
         Ok(self.cluster_stats_any()?.2.into_pyarray(py))
+    }
+
+    /// `(calinski_harabasz, davies_bouldin, medoid_silhouette)` over the leaf summary; requires a
+    /// finalized clustering.
+    fn validity_(&self) -> PyResult<(f64, f64, f64)> {
+        self.validity_any()
     }
 
     /// Per-row outlier score: distance to the assigned cluster centroid divided by that cluster's

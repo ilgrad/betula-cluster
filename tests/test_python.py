@@ -1069,6 +1069,41 @@ def test_summary_reports_structure(blobs):
     assert s["mean_microcluster_radius"] >= 0
 
 
+def test_validity_scores_the_true_grouping_above_a_shuffled_one(blobs):
+    x, _ = blobs
+    kwargs = dict(feature="diagonal", method="kmeans", threshold=0.05, max_leaves=300, seed=1)
+    good = betula_cluster.Betula(n_clusters=4, **kwargs).fit(x).validity()
+    # Four clusters where there are four blobs, against sixteen splinters of the same data.
+    split = betula_cluster.Betula(n_clusters=16, **kwargs).fit(x).validity()
+    assert good["calinski_harabasz"] > split["calinski_harabasz"]
+    assert good["davies_bouldin"] < split["davies_bouldin"]
+    assert good["medoid_silhouette"] > split["medoid_silhouette"]
+    assert good["medoid_silhouette"] <= 1.0
+
+
+def test_validity_agrees_with_sklearn_on_the_indices_that_are_exact():
+    sk = pytest.importorskip("sklearn.metrics")
+    rng = np.random.default_rng(4)
+    x = np.vstack([rng.normal(c, 0.5, (300, 2)) for c in ([0, 0], [7, 0], [0, 7])])
+    # threshold=0 with a leaf budget above N gives one leaf per point, so the leaf summary is the
+    # data and the exact index must agree with sklearn's point-level one to floating-point noise.
+    est = betula_cluster.Betula(
+        n_clusters=3, feature="spherical", threshold=0.0, max_leaves=4000, seed=0
+    )
+    labels = est.fit_predict(x)
+    got = est.validity()["calinski_harabasz"]
+    want = sk.calinski_harabasz_score(x, labels)
+    assert abs(got - want) < 1e-6 * want
+
+
+def test_validity_requires_a_finalized_clustering(blobs):
+    x, _ = blobs
+    est = betula_cluster.Betula(n_clusters=3, max_leaves=300)
+    est.partial_fit(x)  # a tree, but no head has run over it yet
+    with pytest.raises(ValueError, match="finalize first"):
+        est.validity()
+
+
 def test_find_outliers_returns_injected(blobs):
     est, x, _ = _fitted(blobs)
     xo = np.vstack([x, [[100.0, 100.0]]])

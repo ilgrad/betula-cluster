@@ -7,6 +7,27 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **`validity()`: three internal indices off the leaf summary, and the caveat each one carries.**
+  `est.validity()` returns `calinski_harabasz`, `davies_bouldin` and `medoid_silhouette` for the
+  fitted partition in `O(ℓ·k·d)` — no second pass over the data and no `O(N²)` term, because the sum
+  of squared distances inside a leaf is `S_i + n_i‖μ_i − c‖²` exactly. On a one-leaf-per-point tree
+  `calinski_harabasz` reproduces scikit-learn's point-level `calinski_harabasz_score` to
+  floating-point noise, and a test asserts it.
+
+  What is exact and what is a variant is stated rather than glossed. CH is exact. Davies–Bouldin
+  ships the **RMS** dispersion `√(E‖x − c‖²)`; the classical mean-distance form is not a function of
+  a cluster feature at all, and Jensen only bounds it, so this is a deliberate variant, not an
+  approximation of the original. The medoid silhouette is the index **of the summary** — a per-leaf
+  ratio weighted by leaf mass, and a ratio of expectations is not the expectation of a ratio. Its
+  medoid is taken in the squared metric, where
+  `Σ_{i'} n_{i'}‖μ_i − μ_{i'}‖² = n_j‖μ_i − c_j‖² + const` makes the minimiser exactly the leaf
+  nearest the centroid — an `O(m)` scan where the unsquared medoid needs `O(m²)`.
+
+  **None of the three can report "there is no structure here."** Schubert, *Stop using the elbow
+  criterion for k-means* (SIGKDD Explorations 25(1), 2023, arXiv 2212.12189), Table 1 has the
+  distance-based indices finding 3–22 clusters in pure noise where BIC correctly finds one. CH is
+  undefined at `k = 1`, which is that same limitation said out loud. The `n_clusters=0` BIC path is
+  unchanged and remains the authority on whether there is one cluster at all.
 - **`graph_degree`: the density head off its complete graph.** `method="hdbscan"` was quadratic in
   the leaf count twice over — a full sort per leaf for the core distances, then Prim over the complete
   mutual-reachability graph — so the one head that most wants a fine summary was the one that could
@@ -188,6 +209,17 @@ All notable changes to this project are documented here. The format follows
   the tree routinely settles below its cap and at `n < max_leaves` the cap never binds at all.
 
 ### Changed
+- **`method="ward"` with `n_clusters=0` selects `k` by the variance ratio, not by the elbow.** The
+  auto-`k` path cut the dendrogram at the largest *relative* jump in merge height, which is the
+  elbow criterion wearing a dendrogram, and Schubert (SIGKDD Explorations 25(1), 2023) is a direct
+  argument against it. It now scores every horizontal cut in the sweep by Calinski–Harabasz — the
+  first alternative that paper names, exact on cluster features — and keeps the best. On two far
+  groups of two nearby subclusters each, the tallest relative jump is the one that joins the far
+  groups, so the old rule reported `k = 2` on every seed where the new one reports the true 4; that
+  fixture is now a test, and it fails if the elbow is put back. Scoring 19 cuts is `O(k_max·m·d)`,
+  nothing beside the `O(m²)` dendrogram that had to be built anyway. `k = 1` is still outside what
+  CH can express — `n_clusters=0` on a mixture head remains the way to ask whether there is
+  structure at all.
 - **`spherical-kmeans` skips the dot products it can prove will not change a label.** Hamerly's two
   bounds, restated on similarities rather than distances (Schubert, Lang & Feher, arXiv 2107.04074):
   keep a lower bound `low[i]` on the cosine to the assigned centre and an upper bound `high[i]` on
