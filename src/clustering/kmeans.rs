@@ -40,7 +40,7 @@ pub fn kmeans<R: Real, C: ClusterFeature<R>>(
     let mut rng = SplitMix64::new(seed);
     let mut best: Option<KMeans<R>> = None;
     for _ in 0..n_init.max(1) {
-        let init = kmeans_plus_plus(&means, &weights, k, &mut rng);
+        let init = kmeans_plus_plus(&means, &weights, &ssd, k, &mut rng);
         let res = lloyd_hamerly(&means, &weights, &ssd, init, max_iter, dim);
         match &best {
             Some(b) if res.inertia >= b.inertia => {}
@@ -141,6 +141,8 @@ pub fn cop_kmeans<R: Real, C: ClusterFeature<R>>(
         })
         .collect();
 
+    let css = chunklet_scatter(features, &chunk_of, &cmean, g);
+
     // 3) Cannot-link lifted to chunklets; a within-chunklet cannot-link contradicts a must-link.
     let mut cl_adj: Vec<Vec<usize>> = vec![Vec::new(); g];
     for &(a, b) in cannot {
@@ -172,7 +174,7 @@ pub fn cop_kmeans<R: Real, C: ClusterFeature<R>>(
     let mut rng = SplitMix64::new(seed);
     let mut best: Option<(R, Vec<usize>)> = None; // (inertia, chunk → centre)
     for _ in 0..n_init.max(1) {
-        let mut centers = kmeans_plus_plus(&cmean, &cw, k, &mut rng);
+        let mut centers = kmeans_plus_plus(&cmean, &cw, &css, k, &mut rng);
         let mut assign = vec![usize::MAX; g];
         let mut feasible = true;
         for _ in 0..max_iter.max(1) {
@@ -234,19 +236,46 @@ pub fn cop_kmeans<R: Real, C: ClusterFeature<R>>(
     Ok(chunk_of.iter().map(|&c| assign[c]).collect())
 }
 
+/// Scatter of each chunklet about its own centroid, by König–Huygens: every member contributes its
+/// own `S_i` plus the displacement of its mean from the chunklet centroid. With no must-links a
+/// chunklet is a single feature and this returns its `ssd` unchanged, which is what makes
+/// [`cop_kmeans`] seed identically to [`kmeans`] on an unconstrained instance.
+fn chunklet_scatter<R: Real, C: ClusterFeature<R>>(
+    features: &[C],
+    chunk_of: &[usize],
+    cmean: &[Vec<R>],
+    g: usize,
+) -> Vec<R> {
+    let mut css = vec![R::zero(); g];
+    for (i, f) in features.iter().enumerate() {
+        let c = chunk_of[i];
+        css[c] = css[c] + f.ssd() + f.weight() * sq_euclidean(f.mean(), &cmean[c]);
+    }
+    css
+}
+
 /// **Greedy** weighted k-means++ (Arthur–Vassilvitskii; scikit-learn's default since 1.0). Each new
-/// centre samples `n_trials = 2 + ⌊ln k⌋` candidates ∝ weight·D² and keeps the one that most reduces
-/// the total potential `Σ_i w_i · min_c ‖x_i − c‖²` — strictly lower-variance, lower-inertia seeds than
-/// single-candidate sampling, at ~`ln k`× the (already negligible) init cost over the `M ≪ N` leaves.
+/// centre samples `n_trials = 2 + ⌊ln k⌋` candidates ∝ the leaf's own contribution to the potential
+/// and keeps the one that most reduces the total `Σ_i [S_i + n_i‖μ_i − c‖²]` — strictly lower-variance,
+/// lower-inertia seeds than single-candidate sampling, at ~`ln k`× the (already negligible) init cost
+/// over the `M ≪ N` leaves.
+///
+/// The sampling weight is the **exact** CF-adapted potential of Lang's Eq. 5.4, `S_i + n_i·D²_i`, not
+/// the `n_i·D²_i` of point-level k-means++: a leaf that sits on a chosen centre still carries `S_i` of
+/// scatter, and dropping it makes such a leaf unsamplable however wide it is. The greedy candidate
+/// score inside the trial loop needs no such term — it differs from the exact potential by `Σ_i S_i`,
+/// which is constant in the candidate.
 fn kmeans_plus_plus<R: Real>(
     means: &[Vec<R>],
     weights: &[R],
+    ssd: &[R],
     k: usize,
     rng: &mut SplitMix64,
 ) -> Vec<Vec<R>> {
     let to_f = |r: R| r.to_f64().unwrap_or(0.0);
     let mut centers = Vec::with_capacity(k);
     let w0: Vec<f64> = weights.iter().map(|&w| to_f(w)).collect();
+    let s0: Vec<f64> = ssd.iter().map(|&s| to_f(s)).collect();
     centers.push(means[weighted_pick(&w0, rng)].clone());
 
     // d2[i] = squared distance of point i to the nearest chosen centre.
@@ -256,8 +285,13 @@ fn kmeans_plus_plus<R: Real>(
         .collect();
     let n_trials = 2 + (k as f64).ln().floor().max(0.0) as usize;
     while centers.len() < k {
-        let probs: Vec<f64> = w0.iter().zip(&d2).map(|(&w, &d)| w * d).collect();
-        // Sample `n_trials` candidates ∝ weight·D²; keep the one giving the lowest resulting potential.
+        let probs: Vec<f64> = w0
+            .iter()
+            .zip(&d2)
+            .zip(&s0)
+            .map(|((&w, &d), &s)| s + w * d)
+            .collect();
+        // Sample `n_trials` candidates ∝ S + weight·D²; keep the one giving the lowest resulting potential.
         let mut best = usize::MAX;
         let mut best_pot = f64::INFINITY;
         for _ in 0..n_trials {
@@ -593,7 +627,7 @@ mod tests {
         let weights: Vec<f64> = micros.iter().map(|f| f.weight()).collect();
         let ssd: Vec<f64> = micros.iter().map(|f| f.ssd()).collect();
         let mut r = SplitMix64::new(7);
-        let init = kmeans_plus_plus(&means, &weights, 5, &mut r);
+        let init = kmeans_plus_plus(&means, &weights, &ssd, 5, &mut r);
         let brute = lloyd(&means, &weights, &ssd, init.clone(), 100, 2);
         let fast = lloyd_hamerly(&means, &weights, &ssd, init, 100, 2);
         assert_eq!(
@@ -808,9 +842,10 @@ mod tests {
             .flat_map(|g| (0..8).map(move |j| vec![g[0] + j as f64 * 0.1, g[1]]))
             .collect();
         let weights = vec![1.0; means.len()];
+        let ssd = vec![0.0; means.len()];
         for seed in 0..24u64 {
             let mut rng = SplitMix64::new(seed);
-            let centers = kmeans_plus_plus(&means, &weights, 3, &mut rng);
+            let centers = kmeans_plus_plus(&means, &weights, &ssd, 3, &mut rng);
             let mut hit = [false; 3];
             for c in &centers {
                 let g = groups
@@ -820,6 +855,76 @@ mod tests {
                 assert!(!hit[g], "seed {seed} put two centres in group {g}");
                 hit[g] = true;
             }
+        }
+    }
+
+    #[test]
+    fn a_chunklet_carries_the_scatter_of_the_points_underneath_its_members() {
+        // A must-link group is seeded as one weighted point, so its scatter is not the sum of its
+        // members' — it also has to absorb how far apart their means sit. Both halves are checked
+        // against the total scatter of the raw points, computed directly: three leaves built from
+        // known point sets, merged into one chunklet, must report exactly `Σ‖x − x̄‖²` over all nine
+        // points, while the same leaves left unmerged must report their own `ssd` untouched.
+        let groups = [
+            vec![[0.0, 0.0], [2.0, 0.0], [1.0, 3.0]],
+            vec![[7.0, 1.0], [9.0, 1.0], [8.0, 4.0]],
+            vec![[4.0, 9.0], [6.0, 9.0], [5.0, 12.0]],
+        ];
+        let leaves: Vec<Spherical<f64>> = groups
+            .iter()
+            .map(|pts| {
+                let n = pts.len() as f64;
+                let mean: Vec<f64> = (0..2)
+                    .map(|j| pts.iter().map(|p| p[j]).sum::<f64>() / n)
+                    .collect();
+                let ssd = pts
+                    .iter()
+                    .map(|p| (0..2).map(|j| (p[j] - mean[j]).powi(2)).sum::<f64>())
+                    .sum();
+                Spherical::from_moments(n, mean, ssd)
+            })
+            .collect();
+
+        let alone: Vec<usize> = (0..3).collect();
+        let means: Vec<Vec<f64>> = leaves.iter().map(|f| f.mean().to_vec()).collect();
+        let solo = chunklet_scatter(&leaves, &alone, &means, 3);
+        for (got, f) in solo.iter().zip(&leaves) {
+            assert!((got - f.ssd()).abs() < 1e-12, "{got} vs {}", f.ssd());
+        }
+
+        let all = [0usize; 3];
+        let pts: Vec<[f64; 2]> = groups.iter().flatten().copied().collect();
+        let n = pts.len() as f64;
+        let grand: Vec<f64> = (0..2)
+            .map(|j| pts.iter().map(|p| p[j]).sum::<f64>() / n)
+            .collect();
+        let want: f64 = pts
+            .iter()
+            .map(|p| (0..2).map(|j| (p[j] - grand[j]).powi(2)).sum::<f64>())
+            .sum();
+        let merged = chunklet_scatter(&leaves, &all, &[grand], 1);
+        assert!((merged[0] - want).abs() < 1e-10, "{} vs {want}", merged[0]);
+        assert!(
+            want > solo.iter().sum::<f64>(),
+            "the fixture cannot see the displacement term"
+        );
+    }
+
+    #[test]
+    fn a_leaf_is_sampled_for_its_own_scatter_and_not_only_for_its_distance() {
+        // Lang Eq. 5.4's potential is `S_i + n_i·D²_i`. Two leaves sit the same distance from the
+        // only chosen centre, so the `n_i·D²_i` half cannot tell them apart and a sampler that used
+        // it alone would take each half the time; one of them carries a million units of scatter and
+        // is the one the exact potential wants. Twenty-four seeds make the coin-flip alternative
+        // untenable at 2⁻²⁴.
+        let means = vec![vec![0.0, 0.0], vec![1.0, 0.0], vec![-1.0, 0.0]];
+        let weights = vec![1e9, 1.0, 1.0];
+        let ssd = vec![0.0, 1e6, 0.0];
+        for seed in 0..24u64 {
+            let mut rng = SplitMix64::new(seed);
+            let centers = kmeans_plus_plus(&means, &weights, &ssd, 2, &mut rng);
+            assert_eq!(centers[0], means[0], "seed {seed}: first centre not forced");
+            assert_eq!(centers[1], means[1], "seed {seed}: scatter ignored");
         }
     }
 
@@ -1010,13 +1115,16 @@ mod tests {
         );
     }
 
-    /// Greedy k-means++ re-derived from Arthur–Vassilvitskii plus scikit-learn's greedy variant:
-    /// the first centre is drawn ∝ weight, then each further centre is the best of `2 + ⌊ln k⌋`
-    /// candidates drawn ∝ weight·D², scored by the potential `Σ_i w_i · min(‖x_i − cand‖², D²_i)`
-    /// it would leave behind. It shares [`weighted_pick`], so it consumes the same rng stream.
+    /// Greedy k-means++ re-derived from Arthur–Vassilvitskii plus scikit-learn's greedy variant,
+    /// with Lang Eq. 5.4's CF potential: the first centre is drawn ∝ weight, then each further centre
+    /// is the best of `2 + ⌊ln k⌋` candidates drawn ∝ `S_i + w_i·D²_i`, scored by the potential
+    /// `Σ_i w_i · min(‖x_i − cand‖², D²_i)` it would leave behind (the `Σ_i S_i` the exact potential
+    /// adds is constant in the candidate). It shares [`weighted_pick`], so it consumes the same rng
+    /// stream.
     fn reference_kpp(
         means: &[Vec<f64>],
         weights: &[f64],
+        ssd: &[f64],
         k: usize,
         rng: &mut SplitMix64,
     ) -> Vec<Vec<f64>> {
@@ -1024,7 +1132,12 @@ mod tests {
         let mut d2: Vec<f64> = means.iter().map(|m| sq_euclidean(m, &centers[0])).collect();
         let n_trials = 2 + (k as f64).ln().floor().max(0.0) as usize;
         while centers.len() < k {
-            let probs: Vec<f64> = weights.iter().zip(&d2).map(|(&w, &d)| w * d).collect();
+            let probs: Vec<f64> = weights
+                .iter()
+                .zip(&d2)
+                .zip(ssd)
+                .map(|((&w, &d), &s)| s + w * d)
+                .collect();
             let mut best = usize::MAX;
             let mut best_pot = f64::INFINITY;
             for _ in 0..n_trials {
@@ -1059,12 +1172,13 @@ mod tests {
         let (micros, _assign) = grid_micros(&pts, 0.5);
         let means: Vec<Vec<f64>> = micros.iter().map(|f| f.mean().to_vec()).collect();
         let weights: Vec<f64> = micros.iter().map(|f| f.weight()).collect();
+        let ssd: Vec<f64> = micros.iter().map(|f| f.ssd()).collect();
         for k in [2usize, 4, 7] {
             let mut a = SplitMix64::new(2024);
             let mut b = SplitMix64::new(2024);
             assert_eq!(
-                kmeans_plus_plus(&means, &weights, k, &mut a),
-                reference_kpp(&means, &weights, k, &mut b),
+                kmeans_plus_plus(&means, &weights, &ssd, k, &mut a),
+                reference_kpp(&means, &weights, &ssd, k, &mut b),
                 "k = {k}"
             );
             assert_eq!(a.next_u64(), b.next_u64(), "k = {k}: rng streams diverged");

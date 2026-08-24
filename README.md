@@ -46,8 +46,9 @@ with peak RSS sampled from `/proc/self/statm`. Full methodology, every metric, a
   **ARI 1.00**. Spectral matches `SpectralClustering`'s quality at 1.0–1.5× its speed — the durable
   claim there is *scaling* (cost set by `max_leaves`, not `N`), not a constant factor.
 - 🌍 **Real data, and two losses stated plainly.** betula's diagonal GMM overtakes scikit-learn on hard
-  `covtype` (**0.094 vs 0.080** at adequate leaf resolution) and it clusters **full covtype (581 k
-  rows) 6.0× faster** at matching ARI (0.050 vs 0.049). But `sklearn-birch` beats **every** betula
+  `covtype` (**0.104 vs 0.080** at adequate leaf resolution — at the default 4 000-leaf budget the two
+  are a tie inside their seed spreads) and it clusters **full covtype (581 k rows) 5.9× faster** at no
+  worse ARI (0.070 vs 0.049). But `sklearn-birch` beats **every** betula
   head on both `covtype` (0.131) and MNIST (0.426 vs 0.377). On `covtype` that is a loss on the merits
   — tested in both directions, and the mechanism is the leaf budget's unequal cell *mass*; on MNIST
   Birch simply does not compress (20 000 subclusters for 20 000 points), and at equal compression the

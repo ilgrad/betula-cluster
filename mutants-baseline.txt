@@ -17,9 +17,10 @@
 # rebuild-cost fix, and again 2026-08-21 whole-file), `src/clustering/gmm.rs` and
 # `src/clustering/nmf.rs` (2026-08-21, entry by entry), `src/clustering/kprototypes.rs` (2026-08-22,
 # entry by entry), `src/clustering/vmf.rs` (2026-08-22 entry by entry, then **2026-08-23 whole-file**
-# after the `log_iv` asymptotic branch), and `src/clustering/nmf.rs` + `src/clustering/pca.rs`
+# after the `log_iv` asymptotic branch), `src/clustering/nmf.rs` + `src/clustering/pca.rs`
 # together (**2026-08-24 whole-file**, after `NmfSpec` became `ProjectionSpec` and `project_pca` was
-# added). The entry-by-entry form is sound where the only change to the
+# added), and `src/clustering/kmeans.rs` (**2026-08-24 whole-file**, after the k-means++ sampling
+# weight gained the leaf variance term). The entry-by-entry form is sound where the only change to the
 # file was *test* code: adding a test can kill a mutant but can never create one, so nothing outside
 # the recorded set needs re-measuring. It is not sound after a production edit -- re-measure the file
 # whole then, which also renumbers every `line:col` in that section.
@@ -281,34 +282,48 @@ src/clustering/scalespace.rs:93:19: replace < with <= in bandwidth_range
 src/clustering/scalespace.rs:96:19: replace < with <= in bandwidth_range
 src/clustering/scalespace.rs:99:19: replace > with >= in bandwidth_range
 
-# ── src/clustering/kmeans.rs (26) ──
-# Debt: Lloyd assignment and the k-means++ draw.
+# ── src/clustering/kmeans.rs (25) ──
+# Re-measured 2026-08-24, whole file: 205 mutants in 70 min at -j4, 162 caught / 25 missed /
+# 16 unviable / 2 timeouts. A production edit landed here (the k-means++ sampling weight gained the
+# leaf's `S_i` term, and the chunklet scatter came out of `cop_kmeans` into its own function), so
+# every `line:col` below is renumbered and an entry-by-entry patch would have been unsound.
+#
+# One entry from the previous list is gone because it is now caught: `replace * with + in
+# kmeans_plus_plus` on the sampling weight, closed by
+# `a_leaf_is_sampled_for_its_own_scatter_and_not_only_for_its_distance`. Six mutants the new
+# `chunklet_scatter` introduced were measured as survivors in this run's predecessor and are absent
+# here because `a_chunklet_carries_the_scatter_of_the_points_underneath_its_members` kills all six --
+# each verified by hand-applying the mutant, not by assuming the fixture sees it.
+#
+# The two `uf_find` mutants (`replace != with ==`) are timeouts, not survivors: they turn the
+# union-find path walk into an infinite loop, which the suite detects by hanging.
+#
+# Debt: Lloyd assignment, the k-means++ draw and the whole x-means BIC.
 src/clustering/kmeans.rs:136:22: replace > with >= in cop_kmeans
-src/clustering/kmeans.rs:225:31: replace + with - in cop_kmeans
-src/clustering/kmeans.rs:267:30: replace * with + in kmeans_plus_plus
-src/clustering/kmeans.rs:269:20: replace < with <= in kmeans_plus_plus
-src/clustering/kmeans.rs:276:19: replace < with <= in kmeans_plus_plus
-src/clustering/kmeans.rs:297:17: replace - with + in weighted_pick
-src/clustering/kmeans.rs:297:17: replace - with / in weighted_pick
-src/clustering/kmeans.rs:376:21: replace < with <= in nearest_two
-src/clustering/kmeans.rs:402:16: replace > with >= in update_centers
-src/clustering/kmeans.rs:415:31: replace <= with > in update_centers
-src/clustering/kmeans.rs:419:38: replace * with + in update_centers
-src/clustering/kmeans.rs:546:24: replace / with * in xmeans
-src/clustering/kmeans.rs:546:30: replace - with + in xmeans
-src/clustering/kmeans.rs:546:73: replace / with * in xmeans
-src/clustering/kmeans.rs:550:20: replace > with >= in xmeans
-src/clustering/kmeans.rs:552:21: replace - with + in xmeans
-src/clustering/kmeans.rs:552:27: replace * with / in xmeans
-src/clustering/kmeans.rs:554:21: replace - with + in xmeans
-src/clustering/kmeans.rs:554:28: replace * with + in xmeans
-src/clustering/kmeans.rs:554:28: replace * with / in xmeans
-src/clustering/kmeans.rs:554:35: replace - with + in xmeans
-src/clustering/kmeans.rs:554:35: replace - with / in xmeans
-src/clustering/kmeans.rs:554:47: replace * with + in xmeans
-src/clustering/kmeans.rs:554:47: replace * with / in xmeans
-src/clustering/kmeans.rs:557:43: replace + with * in xmeans
-src/clustering/kmeans.rs:559:16: replace > with >= in xmeans
+src/clustering/kmeans.rs:227:31: replace + with - in cop_kmeans
+src/clustering/kmeans.rs:303:20: replace < with <= in kmeans_plus_plus
+src/clustering/kmeans.rs:310:19: replace < with <= in kmeans_plus_plus
+src/clustering/kmeans.rs:331:17: replace - with + in weighted_pick
+src/clustering/kmeans.rs:331:17: replace - with / in weighted_pick
+src/clustering/kmeans.rs:410:21: replace < with <= in nearest_two
+src/clustering/kmeans.rs:436:16: replace > with >= in update_centers
+src/clustering/kmeans.rs:449:31: replace <= with > in update_centers
+src/clustering/kmeans.rs:453:38: replace * with + in update_centers
+src/clustering/kmeans.rs:580:24: replace / with * in xmeans
+src/clustering/kmeans.rs:580:30: replace - with + in xmeans
+src/clustering/kmeans.rs:580:73: replace / with * in xmeans
+src/clustering/kmeans.rs:584:20: replace > with >= in xmeans
+src/clustering/kmeans.rs:586:21: replace - with + in xmeans
+src/clustering/kmeans.rs:586:27: replace * with / in xmeans
+src/clustering/kmeans.rs:588:21: replace - with + in xmeans
+src/clustering/kmeans.rs:588:28: replace * with + in xmeans
+src/clustering/kmeans.rs:588:28: replace * with / in xmeans
+src/clustering/kmeans.rs:588:35: replace - with + in xmeans
+src/clustering/kmeans.rs:588:35: replace - with / in xmeans
+src/clustering/kmeans.rs:588:47: replace * with + in xmeans
+src/clustering/kmeans.rs:588:47: replace * with / in xmeans
+src/clustering/kmeans.rs:591:43: replace + with * in xmeans
+src/clustering/kmeans.rs:593:16: replace > with >= in xmeans
 
 # ── src/clustering/gmm_toeplitz.rs (23) ──
 # Debt. Also the largest timeout pool (17), so some of these are unmeasured rather

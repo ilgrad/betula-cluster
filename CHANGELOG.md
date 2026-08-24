@@ -43,24 +43,27 @@ All notable changes to this project are documented here. The format follows
   have to densify the matrix it exists to avoid. **Label-changing where enabled** — which is why it
   is opt-in rather than a new default.
 
-  It pays exactly where the theory says: a summary coarse relative to the data. On MNIST
-  (20 000×784, k=10, `max_leaves=4000` → 3 779 leaves, median of seeds 0/1/2) twenty sweeps move ARI
-  0.275 → 0.318 and the k-means objective 11 778 133 → 11 707 368, for 4.3 s → 6.6 s.
+  It moves the objective exactly where the theory says — a summary coarse relative to the data — and
+  **on this benchmark that is not the same as moving the answer.** On MNIST (first 20 000 rows,
+  784-D, `StandardScaler`, k=10, spherical CF, `max_leaves=4000`, median of seeds 0/1/2) twenty
+  sweeps take the k-means objective 11 750 563 → 11 710 630 for 4.2 s → 6.4 s, and take ARI
+  0.315 → 0.309 with it. Five sweeps: 11 720 402 and 0.311. The descent is monotone in the objective
+  and monotone *downwards* in ARI.
 
   **The acceptance target was not met, and the misses are the interesting part.** Against
-  `sklearn.cluster.KMeans(n_init=10)` (ARI 0.324, objective 11 703 801, 16.3 s) refinement lands at
-  2.5× the speed rather than the 3× asked for, and 0.03 % *above* the objective rather than at or
-  below it: one warm start from a lossy summary settles in a slightly worse basin than the best of
-  ten k-means++ restarts, and more sweeps cannot leave a basin. `digits` and `covtype` gain nothing
-  at all, structurally — `digits` at `max_leaves=4000` realises 1 797 leaves for 1 797 rows, so
-  Phase 3 already *is* exact k-means on the raw points and Phase 4 begins at its fixed point, while
-  `covtype`'s centres move by 4e-7 relative. MNIST at `max_leaves=16000` behaves like `digits` for
-  the same reason, and costs more than 4 000 leaves plus twenty sweeps.
+  `sklearn.cluster.KMeans(n_init=10)` (ARI 0.324, objective 11 671 351, 19.3 s) refinement lands at
+  3.0× the speed but 0.34 % *above* the objective: one warm start from a lossy summary settles in a
+  worse basin than the best of ten k-means++ restarts, and more sweeps cannot leave a basin.
+  `digits` and `covtype` gain nothing at all, structurally — `digits` at `max_leaves=4000` realises
+  1 797 leaves for 1 797 rows, so Phase 3 already *is* exact k-means on the raw points and Phase 4
+  begins at its fixed point, while `covtype` moves 0.1993 → 0.1998. MNIST at `max_leaves=16000`
+  behaves like `digits`: 0.3237 at objective 11 671 813 — scikit-learn's own answer in 15.8 s
+  against its 19.3 s — and twenty sweeps then move the ARI by 0.0001.
 
   The measurement also sharpens the caveat the feature ships with: on this benchmark a **lower
-  k-means objective goes with a worse partition**, twice. `covtype` — `n_init=10` objective 864 890 /
-  ARI 0.055, `n_init=1` objective 869 208 / ARI 0.093. `digits` — `n_init=10` 69 409 / 0.468,
-  `n_init=1` 69 749 / 0.555. `refine` optimizes the objective faithfully; `docs/USAGE.md` says
+  k-means objective goes with a worse partition**, twice. `covtype` — `n_init=10` objective 827 314 /
+  ARI 0.174, `n_init=1` objective 832 081 / ARI 0.277. `digits` — `n_init=10` 69 405 / 0.468,
+  `n_init=1` 69 749 / 0.559. `refine` optimizes the objective faithfully; `docs/USAGE.md` says
   plainly that this is not the same as optimizing the answer.
 - **The full BIRCH absorption grid, and D3 implemented for the first time.** `absorb` accepted only
   `euclidean` and `chi2`; it now takes `manhattan` (D1), `average` (D2), `diameter` (D3), `ward` (D4)
@@ -99,6 +102,43 @@ All notable changes to this project are documented here. The format follows
   the tree routinely settles below its cap and at `n < max_leaves` the cap never binds at all.
 
 ### Changed
+- **The CF k-means++ sampling weight now carries the leaf's own scatter.** Seeding drew each
+  candidate centre proportional to `n_i·D²_i` — the point-level k-means++ weight, with the leaf
+  treated as a point at its mean. The exact CF-adapted potential is Lang's Eq. 5.4,
+  **`S_i + n_i·D²_i`**, and the missing `S_i` is not a rounding detail: a wide leaf sitting on an
+  already-chosen centre has `D²_i = 0` and so was **unsamplable however much scatter it held**. The
+  greedy candidate score inside the trial loop is unchanged and correct as it was — it differs from
+  the exact potential by `Σ_i S_i`, which is constant in the candidate. `cop_kmeans` gets the same
+  weight, over a chunklet scatter assembled by König-Huygens (`Σ S_i + Σ n_i‖μ_i − c‖²`), so with no
+  must-links it seeds identically to `kmeans`.
+
+  **This is on correctness grounds and claims no quality gain — it relabels output and the
+  benchmark moved in both directions.** It reaches `kmeans`, `gmm`, `gmm-full`, `spectral`, `xmeans`
+  and `cop_kmeans`; `ward`, `leiden`, `hdbscan`, `vmf` and `spherical-kmeans` (which has its own
+  angular seeder) are untouched, and every scikit-learn row reproduced to the last digit. It is a
+  **no-op wherever the summary is lossless**: at `max_leaves ≥ N` every leaf holds one point, `S_i`
+  is 0, and the weight is bit-identical to the old one — which is why the whole synthetic quality
+  table and every `digits` row are unchanged, and it is a useful self-check that a benchmark budget
+  actually compresses.
+
+  Where it does bite, over three seeds (`bench/RESULTS.md` re-measured whole): covtype `spectral`
+  0.037 → **0.100** and MNIST `spectral` 0.155 → **0.203**; MNIST `kmeans` 0.302 → 0.307; covtype
+  `kmeans` 0.088 → 0.074, `gmm` 0.088 → 0.076. At 16 000 leaves covtype `gmm` goes 0.094 → **0.104**
+  and `kmeans` 0.078 → 0.067. The covtype GMM result the README quoted at the *default* budget was a
+  win by 0.008 and is now a loss by 0.004 — both sit inside two nearly coincident seed ranges
+  (0.055–0.096 against 0.055–0.102), so the honest reading is that it was a tie before and is a tie
+  now, and the page says so. The claim that survives is the one at adequate leaf resolution, which
+  got stronger.
+
+  It also inverted the `refine=` MNIST result above: with the new seeding Phase 3 already lands at
+  ARI 0.315 rather than 0.275, and twenty Lloyd sweeps now lower the objective while lowering the
+  ARI. That entry was re-measured rather than left standing.
+
+  A prior sweep of ELKI's three `CFInitWeight` options at 18×/6×/2× compression over five seeds
+  found no consistent winner and every difference inside the seed spread
+  (`local/scratch/elki/init_weight_ab.py`); Lang's thesis separates them only at RMSD ≈ 0.005 with
+  ±0.004 confidence intervals. This change is made because the formula is the right one, not because
+  it scores better.
 - **`min_samples` now counts the microcluster itself** in `method="hdbscan"`, so `min_samples=1`
   leaves every core distance at 0 and HDBSCAN\* degenerates to single linkage. The convention is a
   genuine split in the field — Campello, Moulavi & Sander's Def. 3.1, `sklearn.cluster.HDBSCAN` and

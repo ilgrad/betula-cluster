@@ -27,7 +27,7 @@ variance; fixes the BIRCH size-imbalance bug), `decay` (EWMA factor
 for streaming concept drift), `normalize` (L2-normalize rows → cluster by *direction*; on the unit
 sphere squared-Euclidean is monotone in cosine, so the tree clusters by angle. It earns its keep on
 `digits`-64 (k-means **0.467 → 0.569**, ward **0.643 → 0.699**, median of three seeds); on MNIST-784
-it is now a wash — 0.302 → 0.335, inside the seed spread and sign-flipping between seeds, since the
+it is now a wash — 0.307 → 0.346, inside the seed spread and sign-flipping between seeds, since the
 tree-rebuild fix removed most of the Euclidean collapse it used to compensate for. Leave it off for
 tabular data where magnitude is signal: it takes covtype ward to **−0.049**, worse than random),
 `n_jobs` (parallel shard+merge tree build — `>1` gives ~4–5× on large
@@ -107,35 +107,38 @@ centres. It is **off by default**, applies only to the centroid heads (`kmeans`,
 and only to the in-memory `fit` / `fit_predict` — `partial_fit` keeps a tree, not the data, and the
 sparse path would have to densify the matrix it exists to avoid.
 
-It pays where the summary is coarse relative to the data. MNIST (20 000×784, k=10, `max_leaves=4000`
-→ 3 779 leaves; median of seeds 0/1/2):
+It moves the objective where the summary is coarse relative to the data. MNIST (first 20 000 rows,
+784-D, `StandardScaler`, k=10, spherical CF, `threshold=0`, `max_leaves=4000`; median of seeds
+0/1/2 — `local/scratch/refine_claims.py`):
 
 | | ARI | k-means objective | time |
 |---|---|---|---|
-| `refine=0` | 0.275 | 11 778 133 | 4.3 s |
-| `refine=5` | 0.315 | 11 726 039 | 4.9 s |
-| `refine=20` | 0.318 | 11 707 368 | 6.6 s |
-| `sklearn KMeans(n_init=10)` | 0.324 | 11 703 801 | 16.3 s |
+| `refine=0` | **0.315** | 11 750 563 | 4.2 s |
+| `refine=5` | 0.311 | 11 720 402 | 4.6 s |
+| `refine=20` | 0.309 | **11 710 630** | 6.4 s |
+| `sklearn KMeans(n_init=10)` | 0.324 | 11 671 351 | 19.3 s |
 
-Twenty sweeps close most of the gap to a ten-restart k-means for a 52 % time premium, at 2.5× its
-speed — but they do not close it: the objective stays 0.03 % above, because one warm start from a
-lossy summary lands in a slightly worse basin than the best of ten k-means++ restarts, and more
-sweeps cannot leave that basin.
+**Read that table before enabling the parameter: the objective falls monotonically and the ARI falls
+with it.** Twenty sweeps buy 0.34 % of objective for a 52 % time premium and cost 0.006 ARI. Phase 4
+does exactly what it says — Lloyd is monotone in the objective — but on this dataset the objective and
+the ground truth point in opposite directions, which is the caveat two paragraphs down and not a bug
+in the sweep.
 
 **Two regimes get nothing, for structural reasons rather than weak refinement.** When
 `max_leaves ≥ N` the tree holds one leaf per point — `digits` at `max_leaves=4000` realises 1 797
 leaves for 1 797 rows — so Phase 3 *is* exact k-means on the raw data and Phase 4 starts at its fixed
 point; the labels are bit-identical at every `refine`. Raising the budget does the same thing more
-gradually: MNIST at `max_leaves=16000` (15 664 leaves) reaches ARI 0.322 unrefined and refinement
-moves it 0.001, inside the seed spread — and costs 13.4 s to get there, more than 4 000 leaves plus
-twenty sweeps.
+gradually: MNIST at `max_leaves=16000` reaches ARI 0.3237 unrefined at objective 11 671 813 —
+scikit-learn's own answer, in 15.8 s against its 19.3 s — and twenty sweeps then move the ARI by
+0.0001. `covtype` at `max_leaves=4000` is the same story from the other end: 0.1993 → 0.1998, and the
+centres move by 7e-5 relative.
 
 **A lower objective is not a better partition, and on this benchmark it is reliably worse.** On
-`covtype`, `sklearn KMeans(n_init=10)` reaches the better objective (864 890 against our 868 263) and
-half the ARI (0.055 against 0.078); dropping it to `n_init=1` *worsens* its objective to 869 208 and
-*raises* its ARI to 0.093. `digits` shows the same inversion — `n_init=1` scores 0.555 at objective
-69 749, `n_init=10` scores 0.468 at 69 409. Refinement optimizes the objective faithfully; whether
-that is what you want is a property of your data, so measure it rather than assuming.
+`covtype` (same probe), `sklearn KMeans(n_init=10)` reaches the better objective (827 314 against
+`n_init=1`'s 832 081) and **0.174 ARI against 0.277**. `digits` shows the same inversion — `n_init=1`
+scores 0.559 at objective 69 749, `n_init=10` scores 0.468 at 69 405. Refinement optimizes the
+objective faithfully; whether that is what you want is a property of your data, so measure it rather
+than assuming.
 
 ## Streaming / out-of-core — the `Betula` estimator
 
