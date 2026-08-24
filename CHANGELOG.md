@@ -57,6 +57,27 @@ All notable changes to this project are documented here. The format follows
   micro-clusters to the index. `close_frame`, `frame_spans`, `window_moments` and `cluster_window`
   are exposed in Python. This is what `DenStream` structurally cannot do: decay leaves it with only
   a present, while this retains history and coarsens it with age.
+- **Two benchmark studies the published tables never ran: leaf budget, and insertion order.**
+  `bench/leaf_budget.py` sweeps `max_leaves` × routing distance × head over three datasets (252
+  cells, median of seeds 0/1/2) and `bench/insertion_order.py` measures order sensitivity against a
+  reseeding control (54 cells, 8 runs each). Three findings land in `bench/RESULTS.md`:
+
+  The published `digits` rows run at `max_leaves=4000` against `n=1797` — **zero compression**,
+  confirmed at 1797 leaves, maximum leaf weight 1, mean squared radius 0. They are raw-point
+  clustering behind a betula wrapper and support no claim about summarization. They also *understate*
+  the library: the curve has an interior optimum, and halving the leaf count raises `ward` from
+  0.6428 to **0.6819** and `kmeans` from 0.4670 to **0.5600**. On `covtype-20k` the `ward` head holds
+  0.1412–0.1430 from ×11 to **×202**.
+
+  The routing distance is a function of compression, mechanically: at ×1.0 the spread across the four
+  distances is exactly **0.0000** on all three datasets, because they build the identical singleton
+  leaf set. Task 27 measured that lever at one budget and found it small — this says the budget it was
+  measured at is the one regime where it provably cannot matter.
+
+  And at real compression the **input order moves ARI more than the seed does**: MNIST at 200 leaves
+  with the k-means head disagrees with itself at pairwise ARI 0.2949 across permutations against
+  0.7026 across seeds. The `ward` head's seed arm reads spread `0.0000` / pairwise `1.0000` in all
+  nine of its cells, which is the control that makes the order arm readable.
 - **`export_coreset(size=…)`: the word "coreset" turned into a claim.** `export_coreset()` has
   always returned the leaf summary and always called it a coreset; nothing checked that it was one.
   It now carries the two bounds that make the name earned, and they are kept apart on purpose,

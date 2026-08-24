@@ -378,7 +378,10 @@ bounded, still `O(N)`) — an honest de-handicap, not a tuned number (`results_r
   still does not reach `sklearn-birch`'s 0.131. covtype **k-means goes the other way**, 0.074 → 0.067
   — resolution is not monotone even within one dataset.
 - **digits** is unchanged — its 1797 points already fit under 4 000 leaves, so at `max_leaves=1797`
-  every leaf holds one point and the summary is lossless.
+  every leaf holds one point and the summary is lossless. That also means both digits columns are
+  measured at **zero compression** and say nothing about summarization; the leaf-budget sweep below
+  shows they are on the wrong side of the peak, since halving the leaves *raises* ward from 0.643 to
+  0.682 and k-means from 0.467 to 0.560.
 - **mnist k-means** closes to **0.325 vs 0.324**, a tie; the diagonal GMM gains far less
   (0.234 → 0.267), which is the resolution/over-fragmentation trade the head pays in 784 dimensions.
 
@@ -636,6 +639,109 @@ six quality losses are the `covtype` and `digits` rows discussed above, the raw-
 MNIST k-means, and the two `fast_hdbscan` cells; the five speed losses are the two FAISS cells and the
 three `20news` rows the sparse leader pass owns (task #71).
 
+## Quality against the leaf budget — the knob the tables never varied
+
+`bench/leaf_budget.py`, median of seeds 0/1/2, `feature="spherical"`, `threshold=0.0`, crossed over
+the four routing distances; `bench/results_budget.csv` holds all 252 cells. Every table above this
+one fixes `max_leaves` and varies the head, which answers the wrong question for a summarization
+library: the user's knob is the budget.
+
+**The `digits` rows above run at zero compression, and that is a defect in the record.** At
+`max_leaves=4000` against `n=1797` the sweep measures 1797 leaves, ×1.0, maximum leaf weight **1**,
+mean squared radius **0** — every leaf is a single point. Re-running at `max_leaves=1797` reproduces
+those cells to the digit. That row is raw-point clustering behind a betula wrapper and cannot support
+any claim about summarization.
+
+It also understates the library. On `digits` the curve has an **interior optimum**, not a monotone
+decline:
+
+| `max_leaves` | leaves | compression | max leaf weight | mean sq radius | ward | k-means | gmm |
+|---|---|---|---|---|---|---|---|
+| 4000 / 1797 | 1797 | ×1.0 | 1 | 0.000 | 0.6428 | 0.4670 | 0.4613 |
+| 900 | 898 | **×2.0** | 54 | 4.689 | **0.6819** | **0.5600** | 0.0088 |
+| 450 | 427 | ×4.2 | 160 | 12.47 | 0.6197 | 0.5241 | 0.2139 |
+| 225 | 218 | ×8.2 | 243 | 20.77 | 0.3909 | 0.5628 | 0.4105 |
+| 112 | 111 | ×16.2 | 605 | 30.72 | 0.2870 | 0.1903 | 0.2897 |
+| 90 | 89 | ×20.2 | 1102 | 34.64 | 0.1101 | 0.1786 | 0.2124 |
+| 45 | 44 | ×40.8 | 1251 | 39.21 | 0.1778 | 0.1198 | 0.1666 |
+
+Halving the leaf count **improves** ward (0.6428 → 0.6819) and k-means (0.4670 → 0.5600). The
+summary is not a lossy approximation of the point-level answer there; it is a denoising step, and
+the published zero-compression row is on the wrong side of the peak.
+
+`covtype-20k` behaves differently and more usefully: the `ward` head holds 0.1412–0.1430 from ×11.1
+all the way to **×202** (99 leaves, maximum leaf weight 5773), and the order study below reads
+0.1416 for the same head at ×1.0 — two orders of magnitude of compression cost nothing measurable,
+and the best `covtype` cell in the whole sweep (0.1430) is the *most* compressed one. `mnist-10k` degrades gently to ×5.5 (k-means 0.2900 → 0.2725, ward 0.3419 → 0.3228)
+and then falls off a cliff between ×10 and ×22.
+
+Two further readings the sweep settles:
+
+- **The `gmm` head is the fragile one.** It collapses to 0.0088 on `digits` at ×2.0 and to 0.0618 /
+  0.0512 on MNIST at ×5.5 / ×10, in cells where k-means and ward are still near their best. Nothing
+  in the fixed-budget tables exposed this, because they never crossed the region where it happens.
+- **The routing distance only exists under compression, mechanically.** At ×1.0 the spread across
+  `euclidean` / `manhattan` / `ward` / `average` is exactly **0.0000** on all three datasets: the four
+  distances build the identical singleton leaf set, so there is nothing left to differ. The spread
+  grows with compression (`digits` gmm: 0.0000 → 0.2745 at ×2.2 → 0.6300 at ×8.2). Task 27 measured
+  the routing lever at one budget and found it small; this says the budget it was measured at is the
+  one regime where it provably cannot matter. Counting wins per cell, `ward` routing takes 13/23 on
+  `digits` and 13/19 on MNIST — and only 2/21 on `covtype`, where `manhattan` (8) and `average` (7)
+  lead. The default stays `euclidean`; the recommendation is now data-dependent and measured.
+
+The `mean_sq_radius` column is Σᵢwᵢrᵢ²/n, the summary's mean squared quantization error, and it is
+the input to task #60's Zador-form fit. It is monotone in the leaf count on all three datasets and is
+label-free, so it can be reported for data with no ground truth at all.
+
+## Insertion-order sensitivity — the property the whole BIRCH family inherits
+
+`bench/insertion_order.py`, `bench/results_order.csv` (54 cells). A CF-tree routes each point against
+the tree as it stands at that moment, so reordering the input changes the tree. Every BIRCH-class
+library inherits this and none of them publish the size of it. Two arms of `P = 8` runs per cell:
+`vary="order"` (8 permutations, estimator seed pinned at 0) and `vary="seed"` (identity order, seeds
+0–7).
+
+**The harness carries its own control.** The `ward` head is deterministic given a leaf set, so its
+seed arm must read exactly zero. It does — spread `0.0000`, pairwise ARI `1.0000`, in all **9** of
+its seed cells. That makes `ward` + `vary="order"` a pure measurement of insertion order with no
+restart term in it.
+
+| dataset | `max_leaves` | leaves | head | order spread | order pairwise | seed spread | seed pairwise |
+|---|---|---|---|---|---|---|---|
+| digits | 4000 | 1797 (×1.0) | ward | 0.0159 | 0.9261 | **0.0000** | **1.0000** |
+| digits | 360 | 327–358 | ward | **0.2880** | 0.5454 | **0.0000** | **1.0000** |
+| digits | 90 | 83–90 | ward | 0.1986 | 0.3425 | **0.0000** | **1.0000** |
+| mnist-10k | 10000 | 10000 (×1.0) | ward | 0.0062 | 0.8417 | **0.0000** | **1.0000** |
+| mnist-10k | 1000 | 909–1000 | ward | 0.1129 | 0.3536 | **0.0000** | **1.0000** |
+| mnist-10k | 200 | 180–195 | ward | 0.1635 | 0.3087 | **0.0000** | **1.0000** |
+| covtype-20k | 20000 | 20000 (×1.0) | ward | 0.0005 | 0.9960 | **0.0000** | **1.0000** |
+| covtype-20k | 2000 | 1805–1983 | ward | 0.0005 | 0.9984 | **0.0000** | **1.0000** |
+| covtype-20k | 300 | 278–299 | ward | 0.0013 | 0.9902 | **0.0000** | **1.0000** |
+
+Three results:
+
+- **The effect scales with compression, not with the dataset or the head.** `digits` goes 0.0159 →
+  0.2880 → 0.1986 as the budget falls; MNIST goes 0.0062 → 0.1129 → 0.1635. `covtype` stays under
+  0.0013 everywhere only because its `ward` ARI is pinned at ~0.1416 whatever the leaves are.
+- **At real compression the input order is a bigger lever than the seed.** MNIST at
+  `max_leaves=200`, k-means head: order pairwise ARI **0.2949** against seed pairwise **0.7026** —
+  reordering the rows disagrees with itself 2.4× more than reseeding the head does. At
+  `max_leaves=1000` it is 0.3574 against 0.4751. Every published table in this file, and every
+  competitor's, fixes the order and varies the seed.
+- **The realised leaf count is itself order-dependent** (327–358, 909–1000, 180–195) and is constant
+  under reseeding — so the two arms are not even comparing summaries of the same size.
+
+This closes the loose end from task 27: `ward` on `digits` varied 0.6224–0.6525 across the four
+routing distances at an identical singleton leaf set, which had no explanation while the leaf set was
+believed to be the only input. Here the same head varies 0.6428–0.6587 across permutations of that
+same identical leaf set. Both are the tie-break order in which equal-distance leaves are visited, and
+the budget sweep above shows why it was visible at all: `digits` at ×1.0 is exactly where nothing
+else can differ.
+
+The practical consequence is a caveat, not a fix — a single pass over an ordered stream is what the
+algorithm is for. Shuffle before fitting when the input has structure in its row order, and read any
+single-permutation ARI at high compression as a draw from a distribution roughly 0.15 wide.
+
 ## Conclusions
 
 - **Use betula** when data is large or streaming, memory is bounded, or you want one numerically
@@ -660,6 +766,12 @@ three `20news` rows the sparse leader pass owns (task #71).
   defeats every fast clusterer. `fit_predict_sparse(..., projection="svd", method="spherical-kmeans")`
   does the reduction and the clustering in one call and tops the 20-newsgroups table (0.164); tune
   `max_leaves` for the time you are willing to spend.
+- **Tune `max_leaves`, and shuffle first.** The budget is the knob that matters and it is not
+  monotone: on `digits` ×2 compression beats no compression on both ward and k-means, on `covtype`
+  ×202 costs nothing, on MNIST the cliff is between ×10 and ×22. And at real compression the *row
+  order* moves ARI more than the seed does (MNIST at 200 leaves: pairwise 0.295 across permutations
+  against 0.703 across seeds), so a single-permutation number at high compression is a draw from a
+  distribution roughly 0.15 wide — including every such number in the tables above.
 - The numbers above are what the committed `bench/comprehensive.py` + `bench/median_of_seeds.py`
   (plus `bench/spectral_nonconvex.py`, `bench/toeplitz_ar_mixture.py`, `bench/nmf_cf_weighted.py`)
   produce; re-run them to regenerate every table and plot.
