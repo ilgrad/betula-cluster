@@ -55,7 +55,10 @@ A capability-by-capability reference. For runnable code see [`USAGE.md`](USAGE.m
   (Banerjee 2005) is estimated without a Bessel library, with input auto-L2-normalized, and
   **HDBSCAN-style density clustering over the CF microclusters** (mass-aware mutual-reachability +
   mass-weighted stability → non-convex clusters and noise, automatic count; an *approximation* of
-  raw-point HDBSCAN over the $M \ll N$ microclusters, not identical to it), and
+  raw-point HDBSCAN over the $M \ll N$ microclusters, not identical to it, with `graph_degree > 0`
+  swapping the complete mutual-reachability graph for a bounded-degree approximate k-NN graph —
+  Okkels et al.'s two-pass construction over a flat capped-beam index — so a large `max_leaves`
+  becomes affordable for the one head that most wants it), and
   **scale-space (Morse-persistence) density-mode clustering** (`method="scale-space"` — mean-shift over
   the microcluster KDE, with the bandwidth *and* the cluster count chosen by **mode persistence** across
   scale, so no `k` or bandwidth is required; non-convex, arbitrary count).

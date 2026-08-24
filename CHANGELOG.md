@@ -7,6 +7,40 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **`graph_degree`: the density head off its complete graph.** `method="hdbscan"` was quadratic in
+  the leaf count twice over — a full sort per leaf for the core distances, then Prim over the complete
+  mutual-reachability graph — so the one head that most wants a fine summary was the one that could
+  least afford it. `graph_degree > 0` (new keyword, default `0` = the exact path, byte-identical to
+  before) replaces both with the **two-pass** construction of Okkels et al. (Inf. Syst. 142 (2026)
+  102768, Alg. 4): build a bounded-degree approximate k-NN graph over the leaf means, read the core
+  distances off *that* graph, take an exact MST of it. Two-pass rather than one-pass because it is
+  the variant whose evaluation reaches cophenetic correlation ≥ 0.9 where one-pass saturates at 0.7,
+  and because its edge count is fixed at `O(m · degree)` where one-pass lets the expansion queue grow
+  quadratically.
+
+  The index is **flat** — no HNSW layer stack — following Thordsen & Schubert (SISAP 2025), who
+  report that the hierarchy buys little in high dimension, that approximating an RNG/SSG there is
+  futile, and that the *capped* beam search is the part worth keeping. Three uniformly random
+  out-edges per vertex stand in for the long edges the upper layers would have contributed; they are
+  held outside the degree cap, so a random draw can never evict a true neighbour, and they are what
+  make the diameter logarithmic — without them a capped search on a purely local graph cannot reach a
+  distant region at all.
+
+  Median of seeds 0/1/2, one BLAS thread, `min_cluster_size = N/100`, `min_samples = 4N/max_leaves`,
+  timing the head only (the tree build is identical and subtracted): on MNIST (70 k × 784) at
+  `max_leaves=8000` the head goes **52.0 s → 0.45 s** at degree 32, a **116×** cut with the ARI
+  unchanged at **0.0523** and the same ten clusters — the approximation is free there. On 100 k 2-D
+  blobs at `max_leaves=32000`, **36.6 s → 0.98 s** (37×) for ARI 0.5674 → 0.5608; on covtype
+  (581 k, 54-D) at `max_leaves=8000`, **4.61 s → 0.45 s** for ARI 0.0490 → 0.0457. The trade is
+  monotone in the degree and it is the degree, not the graph, that costs the quality — **degree 8 is
+  not enough at `d = 784`** (ARI 0.0190 with 4 clusters, swinging across [0.0068, 0.0600] between
+  seeds), 16 is the smallest measured to be lossless there.
+
+  `graph_degree` is a **floor, not a ceiling**: core distances read off a graph saturate at the
+  farthest neighbour, so a degree below what `min_samples` needs underestimates every core distance
+  with no bound on the error. The head raises the request to `min_samples / mean leaf mass` whenever
+  that is larger — the paper's `Ω(minPts)` requirement translated into the currency a weighted
+  summary actually counts in.
 - **`method="mppca"`: a mixture of probabilistic PCA, and the compression trade it exposes.** Each
   component covariance is `Σ_c = W_c W_cᵀ + σ_c² I` with `W_c` of rank `rank` (new keyword, default
   `2`, clamped to `dim - 1`; `0` gives a spherical mixture). Both identities it rests on — the

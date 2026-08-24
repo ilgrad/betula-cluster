@@ -779,6 +779,49 @@ def test_hdbscan_separates_moons(moons):
     assert ari(labels, y) > 0.9
 
 
+def test_hdbscan_graph_degree_recovers_the_exact_partition(moons):
+    """`graph_degree > 0` swaps the complete graph for a bounded-degree proximity graph. The
+    approximation is in which edges the MST may choose from, not in the clustering criterion, so on
+    a fixture with a clean density gap it has to land on the same partition."""
+    x, y = moons
+    kwargs = dict(method="hdbscan", threshold=0.01, max_leaves=3000, min_samples=5)
+    exact = betula_cluster.fit_predict(x, min_cluster_size=5, **kwargs)
+    graph = betula_cluster.fit_predict(x, min_cluster_size=5, graph_degree=16, seed=1, **kwargs)
+    assert n_labels(graph) == n_labels(exact)
+    assert ari(graph, y) > 0.9
+
+
+def test_hdbscan_graph_degree_is_a_floor_not_a_ceiling(blobs):
+    """The core distance is read off the graph, so a degree below what `min_samples` needs would
+    truncate the walk and underestimate it. The head raises the request to `min_samples`/leaf-mass,
+    which is observable: two different requests below the floor land on the same graph and the same
+    labels, where an honoured request would not. A degree above the floor is honoured and
+    differs."""
+    x, y = blobs
+    kwargs = dict(
+        method="hdbscan",
+        threshold=0.05,
+        max_leaves=300,
+        min_samples=25,
+        min_cluster_size=25,
+        seed=1,
+    )
+    one = betula_cluster.fit_predict(x, graph_degree=1, **kwargs)
+    two = betula_cluster.fit_predict(x, graph_degree=2, **kwargs)
+    wide = betula_cluster.fit_predict(x, graph_degree=64, **kwargs)
+    assert np.array_equal(one, two)
+    assert not np.array_equal(one, wide)
+    assert ari(one, y) > 0.8  # the cheapest legal graph is still a clustering, not a degenerate one
+    assert ari(wide, y) > 0.99  # and a wide one recovers what the exact complete graph finds
+
+
+def test_hdbscan_graph_degree_roundtrips_through_get_params():
+    est = betula_cluster.Betula(method="hdbscan", graph_degree=24)
+    assert est.get_params()["graph_degree"] == 24
+    assert betula_cluster.Betula(**est.get_params()).get_params()["graph_degree"] == 24
+    assert betula_cluster.Betula().get_params()["graph_degree"] == 0  # default = exact
+
+
 # ── streaming Betula estimator ───────────────────────────────────────────────────────────────
 
 

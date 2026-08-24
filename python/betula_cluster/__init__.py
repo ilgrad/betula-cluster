@@ -370,6 +370,7 @@ _DEFAULTS = {
     "projection_max_iter": 100,
     "refine": 0,
     "rank": 2,
+    "graph_degree": 0,
     "memory_budget_mb": None,
 }
 _PARAM_NAMES = tuple(_DEFAULTS)
@@ -426,6 +427,7 @@ class Betula:
         projection_max_iter=100,
         refine=0,
         rank=2,
+        graph_degree=0,
         memory_budget_mb=None,
     ):
         self.n_clusters = n_clusters
@@ -477,6 +479,11 @@ class Betula:
         # Subspace rank q of the MPPCA head (method="mppca"): each component's covariance is
         # W Wᵀ + σ²I with W of rank q, clamped to at most dim - 1. Ignored by every other head.
         self.rank = rank
+        # Out-degree of the proximity graph the hdbscan head takes its MST over. 0 (default) uses
+        # the exact complete graph, which is O(m²) in the leaf count and is what makes a large
+        # max_leaves unaffordable there. Any positive value is a floor: the head raises it to
+        # whatever degree min_samples needs in leaves. Ignored by every other head.
+        self.graph_degree = graph_degree
         # When set, max_leaves is derived from this budget (+ dim + feature) at fit time: a target
         # for the CF-tree resident size (MiB), not total RSS. Most useful for streaming.
         self.memory_budget_mb = memory_budget_mb

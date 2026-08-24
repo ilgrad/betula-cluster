@@ -9,6 +9,7 @@ pub mod gmm_toeplitz;
 pub(crate) mod graph;
 pub mod hdbscan;
 pub mod kmeans;
+pub(crate) mod knn;
 pub mod kprototypes;
 pub mod mppca;
 pub mod nmf;

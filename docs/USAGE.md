@@ -36,7 +36,9 @@ tabular data where magnitude is signal: it takes covtype ward to **−0.049**, w
 the convention of Campello's Def. 3.1, `sklearn.cluster.HDBSCAN` and ELKI, so `min_samples=1`
 leaves every core distance at 0 and HDBSCAN\* degenerates to single linkage;
 `scikit-learn-contrib/hdbscan` excludes it, where the same number means one neighbour more),
-`min_cluster_size`, `resolution` (Leiden γ — granularity for `method="leiden"` / `"leiden-cpm"`, higher
+`min_cluster_size`, `graph_degree` (for `method="hdbscan"`, the out-degree of the proximity graph the
+density head runs on; `0` = the exact complete graph, a positive value is a **floor** the head raises
+to whatever `min_samples` needs — see *Graph-indexing the density head* below), `resolution` (Leiden γ — granularity for `method="leiden"` / `"leiden-cpm"`, higher
 ⇒ more communities), `covariance_weight` (Leiden β — a log-Euclidean covariance/shape term in the
 affinity, `feature="full"`; `0` = off, the centroid-only default), `tangent_weight` / `tangent_rank`
 (Leiden γ — a Grassmann tangent-subspace term of rank `tangent_rank` for manifold-aware communities,
@@ -185,6 +187,53 @@ N = 100 000, `min_cluster_size = 250` (ARI, clusters found):
 So set `min_samples` comfortably above `N / max_leaves`, or raise `max_leaves` until the leaf mass
 falls below the `min_samples` you want. On well-separated clusters neither matters; on overlapping
 ones it is the difference between finding three clusters and finding six.
+
+### Graph-indexing the density head — `graph_degree`
+
+The exact head is quadratic in the leaf count twice over: a full sort per leaf for the core
+distances, then Prim over the complete mutual-reachability graph. That is what makes a large
+`max_leaves` unaffordable exactly where the section above says a density head needs one.
+
+`graph_degree > 0` replaces both with the **two-pass** construction of Okkels et al. (Inf. Syst. 142
+(2026) 102768, Alg. 4): build a bounded-degree approximate k-NN graph over the leaf means, read the
+core distances off *that* graph, take an exact MST of it. The graph is flat — no HNSW layer stack,
+following Thordsen & Schubert (SISAP 2025), who find the hierarchy buys little in high dimension and
+that a *capped* beam search is the part worth keeping — with three uniformly random out-edges per
+vertex standing in for the long edges the upper layers would have contributed.
+
+**The number is a floor, not a ceiling.** Core distances read off a graph saturate at the farthest
+neighbour, so a degree below what `min_samples` needs *underestimates* every core distance with no
+bound on the error. The head therefore raises the requested degree to `min_samples / mean leaf mass`
+whenever that is larger; `graph_degree=1` is a request for the cheapest legal graph, not a broken one.
+
+Median of seeds 0/1/2, one BLAS thread, `min_cluster_size = N/100`, `min_samples = 4N/max_leaves`
+(the rule the section above argues for). "head" is the time after subtracting the identical tree
+build, which is what the parameter changes:
+
+| dataset | `max_leaves` | exact head | ARI | `graph_degree=16` | ARI | `graph_degree=32` | ARI |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| blobs 100 k, 2-D | 2 000 | 0.11 s | 0.5645 | 0.02 s | 0.5596 | 0.04 s | 0.5634 |
+| | 8 000 | 2.04 s | 0.5668 | 0.11 s | 0.5530 | 0.21 s | 0.5640 |
+| | 32 000 | 36.6 s | 0.5674 | 0.52 s | 0.5454 | **0.98 s** | **0.5608** |
+| covtype 581 k, 54-D | 2 000 | 0.41 s | 0.0531 | 0.20 s | 0.0496 | 0.24 s | 0.0519 |
+| | 8 000 | 4.61 s | 0.0490 | 0.28 s | 0.0374 | 0.45 s | 0.0457 |
+| MNIST 70 k, 784-D | 2 000 | 3.00 s | 0.0298 | 0.13 s | **0.0298** | 0.28 s | **0.0298** |
+| | 8 000 | 52.0 s | 0.0523 | < 0.5 s | **0.0523** | **0.45 s** | **0.0523** |
+
+At 32 000 leaves on blobs the head goes from 36.6 s to 1.0 s — **37×** — for 1.2% of the ARI. On
+MNIST at 8 000 leaves it goes from 52.0 s to 0.45 s — **116×** — for *no* ARI at all: the graph
+reproduces the exact partition to four decimals with the same ten clusters. The trade is monotone in
+the degree and it is the *degree*, not the graph, that costs the quality: doubling 16 to 32 recovers
+most of the loss at half the saving. Below ~2 000 leaves the exact path is already cheap and there is
+nothing to buy.
+
+**Degree 8 is not enough in high dimension**, whatever the leaf budget: on MNIST it gives ARI 0.0190
+with 4 clusters against the exact 0.0523 with 10, and swings across [0.0068, 0.0600] between seeds.
+16 is the smallest degree measured to be lossless at `d = 784`.
+
+**What it does not fix.** The approximation is in which edges the MST may choose from, never in the
+criterion; where the head is weak on the exact graph (covtype: ARI 0.05 at any budget) it stays
+weak on the approximate one. `graph_degree` buys leaves, not quality.
 
 ### Refining on the raw points — `refine`
 

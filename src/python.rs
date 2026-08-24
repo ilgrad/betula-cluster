@@ -18,7 +18,7 @@ use std::ffi::CString;
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
 
-use crate::clustering::hdbscan::hdbscan;
+use crate::clustering::hdbscan::hdbscan_with;
 use crate::clustering::nmf::{Projection, ProjectionKind, ProjectionSpec};
 use crate::clustering::scalespace::scale_space;
 use crate::clustering::{
@@ -44,6 +44,9 @@ enum Kind {
     Hdbscan {
         min_samples: usize,
         min_cluster_size: usize,
+        /// Out-degree of the proximity graph the mutual-reachability MST is taken over; `0` keeps
+        /// the exact complete graph.
+        graph_degree: usize,
     },
     /// Scale-space KDE-mode clustering with persistence-selected scale (no `k`, no bandwidth).
     ScaleSpace,
@@ -106,6 +109,7 @@ fn parse_method(
     tangent_weight: f64,
     tangent_rank: usize,
     rank: usize,
+    graph_degree: usize,
 ) -> PyResult<Kind> {
     match method {
         "kmeans" => Ok(Kind::Parametric(Method::KMeans)),
@@ -136,6 +140,7 @@ fn parse_method(
         "hdbscan" => Ok(Kind::Hdbscan {
             min_samples,
             min_cluster_size,
+            graph_degree,
         }),
         "scale-space" => Ok(Kind::ScaleSpace),
         _ => Err(PyValueError::new_err(
@@ -232,8 +237,9 @@ fn dispatch_kind<R: Real, C: ClusterFeature<R>>(
         Kind::Hdbscan {
             min_samples,
             min_cluster_size,
+            graph_degree,
         } => (
-            hdbscan(feats, min_samples, min_cluster_size).labels,
+            hdbscan_with(feats, min_samples, min_cluster_size, graph_degree, seed).labels,
             None,
             None,
         ),
@@ -877,8 +883,15 @@ fn cluster<R: Real, C: ClusterFeature<R>>(
         Kind::Hdbscan {
             min_samples,
             min_cluster_size,
+            graph_degree,
         } => {
-            let res = hdbscan(tree.leaf_features(), min_samples, min_cluster_size);
+            let res = hdbscan_with(
+                tree.leaf_features(),
+                min_samples,
+                min_cluster_size,
+                graph_degree,
+                seed,
+            );
             map_rows(n, |i| {
                 res.labels[tree.nearest_entry(&flat[i * dim..(i + 1) * dim])]
             })
@@ -982,7 +995,8 @@ fn run_oneshot<R: Real + Element>(
     min_samples = 5, min_cluster_size = 5, seed = 0, distance = "euclidean",
     absorb = "euclidean", chi2_p = 0.95, chi2_scale = 0.0, n_jobs = 1, normalize = false,
     resolution = 1.0, covariance_weight = 0.0, tangent_weight = 0.0, tangent_rank = 2,
-    projection = "none", projection_dim = 64, projection_max_iter = 100, refine = 0, rank = 2
+    projection = "none", projection_dim = 64, projection_max_iter = 100, refine = 0, rank = 2,
+    graph_degree = 0
 ))]
 #[allow(clippy::too_many_arguments)]
 fn fit_predict<'py>(
@@ -1014,6 +1028,7 @@ fn fit_predict<'py>(
     projection_max_iter: usize,
     refine: usize,
     rank: usize,
+    graph_degree: usize,
 ) -> PyResult<Bound<'py, PyArray1<i64>>> {
     let kind = parse_method(
         method,
@@ -1024,6 +1039,7 @@ fn fit_predict<'py>(
         tangent_weight,
         tangent_rank,
         rank,
+        graph_degree,
     )?;
     let nmf_dim = parse_projection(projection, projection_dim, projection_max_iter)?;
     let (labels, leaves) = if let Ok(a) = data.extract::<PyReadonlyArray2<'py, f64>>() {
@@ -1579,6 +1595,9 @@ struct Betula {
     /// Subspace rank `q` of the MPPCA head (`method="mppca"`); kept for `get_params`.
     #[serde(default = "default_rank")]
     rank: usize,
+    /// Out-degree of the `method="hdbscan"` proximity graph; `0` = exact complete graph.
+    #[serde(default)]
+    graph_degree: usize,
     /// Phase-3 CF-weighted NMF reduction dim (`projection="weighted-nmf"`); `None` = no projection.
     #[serde(default)]
     nmf_dim: Option<usize>,
@@ -2035,7 +2054,7 @@ impl Betula {
         distance = "euclidean", absorb = "euclidean", chi2_p = 0.95, chi2_scale = 0.0, decay = 1.0,
         normalize = false, huber_k = None, resolution = 1.0, covariance_weight = 0.0,
         tangent_weight = 0.0, tangent_rank = 2, projection = "none", projection_dim = 64,
-        projection_max_iter = 100, refine = 0, rank = 2
+        projection_max_iter = 100, refine = 0, rank = 2, graph_degree = 0
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -2066,6 +2085,7 @@ impl Betula {
         projection_max_iter: usize,
         refine: usize,
         rank: usize,
+        graph_degree: usize,
     ) -> PyResult<Self> {
         let kind = parse_method(
             method,
@@ -2076,6 +2096,7 @@ impl Betula {
             tangent_weight,
             tangent_rank,
             rank,
+            graph_degree,
         )?;
         let proj = parse_projection(projection, projection_dim, projection_max_iter)?;
         let nmf_dim = proj.map(|p| p.rank);
@@ -2133,6 +2154,7 @@ impl Betula {
             tangent_weight,
             tangent_rank,
             rank,
+            graph_degree,
             nmf_dim,
             nmf_kl,
             nmf_max_iter,
@@ -2687,6 +2709,7 @@ impl Betula {
         d.set_item("tangent_weight", self.tangent_weight)?;
         d.set_item("tangent_rank", self.tangent_rank)?;
         d.set_item("rank", self.rank)?;
+        d.set_item("graph_degree", self.graph_degree)?;
         d.set_item("refine", self.refine)?;
         Ok(d)
     }

@@ -134,6 +134,104 @@ fn core_distances(
         .collect()
 }
 
+/// Out-degree the proximity graph actually gets, given the caller's request.
+///
+/// `min_samples` is counted in **points** and a leaf carries `mass[i]` of them, so a graph that must
+/// bound the core distances needs about `min_samples / mean_mass` *leaves* per neighbourhood, not
+/// `min_samples` of them. Okkels et al. state the requirement as `Ω(minPts)` for unit-weight data;
+/// this is that requirement translated into the currency the head is actually counting in. The
+/// caller's number is a floor, never a ceiling — asking for too small a degree silently truncates
+/// every core distance, which is the one approximation with no upper bound on its error.
+fn graph_degree_for(requested: usize, min_samples: usize, mass: &[f64]) -> usize {
+    let m = mass.len();
+    let mean = mass.iter().sum::<f64>() / m as f64;
+    let need = if mean > 0.0 {
+        (min_samples as f64 / mean).ceil() as usize
+    } else {
+        min_samples
+    };
+    requested.max(need).clamp(1, m - 1)
+}
+
+/// [`core_distances`] read off a proximity graph instead of the complete one.
+///
+/// Identical accumulation, identical self-inclusion convention; the only difference is that the walk
+/// stops at the end of `adj[i]` rather than at the end of the dataset. When the neighbourhood's mass
+/// never reaches `min_samples` the radius saturates at the farthest *neighbour*, which
+/// **under**estimates the true core distance — the opposite direction from the overestimate the
+/// paper warns about, and the reason [`graph_degree_for`] raises the degree rather than trusting the
+/// caller's.
+fn core_distances_from_graph(
+    min_samples: usize,
+    mass: &[f64],
+    adj: &[Vec<(usize, f64)>],
+) -> Vec<f64> {
+    let need = min_samples.max(1) as f64;
+    adj.iter()
+        .enumerate()
+        .map(|(i, list)| {
+            let mut enclosed = mass[i];
+            let mut radius = 0.0;
+            if enclosed < need {
+                for &(j, d) in list {
+                    enclosed += mass[j];
+                    radius = d;
+                    if enclosed >= need {
+                        break;
+                    }
+                }
+            }
+            radius
+        })
+        .collect()
+}
+
+/// Exact MST of the mutual-reachability weights **restricted to the graph's edges** — Kruskal over
+/// `O(m · degree)` candidates rather than Prim over `O(m²)`.
+///
+/// The graph is connected by construction: every vertex `i ≥ 1` takes at least one random shortcut
+/// into `0..i` during the build, so induction on `i` gives a path to vertex 0. The trailing branch
+/// that links leftover components is therefore unreachable, and exists so that a future change to
+/// the index degrades into a coarse hierarchy rather than into a silently truncated one.
+fn mst_over_graph(
+    m: usize,
+    adj: &[Vec<(usize, f64)>],
+    mreach: &impl Fn(usize, usize) -> f64,
+) -> Vec<(f64, usize, usize)> {
+    let mut edges: Vec<(f64, usize, usize)> = Vec::new();
+    for (i, list) in adj.iter().enumerate() {
+        for &(j, _) in list {
+            if i < j {
+                edges.push((mreach(i, j), i, j));
+            }
+        }
+    }
+    edges.sort_by(|a, b| a.0.total_cmp(&b.0).then((a.1, a.2).cmp(&(b.1, b.2))));
+    let mut uf = UnionFind::new(m);
+    let mut mst: Vec<(f64, usize, usize)> = Vec::with_capacity(m - 1);
+    let mut heaviest = 0.0f64;
+    for (w, a, b) in edges {
+        heaviest = heaviest.max(w);
+        if uf.find(a) != uf.find(b) {
+            uf.union(a, b);
+            mst.push((w, a, b));
+        }
+    }
+    let mut anchor = usize::MAX;
+    for v in 0..m {
+        if mst.len() + 1 >= m {
+            break;
+        }
+        if anchor == usize::MAX {
+            anchor = v;
+        } else if uf.find(anchor) != uf.find(v) {
+            uf.union(anchor, v);
+            mst.push((heaviest, anchor, v));
+        }
+    }
+    mst
+}
+
 /// Cluster `features` with HDBSCAN*. `min_samples` sets the core-distance neighbourhood and
 /// `min_cluster_size` the smallest admissible cluster.
 ///
@@ -150,6 +248,28 @@ pub fn hdbscan<R: Real, C: ClusterFeature<R>>(
     features: &[C],
     min_samples: usize,
     min_cluster_size: usize,
+) -> Hdbscan {
+    hdbscan_with(features, min_samples, min_cluster_size, 0, 0)
+}
+
+/// [`hdbscan`], with the complete mutual-reachability graph optionally replaced by a bounded-degree
+/// proximity graph of out-degree `graph_degree` (`0` keeps the exact quadratic path).
+///
+/// This is Okkels et al.'s **two-pass** shape (Inf. Syst. 142 (2026) 102768, Algorithm 4): build the
+/// approximate neighbour graph, read the core distances off it, take an exact MST of *that* graph.
+/// Two-pass rather than one-pass because it is the variant their evaluation reports as reaching
+/// cophenetic correlation ≥ 0.9 on both datasets while one-pass saturates at 0.7 — and because its
+/// edge count is fixed at `O(m · degree)` where one-pass lets an expansion queue grow quadratically.
+///
+/// The price it names is a degree requirement of `Ω(minPts)`, since the core distances are bounded
+/// directly from the graph. Here `minPts` is counted in points and a leaf carries many, so the
+/// requirement is translated into leaves before it is enforced: see [`graph_degree_for`].
+pub fn hdbscan_with<R: Real, C: ClusterFeature<R>>(
+    features: &[C],
+    min_samples: usize,
+    min_cluster_size: usize,
+    graph_degree: usize,
+    seed: u64,
 ) -> Hdbscan {
     let m = features.len();
     if m == 0 {
@@ -175,10 +295,22 @@ pub fn hdbscan<R: Real, C: ClusterFeature<R>>(
         .collect();
     let dist = |i: usize, j: usize| -> f64 { crate::kernels::sq_euclidean(&mu[i], &mu[j]).sqrt() };
 
-    let core = core_distances(m, min_samples, &mass, dist);
-    let mreach = |i: usize, j: usize| -> f64 { core[i].max(core[j]).max(dist(i, j)) };
+    let mst = if graph_degree == 0 {
+        let core = core_distances(m, min_samples, &mass, dist);
+        prim_complete(m, &|i, j| core[i].max(core[j]).max(dist(i, j)))
+    } else {
+        let degree = graph_degree_for(graph_degree, min_samples, &mass);
+        let adj = crate::clustering::knn::build(m, degree, seed, dist);
+        let core = core_distances_from_graph(min_samples, &mass, &adj);
+        let mreach = |i: usize, j: usize| -> f64 { core[i].max(core[j]).max(dist(i, j)) };
+        mst_over_graph(m, &adj, &mreach)
+    };
 
-    // Prim minimum spanning tree over mutual reachability
+    from_mst(m, &mass, mst, min_cluster_size)
+}
+
+/// Prim's MST over the complete graph — `O(m²)` edge weights, the exact path.
+fn prim_complete(m: usize, weight: &impl Fn(usize, usize) -> f64) -> Vec<(f64, usize, usize)> {
     let mut in_tree = vec![false; m];
     let mut best = vec![f64::INFINITY; m];
     let mut parent = vec![usize::MAX; m];
@@ -202,7 +334,7 @@ pub fn hdbscan<R: Real, C: ClusterFeature<R>>(
         }
         for v in 0..m {
             if !in_tree[v] {
-                let w = mreach(u, v);
+                let w = weight(u, v);
                 if w < best[v] {
                     best[v] = w;
                     parent[v] = u;
@@ -210,7 +342,17 @@ pub fn hdbscan<R: Real, C: ClusterFeature<R>>(
             }
         }
     }
+    mst
+}
 
+/// Turn the mutual-reachability MST into labels: single-linkage dendrogram, condensation by
+/// mass-weighted stability, then excess-of-mass selection.
+fn from_mst(
+    m: usize,
+    mass: &[f64],
+    mut mst: Vec<(f64, usize, usize)>,
+    min_cluster_size: usize,
+) -> Hdbscan {
     // single-linkage dendrogram: leaves 0..m, merges m..2m-1
     let total = 2 * m;
     let mut children: Vec<(usize, usize)> = vec![(usize::MAX, usize::MAX); total];
@@ -847,5 +989,131 @@ mod tests {
             "the sweep never crosses a boundary: {want:?}"
         );
         assert_eq!(got, want, "the excess-of-mass boundary moved");
+    }
+
+    /// A small ring of leaves, so the graph path is exercised on something with a known shape and
+    /// few enough objects that a complete graph is within the search's expansion budget.
+    fn ring(m: usize, per_leaf: f64) -> Vec<Spherical<f64>> {
+        use crate::feature::ClusterFeature;
+        (0..m)
+            .map(|i| {
+                let a = std::f64::consts::TAU * i as f64 / m as f64;
+                let mut f = Spherical::<f64>::new(2);
+                f.push(&[a.cos(), a.sin()], per_leaf);
+                f
+            })
+            .collect()
+    }
+
+    /// Leaves at `i^1.3` on a line: irregular spacing, so every pairwise distance is distinct and a
+    /// float comparison against the exact path can be exact rather than approximate.
+    fn irregular_line(m: usize, per_leaf: f64) -> Vec<Spherical<f64>> {
+        use crate::feature::ClusterFeature;
+        (0..m)
+            .map(|i| {
+                let mut f = Spherical::<f64>::new(1);
+                f.push(&[(i as f64).powf(1.3)], per_leaf);
+                f
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_complete_proximity_graph_reproduces_the_exact_labels() {
+        // The gate on the whole approximation: with the degree at `m - 1` the graph is the complete
+        // one, so the two code paths differ only in *how* they reach the same edge set. Anything but
+        // an identical labelling means the sparse path has a bug rather than an approximation.
+        let mut rng = SplitMix64::new(4);
+        let (pts, _) = two_moons(&mut rng, 120, 0.05);
+        let (micros, _) = grid_micros(&pts, 0.25);
+        let m = micros.len();
+        assert!(m > 8 && m <= 64, "fixture must fit the expansion cap: {m}");
+        let exact = hdbscan(&micros, 4, 3);
+        let graph = hdbscan_with(&micros, 4, 3, m - 1, 1);
+        assert_eq!(graph.n_clusters, exact.n_clusters);
+        // Up to relabelling, not label for label: Prim emits its edges in insertion order and
+        // Kruskal in weight order, so a tie between two equal mutual-reachability edges can be
+        // broken the other way and renumber the clusters. The partition is the invariant.
+        let as_usize = |v: &[i64]| -> Vec<usize> {
+            v.iter()
+                .map(|&l| if l < 0 { usize::MAX } else { l as usize })
+                .collect()
+        };
+        let score = ari(&as_usize(&graph.labels), &as_usize(&exact.labels));
+        assert_eq!(
+            score, 1.0,
+            "the complete-graph path found a different partition"
+        );
+    }
+
+    #[test]
+    fn the_graph_path_recovers_the_two_moons_partition() {
+        let mut rng = SplitMix64::new(7);
+        let (pts, truth) = two_moons(&mut rng, 700, 0.07);
+        let (micros, point_to_micro) = grid_micros(&pts, 0.1);
+        let res = hdbscan_with(&micros, 5, 5, 12, 3);
+        let labels: Vec<usize> = point_to_micro
+            .iter()
+            .map(|&mi| {
+                if res.labels[mi] < 0 {
+                    usize::MAX
+                } else {
+                    res.labels[mi] as usize
+                }
+            })
+            .collect();
+        let score = ari(&labels, &truth);
+        assert!(
+            score > 0.7,
+            "ARI = {score}, n_clusters = {}",
+            res.n_clusters
+        );
+    }
+
+    #[test]
+    fn the_degree_floor_is_counted_in_leaves_not_in_points() {
+        // 100 leaves of 10 points each: reaching 50 points takes 5 leaves, so a request for 2 is
+        // raised to 5 and a request for 9 is left alone. On unit mass the same `min_samples` needs
+        // 50 leaves, and the floor says so.
+        let heavy = vec![10.0f64; 100];
+        assert_eq!(graph_degree_for(2, 50, &heavy), 5);
+        assert_eq!(graph_degree_for(9, 50, &heavy), 9);
+        assert_eq!(graph_degree_for(2, 50, &vec![1.0f64; 100]), 50);
+        // …and it can never exceed the number of other objects there are.
+        assert_eq!(graph_degree_for(1000, 50, &heavy), 99);
+    }
+
+    #[test]
+    fn core_distances_off_a_complete_adjacency_match_the_exact_ones() {
+        use crate::feature::ClusterFeature;
+        let micros = irregular_line(24, 3.0);
+        let mu: Vec<Vec<f64>> = micros.iter().map(|f| f.mean().to_vec()).collect();
+        let mass = vec![3.0f64; 24];
+        let dist = |i: usize, j: usize| crate::kernels::sq_euclidean(&mu[i], &mu[j]).sqrt();
+        let adj = crate::clustering::knn::build(24, 23, 2, dist);
+        for min_samples in [1usize, 3, 7, 200] {
+            assert_eq!(
+                core_distances_from_graph(min_samples, &mass, &adj),
+                core_distances(24, min_samples, &mass, dist),
+                "min_samples = {min_samples}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_graph_mst_spans_every_leaf() {
+        let micros = ring(60, 1.0);
+        let mu: Vec<Vec<f64>> = micros.iter().map(|f| f.mean().to_vec()).collect();
+        let dist = |i: usize, j: usize| crate::kernels::sq_euclidean(&mu[i], &mu[j]).sqrt();
+        for degree in [2usize, 4, 10] {
+            let adj = crate::clustering::knn::build(60, degree, 6, dist);
+            let mst = mst_over_graph(60, &adj, &dist);
+            assert_eq!(mst.len(), 59, "degree = {degree}");
+            let mut uf = UnionFind::new(60);
+            for &(_, a, b) in &mst {
+                assert_ne!(uf.find(a), uf.find(b), "the MST has a cycle");
+                uf.union(a, b);
+            }
+        }
     }
 }
