@@ -551,6 +551,45 @@ All notable changes to this project are documented here. The format follows
   the noise fraction down from 0.620 to 0.580); `blobs` 0.142 → 0.154 and `varied` 0.519 → 0.536;
   `aniso` 0.569 → 0.568 and `covtype` +0.0001 are ties; MNIST stays all-noise.
 
+- **The three distance kernels get a hand-written AVX2 + FMA path: 1.38x on a 20-dimensional
+  `kmeans` fit, 1.59x on a 784-dimensional `gmm` fit, byte-identical labels.** `src/kernels.rs` said
+  its reductions were "plain inlinable loops the compiler vectorizes at each call site". `perf
+  annotate` on the symbol holding 31.5% of a 1 000 000 x 20 `kmeans` profile returns only `subsd`,
+  `mulsd` and `addsd` -- **not one packed instruction** -- so the claim was wrong, and the doc is
+  corrected along with the code.
+
+  It is wrong for a reason no build flag can fix. `a.iter().zip(b).map(...).sum()` is
+  `Iterator::sum`, a strictly-ordered left fold; IEEE addition is not associative; LLVM may therefore
+  not reassociate the reduction, and without reassociation there is nothing legal to pack.
+
+  Measured on this machine against the shipped scalar fold: four independent accumulators at the
+  crate's baseline ISA give **0.93x at `d = 20`** -- a loss -- 1.13x at 64 and 1.46x at 784, while
+  explicit AVX2 + FMA gives **2.35x / 3.89x / 2.43x**. Breaking the dependency chain is not the win;
+  the register width is, and at a baseline `x86-64` target the only way to reach it is to write the
+  intrinsics and detect the feature at run time.
+
+  So `sq_euclidean`, `dot` and `manhattan` now dispatch to hand-written AVX2 kernels for `f64` and
+  `f32` when the CPU reports `avx2` and `fma`, and fall back to the identical scalar fold otherwise.
+  Non-`x86_64` targets and pre-AVX2 `x86_64` are unaffected -- the fallback is the old code, and the
+  choice is made at run time, so one wheel still serves every machine.
+
+  This is the crate's **first `unsafe`**, about 130 lines in one leaf module, and it is a decision
+  rather than a detail: ADR 003 records the alternatives, including the safe four-accumulator version
+  that the numbers rejected. Two preconditions are upheld one call frame above and both are tested --
+  the feature detection, and `n = a.len().min(b.len())`, which matters because `CFTree::insert`
+  accepts a point longer than the tree's dimension and an intrinsic loop bounded by `a.len()` would
+  read out of bounds rather than merely return a wrong number.
+
+  The acceptance gate was that nothing observable changes. Eight partial sums and an FMA round
+  differently from one serial chain, so an argmin decided by less than an ulp could in principle
+  flip, and identical labels are therefore a measurement and not a theorem. What was measured:
+  SHA-256 label digests identical on both profiled shapes across an A-B-A-B run; the whole Rust
+  suite, SciPy and ELKI cross-checks included; and a re-run of the entire quality benchmark, 75 of
+  whose 78 rows reproduce the committed per-seed table cell for cell. The three that moved are all
+  `betula-hdbscan`, and a direct A/B on exactly those cells returns identical label digests from both
+  builds -- they predate this change and belong to `835d05f`, which made `min_samples` and
+  `min_cluster_size` count points rather than leaves and relabels the summary route by design.
+
 - **`method="gmm"` hoists the log-variance term out of the leaf loop: 1.35x on the profiled shape,
   byte-identical labels.** A profile came first, as the task required. On 20 000 x 784 with
   `method="gmm"` and `max_leaves=2000` (`perf record -F 997 --call-graph fp`, 9 014 samples,

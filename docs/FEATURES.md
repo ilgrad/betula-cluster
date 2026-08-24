@@ -7,8 +7,10 @@ A capability-by-capability reference. For runnable code see [`USAGE.md`](USAGE.m
   full (PSD-by-construction via Cholesky), and a **Frequent-Directions sketch** for very
   high-dimensional data ($O(\ell d)$ memory per leaf instead of $O(d^2)$; trades speed for memory, for
   `d` so large the full covariance does not fit).
-- auto-vectorized distance kernels (tight inline reductions the compiler vectorizes — measured
-  faster than runtime SIMD dispatch on the small-`d` hot path); rayon-parallel point
+- hand-written AVX2/FMA distance kernels chosen by run-time feature detection, with the scalar
+  fold as the fallback on every other target (the reductions do not autovectorize — `Iterator::sum`
+  is an ordered fold, so LLVM may not reassociate; measured 1.38–1.59x, labels unchanged, ADR 003);
+  rayon-parallel point
   labeling and rebuild-threshold estimation (deterministic — bit-identical labels to the serial
   path; `parallel` feature, on by default, `--no-default-features` for a serial build).
 - Global clustering heads: weighted **k-means** (k-means++ + exact Lloyd), **diagonal &
@@ -189,7 +191,7 @@ A capability-by-capability reference. For runnable code see [`USAGE.md`](USAGE.m
 | `linalg` | Cholesky / triangular solve / logdet / Mahalanobis / Jacobi eigensolver (no LAPACK) |
 | `stats` | χ² quantile (inverse regularized incomplete gamma) for Mahalanobis gates |
 | `feature` | clustering features: `Spherical` / `Diagonal` / `Full` / `FdSketch` (high-d) |
-| `kernels` | auto-vectorized distance kernels (inline reductions) |
+| `kernels` | distance kernels: scalar fold + hand-written AVX2/FMA path |
 | `distance` | D0–D4, radius, Mahalanobis (stable forms) |
 | `tree` | arena CF-tree + budget-targeting auto-rebuild |
 | `clustering` | `kmeans` / `cop_kmeans`, `gmm_diagonal`, `gmm_full`, `gmm_toeplitz{,_full,_gs}`, `ward_hac`, `agglomerative` (UPGMA/WPGMA/UPGMC/WPGMC), `spectral`, `leiden`, `spherical_kmeans`, `movmf`, `scale_space`, `hdbscan`, `kprototypes`, `nmf` (the `projection` reducer) |

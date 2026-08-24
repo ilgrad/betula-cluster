@@ -99,7 +99,7 @@ src/
   stats.rs       χ² quantile (inverse regularized incomplete gamma) for Mahalanobis gates
   feature.rs     ClusterFeature trait + Spherical / Diagonal / Full / FdSketch (FD high-d)
   distance.rs    CFDistance trait + measures; uses simd kernels
-  kernels.rs     auto-vectorized distance kernels (inline reductions)
+  kernels.rs     distance kernels: scalar fold + a hand-written AVX2/FMA path (ADR 003)
   tree.rs        arena CF-tree (insert/split/rebuild)
   clustering/    kmeans.rs, gmm.rs, gmm_toeplitz.rs, ward.rs, spectral.rs, community.rs, graph.rs,
                  vmf.rs, scalespace.rs, hdbscan.rs, kprototypes.rs, nmf.rs, rng.rs (Phase 3)
@@ -118,11 +118,14 @@ Core abstractions: `Real` (numeric), `ClusterFeature<R>` (Spherical/Diagonal/Ful
 zero dispatch cost; Python/CLI pick variants via enums.
 
 ## Numeric & performance strategy
-- **SIMD**: inline auto-vectorized kernels (sq-euclidean, dot, manhattan) — the compiler vectorizes
-  the tight reductions at each call site. Measured faster than a `multiversion` runtime SIMD
-  dispatcher on the small-$d$ CF-tree hot path (its indirect call cannot inline, and the per-call
-  dispatch dominates the few arithmetic ops; no high-$d$ win either, where the GMM $O(d^3)$ Cholesky
-  dominates, not these reductions).
+- **SIMD**: hand-written AVX2 + FMA kernels (sq-euclidean, dot, manhattan) for `f64` and `f32`,
+  chosen by run-time feature detection, with the scalar fold as the fallback everywhere else. The
+  reductions do **not** autovectorize and no build flag makes them: `Iterator::sum` is a
+  strictly-ordered left fold and IEEE addition is not associative, so LLVM may not reassociate and
+  cannot pack — `perf annotate` on 31.5% of a $10^6 \times 20$ `kmeans` profile shows only
+  `subsd`/`mulsd`/`addsd`. Measured 1.38x on that shape and 1.59x on $2\times10^4 \times 784$ `gmm`,
+  labels unchanged. Dispatch is a macro, not a function pointer: a `multiversion` dispatcher was
+  measured slower at small $d$ because its indirect call cannot inline. See ADR 003.
 - **Parallel**: `rayon` for assignment/E-step over points/CFs; thread-local accumulators merged
   (CF is a commutative monoid → exact reduction).
 - **Linalg**: hand-rolled tiny Cholesky in `linalg.rs` for per-CF $d \times d$; `faer` (pure-Rust SIMD,
@@ -153,7 +156,7 @@ Python end-to-end + scikit-learn benchmark (`README.md`, `bench/RESULTS.md`):
   $O(\ell d)$ advantage carries through clustering (otherwise it would be lost). Identical math to the
   dense path. All PSD; tested incl. $\mathrm{dim}\ge 4$ merge, FD-vs-full agreement on low-rank data, and
   FD-vs-full GMM clustering (ARI 1.0, peak RSS bounded by $\ell d$).
-- `distance` + `kernels` (inline auto-vectorized distance reductions).
+- `distance` + `kernels` (distance reductions; AVX2/FMA path with a scalar fallback).
 - `tree` (insert/split/rebuild — `estimate_threshold` is the within-leaf mean nearest-sibling gap,
   ELKI/BETULA-standard, $O(M \cdot \text{capacity})$, threshold raised monotonically; reverse-DFS-order reinsert
   matches the reference tree shape; the rebuild **targets the leaf budget** rather than predicting it —

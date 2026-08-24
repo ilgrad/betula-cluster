@@ -353,7 +353,7 @@ stable CF from scratch and then adds everything betulars leaves to the user:
 - `f32` trees, streaming `partial_fit`, a mass-invariant **χ² absorption gate**, a
   Frequent-Directions sketch for high `d`, `normalize=True` for embeddings, an inspection API
   (outliers / near-duplicates / representatives / geometry), and serde persistence;
-- auto-vectorized distance kernels (tight inline reductions) and rayon-parallel build + labeling.
+- AVX2/FMA distance kernels with a scalar fallback, and rayon-parallel build + labeling.
 
 The concrete, reproducible quality/speed/memory comparison is against the labeled scikit-learn
 clusterers practitioners actually reach for: at **matching ARI**, betula labels 1 M points **35×
