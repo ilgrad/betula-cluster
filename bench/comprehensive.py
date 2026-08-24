@@ -4,7 +4,7 @@ Two parts, both written to be *fair* and *reproducible*:
 
 * **Quality** — every method on every dataset (standardized) at a fixed `N`, scored with external
   metrics (ARI, AMI, V-measure, vs ground truth) and internal metrics (silhouette on a sample,
-  Davies-Bouldin, Calinski-Harabasz), plus wall-clock fit time.
+  the exact O(N k) medoid silhouette, Davies-Bouldin, Calinski-Harabasz), plus wall-clock fit time.
 * **Scaling** — fit time and **peak process RSS** vs `N`, each run isolated in a spawned subprocess
   (its own `ru_maxrss`, a `RLIMIT_AS` cap, and a timeout) so a method that explodes in memory fails
   gracefully instead of taking down the host. This surfaces betula's memory-bounded CF-tree.
@@ -177,6 +177,36 @@ def methods(k: int, n: int, seed: int = 0) -> dict:
 
 
 # ── quality ───────────────────────────────────────────────────────────────────────────────────────
+def medoid_silhouette(X, labels):
+    """Lenssen & Schubert's medoid silhouette (Inf. Syst. 120, 2024), in the squared-distance form.
+
+    `1 − d²(x, m_own) / d²(x, m_nearest other)`, averaged over every point. `O(N·k)` and exact,
+    where the classical silhouette is `O(N²)` and has to be subsampled to be affordable at all --
+    which is why the `silhouette` column beside it carries `sample_size=5000` and this one does not.
+    The medoid is taken in the squared metric, where the minimiser of the within-cluster sum is
+    exactly the member nearest the centroid, so finding it is a scan rather than an all-pairs pass.
+    """
+    labels = np.asarray(labels)
+    uniq = np.unique(labels[labels >= 0])
+    if uniq.size < 2:
+        return float("nan")
+    medoids = []
+    for c in uniq:
+        members = X[labels == c]
+        centroid = members.mean(0)
+        medoids.append(members[np.argmin(((members - centroid) ** 2).sum(1))])
+    medoids = np.vstack(medoids)
+    mask = labels >= 0
+    xs = X[mask]
+    # Expanded form: an (n, k, d) difference tensor is hundreds of MB at benchmark sizes.
+    d2 = (xs**2).sum(1)[:, None] - 2.0 * (xs @ medoids.T) + (medoids**2).sum(1)[None, :]
+    own = np.searchsorted(uniq, labels[mask])
+    mine = d2[np.arange(d2.shape[0]), own]
+    d2[np.arange(d2.shape[0]), own] = np.inf
+    other = d2.min(1)
+    return float(np.mean(np.where(other > 0, 1.0 - mine / other, 0.0)))
+
+
 def score(X, y, labels):
     from sklearn import metrics
 
@@ -197,6 +227,7 @@ def score(X, y, labels):
                 sample_size=min(5000, int(mask.sum())),
                 random_state=0,
             )
+            out["medoid_silhouette"] = medoid_silhouette(X, np.asarray(labels))
             out["davies_bouldin"] = metrics.davies_bouldin_score(X[mask], np.asarray(labels)[mask])
             out["calinski_harabasz"] = metrics.calinski_harabasz_score(
                 X[mask], np.asarray(labels)[mask]
