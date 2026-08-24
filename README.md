@@ -183,6 +183,12 @@ snapshots / active-learning batches, the Rust API, and the CLI — all in the
   singular (`N_k ≪ d`) and a diagonal model ignores neighbour correlation; the `-full` head captures
   structure beyond a low-order AR (e.g. a long-lag echo), the `-gs` head fits a likelihood-optimal
   precision with a cheaper E-step than full at large `d`.
+- **Subspace GMM** — **`method="mppca"`**, a mixture of probabilistic PCA (Tipping & Bishop 1999):
+  each component covariance is `W Wᵀ + σ²I` of rank `rank`, so it carries orientation at `O(d·rank)`
+  per component instead of `O(d²)` and runs at `d = 784` where the full head cannot. At one leaf per
+  point on `digits` it beats both the diagonal and the full head (ARI 0.600 vs 0.461 / 0.575); on a
+  coarse summary it loses to the diagonal head, and
+  [`docs/USAGE.md`](https://github.com/ilgrad/betula-cluster/blob/main/docs/USAGE.md) measures why.
 - **More heads & data** — `DenStream` / `DbStream` evolving-stream density, mergeable `KllSketch` /
   `DdSketch` quantiles, `scipy.sparse` (`O(nnz)`, never densified), mixed numeric+categorical
   (`KPrototypes`), COP-KMeans constraints, robust (Huber) insertion, drift snapshots, dependency-free CLI.

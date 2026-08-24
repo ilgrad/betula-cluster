@@ -16,8 +16,9 @@ use crate::types::Real;
 /// A feature's covariance `Σ = M / n` in the form the full-covariance GMM E-step needs: `Dense` for
 /// the dense models, or `LowRank` rows `{f_r}` with `Σ = Σ_r f_r f_rᵀ` for the Frequent-Directions
 /// sketch. The low-rank form keeps the GMM at `O(ℓ·d)` per leaf instead of materialising `d×d`
-/// (which would undo FD's whole memory advantage). Both encode the same matrix, so `trace_under` and
-/// `add_scaled` return identical values for either variant.
+/// (which would undo FD's whole memory advantage). Both encode the same matrix, so every accessor
+/// here — `trace_under`, `trace`, `apply_rows`, `add_scaled` — returns identical values for either
+/// variant.
 pub enum SecondMoment<R: Real> {
     /// Dense `d×d` covariance.
     Dense(Vec<Vec<R>>),
@@ -45,6 +46,58 @@ impl<R: Real> SecondMoment<R> {
                 .iter()
                 .map(|f| linalg::mahalanobis_sq_from_chol(chol, f))
                 .fold(R::zero(), |a, b| a + b),
+        }
+    }
+
+    /// `tr(Σ)`. For `LowRank` this is `Σ_r ‖f_r‖²`, so the diagonal is never materialised.
+    pub fn trace(&self) -> R {
+        match self {
+            SecondMoment::Dense(cov) => cov
+                .iter()
+                .enumerate()
+                .map(|(d, row)| row[d])
+                .fold(R::zero(), |a, b| a + b),
+            SecondMoment::LowRank(rows) => rows
+                .iter()
+                .map(|f| f.iter().map(|&v| v * v).fold(R::zero(), |a, b| a + b))
+                .fold(R::zero(), |a, b| a + b),
+        }
+    }
+
+    /// `out[r] += w · Σ v_r` for each row `v_r` of `v` — the only product a subspace head needs of a
+    /// leaf's scatter. For `LowRank`, `Σ v = Σ_j f_j (f_j·v)` costs `O(ℓ·d)` per row against the
+    /// dense `O(d²)`, which is what keeps an `ℓ`-row sketch cheaper than the covariance it stands for.
+    pub fn apply_rows(&self, v: &[Vec<R>], out: &mut [Vec<R>], w: R) {
+        match self {
+            SecondMoment::Dense(cov) => {
+                for (vr, o) in v.iter().zip(out.iter_mut()) {
+                    for (a, row) in cov.iter().enumerate() {
+                        let s = row
+                            .iter()
+                            .zip(vr)
+                            .map(|(&c, &x)| c * x)
+                            .fold(R::zero(), |p, q| p + q);
+                        o[a] = o[a] + w * s;
+                    }
+                }
+            }
+            SecondMoment::LowRank(rows) => {
+                for (vr, o) in v.iter().zip(out.iter_mut()) {
+                    for f in rows {
+                        let dot = f
+                            .iter()
+                            .zip(vr)
+                            .map(|(&a, &b)| a * b)
+                            .fold(R::zero(), |p, q| p + q);
+                        let c = w * dot;
+                        if c != R::zero() {
+                            for (ov, &fv) in o.iter_mut().zip(f) {
+                                *ov = *ov + c * fv;
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -1107,6 +1160,68 @@ mod tests {
             (f.mahalanobis_sq(&far).unwrap() - 4.0 * d1).abs() < 1e-9,
             "not quadratic in the deviation"
         );
+    }
+
+    /// `trace` and `apply_rows` are the two products the MPPCA head takes of a leaf's scatter, and
+    /// both have a `LowRank` path that never forms `Σ`. Check each against `Σ` built densely, on a
+    /// sketch whose rows are neither orthogonal nor axis-aligned.
+    #[test]
+    fn the_low_rank_scatter_products_agree_with_the_dense_ones() {
+        let rows = vec![
+            vec![1.0_f64, -2.0, 0.5, 3.0],
+            vec![0.0, 1.0, 2.0, -1.0],
+            vec![-1.5, 0.25, 1.0, 0.75],
+        ];
+        let mut dense = vec![vec![0.0_f64; 4]; 4];
+        for r in &rows {
+            for i in 0..4 {
+                for j in 0..4 {
+                    dense[i][j] += r[i] * r[j];
+                }
+            }
+        }
+        let low = SecondMoment::LowRank(rows);
+        let full = SecondMoment::Dense(dense.clone());
+        assert!(close(low.trace(), full.trace()));
+        assert!(close(low.trace(), (0..4).map(|i| dense[i][i]).sum()));
+
+        let v = vec![vec![2.0_f64, 0.0, -1.0, 0.5], vec![0.3, 1.7, 0.0, -2.0]];
+        let mut a = vec![vec![0.0_f64; 4]; 2];
+        let mut b = vec![vec![0.0_f64; 4]; 2];
+        low.apply_rows(&v, &mut a, 1.5);
+        full.apply_rows(&v, &mut b, 1.5);
+        for (ra, rb) in a.iter().zip(&b) {
+            for (&x, &y) in ra.iter().zip(rb) {
+                assert!(close(x, y), "{x} vs {y}");
+            }
+        }
+        // …and against the longhand `1.5 · Σ v` rather than only against each other.
+        for (r, vr) in v.iter().enumerate() {
+            for i in 0..4 {
+                let want: f64 = 1.5 * (0..4).map(|j| dense[i][j] * vr[j]).sum::<f64>();
+                assert!(
+                    close(a[r][i], want),
+                    "row {r} dim {i}: {} vs {want}",
+                    a[r][i]
+                );
+            }
+        }
+    }
+
+    /// `apply_rows` accumulates: two half-weight calls must equal one full-weight call, which is
+    /// what lets the M-step sum leaf contributions into one buffer.
+    #[test]
+    fn apply_rows_accumulates_into_its_target() {
+        let low = SecondMoment::LowRank(vec![vec![1.0_f64, 2.0], vec![-0.5, 0.25]]);
+        let v = vec![vec![1.0_f64, -1.0]];
+        let mut once = vec![vec![0.0_f64; 2]; 1];
+        let mut twice = vec![vec![0.0_f64; 2]; 1];
+        low.apply_rows(&v, &mut once, 1.0);
+        low.apply_rows(&v, &mut twice, 0.4);
+        low.apply_rows(&v, &mut twice, 0.6);
+        for (&x, &y) in once[0].iter().zip(&twice[0]) {
+            assert!(close(x, y), "{x} vs {y}");
+        }
     }
 }
 

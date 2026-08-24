@@ -19,7 +19,7 @@ labels = betula_cluster.fit_predict(X, method="hdbscan", min_samples=10, min_clu
 # hdbscan: label -1 == noise
 ```
 
-Keyword args: `feature ∈ {spherical, diagonal, full, fd}`, `method ∈ {kmeans, gmm, gmm-full, ward, spectral, leiden, leiden-cpm, spherical-kmeans, vmf, gmm-toeplitz, gmm-toeplitz-full, gmm-toeplitz-gs, hdbscan, scale-space}`,
+Keyword args: `feature ∈ {spherical, diagonal, full, fd}`, `method ∈ {kmeans, gmm, gmm-full, mppca, ward, spectral, leiden, leiden-cpm, spherical-kmeans, vmf, gmm-toeplitz, gmm-toeplitz-full, gmm-toeplitz-gs, hdbscan, scale-space}`,
 `distance ∈ {euclidean, manhattan, ward, average}` (routing measure),
 `absorb ∈ {euclidean, manhattan, average, diameter, ward, radius, chi2, subspace}` (see *Absorption criteria*
 below; `chi2` = mass-invariant Mahalanobis gate at level `chi2_p` with `chi2_scale` = within-cluster
@@ -40,7 +40,8 @@ leaves every core distance at 0 and HDBSCAN\* degenerates to single linkage;
 ⇒ more communities), `covariance_weight` (Leiden β — a log-Euclidean covariance/shape term in the
 affinity, `feature="full"`; `0` = off, the centroid-only default), `tangent_weight` / `tangent_rank`
 (Leiden γ — a Grassmann tangent-subspace term of rank `tangent_rank` for manifold-aware communities,
-`feature="full"`; `0` = off), `projection` / `projection_dim` / `projection_max_iter` (reduce the leaf centroids to
+`feature="full"`; `0` = off), `rank` (MPPCA subspace rank `q` for `method="mppca"`, clamped to at
+most `dim - 1`; `0` makes every component spherical), `projection` / `projection_dim` / `projection_max_iter` (reduce the leaf centroids to
 `projection_dim` codes before the head; `"none"` = off. **`"weighted-nmf"`**, or
 **`"weighted-nmf-kl"`** for count data, gives nonnegative CF-weighted NMF codes — for **nonnegative**
 data only: TF-IDF / counts / spectrograms, dense or CSR. **`"svd"`** gives a CF-weighted PCA, accepts
@@ -106,6 +107,7 @@ answer.
 |---|---|---|
 | compact/spherical groups, fastest | `kmeans` | yes |
 | elliptical / correlated / anisotropic, soft assignment | `gmm` (diag) or `gmm-full` | yes (or `0` = BIC) |
+| clusters on **low-dimensional subspaces**, `d` too large for `gmm-full` | `mppca` + `feature="fd"`, `rank` = the intrinsic dimension — read *`rank`, and where `mppca` loses* first | yes (or `0` = BIC) |
 | **L2-normalized embeddings** (CLIP / face / sentence / speaker), cosine geometry | `vmf` (soft) or `spherical-kmeans` (hard) | yes (or `0` = BIC, `vmf`) |
 | a cluster *hierarchy* / merge structure | `ward` | yes (or `0` = dendrogram cut) |
 | **non-convex / manifold** shapes (moons, rings, spirals) | `spectral` | yes (pair with a **small** `threshold`) |
@@ -119,6 +121,48 @@ answer.
 `n_clusters=0` auto-selects `k` for the parametric heads; `leiden` / `hdbscan` always discover it
 (`leiden` reads the count off the graph — tune granularity with `resolution` γ, higher ⇒ more).
 For a robustness score per point, wrap any partitional head in `consensus` (see below).
+
+### `rank`, and where `mppca` loses — `method="mppca"`
+
+`mppca` constrains each component covariance to `W_c W_cᵀ + σ_c² I` with `W_c` of rank `rank`: a
+`rank`-dimensional principal subspace plus isotropic noise. It buys `gmm-full`'s orientation at
+`O(d·rank)` per component instead of `O(d²)`, which is what makes it usable at `d = 784` where the
+full head's per-leaf dense scatters need ~38 GB and simply do not run. Pair it with `feature="fd"`,
+whose leaf scatter is already low-rank, and the E-step never forms a `d×d` matrix either.
+
+**`rank` is the intrinsic dimension of a cluster, and the fit finds it.** Six 5-dimensional
+subspaces sharing one centre in 100-D — where every centroid coincides and orientation is the only
+signal — `max_leaves=2000`, median of seeds 0/1/2:
+
+| `rank` | 2 | 3 | **5** | 10 | 20 | `gmm` (diag) |
+|---|---|---|---|---|---|---|
+| ARI | 0.385 | 0.654 | **0.998** | 0.823 | 0.727 | 0.166 |
+
+The peak is exactly at the true rank, and the band at `rank=5` is [0.9976, 0.9984] — this is not a
+lucky seed. Overshooting costs less than undershooting *here*; on a compressed summary it costs much
+more, which is the next paragraph. Where the centroids are far enough apart to separate the clusters
+on their own, the extra parameters cost nothing: on the same six subspaces pulled apart, `gmm` and
+`mppca` both score 1.0000 at every rank from 2 to 20.
+
+**The trade is against compression, not against dimension.** The expected-log E-step folds each
+leaf's own scatter into the component covariance as `−½ tr(Σ_c⁻¹ Σ_i)`. That within-leaf scatter is
+locally oriented and adds up to a term that carries almost none of the *between-cluster*
+orientation — so the more orientation a head models, the more the summary costs it. Measured on
+`digits` (1797×64, `feature="fd"`, median of seeds 0/1/2), where `max_leaves=2000` gives one leaf per
+point and the correction is exactly zero:
+
+| `max_leaves` | leaves | `gmm` (diag) | `mppca` `rank=5` | `mppca` `rank=10` | `gmm-full` |
+|---|---|---|---|---|---|
+| 2000 | 1797 (= n) | 0.461 | **0.600** | 0.555 | 0.575 |
+| 300 | 296 | **0.493** | 0.406 | 0.348 | 0.273 |
+| 120 | 115 | **0.235** | 0.168 | 0.121 | 0.099 |
+
+At full resolution `mppca` beats both the diagonal head *and* the full head at a fraction of the
+parameters. At 6:1 compression the ordering inverts, and it inverts in exact order of how much
+orientation each head carries. On MNIST-20k (784-D, `max_leaves=2000` ⇒ 1880 leaves, 10.6:1) that
+puts `mppca` behind the diagonal head at every rank tried — ARI **0.159 / 0.069 / 0.024** for
+`rank` 2 / 5 / 10 against `gmm`'s **0.274** — and the loss grows with rank, as the mechanism
+predicts. Use `mppca` when the summary is fine relative to the clusters; use `gmm` when it is coarse.
 
 ### `min_samples` on a summary — `hdbscan`
 

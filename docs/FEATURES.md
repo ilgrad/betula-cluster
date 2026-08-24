@@ -28,6 +28,11 @@ A capability-by-capability reference. For runnable code see [`USAGE.md`](USAGE.m
   head — the full-order **Gohberg-Semencul MLE** precision (Yule-Walker warm start + exact-likelihood
   coordinate ascent, PD by `|k| < 1`), the likelihood-optimal general precision with a cheaper `O(m·d·p)`
   E-step than the dense route,
+  a **mixture of probabilistic PCA** (`method="mppca"`, Tipping & Bishop 1999) whose component
+  covariance is `W Wᵀ + σ²I` of rank `rank` — orientation like the full-covariance head at
+  `O(d·rank)` per component instead of `O(d²)`, with the Woodbury inverse and the `σ^(2(d−q))|M|`
+  determinant keeping every step off the `d×d` matrix; pair it with `feature="fd"`, whose leaf
+  scatter is already low-rank,
   **Ward agglomerative HAC** (exact, via nearest-neighbour chain; dendrogram-cut auto-k),
   **spectral clustering** (self-tuning k-NN affinity + normalized Laplacian embedding via the
   in-house Jacobi eigensolver, k-means-landmark-reduced above 256 microclusters — separates

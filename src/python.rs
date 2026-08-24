@@ -96,6 +96,7 @@ fn warn_leaf_budget(py: Python<'_>, leaves: usize, k: usize, max_leaves: usize) 
 }
 
 /// Map the `method` keyword (+ HDBSCAN params) to an internal [`Kind`].
+#[allow(clippy::too_many_arguments)] // one parameter per head-specific keyword, as the callers have
 fn parse_method(
     method: &str,
     min_samples: usize,
@@ -104,6 +105,7 @@ fn parse_method(
     covariance_weight: f64,
     tangent_weight: f64,
     tangent_rank: usize,
+    rank: usize,
 ) -> PyResult<Kind> {
     match method {
         "kmeans" => Ok(Kind::Parametric(Method::KMeans)),
@@ -130,13 +132,14 @@ fn parse_method(
         "gmm-toeplitz" => Ok(Kind::Parametric(Method::GmmToeplitz)),
         "gmm-toeplitz-full" => Ok(Kind::Parametric(Method::GmmToeplitzFull)),
         "gmm-toeplitz-gs" => Ok(Kind::Parametric(Method::GmmToeplitzGs)),
+        "mppca" => Ok(Kind::Parametric(Method::Mppca { rank })),
         "hdbscan" => Ok(Kind::Hdbscan {
             min_samples,
             min_cluster_size,
         }),
         "scale-space" => Ok(Kind::ScaleSpace),
         _ => Err(PyValueError::new_err(
-            "method must be 'kmeans', 'gmm', 'gmm-full', 'ward', 'spectral', 'leiden', \
+            "method must be 'kmeans', 'gmm', 'gmm-full', 'mppca', 'ward', 'spectral', 'leiden', \
              'leiden-cpm', 'spherical-kmeans', 'vmf', 'gmm-toeplitz', 'gmm-toeplitz-full', \
              'gmm-toeplitz-gs', 'hdbscan' or 'scale-space'",
         )),
@@ -979,7 +982,7 @@ fn run_oneshot<R: Real + Element>(
     min_samples = 5, min_cluster_size = 5, seed = 0, distance = "euclidean",
     absorb = "euclidean", chi2_p = 0.95, chi2_scale = 0.0, n_jobs = 1, normalize = false,
     resolution = 1.0, covariance_weight = 0.0, tangent_weight = 0.0, tangent_rank = 2,
-    projection = "none", projection_dim = 64, projection_max_iter = 100, refine = 0
+    projection = "none", projection_dim = 64, projection_max_iter = 100, refine = 0, rank = 2
 ))]
 #[allow(clippy::too_many_arguments)]
 fn fit_predict<'py>(
@@ -1010,6 +1013,7 @@ fn fit_predict<'py>(
     projection_dim: usize,
     projection_max_iter: usize,
     refine: usize,
+    rank: usize,
 ) -> PyResult<Bound<'py, PyArray1<i64>>> {
     let kind = parse_method(
         method,
@@ -1019,6 +1023,7 @@ fn fit_predict<'py>(
         covariance_weight,
         tangent_weight,
         tangent_rank,
+        rank,
     )?;
     let nmf_dim = parse_projection(projection, projection_dim, projection_max_iter)?;
     let (labels, leaves) = if let Ok(a) = data.extract::<PyReadonlyArray2<'py, f64>>() {
@@ -1527,6 +1532,10 @@ fn default_projection_max_iter() -> usize {
     100
 }
 
+fn default_rank() -> usize {
+    2
+}
+
 #[pyclass(name = "Betula", module = "betula_cluster._core")]
 #[derive(serde::Serialize, serde::Deserialize)]
 struct Betula {
@@ -1567,6 +1576,9 @@ struct Betula {
     /// Rank `r` of the local tangent subspaces compared by `tangent_weight`; kept for `get_params`.
     #[serde(default = "default_tangent_rank")]
     tangent_rank: usize,
+    /// Subspace rank `q` of the MPPCA head (`method="mppca"`); kept for `get_params`.
+    #[serde(default = "default_rank")]
+    rank: usize,
     /// Phase-3 CF-weighted NMF reduction dim (`projection="weighted-nmf"`); `None` = no projection.
     #[serde(default)]
     nmf_dim: Option<usize>,
@@ -1970,7 +1982,7 @@ impl Betula {
         }
         let (leaf, k) = self.proba.as_ref().ok_or_else(|| {
             PyValueError::new_err(
-                "predict_proba is only available after fit with method='gmm', 'gmm-full', 'vmf', 'gmm-toeplitz', 'gmm-toeplitz-full' or 'gmm-toeplitz-gs'",
+                "predict_proba is only available after fit with method='gmm', 'gmm-full', 'mppca', 'vmf', 'gmm-toeplitz', 'gmm-toeplitz-full' or 'gmm-toeplitz-gs'",
             )
         })?;
         let idx = py.detach(|| tree.assign_microclusters(flat, n, dim));
@@ -2023,7 +2035,7 @@ impl Betula {
         distance = "euclidean", absorb = "euclidean", chi2_p = 0.95, chi2_scale = 0.0, decay = 1.0,
         normalize = false, huber_k = None, resolution = 1.0, covariance_weight = 0.0,
         tangent_weight = 0.0, tangent_rank = 2, projection = "none", projection_dim = 64,
-        projection_max_iter = 100, refine = 0
+        projection_max_iter = 100, refine = 0, rank = 2
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -2053,6 +2065,7 @@ impl Betula {
         projection_dim: usize,
         projection_max_iter: usize,
         refine: usize,
+        rank: usize,
     ) -> PyResult<Self> {
         let kind = parse_method(
             method,
@@ -2062,6 +2075,7 @@ impl Betula {
             covariance_weight,
             tangent_weight,
             tangent_rank,
+            rank,
         )?;
         let proj = parse_projection(projection, projection_dim, projection_max_iter)?;
         let nmf_dim = proj.map(|p| p.rank);
@@ -2118,6 +2132,7 @@ impl Betula {
             covariance_weight,
             tangent_weight,
             tangent_rank,
+            rank,
             nmf_dim,
             nmf_kl,
             nmf_max_iter,
@@ -2389,7 +2404,7 @@ impl Betula {
     fn microcluster_proba_<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray2<f64>>> {
         let (flat, k) = self.proba.as_ref().ok_or_else(|| {
             PyValueError::new_err(
-                "predict_proba posterior is only available after fit with method='gmm', 'gmm-full', 'vmf', 'gmm-toeplitz', 'gmm-toeplitz-full' or 'gmm-toeplitz-gs'",
+                "predict_proba posterior is only available after fit with method='gmm', 'gmm-full', 'mppca', 'vmf', 'gmm-toeplitz', 'gmm-toeplitz-full' or 'gmm-toeplitz-gs'",
             )
         })?;
         let rows = flat.len().checked_div(*k).unwrap_or(0);
@@ -2671,6 +2686,7 @@ impl Betula {
         d.set_item("covariance_weight", self.covariance_weight)?;
         d.set_item("tangent_weight", self.tangent_weight)?;
         d.set_item("tangent_rank", self.tangent_rank)?;
+        d.set_item("rank", self.rank)?;
         d.set_item("refine", self.refine)?;
         Ok(d)
     }

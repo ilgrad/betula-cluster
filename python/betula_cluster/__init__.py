@@ -369,6 +369,7 @@ _DEFAULTS = {
     "projection_dim": 64,
     "projection_max_iter": 100,
     "refine": 0,
+    "rank": 2,
     "memory_budget_mb": None,
 }
 _PARAM_NAMES = tuple(_DEFAULTS)
@@ -424,6 +425,7 @@ class Betula:
         projection_dim=64,
         projection_max_iter=100,
         refine=0,
+        rank=2,
         memory_budget_mb=None,
     ):
         self.n_clusters = n_clusters
@@ -472,6 +474,9 @@ class Betula:
         # the CF centres. Centroid heads only (kmeans / spherical-kmeans), dense in-memory `fit` /
         # `fit_predict` only. A better objective is not automatically a better partition. 0 = off.
         self.refine = refine
+        # Subspace rank q of the MPPCA head (method="mppca"): each component's covariance is
+        # W Wᵀ + σ²I with W of rank q, clamped to at most dim - 1. Ignored by every other head.
+        self.rank = rank
         # When set, max_leaves is derived from this budget (+ dim + feature) at fit time: a target
         # for the CF-tree resident size (MiB), not total RSS. Most useful for streaming.
         self.memory_budget_mb = memory_budget_mb
@@ -965,6 +970,7 @@ class Betula:
         if self.method in (
             "gmm",
             "gmm-full",
+            "mppca",
             "vmf",
             "gmm-toeplitz",
             "gmm-toeplitz-full",

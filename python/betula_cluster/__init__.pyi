@@ -37,6 +37,7 @@ _Method = Literal[
     "kmeans",
     "gmm",
     "gmm-full",
+    "mppca",
     "ward",
     "spectral",
     "leiden",
@@ -138,6 +139,7 @@ def fit_predict(
     projection_dim: int = ...,
     projection_max_iter: int = ...,
     refine: int = ...,
+    rank: int = ...,
 ) -> NDArray[np.int64]:
     """Cluster ``data`` in one shot and return per-point integer labels (``-1`` = noise)."""
 
@@ -186,6 +188,7 @@ class Betula:
         projection_dim: int = ...,
         projection_max_iter: int = ...,
         refine: int = ...,
+        rank: int = ...,
         memory_budget_mb: float | None = ...,
     ) -> None: ...
     def get_params(self, deep: bool = ...) -> dict[str, Any]: ...

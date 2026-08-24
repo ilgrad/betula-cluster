@@ -10,6 +10,7 @@ pub(crate) mod graph;
 pub mod hdbscan;
 pub mod kmeans;
 pub mod kprototypes;
+pub mod mppca;
 pub mod nmf;
 pub(crate) mod pca;
 pub(crate) mod rng;
@@ -27,6 +28,7 @@ pub use gmm_toeplitz::{
 pub use hdbscan::{Hdbscan, hdbscan};
 pub use kmeans::{ConstraintError, KMeans, cop_kmeans, kmeans, xmeans};
 pub use kprototypes::{MixedCf, kprototypes, nearest_micro, summarize_mixed};
+pub use mppca::{Mppca, mppca, mppca_auto};
 pub use scalespace::{ScaleSpace, scale_space};
 pub use spectral::{Spectral, spectral};
 pub use vmf::{Movmf, SphericalKMeans, movmf, movmf_auto, spherical_kmeans};

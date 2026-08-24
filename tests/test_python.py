@@ -71,6 +71,7 @@ def moons():
         ("diagonal", "gmm"),
         ("full", "gmm-full"),
         ("fd", "gmm-full"),
+        ("fd", "mppca"),
         ("diagonal", "ward"),
         ("spherical", "spectral"),
     ],
@@ -84,7 +85,8 @@ def test_fit_predict_recovers_blobs(blobs, feature, method):
 
 
 @pytest.mark.parametrize(
-    "feature,method", [("diagonal", "gmm"), ("full", "gmm-full"), ("diagonal", "ward")]
+    "feature,method",
+    [("diagonal", "gmm"), ("full", "gmm-full"), ("fd", "mppca"), ("diagonal", "ward")],
 )
 def test_auto_k_selects_true_count_when_n_clusters_zero(blobs, feature, method):
     x, y = blobs
@@ -670,6 +672,42 @@ def test_subspace_gate_beats_chi2_where_only_orientation_separates():
     # A gate that merely splits more finely buys purity for free, so the counts have to stay close.
     assert n_sub <= 1.3 * n_chi2, f"subspace bought purity with leaves: {n_sub} vs {n_chi2}"
     assert pure_sub > pure_chi2, f"subspace {pure_sub:.4f} did not beat chi2 {pure_chi2:.4f}"
+
+
+def test_mppca_separates_subspaces_a_diagonal_covariance_cannot():
+    """The head's reason to exist, on the fixture that isolates it.
+
+    Every cluster shares one centre and every per-dimension variance, so neither the centroid nor a
+    diagonal covariance carries any signal — only the orientation of the subspace does. `gmm` has to
+    fail here and `mppca` has to succeed, at the same leaves and the same seed.
+    """
+    x, truth = _concentric_subspaces(6000, 40, 3, 3, seed=0)
+    got = {}
+    for method, kw in (("gmm", {}), ("mppca", {"rank": 3})):
+        est = betula_cluster.Betula(
+            n_clusters=3, feature="fd", method=method, max_leaves=300, seed=0, **kw
+        )
+        got[method] = ari(est.fit_predict(x), truth)
+    assert got["gmm"] < 0.3, f"diagonal ARI {got['gmm']:.4f}: fixture is not discriminating"
+    assert got["mppca"] > 0.9, f"mppca ARI {got['mppca']:.4f}"
+
+
+def test_mppca_rank_is_clamped_below_the_dimension(blobs):
+    """`rank >= dim` would leave no isotropic residual for σ² to explain. The head clamps rather
+    than erroring, so a caller who asks for more subspace than the data has still gets a fit."""
+    x, y = blobs
+    labels = betula_cluster.fit_predict(
+        x, 4, feature="fd", method="mppca", rank=64, threshold=0.05, max_leaves=300, seed=1
+    )
+    assert ari(labels, y) > 0.95
+
+
+def test_mppca_rank_zero_is_a_spherical_mixture(blobs):
+    x, y = blobs
+    labels = betula_cluster.fit_predict(
+        x, 4, feature="fd", method="mppca", rank=0, threshold=0.05, max_leaves=300, seed=1
+    )
+    assert ari(labels, y) > 0.95
 
 
 @pytest.mark.parametrize("distance", ["euclidean", "manhattan", "ward", "average"])
@@ -2326,7 +2364,8 @@ def test_consensus_parallel_matches_serial(blobs):
 
 
 @pytest.mark.parametrize(
-    "method", ["gmm", "gmm-full", "vmf", "gmm-toeplitz", "gmm-toeplitz-full", "gmm-toeplitz-gs"]
+    "method",
+    ["gmm", "gmm-full", "mppca", "vmf", "gmm-toeplitz", "gmm-toeplitz-full", "gmm-toeplitz-gs"],
 )
 def test_mixture_labels_are_the_maximum_posterior(method):
     """A mixture head assigns by maximum posterior; `predict` must return that partition.

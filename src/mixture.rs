@@ -129,6 +129,15 @@ enum Kernel {
         means: Vec<Vec<f64>>,
         kappas: Vec<f64>,
     },
+    /// Probabilistic-PCA component: `Σ_c = W_c W_cᵀ + σ_c² I`, held as the `q` loading rows, the
+    /// Cholesky of `M_c = σ_c² I_q + W_cᵀ W_c` and `1/σ_c²`. Scoring goes through Woodbury, so no
+    /// `d×d` matrix exists here either — the reason this head can hold `k` components at `d = 784`.
+    LowRank {
+        means: Vec<Vec<f64>>,
+        loads: Vec<Vec<Vec<f64>>>,
+        m_chol: Vec<Vec<Vec<f64>>>,
+        inv_noise: Vec<f64>,
+    },
 }
 
 /// The point-level density of a fitted mixture head: `ln π_c + ln p(x | θ_c)` per component, and the
@@ -231,6 +240,63 @@ impl Mixture {
         }
     }
 
+    /// Probabilistic-PCA mixture (`method="mppca"`), given each component's `q` loading rows
+    /// (`loads[c][r]` is a length-`d` column of `W_c`) and its isotropic noise `σ_c²`.
+    ///
+    /// `M_c = σ_c² I_q + W_cᵀ W_c` is built and factorized once here, so scoring costs `O(q·d)` per
+    /// component and `log|Σ_c| = (d−q) ln σ_c² + log|M_c|` never touches a `d×d` determinant.
+    pub(crate) fn low_rank<R: Real>(
+        weights: &[R],
+        means: &[Vec<R>],
+        loads: &[Vec<Vec<R>>],
+        noise: &[R],
+    ) -> Self {
+        let dim = means.first().map_or(0, |m| m.len()) as f64;
+        let log_two_pi = std::f64::consts::TAU.ln();
+        let mut logw = Vec::with_capacity(weights.len());
+        let mut kept = Vec::with_capacity(weights.len());
+        let mut m_chol = Vec::with_capacity(weights.len());
+        let mut inv_noise = Vec::with_capacity(weights.len());
+        for ((&w, rows), &s2) in weights.iter().zip(loads).zip(noise) {
+            let s2 = as_f64(s2).max(f64::MIN_POSITIVE);
+            let rows: Vec<Vec<f64>> = widen_rows(rows);
+            let q = rows.len();
+            let mut m = vec![vec![0.0; q]; q];
+            for i in 0..q {
+                for j in 0..=i {
+                    let dot: f64 = rows[i].iter().zip(&rows[j]).map(|(&a, &b)| a * b).sum();
+                    m[i][j] = dot;
+                    m[j][i] = dot;
+                }
+                m[i][i] += s2;
+            }
+            // `M ⪰ σ² I ≻ 0`, so this factors unless a loading row has overflowed. Dropping the
+            // loadings then leaves a well-defined isotropic component rather than a NaN density.
+            let chol = crate::linalg::cholesky_lower(&m);
+            let (rows, chol, logdet) = match chol {
+                Some(l) => {
+                    let ld = crate::linalg::logdet_from_chol(&l);
+                    let ld = (dim - q as f64) * s2.ln() + ld;
+                    (rows, l, ld)
+                }
+                None => (Vec::new(), Vec::new(), dim * s2.ln()),
+            };
+            logw.push(ln_weight(w) - 0.5 * (dim * log_two_pi + logdet));
+            kept.push(rows);
+            m_chol.push(chol);
+            inv_noise.push(1.0 / s2);
+        }
+        Self {
+            logw,
+            kernel: Kernel::LowRank {
+                means: widen_rows(means),
+                loads: kept,
+                m_chol,
+                inv_noise,
+            },
+        }
+    }
+
     /// Silence every component that no leaf hard-assigns, so a prediction can only name a label the
     /// fitted partition actually uses. An EM component can end up with responsibility everywhere and
     /// the argmax nowhere; without this it would be reachable from `predict` but absent from
@@ -284,6 +350,39 @@ impl Mixture {
                         *dv = as_f64(xd) - mu;
                     }
                     out.push(lw + cov.loglik(&delta));
+                }
+            }
+            Kernel::LowRank {
+                means,
+                loads,
+                m_chol,
+                inv_noise,
+            } => {
+                let mut delta = vec![0.0; x.len()];
+                let mut proj = Vec::new();
+                for (((&lw, mu), rows), (l, &iv)) in self
+                    .logw
+                    .iter()
+                    .zip(means)
+                    .zip(loads)
+                    .zip(m_chol.iter().zip(inv_noise))
+                {
+                    let mut iso = 0.0;
+                    for ((dv, &xd), &md) in delta.iter_mut().zip(x).zip(mu) {
+                        *dv = as_f64(xd) - md;
+                        iso += *dv * *dv;
+                    }
+                    proj.clear();
+                    proj.extend(
+                        rows.iter()
+                            .map(|r| r.iter().zip(&delta).map(|(&f, &d)| f * d).sum::<f64>()),
+                    );
+                    let corr = if proj.is_empty() {
+                        0.0
+                    } else {
+                        mahalanobis_sq_from_chol(l, &proj)
+                    };
+                    out.push(lw - 0.5 * (iso - corr) * iv);
                 }
             }
             Kernel::Vmf { means, kappas } => {
@@ -469,6 +568,74 @@ mod tests {
         let (mut a, mut b) = (Vec::new(), Vec::new());
         diag.log_joint(&x, &mut a);
         full.log_joint(&x, &mut b);
+        for (u, v) in a.iter().zip(&b) {
+            assert!((u - v).abs() < 1e-12, "{u} vs {v}");
+        }
+    }
+
+    /// Woodbury against the dense inverse it exists to avoid: the `LowRank` arm must agree with a
+    /// `Full` component built by materializing `Σ = W Wᵀ + σ² I` and factorizing it, on both the
+    /// quadratic form and the normalizer.
+    #[test]
+    fn low_rank_matches_the_dense_covariance_it_never_forms() {
+        let dim = 4;
+        let loads = vec![
+            vec![vec![1.0_f64, -2.0, 0.5, 3.0], vec![0.0, 1.0, 2.0, -1.0]],
+            vec![vec![2.0_f64, 0.0, -1.0, 1.0]],
+        ];
+        let noise = [0.75_f64, 1.5];
+        let means = vec![vec![0.0_f64, 1.0, -1.0, 2.0], vec![1.0, 1.0, 1.0, 1.0]];
+        let weights = [0.35_f64, 0.65];
+
+        let mut chol = Vec::new();
+        let mut logdet = Vec::new();
+        for (rows, &s2) in loads.iter().zip(&noise) {
+            let mut cov = vec![vec![0.0_f64; dim]; dim];
+            for r in rows {
+                for i in 0..dim {
+                    for j in 0..dim {
+                        cov[i][j] += r[i] * r[j];
+                    }
+                }
+            }
+            for (i, row) in cov.iter_mut().enumerate() {
+                row[i] += s2;
+            }
+            let l = crate::linalg::cholesky_lower(&cov).expect("Sigma is positive definite");
+            logdet.push(crate::linalg::logdet_from_chol(&l));
+            chol.push(l);
+        }
+
+        let dense = Mixture::full(&weights, &means, &chol, &logdet);
+        let lowrank = Mixture::low_rank(&weights, &means, &loads, &noise);
+        let (mut a, mut b) = (Vec::new(), Vec::new());
+        for x in [
+            [0.0_f64, 0.0, 0.0, 0.0],
+            [1.3, -0.4, 2.2, 0.1],
+            [-5.0, 4.0, -3.0, 6.0],
+        ] {
+            dense.log_joint(&x, &mut a);
+            lowrank.log_joint(&x, &mut b);
+            for (c, (u, v)) in a.iter().zip(&b).enumerate() {
+                assert!((u - v).abs() < 1e-10, "c={c}: {u} vs {v}");
+            }
+        }
+    }
+
+    /// `q = 0` is the degenerate rung the head falls back to when a component holds no direction
+    /// worth keeping: it must be a spherical Gaussian exactly, not approximately.
+    #[test]
+    fn low_rank_without_loadings_is_a_spherical_gaussian() {
+        let means = vec![vec![0.0_f64, 1.0], vec![2.0, -1.0]];
+        let weights = [0.4_f64, 0.6];
+        let noise = [2.0_f64, 0.5];
+        let vars: Vec<Vec<f64>> = noise.iter().map(|&s2| vec![s2, s2]).collect();
+        let sphere = Mixture::diagonal(&weights, &means, &vars);
+        let lowrank = Mixture::low_rank(&weights, &means, &[Vec::new(), Vec::new()], &noise);
+        let (mut a, mut b) = (Vec::new(), Vec::new());
+        let x = [0.7_f64, 0.3];
+        sphere.log_joint(&x, &mut a);
+        lowrank.log_joint(&x, &mut b);
         for (u, v) in a.iter().zip(&b) {
             assert!((u - v).abs() < 1e-12, "{u} vs {v}");
         }

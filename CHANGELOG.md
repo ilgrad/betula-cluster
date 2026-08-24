@@ -7,6 +7,38 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **`method="mppca"`: a mixture of probabilistic PCA, and the compression trade it exposes.** Each
+  component covariance is `Σ_c = W_c W_cᵀ + σ_c² I` with `W_c` of rank `rank` (new keyword, default
+  `2`, clamped to `dim - 1`; `0` gives a spherical mixture). Both identities it rests on — the
+  Woodbury inverse `(1/σ²)[I − W M⁻¹ Wᵀ]` and `|Σ| = σ^(2(d−q))|M|`, `M = σ²I_q + WᵀW` — were
+  verified exactly in Maxima at three shapes before any of it was written, and nothing in the head
+  or in point scoring ever forms a `d×d` matrix. That is what makes it run at `d = 784` and
+  `max_leaves=2000`, where `gmm-full`'s per-leaf dense scatters need ~38 GB across its parallel
+  restarts and the benchmark table has carried a `—` for it since 0.1.0.
+
+  **At full resolution it beats the diagonal *and* the full head.** On `digits` (1797×64,
+  `feature="fd"`, `max_leaves=2000` ⇒ one leaf per point, median of seeds 0/1/2) `rank=5` scores ARI
+  **0.600** against `gmm-full`'s 0.575 and the diagonal head's 0.461 — a rank-5 subspace where full
+  covariance spends 2016 parameters. On six 5-dimensional subspaces sharing one centre in 100-D,
+  where centroid distance carries no information at all, ARI peaks **exactly at the true rank**:
+  0.385 / 0.654 / **0.998** / 0.823 / 0.727 for `rank` 2 / 3 / 5 / 10 / 20, against the diagonal
+  head's 0.166 (median of seeds 0/1/2; the band at the peak is [0.9976, 0.9984]). Pull the same six
+  subspaces apart so the centroids separate them and every head scores 1.0000 at every one of those
+  ranks — the extra parameters cost nothing where they buy nothing.
+
+  **And it loses on MNIST, for a reason that is about the summary rather than the head.** The
+  expected-log E-step folds each leaf's own scatter into the component covariance as
+  `−½ tr(Σ_c⁻¹ Σ_i)`, and that within-leaf term carries almost none of the *between-cluster*
+  orientation — so compression costs a head in proportion to how much orientation it models. Sweeping
+  the leaf budget on `digits` shows the ordering invert cleanly: at one leaf per point
+  `mppca(5) 0.600 > gmm-full 0.575 > gmm 0.461`; at 6:1 compression `gmm 0.493 > mppca(5) 0.406 >
+  gmm-full 0.273`; at 16:1 `0.235 > 0.168 > 0.099`. MNIST-20k at `max_leaves=2000` is 10.6:1, and
+  there `mppca` scores **0.159 / 0.069 / 0.024** at `rank` 2 / 5 / 10 against `gmm`'s **0.274**. The
+  head is opt-in, the default is untouched, and `docs/USAGE.md` states the loss and the mechanism.
+
+  `predict` / `predict_proba` work as for any mixture head, and `n_clusters=0` selects the component
+  count by BIC (the Stiefel rotation of `W_c` is unidentifiable, so `q(q−1)/2` of the loadings are
+  not counted as free parameters).
 - **`absorb="subspace"`: the χ² gate read on the leaf's own low-rank basis.** Only `feature="fd"`
   carries a basis, so every other feature model falls back to `chi2` and the option changes nothing
   unless you asked for the Frequent-Directions sketch. Same `chi2_p` and `chi2_scale`, same units.

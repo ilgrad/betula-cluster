@@ -600,12 +600,12 @@ pub(crate) fn chol_regularized<R: Real>(cov: &[Vec<R>], scale: R, ridge0: R) -> 
 
 /// Bayesian Information Criterion `−2·loglik + p·ln N` (lower is better); `p` = free parameters,
 /// `N` = total point weight. Lets us pick the component count `k` without a user-supplied value.
-fn bic<R: Real>(loglik: R, n_params: usize, n_total: R) -> R {
+pub(crate) fn bic<R: Real>(loglik: R, n_params: usize, n_total: R) -> R {
     let two = R::from_f64(2.0).unwrap();
     -two * loglik + R::from_usize(n_params).unwrap() * n_total.ln()
 }
 
-fn total_weight<R: Real, C: ClusterFeature<R>>(features: &[C]) -> R {
+pub(crate) fn total_weight<R: Real, C: ClusterFeature<R>>(features: &[C]) -> R {
     features
         .iter()
         .map(|f| f.weight())
