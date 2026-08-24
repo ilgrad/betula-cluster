@@ -19,7 +19,7 @@ labels = betula_cluster.fit_predict(X, method="hdbscan", min_samples=10, min_clu
 # hdbscan: label -1 == noise
 ```
 
-Keyword args: `feature ∈ {spherical, diagonal, full, fd}`, `method ∈ {kmeans, gmm, gmm-full, mppca, ward, spectral, leiden, leiden-cpm, spherical-kmeans, vmf, gmm-toeplitz, gmm-toeplitz-full, gmm-toeplitz-gs, hdbscan, scale-space}`,
+Keyword args: `feature ∈ {spherical, diagonal, full, fd}`, `method ∈ {kmeans, gmm, gmm-full, mppca, ward, average, weighted, centroid, median, spectral, leiden, leiden-cpm, spherical-kmeans, vmf, gmm-toeplitz, gmm-toeplitz-full, gmm-toeplitz-gs, hdbscan, scale-space}`,
 `distance ∈ {euclidean, manhattan, ward, average}` (routing measure),
 `absorb ∈ {euclidean, manhattan, average, diameter, ward, radius, chi2, subspace}` (see *Absorption criteria*
 below; `chi2` = mass-invariant Mahalanobis gate at level `chi2_p` with `chi2_scale` = within-cluster
@@ -358,6 +358,36 @@ rather than at the largest relative jump in merge height. The old rule was the e
 dendrogram's clothing, and it fails exactly where the paper says it does: on two far groups of two
 nearby subclusters each, the tallest relative jump is the one that joins the far groups, so it
 reported `k = 2` on every seed where the variance ratio reports the true 4.
+
+## The other four linkages — `average` / `weighted` / `centroid` / `median`
+
+`method="ward"` is the nearest-neighbour chain, which is only valid for a *reducible* linkage.
+The other four run on Anderberg's algorithm and take the same `n_clusters` (and `n_clusters=0`
+for a Calinski–Harabasz-scored cut) as every other partitional head. Names follow SciPy's
+`scipy.cluster.hierarchy.linkage(method=…)`:
+
+| `method` | classical name | what it measures between two clusters | children weighted by |
+|---|---|---|---|
+| `average` | UPGMA | mean squared distance over all cross-cluster point pairs | mass |
+| `weighted` | WPGMA (McQuitty) | the same, with the two children counted equally | 1 each |
+| `centroid` | UPGMC | squared distance between mass-weighted centroids | mass |
+| `median` | WPGMC | squared distance between dyadic midpoints | 1 each |
+| `ward` | Ward | `2·n_a n_b/(n_a+n_b)·‖Δμ‖²` | mass |
+
+All five are on **squared** distances, and on single-point leaves all five reduce to the plain
+squared distance between the two points — that is what the factor two on Ward is for.
+
+Three of them are exactly the CF distances the tree already routes by: `average` is `D2²`,
+`centroid` is `D0²`, `ward` is `2·D4²`. `weighted` and `median` are not, and cannot be: a cluster
+feature merge is mass-weighted by construction, so nothing built out of cluster features can
+represent a cluster whose children were combined equally regardless of size. They are driven by a
+per-cluster `(mean, mean squared radius)` pair instead, updated by the König–Huygens recurrence in
+its all-positive form — no `Σα‖μ‖² − ‖m‖²`, so no cancellation far from the origin.
+
+**`centroid` and `median` invert.** They can merge at a height below one of their children's. This
+is a property of the linkage, not a bug, and it is why cuts here are taken as a prefix of the
+agglomeration order rather than by sorting on height. If you need a monotone dendrogram, use
+`average`, `weighted` or `ward`.
 
 ## Topological structure — `mapper()`
 

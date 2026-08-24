@@ -1,10 +1,11 @@
 //! End-to-end model: build a CF-tree, cluster its leaves (Phase 3), and label points.
 
 use crate::clustering::{
-    Gmm, GmmFull, GmmToeplitz, Movmf, Mppca, Objective, gmm_diagonal, gmm_diagonal_auto, gmm_full,
-    gmm_full_auto, gmm_toeplitz, gmm_toeplitz_auto, gmm_toeplitz_full, gmm_toeplitz_full_auto,
-    gmm_toeplitz_gs, gmm_toeplitz_gs_auto, kmeans, leiden, movmf, movmf_auto, mppca, mppca_auto,
-    spectral, spherical_kmeans, ward_hac, ward_hac_auto, xmeans,
+    Gmm, GmmFull, GmmToeplitz, Linkage, Movmf, Mppca, Objective, agglomerative, agglomerative_auto,
+    gmm_diagonal, gmm_diagonal_auto, gmm_full, gmm_full_auto, gmm_toeplitz, gmm_toeplitz_auto,
+    gmm_toeplitz_full, gmm_toeplitz_full_auto, gmm_toeplitz_gs, gmm_toeplitz_gs_auto, kmeans,
+    leiden, movmf, movmf_auto, mppca, mppca_auto, spectral, spherical_kmeans, ward_hac,
+    ward_hac_auto, xmeans,
 };
 use crate::distance::CFDistance;
 use crate::feature::ClusterFeature;
@@ -28,6 +29,9 @@ pub enum Method {
     GmmFull,
     /// Ward agglomerative hierarchical clustering (variance-increase linkage).
     Ward,
+    /// Agglomerative hierarchical clustering under one of the four non-Ward linkages, driven by
+    /// Anderberg's algorithm. Auto-`k` (Calinski-Harabasz over the cuts) when `k == 0`.
+    Agglomerative { linkage: Linkage },
     /// Spectral clustering (self-tuning affinity + normalized Laplacian) for non-convex clusters.
     Spectral,
     /// Leiden community detection on the microcluster affinity graph (auto community count).
@@ -91,7 +95,9 @@ pub(crate) fn assignment_rule(method: Method) -> Rule {
         | Method::GmmToeplitzGs
         | Method::Movmf
         | Method::Mppca { .. } => Rule::Posterior,
-        Method::Ward | Method::Spectral | Method::Leiden { .. } => Rule::Microcluster,
+        Method::Ward | Method::Agglomerative { .. } | Method::Spectral | Method::Leiden { .. } => {
+            Rule::Microcluster
+        }
     }
 }
 
@@ -417,6 +423,12 @@ pub(crate) fn fit_head<R: Real, C: ClusterFeature<R>>(
         Method::Mppca { rank } => HeadFit::soft(mppca(features, kk, rank, max_iter, seed)),
         Method::Ward if k == 0 => HeadFit::hard(ward_hac_auto(features, 2, auto_hi).labels),
         Method::Ward => HeadFit::hard(ward_hac(features, kk).labels),
+        Method::Agglomerative { linkage } if k == 0 => {
+            HeadFit::hard(agglomerative_auto(features, linkage, 2, auto_hi).labels)
+        }
+        Method::Agglomerative { linkage } => {
+            HeadFit::hard(agglomerative(features, linkage, kk).labels)
+        }
         // Spectral resolves `k == 0` (eigengap) and clamps internally, so one arm covers both.
         Method::Spectral => HeadFit::hard(spectral(features, k, max_iter, seed).labels),
         // Leiden discovers the community count from the graph; `k` is ignored (like HDBSCAN).
@@ -617,6 +629,18 @@ mod tests {
             ("gmm", Method::Gmm),
             ("gmm-full", Method::GmmFull),
             ("ward", Method::Ward),
+            (
+                "average",
+                Method::Agglomerative {
+                    linkage: Linkage::Average,
+                },
+            ),
+            (
+                "median",
+                Method::Agglomerative {
+                    linkage: Linkage::Median,
+                },
+            ),
             ("spherical-kmeans", Method::SphericalKMeans),
             ("movmf", Method::Movmf),
             ("gmm-toeplitz", Method::GmmToeplitz),
@@ -686,6 +710,12 @@ mod tests {
             ("gmm", Method::Gmm),
             ("movmf", Method::Movmf),
             ("ward", Method::Ward),
+            (
+                "centroid",
+                Method::Agglomerative {
+                    linkage: Linkage::Centroid,
+                },
+            ),
             ("spectral", Method::Spectral),
             (
                 "leiden",

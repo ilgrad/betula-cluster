@@ -7,6 +7,47 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **The four non-Ward linkages: `average`, `weighted`, `centroid`, `median`.** `method="ward"` was
+  the only hierarchical head, because the nearest-neighbour chain that drives it is valid only for a
+  *reducible* linkage — and centroid and median linkage are not reducible, they invert. The four
+  others now run on an **Anderberg** driver (one global minimum per step over a lazily repaired
+  nearest-neighbour cache; `O(m²·d)` expected, `O(m·d)` extra space) and take the same `n_clusters`,
+  including `n_clusters=0` for a Calinski–Harabasz-scored cut. Names follow SciPy's
+  `linkage(method=…)`: `average` = UPGMA, `weighted` = WPGMA (McQuitty), `centroid` = UPGMC,
+  `median` = WPGMC.
+
+  All five linkages are one accumulator. Writing `α` for the weights a cluster gives its member
+  leaves, each of them is a function of `m_A = Σ α_i μ_i` and `V_A = Σ α_i (S_i/n_i + ‖μ_i − m_A‖²)`,
+  and both compose exactly under a merge with `β = w_a/(w_a + w_b)`:
+
+  ```text
+  m_AB = β m_A + (1−β) m_B
+  V_AB = β V_A + (1−β) V_B + β(1−β)‖m_A − m_B‖²
+  ```
+
+  The `V` recurrence is König–Huygens arranged so every term is non-negative — it never forms
+  `Σ α‖μ‖² − ‖m‖²`, which is exactly the cancellation this library exists to avoid, and a test pins
+  it against the CF merge at an offset of `10⁷`. The five linkages are then two independent choices:
+  weight the children by mass (UPGMA/UPGMC/Ward) or equally (WPGMA/WPGMC), and measure
+  `‖Δm‖² + V_a + V_b`, `‖Δm‖²`, or Ward's `2·n_a n_b/(n_a+n_b)·‖Δm‖²`.
+
+  On mass weights the accumulator *is* the merged cluster feature, so three of them are exactly the
+  CF distances the tree already routes by, all on **squared** distances: UPGMA is `D2²`, UPGMC is
+  `D0²`, Ward is `2·D4²`. The factor two on Ward is not decoration — it is what puts all five on one
+  scale, where each reduces to the plain squared distance between two points on single-point leaves.
+  Both facts are asserted rather than asserted-about.
+
+  `weighted` and `median` are the reason the driver is *not* parameterised over `CFDistance`: a
+  cluster-feature merge is mass-weighted by construction, so nothing built out of cluster features
+  can represent a cluster whose children were combined equally regardless of their size.
+
+  Verification is against implementations that share no algebra with the driver: every linkage
+  reproduces the textbook Lance–Williams recurrence step for step and height for height; `centroid`
+  and `median` reproduce SciPy's partition exactly on a one-leaf-per-point tree (`average` and
+  `weighted` are excluded there, since SciPy applies them to *unsquared* distances); and the Ward
+  arm reproduces the existing nearest-neighbour chain at every `k`. `centroid` and `median` are
+  documented as admitting inversions, which is why cuts are taken as a prefix of the agglomeration
+  order rather than by sorting on height.
 - **`validity()`: three internal indices off the leaf summary, and the caveat each one carries.**
   `est.validity()` returns `calinski_harabasz`, `davies_bouldin` and `medoid_silhouette` for the
   fitted partition in `O(ℓ·k·d)` — no second pass over the data and no `O(N²)` term, because the sum

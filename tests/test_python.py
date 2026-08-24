@@ -2501,6 +2501,47 @@ def test_projected_fit_still_reports_a_leaf_level_posterior():
     assert np.allclose(proba.sum(axis=1), 1.0)
 
 
+# ── the four non-Ward linkages ────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("method", ["average", "weighted", "centroid", "median"])
+def test_every_linkage_recovers_well_separated_blobs(blobs, method):
+    x, y = blobs
+    est = betula_cluster.Betula(n_clusters=4, method=method, max_leaves=300, seed=0)
+    assert ari(y, est.fit_predict(x)) > 0.95
+
+
+@pytest.mark.parametrize("method", ["average", "weighted", "centroid", "median"])
+def test_every_linkage_picks_its_own_k_when_asked(blobs, method):
+    x, _ = blobs
+    est = betula_cluster.Betula(n_clusters=0, method=method, max_leaves=300, seed=0)
+    labels = est.fit_predict(x)
+    assert len(np.unique(labels)) == 4
+
+
+@pytest.mark.parametrize("method", ["centroid", "median"])
+def test_the_centroid_linkages_agree_with_scipy_point_for_point(method):
+    """SciPy's `centroid` and `median` work in the squared Euclidean metric, exactly as this driver
+    does, so on a one-leaf-per-point tree the two partitions must be identical -- not merely
+    similar. `average` and `weighted` are excluded: SciPy applies them to *unsquared* distances,
+    and the mean of squares is not the square of the mean, so a disagreement there would be a
+    convention difference rather than a defect."""
+    sch = pytest.importorskip("scipy.cluster.hierarchy")
+    rng = np.random.default_rng(7)
+    x = np.vstack([rng.normal(c, 0.7, (40, 2)) for c in ([0, 0], [6, 1], [2, 6])])
+    est = betula_cluster.Betula(
+        n_clusters=3, method=method, feature="spherical", threshold=0.0, max_leaves=1000, seed=0
+    )
+    got = est.fit_predict(x)
+    want = sch.fcluster(sch.linkage(x, method=method), 3, criterion="maxclust")
+    assert ari(want, got) == pytest.approx(1.0)
+
+
+def test_an_unknown_linkage_name_lists_the_ones_that_exist():
+    with pytest.raises(ValueError, match="'average', 'weighted', 'centroid', 'median'"):
+        betula_cluster.Betula(n_clusters=3, method="upgma").fit(np.zeros((10, 2)))
+
+
 def test_predict_proba_raises_without_a_posterior():
     rng = np.random.default_rng(1)
     x = rng.normal(size=(200, 5))

@@ -3,6 +3,7 @@
 //! Parametric heads: weighted k-means ([`kmeans`]) and diagonal GMM-EM ([`gmm_diagonal`]).
 //! A density head (HDBSCAN-on-CF, [`hdbscan`]) clusters the leaf microclusters directly.
 
+pub mod agglomerative;
 pub mod community;
 pub mod gmm;
 pub mod gmm_toeplitz;
@@ -20,6 +21,7 @@ pub mod spectral;
 pub mod vmf;
 pub mod ward;
 
+pub use agglomerative::{Agglomerative, Linkage, agglomerative, agglomerative_auto};
 pub use community::{Community, Objective, leiden};
 pub use gmm::{Gmm, GmmFull, gmm_diagonal, gmm_diagonal_auto, gmm_full, gmm_full_auto};
 pub use gmm_toeplitz::{

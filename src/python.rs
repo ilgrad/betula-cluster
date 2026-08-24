@@ -22,7 +22,7 @@ use crate::clustering::hdbscan::hdbscan_with;
 use crate::clustering::nmf::{Projection, ProjectionKind, ProjectionSpec};
 use crate::clustering::scalespace::scale_space;
 use crate::clustering::{
-    ConstraintError, MixedCf, cop_kmeans, kprototypes, nearest_micro, summarize_mixed,
+    ConstraintError, Linkage, MixedCf, cop_kmeans, kprototypes, nearest_micro, summarize_mixed,
 };
 use crate::distance::{
     AverageIntercluster, AverageIntracluster, CFDistance, CentroidEuclidean, CentroidManhattan,
@@ -116,6 +116,18 @@ fn parse_method(
         "gmm" => Ok(Kind::Parametric(Method::Gmm)),
         "gmm-full" => Ok(Kind::Parametric(Method::GmmFull)),
         "ward" => Ok(Kind::Parametric(Method::Ward)),
+        "average" => Ok(Kind::Parametric(Method::Agglomerative {
+            linkage: Linkage::Average,
+        })),
+        "weighted" => Ok(Kind::Parametric(Method::Agglomerative {
+            linkage: Linkage::Weighted,
+        })),
+        "centroid" => Ok(Kind::Parametric(Method::Agglomerative {
+            linkage: Linkage::Centroid,
+        })),
+        "median" => Ok(Kind::Parametric(Method::Agglomerative {
+            linkage: Linkage::Median,
+        })),
         "spectral" => Ok(Kind::Parametric(Method::Spectral)),
         "leiden" => Ok(Kind::Parametric(Method::Leiden {
             resolution,
@@ -144,9 +156,9 @@ fn parse_method(
         }),
         "scale-space" => Ok(Kind::ScaleSpace),
         _ => Err(PyValueError::new_err(
-            "method must be 'kmeans', 'gmm', 'gmm-full', 'mppca', 'ward', 'spectral', 'leiden', \
-             'leiden-cpm', 'spherical-kmeans', 'vmf', 'gmm-toeplitz', 'gmm-toeplitz-full', \
-             'gmm-toeplitz-gs', 'hdbscan' or 'scale-space'",
+            "method must be 'kmeans', 'gmm', 'gmm-full', 'mppca', 'ward', 'average', 'weighted', \
+             'centroid', 'median', 'spectral', 'leiden', 'leiden-cpm', 'spherical-kmeans', 'vmf', \
+             'gmm-toeplitz', 'gmm-toeplitz-full', 'gmm-toeplitz-gs', 'hdbscan' or 'scale-space'",
         )),
     }
 }
@@ -3601,11 +3613,23 @@ fn parse_parametric(method: &str) -> PyResult<Method> {
         "gmm" => Ok(Method::Gmm),
         "gmm-full" => Ok(Method::GmmFull),
         "ward" => Ok(Method::Ward),
+        "average" => Ok(Method::Agglomerative {
+            linkage: Linkage::Average,
+        }),
+        "weighted" => Ok(Method::Agglomerative {
+            linkage: Linkage::Weighted,
+        }),
+        "centroid" => Ok(Method::Agglomerative {
+            linkage: Linkage::Centroid,
+        }),
+        "median" => Ok(Method::Agglomerative {
+            linkage: Linkage::Median,
+        }),
         "spherical-kmeans" => Ok(Method::SphericalKMeans),
         "vmf" => Ok(Method::Movmf),
         _ => Err(PyValueError::new_err(
-            "method must be 'kmeans', 'gmm', 'gmm-full', 'ward', 'spherical-kmeans' or 'vmf' \
-             for sparse input",
+            "method must be 'kmeans', 'gmm', 'gmm-full', 'ward', 'average', 'weighted', \
+             'centroid', 'median', 'spherical-kmeans' or 'vmf' for sparse input",
         )),
     }
 }

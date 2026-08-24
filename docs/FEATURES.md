@@ -33,7 +33,9 @@ A capability-by-capability reference. For runnable code see [`USAGE.md`](USAGE.m
   `O(d·rank)` per component instead of `O(d²)`, with the Woodbury inverse and the `σ^(2(d−q))|M|`
   determinant keeping every step off the `d×d` matrix; pair it with `feature="fd"`, whose leaf
   scatter is already low-rank,
-  **Ward agglomerative HAC** (exact, via nearest-neighbour chain; dendrogram-cut auto-k),
+  **Ward agglomerative HAC** (exact, via nearest-neighbour chain; dendrogram-cut auto-k) and the
+  four non-Ward linkages **`average`** (UPGMA), **`weighted`** (WPGMA), **`centroid`** (UPGMC) and
+  **`median`** (WPGMC) on an Anderberg driver,
   **spectral clustering** (self-tuning k-NN affinity + normalized Laplacian embedding via the
   in-house Jacobi eigensolver, k-means-landmark-reduced above 256 microclusters — separates
   non-convex / manifold clusters the centroid heads cannot; pair it with a small `threshold` so the
@@ -182,7 +184,7 @@ A capability-by-capability reference. For runnable code see [`USAGE.md`](USAGE.m
 | `kernels` | auto-vectorized distance kernels (inline reductions) |
 | `distance` | D0–D4, radius, Mahalanobis (stable forms) |
 | `tree` | arena CF-tree + budget-targeting auto-rebuild |
-| `clustering` | `kmeans` / `cop_kmeans`, `gmm_diagonal`, `gmm_full`, `gmm_toeplitz{,_full,_gs}`, `ward_hac`, `spectral`, `leiden`, `spherical_kmeans`, `movmf`, `scale_space`, `hdbscan`, `kprototypes`, `nmf` (the `projection` reducer) |
+| `clustering` | `kmeans` / `cop_kmeans`, `gmm_diagonal`, `gmm_full`, `gmm_toeplitz{,_full,_gs}`, `ward_hac`, `agglomerative` (UPGMA/WPGMA/UPGMC/WPGMC), `spectral`, `leiden`, `spherical_kmeans`, `movmf`, `scale_space`, `hdbscan`, `kprototypes`, `nmf` (the `projection` reducer) |
 | `mixture` | fitted-mixture kernels (diagonal / full-Cholesky / stationary / vMF) that score a raw point — what `predict` / `predict_proba` label by |
 | `stream` | `DenStream` + `DbStream` fading-microcluster density heads |
 | `sparse` | `O(nnz)` sparse-native summarisation (`fit_predict_sparse`) |
