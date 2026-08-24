@@ -19,8 +19,10 @@
 # entry by entry), `src/clustering/vmf.rs` (2026-08-22 entry by entry, then **2026-08-23 whole-file**
 # after the `log_iv` asymptotic branch), `src/clustering/nmf.rs` + `src/clustering/pca.rs`
 # together (**2026-08-24 whole-file**, after `NmfSpec` became `ProjectionSpec` and `project_pca` was
-# added), and `src/clustering/kmeans.rs` (**2026-08-24 whole-file**, after the k-means++ sampling
-# weight gained the leaf variance term). The entry-by-entry form is sound where the only change to the
+# added), `src/clustering/kmeans.rs` (**2026-08-24 whole-file**, after the k-means++ sampling
+# weight gained the leaf variance term), and `src/clustering/hdbscan.rs` (**2026-08-24 whole-file**,
+# after the point-count and dendrogram-walk fixes -- see that section for why its count rose from 17
+# to 21 without a regression). The entry-by-entry form is sound where the only change to the
 # file was *test* code: adding a test can kill a mutant but can never create one, so nothing outside
 # the recorded set needs re-measuring. It is not sound after a production edit -- re-measure the file
 # whole then, which also renumbers every `line:col` in that section.
@@ -45,6 +47,16 @@
 #
 # Regenerate: gh run download <id> -p 'mutants-out-*' && cat */missed.txt | sort -u
 # Narrow, locally: cargo mutants -f <file> -j2   (-j4 oversubscribes rayon and reports false timeouts)
+#
+# Run it inside a memory cap. A one-operator mutant of `hdbscan.rs` was measured allocating 15-17 GB
+# on a tiny fixture (fixed in d34dd17), and with `systemd-oomd` inactive that reaches the *global*
+# OOM killer, which picks a victim machine-wide rather than inside the job. `-j1` under a shared cap,
+# because at `-j2` the cgroup may kill the other mutant's test binary and record a survivor as
+# caught. A dead scope unit stays loaded, so use a fresh `--unit` name or `systemctl --user
+# reset-failed` first; and `systemd-run ... | tail` reports `tail`'s exit code, so check
+# `ActiveState` rather than trusting it.
+#   systemd-run --user --scope --unit=<fresh> -p MemoryMax=10G -p MemorySwapMax=0 \
+#     -- timeout 10800 cargo mutants -f <file> -j1 --test-tool nextest --output /tmp/mut-<name>
 
 
 # ── src/stats.rs (47) ──
@@ -423,25 +435,71 @@ src/clustering/gmm.rs:396:34: replace < with == in gmm_full_once
 src/clustering/gmm.rs:634:18: replace < with <= in gmm_diagonal_auto
 src/clustering/gmm.rs:662:18: replace < with <= in gmm_full_auto
 
-# ── src/clustering/hdbscan.rs (17) ──
-# Debt: mutual reachability and the condensed-tree stability rule.
-src/clustering/hdbscan.rs:117:36: replace - with + in hdbscan
-src/clustering/hdbscan.rs:117:36: replace - with / in hdbscan
-src/clustering/hdbscan.rs:151:22: replace < with <= in hdbscan
-src/clustering/hdbscan.rs:189:26: replace > with >= in hdbscan
-src/clustering/hdbscan.rs:203:15: replace < with <= in hdbscan
-src/clustering/hdbscan.rs:203:15: replace < with == in hdbscan
-src/clustering/hdbscan.rs:211:43: replace * with + in hdbscan
-src/clustering/hdbscan.rs:232:25: replace += with *= in hdbscan
-src/clustering/hdbscan.rs:232:35: replace - with / in hdbscan
-src/clustering/hdbscan.rs:232:47: replace * with + in hdbscan
-src/clustering/hdbscan.rs:239:25: replace += with -= in hdbscan
-src/clustering/hdbscan.rs:239:35: replace - with / in hdbscan
-src/clustering/hdbscan.rs:239:47: replace * with + in hdbscan
-src/clustering/hdbscan.rs:239:47: replace * with / in hdbscan
-src/clustering/hdbscan.rs:246:35: replace - with / in hdbscan
-src/clustering/hdbscan.rs:246:47: replace * with + in hdbscan
+# ── src/clustering/hdbscan.rs (21) ──
+# Re-measured **2026-08-24 whole-file**, locally and under a memory cap, after the point-count fix
+# (835d05f) and the dendrogram-walk fix (d34dd17): 88 mutants in 30 min, 65 caught, 21 missed,
+# 1 timeout, 1 unviable. Every line:col below is against that revision.
+#
+# **21 is not a regression against the old 17.** The old figure came from CI run 32347677860, whose
+# shard 39 uploaded no artifact; the six extra entries here are all *additional operators at sites
+# the old list already names* (`+= -> -=` where it had only `+= -> *=`, `* -> /` where it had only
+# `* -> +`, and so on), which is exactly what a lost shard looks like. The two fixes closed the four
+# mutual-reachability entries the old list carried at 117:36 and 151:22/203:15. This whole-file local
+# run is the first complete measurement of the file.
+#
+# `35:30: replace != with == in UnionFind::find` is a **timeout, not a survivor**, and so is absent:
+# it makes `find` spin forever on a root, which no test can pass. A timeout is a detection.
+#
+# The 16 entries from 269:43 down share one measured cause, established by instrumenting the condense
+# loop rather than guessed at. All four arms execute heavily on the current fixtures (per run:
+# `split` 1-15, `lbig` 0-31, `rbig` 0-7, `neither` 0-10), so this is **covered by execution and not
+# by assertion**: excess-of-mass compares `stab[c]` against the sum over `kids[c]`, and on every
+# fixture in the suite that comparison has a wide margin -- e.g. 139.5 against children summing to
+# 106.4. Perturbing a fall-out term moves the numbers without moving the sign, so the partition is
+# unchanged. Each of the 21 was re-applied by hand and the whole `hdbscan::` suite re-run; all 21
+# survived and every mutant *not* on this list died, which cross-validates the run.
+#
+# Strengthening `the_excess_of_mass_boundary_sits_where_the_reference_puts_it` from a cluster-count
+# comparison to a full-partition one (ARI against the independent reference at all 16 sweep steps)
+# was measured against all 21 and killed **none** of them. Closing this block needs a fixture whose
+# excess-of-mass decision is genuinely contested, which is a fixture-search problem, not a missing
+# assertion. Recorded as debt rather than tuned to a bit pattern.
+#
+# Believed equivalent, with the argument:
+#   57:31  `self.rank[ra] += 1` -> `*= 1` pins every rank at 0, so `cmp` is always `Equal` and union
+#          always attaches `rb` under `ra`. That is still a correct union with path compression --
+#          only the tree depth grows. No observable output depends on it.
+#   239:26 `node_dist[nd] > 0.0` -> `>= 0.0` reaches `1.0 / 0.0`, which is `f64::INFINITY` -- exactly
+#          what the `else` supplies. `node_dist` is a `sqrt` of a sum of squares, so `-0.0` (whose
+#          reciprocal would be `-INFINITY`) is unreachable.
+# Debt, unproven but unobserved:
+#   191:39 and 206:22 are Prim's two tie-breaks. Single-linkage partitions at a threshold are the
+#          connected components of the `<= t` graph, which no choice among equal-weight MST edges can
+#          change; the condensed tree's *merge order* among tied edges is not covered by that
+#          argument, so this is evidence, not a proof.
+#   257:15 `nd < m` -> `<=` really does skip the first merge. It is a genuine defect that no fixture
+#          in the suite observes.
 src/clustering/hdbscan.rs:57:31: replace += with *= in UnionFind::union
+src/clustering/hdbscan.rs:191:39: replace < with <= in hdbscan
+src/clustering/hdbscan.rs:206:22: replace < with <= in hdbscan
+src/clustering/hdbscan.rs:239:26: replace > with >= in hdbscan
+src/clustering/hdbscan.rs:257:15: replace < with <= in hdbscan
+src/clustering/hdbscan.rs:269:43: replace * with + in hdbscan
+src/clustering/hdbscan.rs:284:25: replace += with -= in hdbscan
+src/clustering/hdbscan.rs:284:25: replace += with *= in hdbscan
+src/clustering/hdbscan.rs:284:35: replace - with / in hdbscan
+src/clustering/hdbscan.rs:284:47: replace * with + in hdbscan
+src/clustering/hdbscan.rs:284:47: replace * with / in hdbscan
+src/clustering/hdbscan.rs:289:25: replace += with -= in hdbscan
+src/clustering/hdbscan.rs:289:25: replace += with *= in hdbscan
+src/clustering/hdbscan.rs:289:35: replace - with + in hdbscan
+src/clustering/hdbscan.rs:289:35: replace - with / in hdbscan
+src/clustering/hdbscan.rs:289:47: replace * with + in hdbscan
+src/clustering/hdbscan.rs:289:47: replace * with / in hdbscan
+src/clustering/hdbscan.rs:294:25: replace += with -= in hdbscan
+src/clustering/hdbscan.rs:294:35: replace - with / in hdbscan
+src/clustering/hdbscan.rs:294:47: replace * with + in hdbscan
+src/clustering/hdbscan.rs:294:47: replace * with / in hdbscan
 
 # ── src/feature.rs (16) ──
 # Debt: `SecondMoment::add_scaled` and `trace_under`, plus the FD sketch.

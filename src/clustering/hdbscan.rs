@@ -816,7 +816,24 @@ mod tests {
             let mu: Vec<Vec<f64>> = feats.iter().map(|f| f.mean().to_vec()).collect();
             let mass: Vec<f64> = feats.iter().map(|f| f.weight()).collect();
             let w = reference_hdbscan(&mu, &mass, 3, 4);
-            got.push(hdbscan(&feats, 3, 4).n_clusters);
+            let g = hdbscan(&feats, 3, 4);
+            // The count is the coarsest reading of the sweep. Compare the partition itself at every
+            // step: a corrupted stability integral can hold the count and still move which points
+            // land in which cluster, which is the failure this fixture exists to see.
+            let a: Vec<usize> = g.labels.iter().map(|&l| (l + 1) as usize).collect();
+            let b: Vec<usize> = w.iter().map(|&l| (l + 1) as usize).collect();
+            assert_eq!(
+                g.labels.iter().map(|&l| l < 0).collect::<Vec<_>>(),
+                w.iter().map(|&l| l < 0).collect::<Vec<_>>(),
+                "sep {sep}: the noise set differs, {:?} vs {w:?}",
+                g.labels
+            );
+            assert!(
+                (ari(&a, &b) - 1.0).abs() < 1e-12,
+                "sep {sep}: the partition differs, {:?} vs {w:?}",
+                g.labels
+            );
+            got.push(g.n_clusters);
             want.push(
                 w.iter()
                     .filter(|&&l| l >= 0)
