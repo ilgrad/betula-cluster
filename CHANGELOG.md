@@ -7,6 +7,49 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **Windowed stream queries, and the measurement that says why they are not done by subtraction.**
+  CluStream (Aggarwal et al., VLDB 2003) answers "cluster the window `[t₀, t₁]`" by keeping
+  snapshots and **subtracting** the one at `t₀` from the one at `t₁`. Cluster-feature additivity
+  makes that exact in real arithmetic, and subtraction is the one CF operation BETULA's stable form
+  does not protect: the entire reason for carrying `(n, μ, S)` instead of `(n, Σx, Σx²)` is never to
+  form a difference of two nearly equal large quantities, and an inverse merge forms exactly that,
+  one level up.
+
+  `window::Moments::checked_subtract` implements the inverse merge and conditions it. The two lines
+
+  ```text
+  μ_B = (n_AB·μ_AB − n_A·μ_A) / n_B
+  S_B = S_AB − S_A − (n_A n_B / n_AB)·‖μ_A − μ_B‖²
+  ```
+
+  lose about `log₁₀(n_AB/n_B)` and `log₁₀(S_AB/S_B)` decimal digits respectively — **and those two
+  ratios are not interchangeable.** On a stationary stream `S` grows with `n` and they agree. Under
+  drift `S_AB` picks up the between-window displacement, which has nothing to do with either
+  window's internal spread, and the scatter ratio runs away while the mass ratio does not. Measured
+  on a two-half fixture with a **mass ratio of exactly 2.0** — a guard written on point counts sees
+  nothing at all — the recovered scatter is `6.25e-2` against a true `1.0153e-5`: **a relative error
+  of 6155×**, at condition number `4.0e15` and 0.35 surviving digits. That is the finding, and it is
+  why the guard conditions on both ratios a posteriori and returns a `SubtractError` instead of a
+  number with nothing in it. (A Cholesky downdate restores the *definiteness* the cancellation
+  destroys — a real and separate problem for the full-covariance feature — but cannot restore digits
+  that were never stored. It treats a symptom of this, not this.)
+
+  `window::WindowIndex` is the constructive answer: micro-clusters stored **per frame** rather than
+  cumulatively, so a window is a *sum* of frames and every combination is the stable Chan merge.
+  `window_moments` and `cluster_window` answer the CluStream question with no condition number at
+  all — on the same drifting fixture the summed answer is exact to `1e-12` where the subtraction was
+  wrong by 6155×. The trade is explicit and runs the other way from CluStream's: exactness in real
+  arithmetic is given up (a window resolves only to the frame boundary) for an answer that is sound
+  in floating point at every ratio. Capacity is enforced by merging the two *oldest* adjacent
+  frames, so resolution coarsens with age and never with recency — the pyramidal property, reached
+  by merging instead of by differencing — and compaction preserves total mass exactly, since every
+  step of it is a CF merge.
+
+  `window::TimeSpan` carries timestamp moments under the same `(weight, mean, ssd)` contract the
+  spatial feature uses, so a windowed summary can say when it is from. `Moments` is deliberately not
+  a `ClusterFeature`: the inverse merge is well defined only for the scalar scatter, and letting a
+  diagonal or full feature through it would silently drop the off-diagonal structure a window query
+  never asked to lose.
 - **`export_coreset(size=…)`: the word "coreset" turned into a claim.** `export_coreset()` has
   always returned the leaf summary and always called it a coreset; nothing checked that it was one.
   It now carries the two bounds that make the name earned, and they are kept apart on purpose,

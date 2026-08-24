@@ -21,6 +21,7 @@ pub mod topology;
 pub mod tree;
 pub mod types;
 pub mod validity;
+pub mod window;
 
 #[cfg(feature = "python")]
 mod python;
