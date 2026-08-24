@@ -72,3 +72,43 @@ ARI, and over **A** because it is the correct expected log-likelihood under the 
 one trace that the second moment is already carrying — not because it measurably clusters better in
 general. A is a legitimate alternative that would perform the same on this experiment outside the
 coarse-and-overlapping corner.
+
+## Independent check against the authors' own implementation (2026-08-24)
+
+The experiment above is synthetic, two-dimensional and written by the same project it justifies.
+ELKI 0.8.0 — the reference implementation of BETULA, by the algorithm's authors — ships two GMM
+heads over the same cluster features: `BetulaGMM` and `BetulaGMMWeighted`. Running them against
+this library's `method="gmm"` at matched CF-tree parameters is the outside check this page lacked.
+
+Harness: `local/scratch/elki/cross_check.py`, median of seeds 0/1/2, `feature="diagonal"` ↔
+`VVIFeature`, branching 32, `threshold=0`, `max_iter=100`. Two CF-tree geometries are run because
+the projects ship different defaults — D0/D0 (`CentroidEuclideanDistance` routing and absorption,
+this library's default) and D4/R (`VarianceIncreaseDistance` + `RadiusDistance`, ELKI's).
+
+| dataset | geometry | `betula gmm` | ELKI `BetulaGMM` | ELKI `BetulaGMMWeighted` |
+|---|---|---|---|---|
+| digits (1797×64, 200 leaves) | D0/D0 | **0.5239** | 0.2305 | 0.3528 |
+| digits | D4/R | **0.5210** | 0.1627 | 0.4586 |
+| covtype-50k (54-D, 2000 leaves) | D0/D0 | **0.1062** | 0.0244 | 0.0523 |
+| covtype-50k | D4/R | **0.0852** | 0.0555 | 0.0575 |
+
+The shipped head leads at the median in all four cells, and reaches the lower within-cluster sum of
+squares in all four as well. **The margin is not all E-step.** This library's GMM head keeps the best
+of four EM restarts by log-likelihood (`GMM_N_INIT`, `src/clustering/gmm.rs`); a bare ELKI
+`BetulaGMM` runs one, and ELKI 0.8.0 has no `BestOfMultipleKMeans` equivalent for EM to equalise it
+with. Compared instead against the **best of ELKI's three seeds across both its variants** — a
+generous handicap that absorbs much of that difference — the result splits evenly: the shipped head
+leads on digits/D0/D0 (0.5239 vs 0.3744) and covtype/D0/D0 (0.1062 vs 0.0696), and trails on
+digits/D4/R (0.5210 vs 0.5294) and covtype/D4/R (0.0852 vs 0.1193). So: a clear lead at equal seed
+budget, and a two-two split against ELKI's luckiest seed — the honest reading is parity once the
+restart budget is accounted for, not superiority.
+
+What this does and does not license. It **does** retire the objection that the E-step decision rests
+on one synthetic fixture from a pre-0.1.0 prototype: on two real datasets, in two tree geometries,
+the shipped formulation is never behind both of the authors' variants at an equal seed budget, and
+is at worst level with the better of them once ELKI is given its luckiest seed. It does **not** isolate
+the E-step as the cause — restarts, initialisation and the M-step differ too. Isolating it would need
+variants A/B/C wired behind a flag in this crate and run on the same fixtures, which is worth doing
+if the decision is ever revisited. One directional signal is worth recording: `BetulaGMMWeighted`
+beats plain `BetulaGMM` in all four cells, which is the same direction as this page's argument —
+folding the leaf's own mass and scatter into the E-step helps.
