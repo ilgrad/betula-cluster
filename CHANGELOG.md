@@ -188,6 +188,44 @@ All notable changes to this project are documented here. The format follows
   the tree routinely settles below its cap and at `n < max_leaves` the cap never binds at all.
 
 ### Changed
+- **`spherical-kmeans` skips the dot products it can prove will not change a label.** Hamerly's two
+  bounds, restated on similarities rather than distances (Schubert, Lang & Feher, arXiv 2107.04074):
+  keep a lower bound `low[i]` on the cosine to the assigned centre and an upper bound `high[i]` on
+  the best of the others, loosen both by how far the centres turned, and skip the leaf entirely while
+  `low[i] ≥ high[i]`. **Labels, centres and iteration count are unchanged** — byte-identical SHA-256
+  label digests in all nine measured cells, and the Rust suite checks the bounded loop against an
+  independent re-derivation on both fixtures.
+
+  Restating the bound on the sphere is not a term-by-term transcription, and the place it breaks is
+  worth naming: `cos(θ − φ)` is an upper bound on the reachable similarity only while `θ ≥ φ`. A
+  centre that turns by more than the angle it started at sweeps **through** the point and reaches
+  similarity 1, so the aggregation Hamerly gets for free — nearest of the other centres paired with
+  the largest movement among them — is unsound here, because `d − δ` is monotone in `d` and
+  `cos(θ − φ)` is not monotone in `θ`. The symmetric failure sits on the other side: past
+  `θ + φ = π` the cosine turns back upward and `cos(θ + φ)` stops being a lower bound. Both are
+  guarded, both guards have a test that fails when the guard is removed.
+
+  Median of seeds 0/1/2, one BLAS thread, timing the head alone (`max_iter=100` minus `max_iter=1`,
+  which never reaches the skip test, so the tree build and the first assignment pass cancel):
+
+  | data | leaves | k | head, no skip | head, bounded | speed-up |
+  |---|---|---|---|---|---|
+  | 100 k × 20-D blobs | 32000 | 10 | 0.28 s | 0.09 s | **3.04×** |
+  | 100 k × 20-D blobs | 32000 | 50 | 3.55 s | 1.55 s | **2.29×** |
+  | 100 k × 20-D blobs | 32000 | 200 | 12.01 s | 7.34 s | **1.64×** |
+  | MNIST 70 k × 784-D | 8000 | 10 | 3.41 s | 2.61 s | 1.31× |
+  | MNIST 70 k × 784-D | 8000 | 50 | 13.82 s | 11.27 s | 1.23× |
+  | MNIST 70 k × 784-D | 8000 | 200 | 82.76 s | 68.53 s | 1.21× |
+
+  **The bound is a dimension effect, not a k effect**, and the table says so twice over: it is worth
+  3× at `d = 20` and 1.2–1.3× at `d = 784`, and within each dataset the gain *falls* as `k` grows.
+  In high dimension the cosines from one leaf to every centre concentrate, `low ≥ high` almost never
+  holds, and what is left is the bookkeeping. This is the same concentration of measure that makes
+  the Euclidean path collapse on MNIST — it is not a defect of this implementation, and no amount of
+  tightening will make Hamerly pay there. `method="vmf"` shows **no gain outside measurement noise**
+  (1.05× against a base-measurement spread of the same size), which is the expected answer: its
+  E-step is soft, every leaf needs all `k` responsibilities, and only the one-restart spherical
+  k-means warm start is accelerated at all.
 - **The CF k-means++ sampling weight now carries the leaf's own scatter.** Seeding drew each
   candidate centre proportional to `n_i·D²_i` — the point-level k-means++ weight, with the leaf
   treated as a point at its mean. The exact CF-adapted potential is Lang's Eq. 5.4,

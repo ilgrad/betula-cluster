@@ -271,6 +271,59 @@ fn spherical_pp<R: Real>(means: &[Vec<R>], n: &[R], k: usize, rng: &mut SplitMix
     centers
 }
 
+/// Slack, in cosine units, that the Hamerly skip test must clear.
+///
+/// The bound update is three multiplications and a square root, so it can come out optimistic by a
+/// few ulps. Demanding the gap exceed this makes a skipped leaf provably still on its own center
+/// rather than merely arithmetically so — the direction that costs a recomputation, never a label.
+const BOUND_SLACK: f64 = 1e-12;
+
+/// Spherical triangle inequality, lower side: a similarity known to be at least `l` to a center that
+/// then turned by `p = ⟨c, c'⟩` is afterwards at least `cos(θ + φ)`, `θ = acos l`, `φ = acos p`.
+///
+/// Past `θ + φ = π` the cosine turns back upward and the addition formula stops being a bound, so
+/// the antipode is the answer there. `θ + φ > π ⟺ cos θ < −cos φ`, which is the test below.
+fn shift_lower(l: f64, p: f64) -> f64 {
+    let (l, p) = (l.clamp(-1.0, 1.0), p.clamp(-1.0, 1.0));
+    if l < -p {
+        return -1.0;
+    }
+    l * p - ((1.0 - l * l) * (1.0 - p * p)).max(0.0).sqrt()
+}
+
+/// The upper side of the same inequality: at most `cos(θ − φ)`.
+///
+/// **`cos(θ − φ)` is only a bound while `θ ≥ φ`.** A center that turned by more than the angle it
+/// started at can pass straight through the point, so the reachable maximum is `cos 0 = 1`, not
+/// `cos(φ − θ)`. This is the one place where transcribing Hamerly's metric bound into similarities
+/// term by term is unsound: `d − δ` is monotone in `d`, `cos(θ − φ)` is not monotone in `θ`, and
+/// aggregating "nearest of the other centers" with "largest movement among them" silently assumes it
+/// is. Without the guard a leaf can be skipped while another center has already overtaken it.
+fn shift_upper(u: f64, p: f64) -> f64 {
+    let (u, p) = (u.clamp(-1.0, 1.0), p.clamp(-1.0, 1.0));
+    if p <= u {
+        return 1.0;
+    }
+    u * p + ((1.0 - u * u) * (1.0 - p * p)).max(0.0).sqrt()
+}
+
+/// The two smallest entries of `drift`, as `(index of the smallest, smallest, second smallest)`.
+/// A center's own drift has to be excluded from the "every other center" bound, and with these
+/// three numbers that exclusion is a comparison instead of a second pass over `k`.
+fn two_smallest(drift: &[f64]) -> (usize, f64, f64) {
+    let (mut at, mut lo, mut lo2) = (0usize, f64::INFINITY, f64::INFINITY);
+    for (c, &p) in drift.iter().enumerate() {
+        if p < lo {
+            lo2 = lo;
+            lo = p;
+            at = c;
+        } else if p < lo2 {
+            lo2 = p;
+        }
+    }
+    (at, lo, lo2)
+}
+
 #[allow(clippy::needless_range_loop)] // spherical accumulation reads clearest with explicit d/c indices
 fn spherical_lloyd<R: Real>(
     means: &[Vec<R>],
@@ -282,22 +335,67 @@ fn spherical_lloyd<R: Real>(
     let m = means.len();
     let k = centers.len();
     let mut labels = vec![0usize; m];
+    // Hamerly's two bounds, reformulated on similarities (Schubert, Lang & Feher, arXiv 2107.04074):
+    // `low[i]` is a lower bound on the cosine to the assigned center, `high[i]` an upper bound on
+    // the best of the others. `low ≥ high` proves the assignment cannot have moved, and the leaf's
+    // `k` dot products are skipped. `scale[i] = ‖μ_i‖` turns the dots into the cosines the bounds
+    // are stated in; the leaf means are *not* unit vectors, and must not be — the update needs the
+    // exactly mergeable resultant `Σ n_i μ_i`, not `Σ n_i μ̂_i`.
+    let scale: Vec<f64> = means
+        .iter()
+        .map(|x| norm(x).to_f64().unwrap_or(0.0))
+        .collect();
+    let mut low = vec![f64::NEG_INFINITY; m];
+    let mut high = vec![f64::INFINITY; m];
+    let mut drift = vec![1.0f64; k];
+    let mut served = vec![R::neg_infinity(); m];
     for it in 0..max_iter.max(1) {
+        // Loosen every bound by how far the centers turned in the previous update. Successive
+        // shifts compose: each is a valid relaxation of the one before, so a leaf keeps a usable
+        // bound across as many iterations as it goes without being recomputed.
+        if it > 0 {
+            let (slowest, worst, worst_but_one) = two_smallest(&drift);
+            for i in 0..m {
+                low[i] = shift_lower(low[i], drift[labels[i]]);
+                if k > 1 {
+                    let other = if slowest == labels[i] {
+                        worst_but_one
+                    } else {
+                        worst
+                    };
+                    high[i] = shift_upper(high[i], other);
+                }
+            }
+        }
         // Assign each leaf to the center with the largest cosine (‖μ_i‖ is constant across centers,
         // so max_c μ_i·μ_c is the max-cosine assignment); track how well each leaf is served.
         let mut changed = false;
-        let mut served = vec![R::neg_infinity(); m];
         for i in 0..m {
+            if it > 0 && scale[i] > 0.0 && low[i] - high[i] >= BOUND_SLACK {
+                continue;
+            }
             let mut best = 0;
             let mut best_dot = dot(&means[i], &centers[0]);
+            let mut second = R::neg_infinity();
             for c in 1..k {
                 let d = dot(&means[i], &centers[c]);
                 if d > best_dot {
+                    second = best_dot;
                     best_dot = d;
                     best = c;
+                } else if d > second {
+                    second = d;
                 }
             }
             served[i] = best_dot;
+            if scale[i] > 0.0 {
+                low[i] = best_dot.to_f64().unwrap_or(f64::NEG_INFINITY) / scale[i];
+                high[i] = if k > 1 {
+                    second.to_f64().unwrap_or(f64::INFINITY) / scale[i]
+                } else {
+                    f64::NEG_INFINITY
+                };
+            }
             if labels[i] != best {
                 labels[i] = best;
                 changed = true;
@@ -316,6 +414,15 @@ fn spherical_lloyd<R: Real>(
                 acc[c][d] = acc[c][d] + n[i] * means[i][d];
             }
         }
+        if count.contains(&0) {
+            // A skipped leaf carries a `served` value from whichever iteration last recomputed it,
+            // and the reseed picks the globally worst-served leaf — so the stale ones have to be
+            // refreshed before anyone reads them. One dot product each, and only when it matters.
+            for i in 0..m {
+                served[i] = dot(&means[i], &centers[labels[i]]);
+            }
+        }
+        let previous = centers.clone();
         for c in 0..k {
             if count[c] == 0 {
                 let worst = argmin(&served);
@@ -329,6 +436,12 @@ fn spherical_lloyd<R: Real>(
                     centers[c][d] = acc[c][d] / nrm;
                 }
             }
+        }
+        for c in 0..k {
+            drift[c] = dot(&previous[c], &centers[c])
+                .to_f64()
+                .unwrap_or(-1.0)
+                .clamp(-1.0, 1.0);
         }
     }
     let cohesion = cohesion_of(means, n, &labels, k, dim);
@@ -1466,6 +1579,63 @@ mod tests {
         let n = vec![3.0, 11.0, 2.0, 7.0, 5.0, 13.0];
         let init = vec![vec![1.0, 0.0], vec![0.0, 1.0]];
         (means, n, init)
+    }
+
+    #[test]
+    fn the_cosine_bounds_never_change_a_label() {
+        // The acceptance criterion for the Hamerly bounds: skipping a leaf must be indistinguishable
+        // from recomputing it. `slow_lloyd_fixture` is the hard case -- three centers seeded within
+        // six degrees of each other, so the first update swings them across the half-circle and the
+        // bounds are exercised in exactly the regime that breaks a naive transcription.
+        for (means, n, init) in [lloyd_fixture(), slow_lloyd_fixture()] {
+            let got = spherical_lloyd(&means, &n, init.clone(), 50, means[0].len());
+            let (want_labels, want_centers, _) = reference_spherical_lloyd(&means, &n, &init, 50);
+            assert_eq!(got.labels, want_labels);
+            for (a, b) in got.centers.iter().zip(&want_centers) {
+                for (x, y) in a.iter().zip(b) {
+                    assert!((x - y).abs() < 1e-12, "center {x} vs {y}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_center_that_turns_past_the_point_is_bounded_by_one_not_by_the_addition_formula() {
+        // The exact numbers that broke the first implementation: a center 3.5 degrees off the leaf
+        // turns by 168.5 degrees, so it sweeps straight through the leaf and its similarity reaches
+        // 1 on the way. cos(theta - phi) reports -0.966 and would license a skip.
+        let (u, p) = (3.5f64.to_radians().cos(), 168.5f64.to_radians().cos());
+        let naive = u * p + ((1.0 - u * u) * (1.0 - p * p)).sqrt();
+        assert!(
+            naive < -0.9,
+            "the fixture does not exercise the guard: {naive}"
+        );
+        assert_eq!(shift_upper(u, p), 1.0);
+    }
+
+    #[test]
+    fn the_bounds_are_the_cosine_of_the_summed_and_differenced_angles() {
+        // Where both guards are inactive the two shifts must be exactly cos(theta +/- phi).
+        for (t, f) in [(20.0f64, 5.0f64), (70.0, 12.0), (100.0, 3.0)] {
+            let (l, p) = (t.to_radians().cos(), f.to_radians().cos());
+            let lo = shift_lower(l, p);
+            let hi = shift_upper(l, p);
+            assert!((lo - (t + f).to_radians().cos()).abs() < 1e-12, "{lo}");
+            assert!((hi - (t - f).to_radians().cos()).abs() < 1e-12, "{hi}");
+        }
+    }
+
+    #[test]
+    fn the_lower_bound_saturates_at_the_antipode() {
+        // theta + phi past 180 degrees puts the cosine back on the way up, where the addition
+        // formula stops being a lower bound at all.
+        let (l, p) = (100.0f64.to_radians().cos(), 120.0f64.to_radians().cos());
+        let naive = l * p - ((1.0 - l * l) * (1.0 - p * p)).sqrt();
+        assert!(
+            naive > -1.0,
+            "the fixture does not exercise the guard: {naive}"
+        );
+        assert_eq!(shift_lower(l, p), -1.0);
     }
 
     #[test]
