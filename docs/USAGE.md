@@ -504,6 +504,40 @@ for chunk in stream_of_arrays:
 labels = ds.predict(X_query)                  # -1 = noise; finalizes the shared-density graph once
 ```
 
+## Windowed stream queries — `WindowStream`
+
+`DenStream` has only a present: decay makes the past fade, so it cannot answer "what did the data
+look like between `t₀` and `t₁`". `WindowStream` keeps a summary **per frame** and answers a window
+by summing the frames it covers:
+
+```python
+from betula_cluster import WindowStream
+
+ws = WindowStream(frame_width=3600.0, capacity=48, max_micros=256)  # 48 hourly frames retained
+for chunk, times in stream_of_arrays_with_timestamps:
+    ws.partial_fit(chunk, times)          # timestamps must be one per row, non-decreasing per call
+ws.close_frame()                          # seal the frame still filling, so it can be queried
+
+ws.window_moments(t0, t1)                 # {'weight', 'mean', 'ssd'} summed over that window
+centers, weights, cost = ws.cluster_window(t0, t1, 5)   # k-means over just that window's summary
+```
+
+Two properties are worth stating because they are the whole design:
+
+- **The window is never computed by subtraction.** CluStream (Aggarwal et al., VLDB 2003) stores
+  cumulative snapshots and gets `[t₀, t₁]` as `CF(t₁) − CF(t₀)`. That inverse merge loses
+  `log₁₀(S_AB/S_B)` digits of the scatter, and under drift `S_AB` is dominated by the displacement
+  *between* the windows, so the ratio runs away while the point counts stay small — a mass-based
+  guard sees nothing. On a two-half fixture measured here it costs a factor of **6155** in the
+  recovered variance at a mass ratio of 2.0. Summation has no such term.
+- **The price is resolution, and it is bounded.** A window resolves only to a frame boundary: a query
+  ending 0.1 s into a frame gets that whole frame. The error is bounded by `frame_width`, where the
+  subtraction's error is bounded by nothing. Pick `frame_width` as the coarsest resolution you will
+  ever query at, and `capacity` as how far back you want to be able to look.
+
+`Moments::checked_subtract` in the Rust core does implement the inverse merge, and refuses rather
+than returning digits it does not have — it is there to be measured against, not to be relied on.
+
 ## Streaming quantiles — `KllSketch` & `DdSketch`
 
 Bounded-memory, mergeable across shards:

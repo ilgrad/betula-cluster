@@ -37,6 +37,7 @@ use crate::stream::{DbStream, DenStream};
 use crate::topology::{Lens, MapperGraph, MapperParams, mapper};
 use crate::tree::CFTree;
 use crate::types::Real;
+use crate::window::WindowStream;
 
 #[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 enum Kind {
@@ -2957,6 +2958,164 @@ fn decode(bytes: &[u8]) -> PyResult<Betula> {
     Ok(est)
 }
 
+/// Streaming **windowed** clusterer: a CF-tree per time frame, and window queries answered by
+/// summing frames rather than by subtracting snapshots (see `crate::window` for the measurement
+/// that rules the subtraction out). Spherical micro-clusters, `f64`.
+#[pyclass(name = "WindowStream", module = "betula_cluster._core")]
+struct PyWindowStream {
+    frame_width: f64,
+    capacity: usize,
+    max_micros: usize,
+    threshold: f64,
+    max_leaves: usize,
+    branching: usize,
+    leaf_cap: usize,
+    seed: u64,
+    inner: Option<WindowStream<f64, Spherical<f64>>>,
+}
+
+#[pymethods]
+impl PyWindowStream {
+    #[new]
+    #[pyo3(signature = (
+        frame_width = 1.0, capacity = 64, max_micros = 200, threshold = 0.0,
+        max_leaves = 2000, branching = 32, leaf_cap = 32, seed = 0
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        frame_width: f64,
+        capacity: usize,
+        max_micros: usize,
+        threshold: f64,
+        max_leaves: usize,
+        branching: usize,
+        leaf_cap: usize,
+        seed: u64,
+    ) -> Self {
+        Self {
+            frame_width,
+            capacity,
+            max_micros,
+            threshold,
+            max_leaves,
+            branching,
+            leaf_cap,
+            seed,
+            inner: None,
+        }
+    }
+
+    /// Construction params as a dict (read by the Python wrapper's scikit-learn `get_params`).
+    fn get_params<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
+        let d = pyo3::types::PyDict::new(py);
+        d.set_item("frame_width", self.frame_width)?;
+        d.set_item("capacity", self.capacity)?;
+        d.set_item("max_micros", self.max_micros)?;
+        d.set_item("threshold", self.threshold)?;
+        d.set_item("max_leaves", self.max_leaves)?;
+        d.set_item("branching", self.branching)?;
+        d.set_item("leaf_cap", self.leaf_cap)?;
+        d.set_item("seed", self.seed)?;
+        Ok(d)
+    }
+
+    /// Stream a chunk of points with their timestamps (one per row).
+    fn partial_fit(
+        &mut self,
+        py: Python<'_>,
+        data: &Bound<'_, PyAny>,
+        times: Vec<f64>,
+    ) -> PyResult<()> {
+        let (flat, n, dim) = flat_as::<f64>(data, false)?;
+        if times.len() != n {
+            return Err(PyValueError::new_err(
+                "times must carry one timestamp per row of data",
+            ));
+        }
+        if let Some(ws) = &self.inner
+            && ws.dim() != dim
+        {
+            return Err(PyValueError::new_err(
+                "dimension mismatch with previously streamed data",
+            ));
+        }
+        if self.inner.is_none() {
+            self.inner = Some(WindowStream::new(
+                dim,
+                self.branching,
+                self.leaf_cap,
+                self.threshold,
+                self.max_leaves,
+                self.frame_width,
+                self.capacity,
+                self.max_micros,
+                self.seed,
+            ));
+        }
+        let ws = self.inner.as_mut().unwrap();
+        py.detach(|| {
+            for (i, &t) in times.iter().enumerate() {
+                ws.insert(&flat[i * dim..(i + 1) * dim], t);
+            }
+        });
+        Ok(())
+    }
+
+    /// Close the frame currently being filled. A no-op if nothing is open.
+    fn close_frame(&mut self) {
+        if let Some(ws) = &mut self.inner {
+            ws.close_frame();
+        }
+    }
+
+    /// Number of closed frames retained.
+    #[getter]
+    fn n_frames(&self) -> usize {
+        self.inner.as_ref().map_or(0, |ws| ws.frames().len())
+    }
+
+    /// `(t_min, t_max, weight)` per closed frame, oldest first.
+    fn frame_spans(&self) -> Vec<(f64, f64, f64)> {
+        self.inner.as_ref().map_or_else(Vec::new, |ws| {
+            ws.frames()
+                .iter()
+                .map(|f| (f.span.min, f.span.max, f.span.weight))
+                .collect()
+        })
+    }
+
+    /// `(weight, mean, ssd)` of the closed frames reaching into `[t0, t1]`.
+    fn window_moments(&self, t0: f64, t1: f64) -> (f64, Vec<f64>, f64) {
+        match &self.inner {
+            Some(ws) => {
+                let m = ws.window_moments(t0, t1);
+                (m.weight, m.mean, m.ssd)
+            }
+            None => (0.0, Vec::new(), 0.0),
+        }
+    }
+
+    /// Cluster the window into `k` groups: `(centers, cluster_masses, inertia)`.
+    /// `None` when the window holds fewer than `k` micro-clusters.
+    fn cluster_window(
+        &self,
+        py: Python<'_>,
+        t0: f64,
+        t1: f64,
+        k: usize,
+        max_iter: usize,
+    ) -> Option<(Vec<Vec<f64>>, Vec<f64>, f64)> {
+        let ws = self.inner.as_ref()?;
+        let micros = ws.window(t0, t1);
+        let km = py.detach(|| ws.cluster_window(t0, t1, k, max_iter))?;
+        let mut masses = vec![0.0; km.centers.len()];
+        for (cf, &l) in micros.iter().zip(&km.labels) {
+            masses[l] += cf.weight();
+        }
+        Some((km.centers, masses, km.inertia))
+    }
+}
+
 /// Streaming **DenStream** density clusterer over spherical fading micro-clusters (`f64`). Kept
 /// separate from `Betula` because it is a different model: a flat set of decaying micro-clusters,
 /// not a CF-tree. Built lazily on the first `partial_fit` (dimensionality fixed then).
@@ -3843,6 +4002,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(fit_predict_sparse, m)?)?;
     m.add_class::<Betula>()?;
     m.add_class::<PyDenStream>()?;
+    m.add_class::<PyWindowStream>()?;
     m.add_class::<PyDbStream>()?;
     m.add_class::<PyKPrototypes>()?;
     m.add_class::<PyKllSketch>()?;

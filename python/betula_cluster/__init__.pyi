@@ -21,6 +21,7 @@ __all__ = [
     "KllSketch",
     "MapperGraph",
     "TuneResult",
+    "WindowStream",
     "__version__",
     "consensus",
     "fit_predict",
@@ -290,6 +291,40 @@ class Betula:
     def active_learning_batch(
         self, X: _FloatArray, n: int = ..., strategy: _Strategy = ...
     ) -> NDArray[np.int64]: ...
+
+class WindowStream:
+    frame_width: float
+    capacity: int
+    max_micros: int
+    threshold: float
+    max_leaves: int
+    branching: int
+    leaf_cap: int
+    seed: int
+    def __init__(
+        self,
+        frame_width: float = ...,
+        capacity: int = ...,
+        max_micros: int = ...,
+        threshold: float = ...,
+        max_leaves: int = ...,
+        branching: int = ...,
+        leaf_cap: int = ...,
+        seed: int = ...,
+    ) -> None: ...
+    def get_params(self, deep: bool = ...) -> dict[str, Any]: ...
+    def set_params(self, **params: Any) -> WindowStream: ...
+    def partial_fit(
+        self, X: _FloatArray, t: float | Sequence[float] | _FloatArray, y: Any = ...
+    ) -> WindowStream: ...
+    def close_frame(self) -> WindowStream: ...
+    @property
+    def n_frames_(self) -> int: ...
+    def frame_spans(self) -> list[tuple[float, float, float]]: ...
+    def window_moments(self, t0: float, t1: float) -> dict[str, Any]: ...
+    def cluster_window(
+        self, t0: float, t1: float, k: int, max_iter: int = ...
+    ) -> tuple[NDArray[np.float64], NDArray[np.float64], float] | None: ...
 
 class DenStream:
     """Streaming DenStream density clusterer over fading micro-clusters."""

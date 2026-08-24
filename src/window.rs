@@ -51,8 +51,10 @@
 //! with age — the pyramidal property, obtained by merging rather than by differencing.
 
 use crate::clustering::{KMeans, kmeans};
+use crate::distance::CentroidEuclidean;
 use crate::feature::ClusterFeature;
 use crate::kernels::sq_euclidean;
+use crate::tree::CFTree;
 use crate::types::Real;
 
 /// Time support of a summary: the same `(weight, mean, ssd)` contract the spatial feature uses,
@@ -348,6 +350,141 @@ fn compact<R: Real, C: ClusterFeature<R>>(micros: Vec<C>, target: usize, seed: u
     groups.into_iter().flatten().collect()
 }
 
+/// A CF-tree over the open frame, plus the index of the frames already closed.
+///
+/// This is the CluStream-class head: `insert` streams points with timestamps, frames close on the
+/// clock rather than on the point count, and `cluster_window` answers the query. It never
+/// subtracts — see the module docs for the measurement that rules that out — so it trades exactness
+/// in real arithmetic for an answer whose accuracy does not depend on how the stream drifted.
+///
+/// Routing and absorption are fixed to `D0` (centroid Euclidean), like the other streaming
+/// clusterers in [`crate::stream`]: a window query is a summary question, and letting the routing
+/// distance vary across frames would make frames from different eras incomparable.
+pub struct WindowStream<R: Real, C: ClusterFeature<R>> {
+    tree: CFTree<R, C, CentroidEuclidean, CentroidEuclidean>,
+    dim: usize,
+    branching: usize,
+    leaf_cap: usize,
+    threshold: R,
+    max_leaves: usize,
+    frame_width: f64,
+    frame_end: Option<f64>,
+    open: TimeSpan,
+    index: WindowIndex<R, C>,
+}
+
+impl<R: Real, C: ClusterFeature<R>> WindowStream<R, C> {
+    /// `frame_width` is in stream-time units and sets the resolution a window can be asked at;
+    /// `capacity` frames are retained before the two oldest are merged. The tree parameters are the
+    /// usual ones and apply to each frame independently.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        dim: usize,
+        branching: usize,
+        leaf_cap: usize,
+        threshold: R,
+        max_leaves: usize,
+        frame_width: f64,
+        capacity: usize,
+        max_micros: usize,
+        seed: u64,
+    ) -> Self {
+        WindowStream {
+            tree: CFTree::new(
+                dim,
+                branching,
+                leaf_cap,
+                threshold,
+                max_leaves,
+                CentroidEuclidean,
+                CentroidEuclidean,
+            ),
+            dim,
+            branching,
+            leaf_cap,
+            threshold,
+            max_leaves,
+            frame_width: if frame_width > 0.0 { frame_width } else { 1.0 },
+            frame_end: None,
+            open: TimeSpan::new(),
+            index: WindowIndex::new(capacity, max_micros, seed),
+        }
+    }
+
+    /// Stream one point stamped at `t`. Timestamps are expected non-decreasing; an out-of-order
+    /// point lands in the open frame rather than being rejected, which keeps a late arrival in the
+    /// summary at the cost of widening that frame's span — the span records it, so a query can see
+    /// what happened.
+    pub fn insert(&mut self, x: &[R], t: f64) {
+        match self.frame_end {
+            None => self.frame_end = Some(t + self.frame_width),
+            Some(end) if t >= end => {
+                self.close_frame();
+                // Snap forward by whole widths so frame boundaries stay on the same grid across a
+                // gap in the stream, without pushing an empty frame for every width in the gap.
+                let mut next = end;
+                while t >= next {
+                    next += self.frame_width;
+                }
+                self.frame_end = Some(next);
+            }
+            Some(_) => {}
+        }
+        self.tree.insert(x);
+        self.open.push(t, 1.0);
+    }
+
+    /// Close the open frame into the index. A no-op when nothing has been inserted since the last
+    /// close, so a gap in the stream costs no empty frames.
+    pub fn close_frame(&mut self) {
+        if self.tree.num_leaves() == 0 {
+            return;
+        }
+        let micros = self.tree.leaf_features().to_vec();
+        self.index.push_frame(self.open, micros);
+        self.tree = CFTree::new(
+            self.dim,
+            self.branching,
+            self.leaf_cap,
+            self.threshold,
+            self.max_leaves,
+            CentroidEuclidean,
+            CentroidEuclidean,
+        );
+        self.open = TimeSpan::new();
+    }
+
+    /// Point dimensionality.
+    pub fn dim(&self) -> usize {
+        self.dim
+    }
+
+    /// Micro-clusters from every closed frame reaching into `[t0, t1]`.
+    pub fn window(&self, t0: f64, t1: f64) -> Vec<C> {
+        self.index.window(t0, t1)
+    }
+
+    /// Frames closed so far, oldest first. The open frame is not among them.
+    pub fn frames(&self) -> &[Frame<C>] {
+        self.index.frames()
+    }
+
+    /// Time support of the frame currently being filled.
+    pub fn open_span(&self) -> TimeSpan {
+        self.open
+    }
+
+    /// Combined moments of the closed frames reaching into `[t0, t1]`.
+    pub fn window_moments(&self, t0: f64, t1: f64) -> Moments<R> {
+        self.index.window_moments(t0, t1, self.dim)
+    }
+
+    /// Cluster the window into `k` groups; `None` when it holds fewer than `k` micro-clusters.
+    pub fn cluster_window(&self, t0: f64, t1: f64, k: usize, max_iter: usize) -> Option<KMeans<R>> {
+        self.index.cluster_window(t0, t1, k, max_iter)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -570,6 +707,143 @@ mod tests {
         }
         assert!(idx.cluster_window(0.0, 3.5, 999, 50).is_none());
         assert!(idx.cluster_window(-10.0, -5.0, 2, 50).is_none());
+    }
+
+    // ────────────────────────────── the streaming wrapper ──────────────────────────────────────
+
+    fn stream(width: f64, capacity: usize) -> WindowStream<f64, Spherical<f64>> {
+        WindowStream::new(2, 32, 32, 0.0, 200, width, capacity, 64, 5)
+    }
+
+    #[test]
+    fn frames_close_on_the_clock_not_on_the_point_count() {
+        let mut s = stream(10.0, 32);
+        // 5 points per unit of time over 35 units: frames must fall on the time grid, so four of
+        // them (0-10, 10-20, 20-30, 30-35) regardless of how many points each holds.
+        for i in 0..175 {
+            let t = i as f64 / 5.0;
+            s.insert(&[t, 0.0], t);
+        }
+        s.close_frame();
+        assert_eq!(s.frames().len(), 4);
+        for (f, want) in
+            s.frames()
+                .iter()
+                .zip([(0.0, 9.8), (10.0, 19.8), (20.0, 29.8), (30.0, 34.8)])
+        {
+            assert!((f.span.min - want.0).abs() < 1e-9, "{:?}", f.span);
+            assert!((f.span.max - want.1).abs() < 1e-9, "{:?}", f.span);
+        }
+    }
+
+    #[test]
+    fn a_gap_in_the_stream_costs_no_empty_frames_and_keeps_the_grid() {
+        let mut s = stream(10.0, 32);
+        s.insert(&[0.0, 0.0], 1.0);
+        s.insert(&[0.0, 0.0], 2.0);
+        s.insert(&[1.0, 0.0], 1000.0); // a 100-width gap
+        s.close_frame();
+        assert_eq!(s.frames().len(), 2, "the gap materialised as empty frames");
+        // The grid survived the jump: the second frame's boundary is still a multiple of the width
+        // away from the first, so windows asked before and after the gap line up.
+        assert!((s.frames()[1].span.min - 1000.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn the_stream_answers_a_window_over_a_drifting_source() {
+        // Two eras with different structure. A window over the first must not see the second, which
+        // is the whole point of the head -- and is what a decayed single model cannot do.
+        let mut rng = SplitMix64::new(9);
+        let mut s = stream(10.0, 32);
+        for i in 0..600 {
+            let t = i as f64 / 20.0; // 0..30
+            // The era switches on a frame boundary. Off one, the frame straddling the switch would
+            // carry both eras whole -- see the granularity test below, which pins exactly that.
+            let far = if t >= 20.0 { 80.0 } else { 0.0 };
+            let side = if i % 2 == 0 { 0.0 } else { 12.0 };
+            s.insert(&[side + rng.gauss() * 0.3, far + rng.gauss() * 0.3], t);
+        }
+        s.close_frame();
+
+        let early = s.cluster_window(0.0, 19.9, 2, 50).expect("two groups");
+        for c in &early.centers {
+            assert!(c[1].abs() < 10.0, "early window saw the later era: {c:?}");
+        }
+        let late = s.cluster_window(20.0, 30.0, 2, 50).expect("two groups");
+        for c in &late.centers {
+            assert!(
+                (c[1] - 80.0).abs() < 10.0,
+                "late window saw the earlier era: {c:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_window_ending_inside_a_frame_gets_that_whole_frame() {
+        // The price of never subtracting, pinned rather than described: resolution is the frame
+        // width, and a query finer than that silently receives more than it asked for. Bounded by
+        // the frame width -- unlike a subtraction's error, which is bounded by nothing.
+        let mut s = stream(10.0, 32);
+        for i in 0..30 {
+            let t = i as f64;
+            s.insert(&[t, 0.0], t);
+        }
+        s.close_frame();
+        assert_eq!(s.frames().len(), 3);
+        // Asking for [0, 12] reaches into the second frame, so all 20 of its points come back --
+        // not the 13 the query named.
+        let w = s.window_moments(0.0, 12.0);
+        assert_eq!(
+            w.weight, 20.0,
+            "expected two whole frames, got {}",
+            w.weight
+        );
+        let exact = s.window_moments(0.0, 9.5);
+        assert_eq!(exact.weight, 10.0);
+    }
+
+    #[test]
+    fn the_streams_window_moments_match_the_points_that_fell_in_it() {
+        let mut rng = SplitMix64::new(10);
+        let mut s = stream(5.0, 32);
+        let mut direct = Moments {
+            weight: 0.0,
+            mean: vec![0.0; 2],
+            ssd: 0.0,
+        };
+        for i in 0..400 {
+            let t = i as f64 / 10.0; // 0..40
+            let p = [rng.gauss(), rng.gauss()];
+            s.insert(&p, t);
+            if (10.0..20.0).contains(&t) {
+                let mut one: Spherical<f64> = Spherical::new(2);
+                one.push(&p, 1.0);
+                direct.merge(&Moments::from_feature(&one));
+            }
+        }
+        s.close_frame();
+        let got = s.window_moments(10.0, 19.999);
+        // Frame-granular by construction and exact within that: the frames are 5 wide and the
+        // window is a whole number of them, so the mass has to land exactly.
+        assert!(
+            (got.weight - direct.weight).abs() < 1e-9,
+            "{} vs {}",
+            got.weight,
+            direct.weight
+        );
+        assert!((got.ssd - direct.ssd).abs() < 1e-6 * direct.ssd);
+    }
+
+    #[test]
+    fn an_untouched_stream_answers_nothing_rather_than_guessing() {
+        let s = stream(10.0, 8);
+        assert!(s.frames().is_empty());
+        assert_eq!(s.open_span().weight, 0.0);
+        assert!(s.cluster_window(0.0, 100.0, 2, 10).is_none());
+        assert_eq!(s.window_moments(0.0, 100.0).weight, 0.0);
+        let mut s = stream(10.0, 8);
+        s.close_frame(); // nothing open: must stay a no-op
+        assert!(s.frames().is_empty());
     }
 
     #[test]

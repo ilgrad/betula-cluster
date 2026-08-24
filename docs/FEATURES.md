@@ -80,6 +80,13 @@ A capability-by-capability reference. For runnable code see [`USAGE.md`](USAGE.m
   proximity: it recovers arbitrarily-shaped clusters as chains of overlapping micro-clusters and —
   unlike a distance-only rule — keeps two close-but-disconnected dense regions apart (an empty gap
   carries zero shared density). Same fading-CF core as `DenStream`; `partial_fit` / `predict`.
+- **`WindowStream`** — windowed queries over a timestamped stream: "cluster what arrived between
+  `t₀` and `t₁`". Summaries are kept **per frame** and a window is their *sum*, never a difference of
+  two cumulative snapshots the way CluStream does it — an inverse merge loses `log₁₀(S_AB/S_B)`
+  digits of the scatter, and under drift that ratio runs away while the point counts stay small (a
+  measured 6155× error at a mass ratio of 2.0). The price is that a window resolves only to the frame
+  boundary, which is an error bounded by `frame_width` rather than by nothing. Old frames merge
+  pairwise as `capacity` fills, so resolution coarsens with age and never with recency.
 - **Streaming quantile sketches** (`KllSketch`, `DdSketch`) — compact, mergeable summaries that
   answer quantile / rank queries over a stream in bounded memory: **KLL** with a rank-error guarantee
   (uniform across the distribution) and **DDSketch** with a relative-error guarantee (ideal for
@@ -188,6 +195,8 @@ A capability-by-capability reference. For runnable code see [`USAGE.md`](USAGE.m
 | `clustering` | `kmeans` / `cop_kmeans`, `gmm_diagonal`, `gmm_full`, `gmm_toeplitz{,_full,_gs}`, `ward_hac`, `agglomerative` (UPGMA/WPGMA/UPGMC/WPGMC), `spectral`, `leiden`, `spherical_kmeans`, `movmf`, `scale_space`, `hdbscan`, `kprototypes`, `nmf` (the `projection` reducer) |
 | `mixture` | fitted-mixture kernels (diagonal / full-Cholesky / stationary / vMF) that score a raw point — what `predict` / `predict_proba` label by |
 | `stream` | `DenStream` + `DbStream` fading-microcluster density heads |
+| `window` | frame-summed windowed summaries + `WindowStream`; the conditioned inverse merge |
+| `coreset` | sensitivity-sampled `(k, ε)`-coreset with its summarization bound |
 | `sparse` | `O(nnz)` sparse-native summarisation (`fit_predict_sparse`) |
 | `sketch` | KLL + DDSketch mergeable quantile sketches |
 | `topology` | Mapper nerve + 0-D persistence |

@@ -2501,6 +2501,87 @@ def test_projected_fit_still_reports_a_leaf_level_posterior():
     assert np.allclose(proba.sum(axis=1), 1.0)
 
 
+# ── WindowStream ──────────────────────────────────────────────────────────────────────────────────
+
+
+def _drifting_stream(n=1200, era=30.0, span=60.0, seed=0):
+    """Two eras with different structure, timestamps rising through `span`.
+
+    Half-open on purpose: a point at exactly `t = span` opens one more frame, and every frame count
+    below would then be off by one for a reason that has nothing to do with what is being tested."""
+    rng = np.random.default_rng(seed)
+    t = np.linspace(0.0, span, n, endpoint=False)
+    side = np.where(np.arange(n) % 2 == 0, 0.0, 12.0)
+    far = np.where(t >= era, 80.0, 0.0)
+    x = np.c_[side + rng.normal(0, 0.3, n), far + rng.normal(0, 0.3, n)]
+    return x, t
+
+
+def test_window_stream_answers_each_era_without_seeing_the_other():
+    """The point of the head: a window over the first era must not see the second. A decayed
+    single-model streamer cannot do this at all — it has only a present."""
+    x, t = _drifting_stream()
+    ws = betula_cluster.WindowStream(frame_width=10.0, capacity=64, max_leaves=200)
+    ws.partial_fit(x, t).close_frame()
+    assert ws.n_frames_ == 6
+
+    early = ws.cluster_window(0.0, 29.9, 2)
+    assert early is not None
+    assert np.all(np.abs(early[0][:, 1]) < 10.0), early[0]
+    late = ws.cluster_window(30.0, 60.0, 2)
+    assert np.all(np.abs(late[0][:, 1] - 80.0) < 10.0), late[0]
+
+
+def test_window_stream_conserves_the_mass_of_the_frames_it_returns():
+    x, t = _drifting_stream(n=600, span=30.0)
+    ws = betula_cluster.WindowStream(frame_width=10.0, capacity=64, max_leaves=200)
+    ws.partial_fit(x, t).close_frame()
+    assert ws.window_moments(0.0, 30.0)["weight"] == pytest.approx(600.0)
+    spans = ws.frame_spans()
+    assert len(spans) == 3
+    assert sum(w for _, _, w in spans) == pytest.approx(600.0)
+    # Ascending, non-overlapping frames.
+    assert all(spans[i][1] <= spans[i + 1][0] for i in range(len(spans) - 1))
+
+
+def test_a_window_ending_inside_a_frame_gets_that_whole_frame():
+    """The documented price of never subtracting, asserted rather than described: resolution is
+    the frame width, and the error it costs is bounded by that width — where a snapshot
+    subtraction's error is bounded by nothing."""
+    x, t = _drifting_stream(n=600, span=30.0)
+    ws = betula_cluster.WindowStream(frame_width=10.0, capacity=64, max_leaves=200)
+    ws.partial_fit(x, t).close_frame()
+    whole = ws.window_moments(0.0, 9.9)["weight"]
+    reaching = ws.window_moments(0.0, 10.1)["weight"]
+    assert whole == pytest.approx(200.0)
+    assert reaching == pytest.approx(400.0), "a query 0.1 past the boundary took a whole frame"
+
+
+def test_window_stream_refuses_a_window_it_cannot_answer():
+    x, t = _drifting_stream(n=200, span=10.0)
+    ws = betula_cluster.WindowStream(frame_width=10.0, max_leaves=200)
+    ws.partial_fit(x, t).close_frame()
+    assert ws.cluster_window(100.0, 200.0, 2) is None  # empty window
+    assert ws.cluster_window(0.0, 10.0, 100_000) is None  # more clusters than micro-clusters
+
+
+def test_window_stream_rejects_a_timestamp_per_row_mismatch():
+    x, t = _drifting_stream(n=50, span=10.0)
+    ws = betula_cluster.WindowStream(frame_width=5.0)
+    with pytest.raises(ValueError, match="one timestamp per row"):
+        ws._est = betula_cluster._core.WindowStream(**ws.get_params())
+        ws._est.partial_fit(x, list(t[:10]))
+
+
+def test_window_stream_is_not_fitted_before_it_is_fed():
+    ws = betula_cluster.WindowStream(frame_width=1.0)
+    with pytest.raises(AttributeError):
+        _ = ws.n_frames_
+    assert betula_cluster.WindowStream(frame_width=2.0).get_params()["frame_width"] == 2.0
+    with pytest.raises(ValueError, match="Invalid parameter"):
+        ws.set_params(nonsense=1)
+
+
 # ── export_coreset ────────────────────────────────────────────────────────────────────────────────
 
 

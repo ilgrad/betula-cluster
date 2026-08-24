@@ -50,6 +50,13 @@ All notable changes to this project are documented here. The format follows
   a `ClusterFeature`: the inverse merge is well defined only for the scalar scatter, and letting a
   diagonal or full feature through it would silently drop the off-diagonal structure a window query
   never asked to lose.
+
+  `WindowStream` is the estimator on top: `partial_fit(X, t)` routes points into a CF-tree, seals a
+  frame every `frame_width` of stream time (snapping forward across a gap so the frame grid stays
+  aligned to the origin rather than to the last arrival), and hands the sealed frame's
+  micro-clusters to the index. `close_frame`, `frame_spans`, `window_moments` and `cluster_window`
+  are exposed in Python. This is what `DenStream` structurally cannot do: decay leaves it with only
+  a present, while this retains history and coarsens it with age.
 - **`export_coreset(size=…)`: the word "coreset" turned into a claim.** `export_coreset()` has
   always returned the leaf summary and always called it a coreset; nothing checked that it was one.
   It now carries the two bounds that make the name earned, and they are kept apart on purpose,

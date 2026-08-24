@@ -21,6 +21,7 @@ from ._core import DbStream as _CoreDbStream  # type: ignore
 from ._core import DdSketch, KllSketch, fit_predict  # type: ignore
 from ._core import DenStream as _CoreDenStream  # type: ignore
 from ._core import KPrototypes as _CoreKPrototypes  # type: ignore
+from ._core import WindowStream as _CoreWindowStream  # type: ignore
 from ._core import fit_predict_sparse as _core_fit_predict_sparse  # type: ignore
 from .tuning import TuneResult, tune
 
@@ -40,6 +41,7 @@ __all__ = [
     "KllSketch",
     "MapperGraph",
     "TuneResult",
+    "WindowStream",
     "__version__",
     "consensus",
     "fit_predict",
@@ -1250,6 +1252,130 @@ class Betula:
 
 
 _DENSTREAM_PARAMS = ("eps", "decay", "beta", "mu")
+
+
+_WINDOWSTREAM_PARAMS = (
+    "frame_width",
+    "capacity",
+    "max_micros",
+    "threshold",
+    "max_leaves",
+    "branching",
+    "leaf_cap",
+    "seed",
+)
+
+
+class WindowStream:
+    """Streaming **windowed** clusterer: ask "cluster the window ``[t0, t1]``" of a live stream.
+
+    This is the CluStream question (Aggarwal et al., VLDB 2003) answered without CluStream's
+    mechanism. CluStream keeps snapshots and **subtracts** the one at ``t0`` from the one at ``t1``;
+    cluster-feature additivity makes that exact in real arithmetic and badly conditioned in floating
+    point, and the condition number is ``S_AB/S_B`` — the scatter ratio, not the point-count ratio.
+    The two agree on a stationary stream and diverge under drift, which is exactly when a window
+    query is worth asking. On a two-half fixture with a **mass ratio of 2.0**, where any guard
+    written on point counts sees nothing, the subtracted scatter comes back wrong by a factor of
+    6155.
+
+    So this keeps micro-clusters **per frame** instead, and a window is a *sum* of frames — every
+    combination is the stable merge. The trade runs the other way and is worth knowing: a window
+    resolves only to the frame boundary, so a query ending inside a frame receives that whole frame.
+    That error is bounded by ``frame_width``. The subtraction's is bounded by nothing.
+
+    Unlike :class:`DenStream`, which fades old data into one current model, this retains history:
+    you can ask about last Tuesday. Older frames are merged pairwise as ``capacity`` fills, so
+    resolution coarsens with age and never with recency.
+
+    >>> ws = WindowStream(frame_width=3600.0, capacity=48)
+    >>> ws.partial_fit(X, timestamps)     # doctest: +SKIP
+    >>> ws.close_frame()                  # doctest: +SKIP
+    >>> centers, masses, inertia = ws.cluster_window(t0, t1, k=5)   # doctest: +SKIP
+    """
+
+    def __init__(
+        self,
+        frame_width=1.0,
+        capacity=64,
+        max_micros=200,
+        threshold=0.0,
+        max_leaves=2000,
+        branching=32,
+        leaf_cap=32,
+        seed=0,
+    ):
+        self.frame_width = frame_width
+        self.capacity = capacity
+        self.max_micros = max_micros
+        self.threshold = threshold
+        self.max_leaves = max_leaves
+        self.branching = branching
+        self.leaf_cap = leaf_cap
+        self.seed = seed
+        self._est = None
+
+    def get_params(self, deep=True):
+        return {k: getattr(self, k) for k in _WINDOWSTREAM_PARAMS}
+
+    def set_params(self, **params):
+        for key, value in params.items():
+            if key not in _WINDOWSTREAM_PARAMS:
+                raise ValueError(
+                    f"Invalid parameter {key!r} for estimator WindowStream. "
+                    f"Valid parameters are: {sorted(_WINDOWSTREAM_PARAMS)}."
+                )
+            setattr(self, key, value)
+        self._est = None
+        return self
+
+    def _require_fit(self):
+        if self._est is None:
+            raise AttributeError("This WindowStream instance is not fitted yet.")
+        return self._est
+
+    def partial_fit(self, X, t, y=None):
+        """Stream a chunk of rows with their timestamps (one per row, or one scalar for all)."""
+        rows = np.asarray(X, dtype=np.float64)
+        times = np.broadcast_to(np.asarray(t, dtype=np.float64), (len(rows),))
+        if self._est is None:
+            self._est = _CoreWindowStream(**self.get_params())
+        self._est.partial_fit(rows, [float(v) for v in times])
+        return self
+
+    def close_frame(self):
+        """Close the frame currently being filled. Call before querying the most recent data."""
+        self._require_fit().close_frame()
+        return self
+
+    @property
+    def n_frames_(self):
+        """Closed frames retained."""
+        return self._require_fit().n_frames
+
+    def frame_spans(self):
+        """``(t_min, t_max, weight)`` per closed frame, oldest first."""
+        return self._require_fit().frame_spans()
+
+    def window_moments(self, t0, t1):
+        """``{"weight", "mean", "ssd"}`` of the frames reaching into ``[t0, t1]``."""
+        w, mean, ssd = self._require_fit().window_moments(float(t0), float(t1))
+        return {"weight": w, "mean": np.asarray(mean, dtype=np.float64), "ssd": ssd}
+
+    def cluster_window(self, t0, t1, k, max_iter=100):
+        """``(centers, cluster_masses, inertia)`` for the window, or ``None`` if it holds fewer
+        than ``k`` micro-clusters — a question the summary cannot answer rather than guess at."""
+        got = self._require_fit().cluster_window(float(t0), float(t1), int(k), int(max_iter))
+        if got is None:
+            return None
+        centers, masses, inertia = got
+        return (
+            np.asarray(centers, dtype=np.float64),
+            np.asarray(masses, dtype=np.float64),
+            inertia,
+        )
+
+    def __repr__(self):
+        return f"WindowStream(frame_width={self.frame_width}, capacity={self.capacity})"
 
 
 class DenStream:
