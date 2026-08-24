@@ -551,6 +551,29 @@ All notable changes to this project are documented here. The format follows
   the noise fraction down from 0.620 to 0.580); `blobs` 0.142 → 0.154 and `varied` 0.519 → 0.536;
   `aniso` 0.569 → 0.568 and `covtype` +0.0001 are ties; MNIST stays all-noise.
 
+- **`method="gmm"` hoists the log-variance term out of the leaf loop: 1.35x on the profiled shape,
+  byte-identical labels.** A profile came first, as the task required. On 20 000 x 784 with
+  `method="gmm"` and `max_leaves=2000` (`perf record -F 997 --call-graph fp`, 9 014 samples,
+  `RAYON_NUM_THREADS=1`), `gmm_diagonal_once` was 34.9% of the run and **`__ieee754_log_fma` alone
+  was 14.6%** -- one library call, a seventh of the whole fit.
+
+  The cause is a loop-invariant in the innermost E-step statement: `1/2 log(2 pi sigma^2_cd)` and
+  `log w_c` depend on the component `c` and the coordinate `d`, never on the leaf `i`, but they sat
+  inside the `for i in 0..m` loop that runs around them. At `m = 1833, k = 10, d = 784` that is
+  **14.4 million `ln` calls per iteration instead of 7 850**. Hoisted to the top of the iteration the
+  cost becomes `k*(d + 1)`.
+
+  The accumulation order is untouched -- the same addends are summed in the same sequence, only the
+  transcendentals are precomputed -- so this is not an approximation and the acceptance gate was that
+  it changes nothing. Measured A-B-A-B on the same build with only the hoist differing: 2.847s /
+  2.098s / 2.781s / 2.072s, **1.35x**, with the SHA-256 label digest `e887117b6aaa25c2` identical in
+  all four runs.
+
+  The same sweep over `gmm-full`, `gmm-toeplitz` and `mppca` found the identical pattern -- but there
+  only `log w_c` is left inside the leaf loop, `k` calls per leaf against an `O(d^2)` Mahalanobis
+  term, so hoisting it would buy nothing measurable and those loops are unchanged. Recorded here so
+  the next reader does not re-derive it.
+
 ### Fixed
 - **`absorb` was validated in two places that had to agree and did not.** The `Betula` estimator
   restated the accepted names and the `chi2_scale > 0` rule inline, next to `resolve_gate`'s own copy

@@ -112,20 +112,32 @@ fn gmm_diagonal_once<R: Real, C: ClusterFeature<R>>(
     let mut loglik = R::neg_infinity();
     let tol = R::from_f64(1e-7).unwrap();
 
+    // `½·log(2π σ²_cd)` and `log w_c` depend on the component, never on the leaf, but the leaf loop
+    // below runs `m` times around them. Hoisted here they cost `k·(d + 1)` transcendentals per
+    // iteration instead of `m·k·(d + 1)` — at `m = 1833, k = 10, d = 784` that is 7 850 calls to
+    // `ln` rather than 14.4 million, and `ln` was 14.6% of the whole 20 000 × 784 profile. The
+    // accumulation order is untouched, so every number this produces is bit-for-bit what it was.
+    let mut half_log_var = vec![vec![R::zero(); dim]; k];
+    let mut log_weight = vec![R::zero(); k];
+
     for it in 0..max_iter {
+        for c in 0..k {
+            log_weight[c] = weights[c].ln();
+            for d in 0..dim {
+                half_log_var[c][d] = half * (two_pi * vars[c][d]).ln();
+            }
+        }
         // ── E-step ──
         let mut new_ll = R::zero();
         for i in 0..m {
             let mut logr = vec![R::zero(); k];
             for c in 0..k {
-                let mut acc = weights[c].ln();
+                let mut acc = log_weight[c];
                 for d in 0..dim {
                     let s2 = vars[c][d];
                     let diff = mu[i][d] - means[c][d];
-                    acc = acc
-                        - half * (two_pi * s2).ln()
-                        - half * diff * diff / s2
-                        - half * var[i][d] / s2;
+                    acc =
+                        acc - half_log_var[c][d] - half * diff * diff / s2 - half * var[i][d] / s2;
                 }
                 logr[c] = acc;
             }
