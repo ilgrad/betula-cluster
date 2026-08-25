@@ -131,6 +131,53 @@ fn warn_no_compression(py: Python<'_>, leaves: usize, n: usize, max_leaves: usiz
     PyErr::warn(py, &py.get_type::<PyUserWarning>(), &msg, 1)
 }
 
+/// Warn when a Gaussian head that wants per-dimension variance is fed a feature that has none.
+///
+/// `Spherical::variance(_d)` ignores its argument — it returns `ssd / (w · dim)`, one **isotropic**
+/// number for every dimension, because a spherical cluster feature carries a scalar scatter and
+/// cannot carry more. The diagonal M-step adds that number to all `dim` per-component variances (and
+/// `gmm-full` inherits the same thing through `cov_dense`'s diagonal default). At zero compression
+/// every leaf is a singleton, `ssd = 0`, and nothing is added. Under compression each component is
+/// inflated **equally in every dimension** by however much leaf scatter it happens to cover, so a
+/// dimension with genuinely near-zero variance is lifted to the isotropic average. The fit survives
+/// this; the labelling does not, because the maximum-posterior argmax is dominated by
+/// `ln|Σ_c| = Σ_d ln σ²_cd` while a nearest-centroid rule ignores `Σ` entirely.
+///
+/// Measured on `digits` (1797 × 64, `k = 10`, medians of seeds 0/1/2), ARI by cluster feature:
+///
+/// | leaf budget | `spherical` | `fd` | `full` |
+/// |---|---|---|---|
+/// | 1797 (×1.0) | 0.4613 | 0.4613 | 0.4613 |
+/// | 900 (×2.0) | **0.0088** | 0.3840 | 0.4403 |
+/// | 500 (×3.7) | **0.0104** | 0.4562 | 0.5083 |
+///
+/// The ×1.0 row is the control: with no within-leaf scatter to add, all three agree to the digit.
+/// `gmm-full` shows the same collapse on the same feature (0.0096 at 1200 leaves, 0.0115 at 500) and
+/// none of it on `feature="full"`. The other heads read the same isotropic `variance(d)` but were not
+/// measured, so they are not covered here.
+fn warn_isotropic_gaussian(
+    py: Python<'_>,
+    method: &str,
+    feature: &str,
+    leaves: usize,
+    n: usize,
+) -> PyResult<()> {
+    if feature != "spherical" || leaves >= n || !matches!(method, "gmm" | "gmm-full") {
+        return Ok(());
+    }
+    let msg = CString::new(format!(
+        "method=\"{method}\" fits a per-dimension covariance, but feature=\"spherical\" carries only \
+         a scalar within-leaf scatter, so the same isotropic number is added to every dimension. \
+         With {leaves} leaves for {n} points that is a real compression, and it distorts each \
+         component's log-determinant — measured on digits at x2.0 compression the labels fall to \
+         ARI 0.0088 against 0.4403 for feature=\"full\", while the fitted centres stay healthy. Pass \
+         feature=\"full\" (or \"fd\" for high dimension), or keep max_leaves at n so the tree does \
+         not compress."
+    ))
+    .expect("the formatted warning contains no interior NUL");
+    PyErr::warn(py, &py.get_type::<PyUserWarning>(), &msg, 1)
+}
+
 /// Map the `method` keyword (+ HDBSCAN params) to an internal [`Kind`].
 #[allow(clippy::too_many_arguments)] // one parameter per head-specific keyword, as the callers have
 fn parse_method(
@@ -1158,6 +1205,7 @@ fn fit_predict<'py>(
         warn_leaf_budget(py, leaves, n_clusters, max_leaves)?;
     }
     warn_no_compression(py, leaves, labels.len(), max_leaves)?;
+    warn_isotropic_gaussian(py, method, feature, leaves, labels.len())?;
     Ok(labels.into_pyarray(py))
 }
 
@@ -2082,6 +2130,14 @@ impl Betula {
         if kind.consumes_k() {
             warn_leaf_budget(py, self.n_leaves_(), k, self.max_leaves)?;
         }
+        // The estimator does not carry a point count, but the leaf weights sum to one — and for the
+        // unweighted `fit(X)` path that sum *is* `n`, which is what the compression test needs.
+        let seen = self
+            .leaf_stats_any()
+            .map_or(0.0, |(_, w, _, _)| w.iter().sum::<f64>());
+        let method = self.method.clone();
+        let feature = self.feature.clone();
+        warn_isotropic_gaussian(py, &method, &feature, self.n_leaves_(), seen as usize)?;
         Ok(())
     }
 

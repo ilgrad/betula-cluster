@@ -764,6 +764,60 @@ accepted deliberately rather than overwritten:
   configuration of FAISS that reaches betula's quality also costs 6.3× the time, so it converts a
   quality cell from tie-against-sklearn to tie-against-FAISS and adds nothing on speed.
 
+## Where the leaf budget goes — geometry, not mass (tasks #70 and #77)
+
+Two open questions about the budget, settled together because one measurement answers both.
+
+**Is the budget under-used?** No — that claim was about ELKI and does not transfer. Realised leaves
+over `max_leaves`, medians of seeds 0/1/2, `threshold=0`:
+
+| dataset | 250 | 500 | 1000 | 2000 | 4000 |
+|---|---|---|---|---|---|
+| covtype-20k | 0.96 | 0.95 | 0.96 | 0.98 | 0.90 |
+| mnist-20k | 0.94 | 0.96 | 0.97 | 0.90 | 0.94 |
+| blobs-100k | 0.97 | 0.95 | 0.95 | 0.93 | 0.95 |
+| highdim-100k | 0.97 | 0.96 | 0.96 | 0.97 | 0.97 |
+
+The tree fills **90–98%** of its budget everywhere. There is no unused-budget lever here.
+
+**Is the budget well *spent*?** No, and that is the real defect. The same run, share of total mass in
+the heaviest leaf (`top1`) and the heaviest 10% of leaves (`top10`):
+
+| dataset | budget | Gini | top1 | top10 | heaviest leaf |
+|---|---:|---:|---:|---:|---:|
+| mnist-20k | 250 | 0.979 | **0.831** | 0.984 | 16 625 of 20 000 |
+| mnist-20k | 1000 | 0.938 | 0.360 | 0.948 | 7 193 |
+| covtype-20k | 500 | 0.886 | 0.149 | 0.851 | 2 976 |
+| covtype-20k | 4000 | 0.683 | 0.015 | 0.613 | 295 |
+| imbalanced-100k | 4000 | 0.949 | **0.800** | 0.952 | **80 000** |
+
+The `imbalanced` fixture is the clean case: 80 000 points in a tight core, 20 000 spread across five
+diffuse minorities ten times wider. **The entire core lands in one leaf at every budget from 250 to
+4000.** With 3 792 leaves realised, 3 791 of them go to the 20% of the mass that happens to be spread
+out. The budget is spent by geometry — how far apart points are — and not by mass.
+
+**The mechanism is the single global threshold.** The rebuild heuristic raises one absorption radius
+until the leaf count fits under `max_leaves`, and stops as soon as it does. One global radius cannot
+serve two densities: at `max_leaves=4000` the threshold settles at 0.705, which is still wider than
+the core's whole diameter, so the core cannot split — and lowering it far enough to split the core
+would explode the minorities past any budget.
+
+**What it costs.** `structured` gives the core internal structure — two true clusters inside it — so
+collapsing it to one leaf makes them unrecoverable by *any* Phase-3 head. `flat` is the control with
+the same mass profile and no internal structure. Medians of seeds 0/1/2:
+
+| fixture | sklearn-kmeans (raw points) | betula @250 | @1000 | @4000 |
+|---|---:|---:|---:|---:|
+| structured (k=7) | **1.0000** | 0.4174 | 0.4174 | 0.4174 |
+| flat (k=6) | 1.0000 | **1.0000** | 1.0000 | 1.0000 |
+
+Sixteen times the budget buys **nothing** on `structured`, and `kmeans` / `ward` / `gmm` agree to
+three decimals — this is not a head choosing badly, it is a summary that no longer contains the
+answer. On `flat` the identical collapse is free. This reproduces the shape of scikit-learn's Birch
+issue #22854 on our own tree, and it is the mechanism behind the `covtype` and MNIST rows above,
+where `top10` reaches 0.61–0.98. Fixing it means a budget that is allocated by mass rather than by
+radius; that is task #70's remaining half and is not in this edition.
+
 ## Quality against the leaf budget — the knob the tables never varied
 
 `bench/leaf_budget.py`, median of seeds 0/1/2, `feature="spherical"`, `threshold=0.0`, crossed over
@@ -802,9 +856,60 @@ and then falls off a cliff between ×10 and ×22.
 
 Two further readings the sweep settles:
 
-- **The `gmm` head is the fragile one.** It collapses to 0.0088 on `digits` at ×2.0 and to 0.0618 /
-  0.0512 on MNIST at ×5.5 / ×10, in cells where k-means and ward are still near their best. Nothing
-  in the fixed-budget tables exposed this, because they never crossed the region where it happens.
+- **The `gmm` head is the fragile one, and the cause is a feature/head mismatch (task #89).** It
+  collapses to 0.0088 on `digits` at ×2.0 and to 0.0618 / 0.0512 on MNIST at ×5.5 / ×10, in cells
+  where k-means and ward are still near their best. Nothing in the fixed-budget tables exposed this,
+  because they never crossed the region where it happens. The mechanism is below.
+
+### Why `gmm` collapses under compression, and why `k-means` does not
+
+Three measurements, each ruling out the previous explanation.
+
+**It is not a degenerate fit.** At the 0.0088 cell the fitted model has ten non-empty components, the
+largest holding 30% of the points, and cluster radii in the same range as every healthy cell. No
+variance spike, no merged blob, no empty component.
+
+**It is not the summary.** Labelling the *same* points three ways off the *same* fitted model:
+
+| leaf budget | maximum posterior | nearest fitted centre | via each point's leaf |
+|---|---|---|---|
+| 1797 (×1.0) | 0.4613 | 0.5132 | 0.5178 |
+| 898 (×2.0) | **0.0088** | 0.5288 | 0.5296 |
+| 484 (×3.7) | **0.0104** | 0.4988 | 0.5267 |
+| 296 (×6.1) | 0.4650 | 0.5004 | 0.4849 |
+
+The centres are healthy at every budget. Only the posterior collapses, and the only thing the
+posterior uses that a nearest-centre rule does not is the fitted covariance.
+
+**It is the covariance, and one line of code says why.** `Spherical::variance(_d)` ignores its
+argument — it returns `ssd / (w · dim)`, one **isotropic** number for every dimension, because a
+spherical cluster feature carries a scalar scatter and cannot carry more. The diagonal M-step adds
+that number to all `dim` per-component variances. At ×1.0 every leaf is a singleton, `ssd = 0`, and
+nothing is added. Under compression each component is inflated **equally in every dimension** by
+however much leaf scatter it happens to cover, so a dimension with genuinely near-zero variance
+(`digits` has constant border pixels) is lifted to the isotropic average. In 64 dimensions the
+maximum-posterior argmax is dominated by `ln|Σ_c| = Σ_d ln σ²_cd`; a nearest-centre rule ignores `Σ`
+entirely. That is the whole difference between the columns above.
+
+The prediction that follows — features carrying *per-dimension* scatter must not show it — and its
+test, medians of seeds 0/1/2 on `digits`:
+
+| leaf budget | `spherical` | `fd` | `full` |
+|---|---|---|---|
+| 1797 (×1.0) | 0.4613 | 0.4613 | 0.4613 |
+| 1200 | **0.0439** | 0.4843 | 0.4427 |
+| 900 | **0.0088** | 0.3840 | 0.4403 |
+| 500 | **0.0104** | 0.4562 | 0.5083 |
+| 300 | 0.4650 | 0.4928 | 0.3943 |
+
+The ×1.0 row is the control: with no scatter to add, all three agree to the digit. `gmm-full` on the
+spherical feature collapses the same way (0.0096 at 1200 leaves, 0.0115 at 500) and never does on
+`feature="full"`, since `cov_dense`'s default is the same isotropic diagonal.
+
+So `method="gmm"` with `feature="spherical"` is a mismatch as soon as the tree compresses: the head
+asks for a per-dimension covariance and the feature has none. That combination now **warns**, naming
+the measured cost and the fix. The other heads read the same isotropic `variance(d)` and were not
+measured, so the warning does not claim them.
 - **The routing distance only exists under compression, mechanically.** At ×1.0 the spread across
   `euclidean` / `manhattan` / `ward` / `average` is exactly **0.0000** on all three datasets: the four
   distances build the identical singleton leaf set, so there is nothing left to differ. The spread

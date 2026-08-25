@@ -3061,3 +3061,35 @@ def test_a_binding_budget_does_not_warn_about_compression():
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         betula_cluster.fit_predict(x, 3, max_leaves=500, threshold=0.0, seed=0)
+
+
+def test_a_compressing_gmm_on_a_spherical_feature_warns_about_isotropic_scatter():
+    """`Spherical::variance(_d)` ignores its argument: it returns one isotropic number for every
+    dimension, because a spherical cluster feature carries a scalar scatter. A diagonal GMM adds
+    that number to all `dim` component variances, so under compression a dimension with genuinely
+    near-zero variance is lifted to the isotropic average. Measured on digits at x2.0 compression
+    that costs ARI 0.4403 -> 0.0088 while the fitted centres stay healthy, so the mismatch is worth
+    a warning rather than a silent wrong answer."""
+    rng = np.random.default_rng(0)
+    x = np.ascontiguousarray(rng.normal(size=(4000, 8)))
+    with pytest.warns(UserWarning, match="per-dimension covariance"):
+        betula_cluster.fit_predict(
+            x, 3, method="gmm", feature="spherical", max_leaves=200, threshold=0.0, seed=0
+        )
+
+
+def test_a_per_dimension_feature_does_not_warn_about_isotropic_scatter():
+    """The control, twice over: the same compressing call on a feature that *does* carry
+    per-dimension scatter must stay silent, and so must the spherical feature when the budget never
+    binds — with one leaf per point there is no scatter to add, which is exactly the row where the
+    measured collapse disappears."""
+    rng = np.random.default_rng(0)
+    x = np.ascontiguousarray(rng.normal(size=(4000, 8)))
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        betula_cluster.fit_predict(
+            x, 3, method="gmm", feature="full", max_leaves=200, threshold=0.0, seed=0
+        )
+        betula_cluster.fit_predict(
+            x, 3, method="kmeans", feature="spherical", max_leaves=200, threshold=0.0, seed=0
+        )

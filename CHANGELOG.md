@@ -463,6 +463,32 @@ All notable changes to this project are documented here. The format follows
   ≈8 leaves per cluster and declines after — and the check reads the **realised** leaf count, since
   the tree routinely settles below its cap and at `n < max_leaves` the cap never binds at all.
 
+- **A warning when a Gaussian head is fed a feature that cannot carry its covariance.**
+  `method="gmm"` and `method="gmm-full"` fit a per-dimension covariance, but
+  `Spherical::variance(_d)` ignores its argument — it returns `ssd / (w · dim)`, one **isotropic**
+  number for every dimension, because a spherical cluster feature holds a scalar scatter and cannot
+  hold more. The M-step adds that number to all `dim` component variances (and `gmm-full` inherits it
+  through `cov_dense`'s diagonal default). With one leaf per point `ssd = 0` and nothing is added;
+  under compression each component is inflated **equally in every dimension** by however much leaf
+  scatter it happens to cover, so a dimension with genuinely near-zero variance is lifted to the
+  isotropic average.
+
+  The fit survives that. The labelling does not, because the maximum-posterior argmax is dominated by
+  `ln|Σ_c| = Σ_d ln σ²_cd` while a nearest-centroid rule ignores `Σ`. Measured on `digits`, medians of
+  seeds 0/1/2: at 898 leaves (×2.0) the head returns **ARI 0.0088**, while labelling the same points
+  off the same fitted model by nearest centre returns **0.5288** and by their leaf **0.5296**. Ten
+  non-empty components, largest holding 30% — there is no degenerate component and no merged blob.
+
+  The falsifiable prediction — features carrying per-dimension scatter must not show it — holds:
+  `fd` and `full` read 0.3840 and 0.4403 in that same cell, and all three agree to the digit at ×1.0,
+  where there is no scatter to add. `gmm-full` on the spherical feature collapses identically (0.0096
+  at 1200 leaves) and never does on `feature="full"`.
+
+  So the pairing is now a warning naming the measured cost and the fix (`feature="full"`, or `"fd"`
+  in high dimension). This closes task #89 with a mechanism rather than a workaround; heads other
+  than these two read the same isotropic `variance(d)` but were not measured, so the warning does not
+  claim them.
+
 ### Changed
 - **The sparse path stores micro-cluster coordinates feature-major, and the 20-newsgroups fit is
   3.4× faster with every label bit-identical.** Both sparse passes — the leader summarisation and the
