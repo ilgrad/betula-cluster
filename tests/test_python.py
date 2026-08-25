@@ -3042,3 +3042,22 @@ def test_unknown_projection_names_the_whole_set():
         betula_cluster.fit_predict(x, 2, projection="pca")
     with pytest.raises(ValueError, match=r"'svd'"):
         betula_cluster.Betula(n_clusters=2, projection="pca").fit(x)
+
+
+def test_a_budget_that_never_binds_warns_that_nothing_was_compressed():
+    """`max_leaves >= n` with `threshold=0` builds one leaf per point: measured 3.8x the fit time at
+    n=8000 and 14x at n=40000 against a binding budget, for a summary that is the input. The warning
+    is what makes that price visible; it reads the realised leaf count, not the configuration."""
+    rng = np.random.default_rng(0)
+    x = np.ascontiguousarray(rng.normal(size=(6000, 4)))
+    with pytest.warns(UserWarning, match="one per point"):
+        betula_cluster.fit_predict(x, 3, max_leaves=20_000, threshold=0.0, seed=0)
+
+
+def test_a_binding_budget_does_not_warn_about_compression():
+    """The control: the same call at a budget that binds compresses, so it must stay silent."""
+    rng = np.random.default_rng(0)
+    x = np.ascontiguousarray(rng.normal(size=(6000, 4)))
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        betula_cluster.fit_predict(x, 3, max_leaves=500, threshold=0.0, seed=0)

@@ -72,6 +72,9 @@ impl Kind {
 /// `covtype` peaking at ≈8 leaves per cluster and declining after.
 const MIN_LEAVES_PER_CLUSTER: usize = 2;
 
+/// Below this many points the cost of an uncompressed tree is not worth a warning.
+const NO_COMPRESSION_FLOOR: usize = 5_000;
+
 /// Warn once per fit when the realised leaf count cannot support `n_clusters`.
 ///
 /// The check uses the **realised** leaf count rather than `max_leaves`: the tree can settle well
@@ -94,6 +97,35 @@ fn warn_leaf_budget(py: Python<'_>, leaves: usize, k: usize, max_leaves: usize) 
          that many clusters and the partition degrades. Raise max_leaves (currently {max_leaves}), \
          lower threshold, or lower n_clusters.",
         leaves as f64 / k as f64,
+    ))
+    .expect("the formatted warning contains no interior NUL");
+    PyErr::warn(py, &py.get_type::<PyUserWarning>(), &msg, 1)
+}
+
+/// Warn when the CF-tree compressed nothing: one leaf per point.
+///
+/// With `threshold = 0` a point is absorbed only by an entry it equals exactly, so a budget that
+/// never binds leaves the summary at `n` micro-clusters — the tree is built, descended and split for
+/// every point, and then Phase 3 runs on the raw rows anyway. It is not a wrong answer, it is a
+/// silent price: measured single-threaded on 64-dimensional blobs, the same fit costs **3.8× more at
+/// n = 8 000 and 14× more at n = 40 000** than the same call with a binding `max_leaves = 2000`, and
+/// 36–46× more than clustering the raw rows directly.
+///
+/// The check reads the **realised** leaf count rather than comparing `n` against `max_leaves`,
+/// because that is the thing that is actually true — a tree can settle below its cap for other
+/// reasons, and only `leaves == n` says no two points ever shared a micro-cluster.
+///
+/// `NO_COMPRESSION_FLOOR` keeps the warning off inputs small enough that the absolute cost is
+/// irrelevant, where "your summary is your data" is the obviously intended reading.
+fn warn_no_compression(py: Python<'_>, leaves: usize, n: usize, max_leaves: usize) -> PyResult<()> {
+    if leaves < NO_COMPRESSION_FLOOR || leaves != n {
+        return Ok(());
+    }
+    let msg = CString::new(format!(
+        "the CF-tree summarized {n} points into {leaves} leaves — one per point, so nothing was \
+         compressed and the tree is pure overhead (measured 3.8x the fit time at n=8000 and 14x at \
+         n=40000 against a binding budget). max_leaves={max_leaves} never binds at this n and \
+         threshold=0.0 absorbs only exact duplicates. Lower max_leaves, or raise threshold."
     ))
     .expect("the formatted warning contains no interior NUL");
     PyErr::warn(py, &py.get_type::<PyUserWarning>(), &msg, 1)
@@ -1125,6 +1157,7 @@ fn fit_predict<'py>(
     if kind.consumes_k() {
         warn_leaf_budget(py, leaves, n_clusters, max_leaves)?;
     }
+    warn_no_compression(py, leaves, labels.len(), max_leaves)?;
     Ok(labels.into_pyarray(py))
 }
 
@@ -3993,6 +4026,7 @@ fn fit_predict_sparse<'py>(
     if Kind::Parametric(m).consumes_k() {
         warn_leaf_budget(py, leaves, n_clusters, max_leaves)?;
     }
+    warn_no_compression(py, leaves, labels.len(), max_leaves)?;
     Ok(labels.into_pyarray(py))
 }
 

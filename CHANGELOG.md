@@ -428,6 +428,26 @@ All notable changes to this project are documented here. The format follows
   The one-shot path had carried a verbatim copy of the estimator's gate resolution, which would have
   meant adding every criterion twice; it now calls the same `resolve_gate`, and the accepted-value
   list exists once so the parser and the error messages cannot drift apart.
+- **A `UserWarning` when the CF-tree compressed nothing: one leaf per point.** With `threshold = 0` a
+  point is absorbed only by an entry it equals exactly, so a `max_leaves` that never binds leaves the
+  summary at `n` micro-clusters. The answer is not wrong — but the tree is descended, split and
+  rebuilt for every point and Phase 3 then runs on the raw rows anyway. Measured single-threaded on
+  64-dimensional blobs, that costs **3.8× the fit time at `n = 8 000` and 14× at `n = 40 000`** against
+  the same call with a binding `max_leaves = 2000`, and 36–46× more than clustering the raw rows
+  directly. The default `max_leaves = 2000` means only a caller who raised it explicitly can land
+  here, which is exactly why it was silent.
+
+  The check reads the **realised** leaf count rather than comparing `n` against `max_leaves`, matching
+  the existing budget warning's own rule: `leaves == n` is the thing that is actually true, and only
+  it says no two points ever shared a micro-cluster.
+
+  This closes task #40's third item by **refuting** it. The proposed fix was a leaf-per-point bypass
+  that skips the routing descent in this regime; it cannot be an exact equivalence. At `threshold = 0`
+  an exact duplicate *is* absorbed — but only when it descends to the leaf holding its twin, and which
+  leaf a point reaches depends on the tree's state at the moment it was inserted. A hash-based bypass
+  would merge duplicates the real tree keeps apart, so it would be a relabelling sold as an
+  optimisation. The measurable cost is published and made visible instead.
+
 - **A `UserWarning` when the CF summary is too coarse to carry `n_clusters`.** Asking for `k`
   clusters from fewer than `2k` leaves silently produced a worse partition with no signal; the
   warning names the realised leaf count, `k`, their ratio and the current `max_leaves`, and points
