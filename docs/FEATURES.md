@@ -194,6 +194,18 @@ A capability-by-capability reference. For runnable code see [`USAGE.md`](USAGE.m
   scalable counterpart to an $O(N^2)$ all-pairs scan), `sample_representatives`, and
   `assign_microclusters` — for embedding dataset cleaning, deduplication, and outlier discovery,
   reusing the CF-tree already built (no extra passes).
+    Measured on the axes Sanchez Vinces, Schubert, Zimek and Cordeiro set out in
+    *Clustering-based outlier detection* (DAMI 2025) — detection quality, resilience to parameter
+    variation, and auto-filtering by an internal index. `outlier_scores` is a **local** score, and it
+    wins where that matters: on clusters of unequal density it reaches ROC-AUC 1.000 / average
+    precision 0.998 against IsolationForest's 0.887 / **0.175**, at the smallest parameter spread of
+    the three detectors (0.001 over a 12-cell sweep). It is *not* the choice for anisotropic clusters
+    — the score divides by a single scalar RMS radius, so a sheared cluster's short axis is judged by
+    the length of its long one (ROC-AUC 0.596, unchanged between `feature="diagonal"` and
+    `feature="full"`, because the covariance is not consulted). And the parameter cell can be chosen
+    without labels: taking the largest `validity()["calinski_harabasz"]` over the sweep lands within
+    0.033 ROC-AUC of the best cell in it. Tables in
+    [`bench/RESULTS.md`](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md).
 - **Mapper topological skeleton** (`mapper()` → `MapperGraph`) — TDA Mapper specialised to the
   microclusters: a lens (`density` / `radius` / `l2norm` / `coordinate` / `eccentricity`) is covered
   by overlapping bins, microclusters in each bin are single-linked at a data-adaptive scale, and the

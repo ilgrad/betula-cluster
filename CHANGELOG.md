@@ -95,6 +95,23 @@ All notable changes to this project are documented here. The format follows
   with the Leiden head and four synthetic fixtures are not the evidence base for a constant that
   relabels two heads at once. Tables in
   [`bench/RESULTS.md`](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md).
+- **`outlier_scores` measured on the DAMI 2025 axes: where it wins, and the shape it cannot see.**
+  Sanchez Vinces, Schubert, Zimek & Cordeiro's *Clustering-based outlier detection* names the axes —
+  detection quality, resilience to parameter variation, scalability, and auto-filtering by an internal
+  index — and three of the four are now measured against IsolationForest and LOF over three fixtures,
+  medians of seeds 0/1/2. The per-cluster z-score wins the **local** case decisively: on clusters of
+  unequal density it reaches ROC-AUC 1.000 / average precision 0.998 against IsolationForest's 0.887 /
+  **0.175**, with the smallest parameter spread of the three detectors (0.001 over a 12-cell sweep). It
+  loses on **anisotropy** — ROC-AUC 0.596 on sheared clusters, and *identically* 0.596 at
+  `feature="diagonal"` and `feature="full"`, which is the mechanism: the score divides by one scalar RMS
+  radius, so a cluster's short axis is judged by the length of its long one and the covariance the tree
+  already carries is never consulted. A Mahalanobis radius on the same partition lifts that to 0.762,
+  filed as its own task. The parameter cell can also be chosen without labels: taking the largest
+  `validity()["calinski_harabasz"]` over the sweep lands within 0.033 ROC-AUC of the sweep's best cell
+  on all three fixtures — so the resilience spread is filterable rather than fatal. No behaviour
+  changed; `docs/FEATURES.md` and
+  [`bench/RESULTS.md`](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md) now state
+  both the win and the limit.
 - **`fidelity::summary_mmd`: a label-free, head-independent fidelity number for the leaf summary.**
   Every other quality number the crate reports needs something the summary cannot supply — ground
   truth labels, a head, or a value of `k` — and `mean_sq_radius`, the one that needs none of them, is

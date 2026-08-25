@@ -1666,6 +1666,71 @@ seconds; they are due a re-measurement on an idle box.
 
 Harness: `local/scratch/dup_recall.py` (untracked).
 
+## Outlier detection on the DAMI 2025 axes: one decisive win, one named loss (task #61)
+
+Sanchez Vinces, Schubert, Zimek and Cordeiro (*Clustering-based outlier detection*, DAMI 2025)
+endorse clustering-based detectors and set out the axes an evaluation has to cover: **detection
+quality** at a matched budget, **resilience to parameter variation**, **scalability**, and whether an
+**internal** quality measure can filter the bad parameter cells without ever seeing a label. The
+score under test is `outlier_scores` — `dist(x, its cluster centroid) ÷ that cluster's RMS radius`, a
+per-cluster z-score, so it is local by construction where a global distance-to-mean is not.
+
+Three fixtures, `N = 4000`, 5% contamination, median of seeds 0/1/2; betula at `n_clusters=5`,
+`feature="full"`, `max_leaves=0.05` (200 leaves), IsolationForest and LOF at their sklearn defaults.
+
+| fixture | betula | IsolationForest | LOF |
+|---|---|---|---|
+| blobs + uniform noise (8-D, global outliers) | 0.991 / 0.940 | **1.000 / 1.000** | 0.969 / 0.877 |
+| clusters of unequal density (4-D, local outliers) | **1.000 / 0.998** | 0.887 / 0.175 | 0.993 / 0.915 |
+| elongated / sheared clusters (6-D) | 0.596 / 0.059 | **0.980 / 0.698** | 0.874 / 0.600 |
+
+ROC-AUC / average precision. The middle row is the case the per-cluster normalisation exists for: the
+planted outliers sit just outside a *tight* cluster and are closer to the data mean than most members
+of the diffuse one, so a global score has to fail — IsolationForest's AUC stays respectable at 0.887
+while its average precision collapses to **0.175**, i.e. its top-ranked points are the wrong ones.
+
+Resilience, ROC-AUC over a 12-cell `n_clusters × max_leaves` sweep (betula), 4 `n_estimators`
+(IsolationForest), 5 `n_neighbors` (LOF):
+
+| fixture | detector | min | median | max | spread |
+|---|---|---|---|---|---|
+| blobs + uniform | betula | 0.552 | 0.779 | 0.994 | 0.442 |
+| | IsolationForest | 1.000 | 1.000 | 1.000 | 0.000 |
+| | LOF | 0.667 | 0.969 | 1.000 | 0.333 |
+| unequal-density | betula | 0.999 | 1.000 | 1.000 | **0.001** |
+| | IsolationForest | 0.879 | 0.895 | 0.905 | 0.026 |
+| | LOF | 0.540 | 0.993 | 1.000 | 0.460 |
+| elongated | betula | 0.523 | 0.630 | 0.892 | 0.368 |
+| | IsolationForest | 0.978 | 0.980 | 0.983 | 0.004 |
+| | LOF | 0.658 | 0.874 | 1.000 | 0.342 |
+
+Read alone that spread looks damning, and the fourth axis is why it is not. Over the same sweep,
+against the internal indices `validity()` already returns:
+
+| fixture | ρ(CH) | ρ(DB) | ρ(medoid-sil) | best cell | cell picked by max CH |
+|---|---|---|---|---|---|
+| blobs + uniform | 0.119 | 0.706 | −0.427 | 0.999 | 0.995 |
+| unequal-density | 0.705 | 0.845 | 0.891 | 1.000 | 1.000 |
+| elongated | 0.217 | 0.434 | 0.706 | 0.892 | 0.859 |
+
+Spearman ρ between the index and the ROC-AUC. Picking the cell with the largest Calinski–Harabasz —
+no labels involved — lands within 0.004, 0.000 and 0.033 of the best cell in the sweep. Note that
+this holds *despite* CH's rank correlation being weak on two of the three fixtures: what auto-filtering
+needs is that the top of the index sit at the top of the quality, not that the whole grid be monotone.
+Davies–Bouldin is the better-correlated index overall and is the one to reach for when ranking cells
+rather than picking one.
+
+The `elongated` loss has a mechanism, and it is measured rather than asserted. Refitting the same
+fixture at `feature="diagonal"` and `feature="full"` gives **the same 0.596** — the score divides by a
+single scalar RMS radius, so the per-dimension covariance the tree already carries is provably unused,
+and a sheared cluster's short axis is judged by the length of its long one. Replacing the scalar with
+a Mahalanobis radius on the *same* partition (oracle, computed outside the crate) lifts it to 0.762:
+worth having, and still short of IsolationForest's 0.980, so anisotropy is a real limit of the
+centroid-and-radius model rather than a bug in one divisor. Filed as its own task.
+
+The scalability axis is timing and is not published here — it belongs on an idle box, and the
+harness (`local/scratch/outlier_dami.py`, untracked) keeps it in a separate function for that reason.
+
 ## DynMSC: a second automatic `k`, and the shape that decides which one to use (task #52)
 
 The crate already chooses `k` on its own — Calinski–Harabasz over the Ward cuts, behind
