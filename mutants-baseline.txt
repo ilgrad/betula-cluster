@@ -22,7 +22,8 @@
 # added), `src/clustering/kmeans.rs` (**2026-08-24 whole-file**, after the k-means++ sampling
 # weight gained the leaf variance term), and `src/clustering/hdbscan.rs` (**2026-08-24 whole-file**,
 # after the point-count and dendrogram-walk fixes -- see that section for why its count rose from 17
-# to 21 without a regression). The entry-by-entry form is sound where the only change to the
+# to 21 without a regression). `src/clustering/medoid.rs` (**2026-08-25 whole-file**) is a first
+# measurement rather than a replacement -- the module postdates the whole-crate sweep entirely. The entry-by-entry form is sound where the only change to the
 # file was *test* code: adding a test can kill a mutant but can never create one, so nothing outside
 # the recorded set needs re-measuring. It is not sound after a production edit -- re-measure the file
 # whole then, which also renumbers every `line:col` in that section.
@@ -662,3 +663,19 @@ src/clustering/spectral.rs:48:10: replace > with >= in spectral
 # Debt.
 src/clustering/ward.rs:167:22: replace > with >= in ward_hac_auto
 src/clustering/ward.rs:49:26: replace < with <= in dendrogram
+
+# ── src/clustering/medoid.rs (2) ──
+# First measurement of this file. It has no entry from the whole-crate sweep because the module
+# postdates it: 161 mutants, 157 caught / 2 missed / 2 unviable / 0 timeouts, whole file at -j1 under
+# a 10G cap. The count started at 26 survivors and ten tests closed the gap before this run --
+# `Leaves::of` on a massless leaf was not a test hole but a real NaN (`S/n` at `0/0`) that reached
+# `partial_cmp(..).unwrap()`, fixed at the producer in 9755163.
+#
+# Believed equivalent -- both are ties that change nothing observable.
+# `168:18`: `if d <= d2[i] { d2[i] = d }` stores the value `d2[i]` already holds when the two are
+# equal, so the seeding potential, the draw and the medoid set are identical.
+# `232:21`: `loss <= current - 1e-12` differs from `<` only when `loss` is *exactly*
+# `current - 1e-12` in f64. The threshold exists to reject ties, and a swap that lands on it to the
+# ulp is not constructible through the public path.
+src/clustering/medoid.rs:168:18: replace < with <= in seed_medoids
+src/clustering/medoid.rs:232:21: replace < with <= in best_swap

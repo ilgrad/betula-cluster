@@ -141,8 +141,6 @@ fn loss_of(lv: &Leaves, near: &[[(f64, usize); 3]]) -> f64 {
         .sum()
 }
 
-/// Greedy weighted k-means++ over the leaves, returning medoid **indices** rather than centroids.
-///
 /// The exact CF potential of a leaf at squared distance `d2` from its nearest chosen medoid:
 /// `S_i + n_i·D²_i`, written in the mean-scatter form the [`Leaves`] view carries. Named because the
 /// two terms are two different claims — the distance to the seeding set, and the scatter a leaf keeps
@@ -497,6 +495,41 @@ mod tests {
         assert!(
             best_swap(&lv, &medoids, &near, loss).is_none(),
             "a zero-delta swap to a duplicate leaf was reported as an improvement"
+        );
+    }
+
+    #[test]
+    fn two_equally_good_swaps_go_to_the_candidate_the_search_reaches_first() {
+        // Duplicated leaves make two exchanges cost exactly the same. Which one is taken is not
+        // arbitrary: the search is deterministic given a seed, and a rule that prefers the *last*
+        // of a tie makes the medoid set depend on candidate order for no reason a score can defend.
+        let lv = placed(&[
+            [0.0, 0.0],
+            [0.0, 0.0],
+            [10.0, 0.0],
+            [10.0, 0.0],
+            [0.0, 10.0],
+            [0.0, 10.0],
+        ]);
+        // Two medoids on the same point and none near the third group: leaves 4 and 5 are an
+        // interchangeable pair of improving candidates for the redundant slot.
+        let medoids = vec![0, 1, 2];
+        let near = three_nearest(&lv, &medoids);
+        let loss = loss_of(&lv, &near);
+        let (slot, cand, _) = best_swap(&lv, &medoids, &near, loss).expect("a swap must improve");
+        let mut twin = medoids.clone();
+        twin[slot] = 5;
+        let mut taken = medoids.clone();
+        taken[slot] = cand;
+        assert!(
+            (loss_of(&lv, &three_nearest(&lv, &twin)) - loss_of(&lv, &three_nearest(&lv, &taken)))
+                .abs()
+                < 1e-12,
+            "the fixture stopped producing a tie, so this test proves nothing"
+        );
+        assert_eq!(
+            cand, 4,
+            "a tie must go to the earlier candidate, not the later"
         );
     }
 
