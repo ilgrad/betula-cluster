@@ -1615,6 +1615,53 @@ edges are now the observed range.
 
 Harness: `cargo test --lib topology::tests::measure_chaining_linkage -- --ignored --nocapture`.
 
+## What the blocking costs the near-duplicate miner, and what buys it back (task #63)
+
+`near_duplicate_pairs` scores exact cosine inside each leaf, which is what makes it `O(N·leaf_size)`
+instead of `O(N²)`. The price is invisible by construction: a duplicate pair whose two rows were
+absorbed into *different* leaves is never scored at all. `neighbors=k` scores each leaf against its
+`k` nearest leaves by centroid distance too — the same geometry that split the pair.
+
+20 000 rows in 32 dimensions, 400 planted pairs (a row plus a Gaussian perturbation),
+`max_leaves=2000`, `threshold=0.9`, median of seeds 0/1/2. **recall split** is the recall restricted
+to the planted pairs the tree actually split, which is the quantity the lever exists for.
+
+| jitter | above 0.9 | split | `neighbors` | recall all | recall split |
+|---|---:|---:|---:|---:|---:|
+| 0.05 | 400/400 | 17 | 0 | 0.9575 | 0.0000 |
+| | | | 2 | 0.9700 | 0.2000 |
+| | | | 8 | 0.9850 | 0.4000 |
+| 0.15 | 400/400 | 64 | 0 | 0.8400 | 0.0000 |
+| | | | 2 | 0.8550 | 0.1447 |
+| | | | 8 | 0.9000 | 0.4286 |
+| 0.30 | 396/400 | 135 | 0 | 0.6550 | 0.0000 |
+| | | | 2 | 0.7050 | 0.1481 |
+| | | | 8 | 0.7850 | 0.3852 |
+
+Three things the table settles.
+
+**The loss really is all blocking.** At jitter 0.3, 396 planted pairs clear the threshold and 135 of
+them are split; the within-leaf scan finds 262, against 261 unsplit findable pairs. Within a block
+the scan is exact, and every miss is a pair the tree separated.
+
+**`neighbors` recovers a predictable fraction of it, not all of it.** Eight neighbours buy back
+about 40% of the split pairs at every jitter — the two rows of a split pair are usually in *adjacent*
+leaves, but "adjacent" by centroid distance is not the same as "adjacent" by cosine, which is what
+the scoring asks. Raising `neighbors` further keeps paying, at linear cost in the number of blocks.
+
+**The exhaustive scan is still the only complete answer.** A blocked all-pairs cosine over the same
+20 000 rows recovers 0.9900 — every planted pair that clears the threshold — and costs 3.76 s against
+0.08 s for the within-leaf scan. What it does not do is scale: `neighbors` multiplies the number of
+blocks, while the all-pairs cost is quadratic in `N` outright.
+
+One caveat about the asymptotics, because it is easy to state the complexity wrongly. At a **fixed**
+`max_leaves`, leaf size grows with `N`, so both the within-leaf and the cross-leaf scans are
+`Θ(N²/M)` — quadratic in `N`, beating all-pairs only by the constant `M`. The blocking is
+asymptotically better only if the leaf budget grows with the data, which is what a fractional
+`max_leaves` (task #68) expresses: `max_leaves=0.1` holds leaf size constant and the scan linear.
+
+Harness: `local/scratch/dup_recall.py` (untracked).
+
 ## DynMSC: a second automatic `k`, and the shape that decides which one to use (task #52)
 
 The crate already chooses `k` on its own — Calinski–Harabasz over the Ward cuts, behind

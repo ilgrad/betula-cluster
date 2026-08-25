@@ -41,6 +41,13 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- `Betula.near_duplicate_pairs(..., neighbors=k)`: a cross-leaf recall pass. The within-leaf scan
+  cannot see a duplicate pair whose two rows were absorbed into different leaves — at 20 000 rows
+  with 400 planted pairs it misses 135 of them outright — and `neighbors` scores each leaf against
+  its `k` nearest leaves as well, recovering about 40% of the split pairs at `k = 8`. `0` (the
+  default) is the previous behaviour unchanged. Table in
+  [bench/RESULTS.md](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md).
+
 - `max_leaves` accepts a **fraction of the row count**: a float in `(0, 1)` resolves to
   `ceil(frac · N)` at `fit` time, alongside the absolute integer cap. One parameter carries both
   forms, discriminated by range rather than by a second flag, which is ELKI's `-cftree.maxleaves`

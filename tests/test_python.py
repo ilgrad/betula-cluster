@@ -3543,3 +3543,66 @@ def test_memory_budget_overrides_a_fractional_max_leaves(blobs):
         n_clusters=4, threshold=0.5, max_leaves=0.5, memory_budget_mb=0.05, seed=0
     ).fit(x)
     assert est.effective_max_leaves_ != math.ceil(0.5 * len(x))
+
+
+def _split_duplicates():
+    """Rows where exactly one pair is a cosine near-duplicate, and the tree splits it.
+
+    Filler points sit on a coarse angular grid, 30 degrees apart, so no two of them are close in
+    *direction* -- random filler would produce coincidental cosine pairs and the test would be
+    measuring those instead. The twins are 0.5 degrees apart and far enough apart in Euclidean
+    distance that a threshold-0 tree keeps them in separate leaves.
+    """
+    angles = np.deg2rad(np.arange(0, 360, 30))
+    radii = 3.0 + 0.5 * np.arange(len(angles))
+    filler = np.column_stack([radii * np.cos(angles), radii * np.sin(angles)])
+    twin_angles = np.deg2rad([137.0, 137.5])
+    twins = np.column_stack([9.0 * np.cos(twin_angles), 9.0 * np.sin(twin_angles)])
+    rows = np.vstack([filler, twins])
+    return rows, (len(filler), len(filler) + 1)
+
+
+def test_near_duplicate_pairs_default_is_the_within_leaf_scan(blobs):
+    x, _ = blobs
+    est = betula_cluster.Betula(n_clusters=4, threshold=0.5, max_leaves=200, seed=0).fit(x)
+    assert np.array_equal(
+        est.near_duplicate_pairs(x, threshold=0.99),
+        est.near_duplicate_pairs(x, threshold=0.99, neighbors=0),
+    )
+
+
+def test_near_duplicate_pairs_neighbors_recovers_a_pair_split_across_two_leaves():
+    rows, (a, b) = _split_duplicates()
+    # threshold=0 with a budget above N is one leaf per point, so *every* pair is a split pair and
+    # the within-leaf scan can find nothing at all.
+    est = betula_cluster.Betula(n_clusters=3, threshold=0.0, max_leaves=4000, seed=0).fit(rows)
+    leaf = np.asarray(est.assign_microclusters(rows))
+    assert leaf[a] != leaf[b], "the fixture stopped splitting the pair"
+    assert len(est.near_duplicate_pairs(rows, threshold=0.999, neighbors=0)) == 0
+    found = est.near_duplicate_pairs(rows, threshold=0.999, neighbors=1)
+    assert (a, b) in {(int(i), int(j)) for _, i, j in found}
+
+
+def test_near_duplicate_pairs_reports_each_pair_once_in_index_order():
+    rows, _ = _split_duplicates()
+    est = betula_cluster.Betula(n_clusters=3, threshold=0.0, max_leaves=4000, seed=0).fit(rows)
+    found = est.near_duplicate_pairs(rows, threshold=0.9, neighbors=8)
+    pairs = [(int(i), int(j)) for _, i, j in found]
+    assert all(i < j for i, j in pairs)
+    assert len(set(pairs)) == len(pairs)
+    assert np.all(np.diff(found[:, 0]) <= 0)  # still sorted by similarity, descending
+
+
+def test_near_duplicate_pairs_asking_for_more_neighbors_than_leaves_is_not_an_error():
+    rows, (a, b) = _split_duplicates()
+    est = betula_cluster.Betula(n_clusters=3, threshold=0.0, max_leaves=4000, seed=0).fit(rows)
+    found = est.near_duplicate_pairs(rows, threshold=0.999, neighbors=10_000)
+    assert (a, b) in {(int(i), int(j)) for _, i, j in found}
+
+
+def test_near_duplicate_pairs_neighbors_needs_more_than_one_populated_leaf():
+    # One leaf means no neighbour to expand into; the pass must be a no-op, not an index error.
+    rows = np.tile([1.0, 1.0], (8, 1))
+    est = betula_cluster.Betula(n_clusters=1, threshold=10.0, max_leaves=200, seed=0).fit(rows)
+    assert est.n_leaves_ == 1
+    assert len(est.near_duplicate_pairs(rows, threshold=0.9, neighbors=4)) == 28

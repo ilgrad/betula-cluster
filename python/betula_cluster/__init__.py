@@ -1022,37 +1022,51 @@ class Betula:
                 groups.append(members)
         return groups
 
-    def near_duplicate_pairs(self, X, threshold=0.9):
-        """Scored near-duplicate row pairs by exact cosine similarity within each microcluster.
+    def near_duplicate_pairs(self, X, threshold=0.9, *, neighbors=0):
+        """Scored near-duplicate row pairs by exact cosine similarity, blocked by microcluster.
 
         The CF-tree blocks rows into leaves in ``O(N)``; within each (small) leaf, exact pairwise
         cosine is computed and pairs scoring ``>= threshold`` are kept. The cost is
         ``~O(N * leaf_size)`` -- the scalable counterpart to an ``O(N^2)`` all-pairs scan, and the
-        scored complement to :meth:`find_near_duplicates` (which returns unscored groups). Recall
-        is bounded by the blocking: a pair split across two leaves is missed; use a coarser tree
-        (smaller ``max_leaves``) to widen blocks and trade speed for recall. Returns an
-        ``(m, 3)`` ``float64`` array of ``[cos_sim, i, j]`` with ``i < j``, sorted by similarity
+        scored complement to :meth:`find_near_duplicates` (which returns unscored groups). Returns
+        an ``(m, 3)`` ``float64`` array of ``[cos_sim, i, j]`` with ``i < j``, sorted by similarity
         descending.
+
+        Recall is bounded by the blocking: a duplicate pair whose two rows were absorbed into
+        *different* leaves is invisible to a within-leaf scan. ``neighbors`` buys that recall back
+        without giving up the blocking — each leaf is also scored against its ``neighbors`` nearest
+        leaves by centroid distance, which is the geometry that split the pair in the first place.
+        ``0`` (the default) is the within-leaf scan unchanged. The added cost is
+        ``O(M^2 d)`` for the leaf-neighbour search plus ``~neighbors x`` the scoring, both still
+        sub-quadratic in ``N``; a coarser tree (smaller ``max_leaves``) is the other lever, trading
+        speed for recall by widening the blocks themselves.
         """
         leaf = np.asarray(self.assign_microclusters(X))
         rows = np.asarray(X, dtype=np.float64)
         norms = np.linalg.norm(rows, axis=1, keepdims=True)
         unit = rows / np.where(norms > 0.0, norms, 1.0)  # guard zero-norm rows (no NaN)
+        members = {int(lf): np.flatnonzero(leaf == lf) for lf in np.unique(leaf)}
+        blocks = [(m, m) for m in members.values() if m.size >= 2]
+        for a, b in self._adjacent_leaves(members, neighbors):
+            blocks.append((members[a], members[b]))
         scores: list = []
         lo: list = []
         hi: list = []
-        for lf in np.unique(leaf):
-            members = np.flatnonzero(leaf == lf)
-            if members.size < 2:
-                continue
-            sim = unit[members] @ unit[members].T
-            iu, ju = np.triu_indices(members.size, k=1)
+        for left, right in blocks:
+            sim = unit[left] @ unit[right].T
+            if left is right:
+                iu, ju = np.triu_indices(left.size, k=1)
+            else:
+                iu, ju = np.meshgrid(np.arange(left.size), np.arange(right.size), indexing="ij")
+                iu, ju = iu.ravel(), ju.ravel()
             s = sim[iu, ju]
             keep = s >= threshold
-            if keep.any():
-                scores.append(s[keep])
-                lo.append(members[iu[keep]])
-                hi.append(members[ju[keep]])
+            if not keep.any():
+                continue
+            i, j = left[iu[keep]], right[ju[keep]]
+            scores.append(s[keep])
+            lo.append(np.minimum(i, j))
+            hi.append(np.maximum(i, j))
         if not scores:
             return np.empty((0, 3), dtype=np.float64)
         s = np.concatenate(scores)
@@ -1060,6 +1074,28 @@ class Betula:
         j = np.concatenate(hi)
         order = np.argsort(s)[::-1]
         return np.column_stack([s[order], i[order], j[order]]).astype(np.float64)
+
+    def _adjacent_leaves(self, members, neighbors):
+        """Unordered pairs of populated leaves that are among each other's nearest by centroid.
+
+        One `(M, M)` distance matrix rather than a per-leaf scan: `M` is the leaf count, which is
+        bounded by `max_leaves` and independent of `N`, so this stays sub-quadratic in the data.
+        """
+        if neighbors <= 0 or len(members) < 2:
+            return []
+        ids = np.array(sorted(members))
+        centers = np.asarray(self.microcluster_centers_, dtype=np.float64)[ids]
+        sq = (centers**2).sum(1)
+        d2 = sq[:, None] + sq[None, :] - 2.0 * (centers @ centers.T)
+        np.fill_diagonal(d2, np.inf)
+        take = min(neighbors, len(ids) - 1)
+        nearest = np.argpartition(d2, take - 1, axis=1)[:, :take]
+        pairs = {
+            (int(ids[a]), int(ids[b])) if ids[a] < ids[b] else (int(ids[b]), int(ids[a]))
+            for a, row in enumerate(nearest)
+            for b in row
+        }
+        return sorted(pairs)
 
     def mapper(
         self,
