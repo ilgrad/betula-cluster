@@ -70,9 +70,11 @@ A capability-by-capability reference. For runnable code see [`USAGE.md`](USAGE.m
   **scale-space (Morse-persistence) density-mode clustering** (`method="scale-space"` — mean-shift over
   the microcluster KDE, with the bandwidth *and* the cluster count chosen by **mode persistence** across
   scale, so no `k` or bandwidth is required; non-convex, arbitrary count. Each leaf enters the KDE as
-  the Gaussian it summarises, $N(\mu_j, \Sigma_j + h^2 I)$, not as a point. **Narrow operating
-  envelope**: 38 of 52 measured `(dimension × leaf budget)` cells on `digits` return a single cluster —
-  read the `scale-space` section of
+  the Gaussian it summarises, $N(\mu_j, \Sigma_j + h^2 I)$, not as a point. The sweep is two-pass —
+  truncated at the first single-mode scale, then narrowed onto the merge cascade — because a single
+  grid spends most of its points on the trivial tail and answered `k = 1` in 42 of 52 measured
+  `(dimension × leaf budget)` cells on `digits`; that is now 3 of 52. Still the weakest head on
+  `covtype`, where every cell scores a negative ARI — read the `scale-space` section of
   [`bench/RESULTS.md`](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md) before
   choosing this head).
 - **Soft assignment & confidence**: `predict_proba` (the point's own posterior under the fitted

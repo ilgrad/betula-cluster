@@ -22,8 +22,17 @@
 //! widest plateau of the "number of modes vs `log h`" curve, i.e. the structure that survives the
 //! longest range of scales. This makes it parameter-free (no `k`, no bandwidth) and non-convex-aware.
 //!
-//! It runs on the `M ≪ N` microclusters, so cost is `O(sweeps · iters · M² · d)` — bounded by the
-//! leaf budget, not `N`.
+//! Persistence is only a usable selector on the part of the curve that carries the merge cascade.
+//! The swept range runs from half the median leaf gap to half the diameter, and the last two clusters
+//! join far below that ceiling, so a single log grid spends most of its points on a trivial `k = 1`
+//! tail — always the longest flat run of a decreasing curve. Two things keep the rule honest: the
+//! sweep **stops at the first single-mode scale**, which leaves that run one point long, and the
+//! range is then **narrowed onto the cascade and re-swept** so a plateau inside it has grid points to
+//! be measured on. Measured on `digits` over 52 `(PCA dimension × leaf budget)` cells, the untruncated
+//! single grid answered `k = 1` in 42 of them; the two-pass sweep does so in 3, at 2.45× the cost.
+//!
+//! It runs on the `M ≪ N` microclusters, so cost is `O(passes · sweeps · iters · M² · d)` — bounded
+//! by the leaf budget, not `N`.
 
 use crate::feature::ClusterFeature;
 use crate::kernels::sq_euclidean;
@@ -84,28 +93,68 @@ pub fn scale_space<R: Real, C: ClusterFeature<R>>(
 
     let (h_min, h_max) = bandwidth_range(&mu);
     let steps = if n_bandwidths == 0 { 15 } else { n_bandwidths }.max(2);
-    // Log-spaced bandwidths h_min .. h_max.
-    let ln_lo = h_min.ln();
-    let ln_step = (h_max.ln() - ln_lo) / (steps as f64 - 1.0);
-    let bandwidths: Vec<f64> = (0..steps)
-        .map(|s| (ln_lo + ln_step * s as f64).exp())
-        .collect();
 
-    let runs: Vec<(Vec<usize>, usize)> = bandwidths
-        .iter()
-        .map(|&h| mean_shift(&mu, &n, &var, h, max_iter))
-        .collect();
+    // The merge cascade lives in the bottom of `[h_min, h_max]` — `h_max` is half the diameter, far
+    // above the scale at which the last two modes join — so a single log grid spends most of its
+    // budget on the trivial tail and resolves no plateau at all. Sweep, stop at the first single-mode
+    // scale (nothing above it can be informative), then re-sweep the range that carried the cascade.
+    let mut hi = h_max;
+    let mut curve = sweep(&mu, &n, &var, h_min, hi, steps, max_iter);
+    for _ in 1..REFINEMENTS {
+        // Narrowing is only safe where the sweep already saw a cascade. Below the scale at which a
+        // single cluster merges there is nothing but the sub-peaks the prominence rule exists to
+        // collapse, and zooming into that sliver manufactures them into plateaus — measured on a
+        // single Gaussian blob, whose refined curve reads `[3,3,3,2,2,…]` over a 3 % span of `h`.
+        // Two multi-mode scales before the merge is the evidence that there is a cascade to resolve.
+        let cascade = curve.iter().filter(|(_, r)| r.1 >= 2).count();
+        match curve.last() {
+            Some(&(h, (_, 1))) if cascade >= 2 && h > h_min => {
+                hi = h;
+                curve = sweep(&mu, &n, &var, h_min, hi, steps, max_iter);
+            }
+            // Merged at once, or never merged: refining sharpens neither.
+            _ => break,
+        }
+    }
 
-    // Most persistent scale = the widest plateau of equal mode counts. A multi-mode (`≥ 2`) plateau
-    // wins only if it is at least as persistent as the merged single-mode tail — otherwise the data
-    // is genuinely one cluster.
-    let sel = select_scale(&runs.iter().map(|r| r.1).collect::<Vec<_>>());
-    let (labels, n_modes) = runs[sel].clone();
+    let counts: Vec<usize> = curve.iter().map(|(_, r)| r.1).collect();
+    let sel = select_scale(&counts);
+    let (h, (labels, n_modes)) = curve.swap_remove(sel);
     ScaleSpace {
         labels,
-        bandwidth: bandwidths[sel],
+        bandwidth: h,
         n_modes,
     }
+}
+
+/// How many times the bandwidth range is narrowed onto the merge cascade before the scale is chosen.
+/// Each pass costs one sweep and each sweep stops early, so three is a handful of mean-shift runs;
+/// past that the range stops moving because the cascade's own foot is `h_min`.
+const REFINEMENTS: usize = 2;
+
+/// One log-spaced sweep of `[lo, hi]`, cut short at the first bandwidth that leaves a single mode.
+fn sweep(
+    mu: &[Vec<f64>],
+    n: &[f64],
+    var: &[f64],
+    lo: f64,
+    hi: f64,
+    steps: usize,
+    max_iter: usize,
+) -> Vec<(f64, (Vec<usize>, usize))> {
+    let ln_lo = lo.ln();
+    let ln_step = (hi.ln() - ln_lo) / (steps as f64 - 1.0);
+    let mut out = Vec::with_capacity(steps);
+    for s in 0..steps {
+        let h = (ln_lo + ln_step * s as f64).exp();
+        let run = mean_shift(mu, n, var, h, max_iter);
+        let merged = run.1 <= 1;
+        out.push((h, run));
+        if merged {
+            break;
+        }
+    }
+    out
 }
 
 /// Bandwidth sweep bounds from the microcluster geometry: `h_min` ≈ half the median nearest-neighbour
@@ -300,6 +349,15 @@ fn uf_find(parent: &mut [usize], x: usize) -> usize {
 /// least two scales (prominence merging makes spurious multi-mode runs width-1, so a wider run is
 /// real structure); otherwise the data is one cluster and the widest single-mode run is chosen.
 /// Returns the middle of the winning run.
+///
+/// **This rule is only sound on a truncated curve, which is why [`sweep`] stops at the first
+/// single-mode scale.** Run it on a sweep that continues to `h_max` and the single-mode tail — always
+/// the longest flat stretch of a decreasing curve — wins whenever the cascade above it is strictly
+/// decreasing, which was the case on 42 of 52 measured cells. Truncation leaves that run one point
+/// long, so a plateau anywhere in the cascade outranks it.
+///
+/// The strict `>` below is a measurement, not a formatting choice: ties go to the finer, earlier
+/// plateau, worth mean ARI 0.3845 against 0.3509 for the coarser one over the same 52 cells.
 fn select_scale(counts: &[usize]) -> usize {
     let (mut best2_start, mut best2_len) = (0usize, 0usize); // widest run with count ≥ 2
     let (mut best1_start, mut best1_len) = (0usize, 0usize); // widest run with count == 1
@@ -338,6 +396,11 @@ mod tests {
     use crate::clustering::rng::SplitMix64;
     use crate::clustering::testutil::{ari, blobs, grid_micros};
     use crate::feature::Spherical;
+
+    /// Leaf masses, alongside [`leaf_variances`], for tests that drive `sweep` directly.
+    fn n_of(micros: &[Spherical<f64>]) -> Vec<f64> {
+        micros.iter().map(|f| f.weight()).collect()
+    }
 
     /// Per-dimension leaf variance, re-derived rather than shared with the source.
     fn leaf_variances(micros: &[Spherical<f64>]) -> Vec<f64> {
@@ -385,6 +448,86 @@ mod tests {
             "ARI = {}",
             ari(&labels, &truth)
         );
+    }
+
+    /// `k` isotropic clusters in `d` dimensions, `per_cluster` leaves each, every leaf eight points
+    /// around its own offset from the cluster centre. Two-dimensional blobs cannot reproduce the
+    /// failure below: their merges are spread widely enough in `h` that some count always repeats.
+    fn concentrated_leaves(
+        seed: u64,
+        d: usize,
+        k: usize,
+        per_cluster: usize,
+        sigma: f64,
+    ) -> (Vec<Spherical<f64>>, Vec<usize>) {
+        let mut rng = SplitMix64::new(seed);
+        let mut leaves = Vec::new();
+        let mut truth = Vec::new();
+        for c in 0..k {
+            let centre: Vec<f64> = (0..d).map(|_| rng.gauss()).collect();
+            for _ in 0..per_cluster {
+                let offset: Vec<f64> = (0..d).map(|_| sigma * rng.gauss()).collect();
+                let mut leaf = Spherical::new(d);
+                for _ in 0..8 {
+                    let p: Vec<f64> = (0..d)
+                        .map(|i| centre[i] + offset[i] + 0.05 * rng.gauss())
+                        .collect();
+                    leaf.push(&p, 1.0);
+                }
+                leaves.push(leaf);
+                truth.push(c);
+            }
+        }
+        (leaves, truth)
+    }
+
+    #[test]
+    fn a_strictly_decreasing_cascade_is_not_answered_with_one_cluster() {
+        // The failure truncation exists to fix. `h_max` is half the diameter, far above the last
+        // merge, so on a coarse grid the cascade occupies a handful of points and the single-mode
+        // tail occupies the rest. Ranking flat runs then makes `k = 1` the answer unless two adjacent
+        // counts in the cascade happen to tie — and in sixteen dimensions the merges are packed
+        // tightly enough that none do. The untruncated grid here reads `[7, 6, 4, 1, 1, …]`.
+        let (micros, truth) = concentrated_leaves(19, 16, 6, 6, 0.55);
+        let res = scale_space(&micros, 15, 100);
+        assert!(
+            res.n_modes >= 5,
+            "collapsed to {} modes: the sweep never resolved a plateau",
+            res.n_modes
+        );
+        assert!(
+            ari(&res.labels, &truth) > 0.9,
+            "ARI = {}",
+            ari(&res.labels, &truth)
+        );
+    }
+
+    #[test]
+    fn the_sweep_stops_at_the_first_single_mode_scale() {
+        // Truncation is what leaves the trivial run one point long, so it is asserted directly rather
+        // than only through the labelling it produces.
+        let mut rng = SplitMix64::new(4);
+        let centers = [[0.0, 0.0], [9.0, 0.0], [4.0, 8.0]];
+        let (pts, _) = blobs(&mut rng, 240, &centers, 0.6);
+        let (micros, _) = grid_micros(&pts, 0.5);
+        let mu: Vec<Vec<f64>> = micros.iter().map(|f| f.mean().to_vec()).collect();
+        let (h_min, h_max) = bandwidth_range(&mu);
+        let got = sweep(
+            &mu,
+            &n_of(&micros),
+            &leaf_variances(&micros),
+            h_min,
+            h_max,
+            15,
+            100,
+        );
+        let counts: Vec<usize> = got.iter().map(|(_, r)| r.1).collect();
+        assert_eq!(
+            counts.iter().filter(|&&c| c <= 1).count(),
+            1,
+            "more than one single-mode scale swept: {counts:?}"
+        );
+        assert_eq!(*counts.last().expect("non-empty"), 1, "{counts:?}");
     }
 
     #[test]
@@ -564,16 +707,40 @@ mod tests {
 
         let (h_min, h_max) = bandwidth_range(&mu);
         let steps = 9usize;
-        let ln_lo = h_min.ln();
-        let ln_step = (h_max.ln() - ln_lo) / (steps as f64 - 1.0);
-        let grid: Vec<f64> = (0..steps)
-            .map(|s| (ln_lo + ln_step * s as f64).exp())
-            .collect();
-
+        // Every pass is a log grid anchored at `h_min` whose ceiling is a point of the pass before,
+        // so the selected bandwidth lies on the grid of *some* pass. Reproduce the passes here rather
+        // than assert against the first one: the refinement is what puts grid points on the cascade.
+        let mut hi = h_max;
+        let mut on_a_grid = false;
         let got = scale_space(&micros, steps, 100).bandwidth;
+        for _ in 0..REFINEMENTS {
+            let ln_lo = h_min.ln();
+            let ln_step = (hi.ln() - ln_lo) / (steps as f64 - 1.0);
+            let grid: Vec<f64> = (0..steps)
+                .map(|s| (ln_lo + ln_step * s as f64).exp())
+                .collect();
+            on_a_grid |= grid.iter().any(|&g| (g - got).abs() <= 1e-9 * g.max(1.0));
+            let next = sweep(
+                &mu,
+                &n_of(&micros),
+                &leaf_variances(&micros),
+                h_min,
+                hi,
+                steps,
+                100,
+            );
+            match next.last() {
+                Some(&(h, (_, 1))) if h > h_min => hi = h,
+                _ => break,
+            }
+        }
         assert!(
-            grid.iter().any(|&g| (g - got).abs() <= 1e-12 * g.max(1.0)),
-            "selected bandwidth {got} is not on the log grid {grid:?}"
+            on_a_grid,
+            "selected bandwidth {got} is on no pass's log grid"
+        );
+        assert!(
+            got >= h_min && got <= h_max,
+            "selected bandwidth {got} left [{h_min}, {h_max}]"
         );
 
         // `n_bandwidths = 0` selects the documented default of 15, not a two-point sweep.

@@ -288,14 +288,24 @@ at zero leaf scatter both collapse to the point-kernel form exactly. Take the
 modes of this KDE (found by mean-shift) as clusters. Increasing
 the bandwidth `h` merges modes — a one-parameter Morse filtration. Rather than fix `h` (or `k`), the
 head sweeps `h` log-spaced and reports the labelling at the **most persistent** mode count: the widest
-plateau of the "number of modes vs `log h`" curve, with the trivial fully-merged tail winning only when
-no multi-mode structure is at least as persistent. At each scale, raw mean-shift modes separated by
+plateau of the "number of modes vs `log h`" curve. At each scale, raw mean-shift modes separated by
 only a **shallow density valley** (`ρ` along the connecting segment stays ≥ `VALLEY_RATIO = 0.8` of the
 lower peak) are merged by prominence — this collapses the spurious sub-peaks a single cluster produces
-at fine bandwidths, cleaning the curve so the persistent plateau is unambiguous. This is parameter-free
-and non-convex-aware — and **its operating envelope is narrow**: measured over 52
-`(PCA dimension × leaf budget)` cells on `digits`, 38 return a single cluster, and the plateau selector
-rather than the kernel is what the measurement indicts. See `bench/RESULTS.md` before relying on it.
+at fine bandwidths, cleaning the curve so the persistent plateau is unambiguous.
+
+Persistence is only a usable selector on the part of the curve that carries the merge cascade. The
+swept range is $[\tfrac12 \operatorname{med}_j \delta_j,\ \tfrac12 \operatorname{diam}]$ with $\delta_j$
+the nearest-leaf gap, and the last two clusters join far below that ceiling, so a single grid spends
+most of its points on a trivial $k=1$ tail — always the longest flat run of a decreasing curve, hence
+the winner whenever the cascade above it is strictly decreasing. Two things fix that: the sweep
+**stops at the first single-mode scale**, leaving the trivial run one point long, and the range is then
+**narrowed onto the cascade and re-swept**, so a plateau inside it has grid points to be measured on.
+Narrowing is guarded on having seen at least two multi-mode scales, because refining below the merge
+scale manufactures structure — a single Gaussian blob's refined curve reads `[3,3,3,2,2,…]` over a 3 %
+span of `h`. Measured over 52 `(PCA dimension × leaf budget)` cells on `digits`, the single grid
+answered $k=1$ in 42; the two-pass sweep does so in 3, at 2.45× the cost. This is parameter-free and
+non-convex-aware, but still the weakest head on `covtype`, where every cell scores a negative ARI. See
+`bench/RESULTS.md` before relying on it.
 
 ## Other verified improvements
 

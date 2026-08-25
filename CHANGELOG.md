@@ -7,6 +7,20 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Changed
+- **`method="scale-space"` sweeps the bandwidth in two passes, and stops answering `k = 1`.** The head
+  ranks flat runs of the mode-count-versus-`log h` curve, and the swept range runs to half the data
+  diameter — far above the scale at which the last two clusters merge. Eleven of fifteen grid points
+  therefore sat in the fully-merged tail, and **the longest flat run of a decreasing curve is always its
+  tail**: on `digits` the head returned a single cluster in **42 of 52** `(PCA dimension × leaf budget)`
+  cells. The sweep now stops at the first single-mode bandwidth, leaving that run one point long, then
+  narrows onto the merge cascade and re-sweeps it once — guarded on having seen at least two multi-mode
+  scales, because refining below the merge scale manufactures structure out of a single blob. Same 52
+  cells: **46 wins, 3 losses, 3 ties, mean ARI 0.3845 against 0.0710, and 3 cells at `k = 1` instead of
+  42**, for ×2.45 wall clock (one cell runs ×0.24, four times faster, because truncation stops it after
+  two bandwidths). `covtype` remains the head's worst dataset — every cell there scores a negative ARI,
+  which the selector cannot fix. **Labels change on almost every input.** Tables in
+  [`bench/RESULTS.md`](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md).
+
 - **`method="scale-space"` mollifies each leaf with its own scatter, and the head's operating envelope
   is now published.** The head advertises the density modes of the *data* but was building the kernel
   density of the leaf **centroids**, one point per leaf. A leaf is a cloud, and convolving that cloud

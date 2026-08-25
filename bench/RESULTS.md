@@ -1194,7 +1194,66 @@ the radii vary, which on this data is where the sweep is already unstable.
 
 The mollification ships because it is the model the head documents and it costs nothing, not because it
 measures better — it does not. What the grid actually indicts is the plateau selector, filed as its own
-task rather than smuggled into this one.
+task rather than smuggled into this one, and answered in the next section.
+
+## The plateau selector was measuring the trivial tail (task #93)
+
+The section above left the head answering `k = 1` in 42 of 52 `digits` cells. The cause is visible the
+moment the mode-count curve is printed rather than reduced to a plateau. At `d = 8, max_leaves = 300`
+the 15-point sweep reads
+
+```text
+counts = [10, 9, 7, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+```
+
+The swept range is `h ∈ [½·median nearest-leaf gap, ½·diameter]`, and the last two clusters merge far
+below that ceiling — so eleven of fifteen points sit in the fully-merged tail. The selector ranks flat
+runs, the curve is decreasing, and **the longest flat run of a decreasing curve is always its tail**.
+The cascade is not degenerate; it is simply never given more grid points than the trivial answer. The
+selector had one job and the grid it was handed made the job unwinnable.
+
+Two changes, both in the sweep rather than the ranking. The sweep **stops at the first single-mode
+bandwidth**, which leaves the trivial run exactly one point long and lets any plateau in the cascade
+outrank it. The surviving range is then **narrowed onto the cascade and re-swept once**, so the cascade
+gets fifteen points instead of four. Narrowing is guarded on having seen at least two multi-mode
+scales, because refining below the merge scale *manufactures* structure: a single Gaussian blob's
+refined curve reads `[3,3,3,2,2,2,2,2,2,2,2,1]` over a 3 % span of `h`, and without the guard the
+one-blob test returns two clusters.
+
+`digits`, PCA to `d`, ARI against the ten digit classes, `seed=0` (the head is deterministic given the
+tree), 52 cells (`d ∈ 2..14` × `max_leaves ∈ {300, 600, 900, 1400}`):
+
+| | win | loss | tie | mean ARI | cells returning `k = 1` |
+|---|---:|---:|---:|---:|---:|
+| two-pass sweep vs single grid | **46** | 3 | 3 | **0.3845** vs 0.0710 | **3** vs 42 |
+
+The wins are the cells the tail was eating, and the three losses are small:
+
+| cell | single grid | two-pass |
+|---|---|---|
+| `d=11`, 900 | 0.0000 (`k=1`) | **0.5813** (`k=11`) |
+| `d=8`, 300 | 0.0000 (`k=1`) | **0.5765** (`k=9`) |
+| `d=13`, 600 | 0.0000 (`k=1`) | **0.5595** (`k=9`) |
+| `d=9`, 600 | **0.5076** (`k=8`) | 0.4090 (`k=7`) |
+| `d=12`, 300 | **0.4764** (`k=7`) | 0.3786 (`k=7`) |
+| `d=3`, 1400 | **0.3331** (`k=6`) | 0.2893 (`k=6`) |
+
+**The tie-break inside the ranking is load-bearing and was measured, not reasoned.** Preferring the
+finer (earlier) of two equally long plateaus scores mean ARI **0.3845**; preferring the coarser scores
+**0.3509** on the same 52 cells. The rule that reads as an arbitrary comparison operator is worth 10 %
+of the head's quality, so it is now stated in the source as a measurement rather than a convention.
+
+**Cost: ×2.45 on the median cell** (`bench`-side wall clock, `digits` and `covtype-20k` at `d ∈ {2, 3,
+5, 8, 16}` × `max_leaves ∈ {300, 900}`, 20 cells), range ×2.21–2.81 — two sweeps instead of one, minus
+what truncation saves. One cell runs **×0.24**, i.e. four times *faster*: `digits`, `d=16`,
+`max_leaves=300` merges at the second bandwidth, so the truncated sweep stops after two mean-shift runs
+where the old one did fifteen.
+
+**`covtype-20k` is not fixed and is not claimed to be.** The selector change moves it from "one cluster
+or negative-ARI modes" to negative-ARI modes in every one of its ten cells (−0.0138 to −0.0475). The
+head finds structure there that anti-correlates with the cover-type labels, which is a statement about
+the head on that data, not about the selector; `k = 1` was never the better answer, only the emptier
+one. Prefer `hdbscan` or `kmeans` on `covtype`.
 
 ## Insertion-order sensitivity — the property the whole BIRCH family inherits
 
