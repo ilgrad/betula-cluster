@@ -399,24 +399,18 @@ or an initialisation that reads coordinate 0. The groups the crate claims, and e
 | `gmm_full`, `mppca`, `spectral`, `scale_space` | yes | yes | yes | yes |
 | `gmm_diagonal` | yes | **no** | yes | yes |
 | `spherical_kmeans`, `movmf` | **no** | yes | yes | yes |
-| `gmm_toeplitz` (its fit, not its partition) | yes | **no** | no — the likelihood carries a Jacobian | **no** |
+| `gmm_toeplitz` | yes | **no** | yes | **no** |
 
 Three rows are exceptions by construction, not defects. An axis-aligned covariance is a claim *about
 the axes*, so rotation is not a symmetry of `gmm_diagonal`'s model; rotating a diagonal fit and
 expecting the same answer is the error. The directional heads read a direction from the origin, so
 translating the data moves it relative to the very thing they measure. And `gmm_toeplitz` is neither
 Euclidean nor directional: an AR($w$) covariance says the coordinates are an evenly spaced
-*sequence*, so reordering the axes is a different model. That last one only shows in the **fit** —
-the partition it emits is driven by the component means, which are permutation equivariant, so the
-labels come out identical while the log-likelihood moves. The audit asserts the likelihood, because
-asserting the labels differ would assert something false.
-
-Measuring that turned up a limitation worth stating on its own. Two AR(1) components with
-$\rho = \pm 0.92$ and *identical* means, in four dimensions, are put in a **single cluster** by
-`gmm_toeplitz` at every leaf size tried; separating the means by 20 makes the split perfect at the
-same sizes. The head's assignment on CF leaves is entirely mean-driven — the lag structure enters the
-likelihood but never the responsibility that decides a label. Mean-seeded EM starts two co-located
-components at the symmetric fixed point and has no gradient to leave it.
+*sequence*, so shifting or rescaling the whole sequence leaves the model alone while reordering the
+axes is a different model. The audit exhibits that on two AR processes that differ in *nothing but*
+their autocovariance — each window standardised, so the marginal mean and variance carry no signal —
+which the head separates exactly; sending lag-1 neighbours 64 apart then destroys the band structure
+and the answer with it.
 
 The head is only half of the pair. A symmetry the **leaf summary** has already discarded cannot be
 recovered by any head reading it, so the group of a `(feature, head)` pair is the *intersection* of

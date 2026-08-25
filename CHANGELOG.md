@@ -62,12 +62,12 @@ All notable changes to this project are documented here. The format follows
   therefore also a choice about which frames the answer may depend on.
 
   Auditing `gmm_toeplitz` — neither Euclidean nor directional, since an AR(*w*) covariance says the
-  coordinates are an evenly spaced *sequence* — turned up a limitation worth stating on its own. Two
-  AR(1) components with `rho = +0.92` and `-0.92` and **identical** means, in four dimensions, land in
-  a **single cluster** at every leaf size tried; separating the means by 20 makes the split perfect at
-  the same sizes. The head's assignment on CF leaves is entirely mean-driven: the lag structure enters
-  the likelihood — the fit does move when the coordinates are permuted, which is what the test asserts
-  — but never the responsibility that decides a label. Tables in
+  coordinates are an evenly spaced *sequence* — needs a third kind of frame change: shifting or
+  rescaling the whole sequence leaves that model alone, while reordering the axes is a different
+  model. It is exhibited on two AR processes differing in *nothing but* their autocovariance, each
+  window standardised so the marginal mean and variance carry no signal, which the head separates
+  exactly; sending lag-1 neighbours 64 apart destroys the band structure and the answer with it.
+  Tables in
   [`docs/MATH.md`](https://github.com/ilgrad/betula-cluster/blob/main/docs/MATH.md). Tests only — no
   behaviour changes.
 - **`dyn_msc`: medoid-silhouette clustering that chooses its own `k`.** (Rust API —

@@ -349,60 +349,99 @@ fn the_leaf_summary_and_not_only_the_head_decides_the_symmetry_group() {
     );
 }
 
-/// Two AR(1) signals in four dimensions, one smooth and one alternating, offset from each other so
-/// the head has a mean to split on. The offset is not incidental: with the two components sharing a
-/// mean and differing only in lag structure, `gmm_toeplitz` collapses to a single cluster at every
-/// leaf size tried — mean-seeded EM has no gradient to separate two co-located components. That is a
-/// limitation of the head, not of this fixture, and it is why the assertion below is about the fit
-/// rather than about the partition.
-fn ar_signals() -> Vec<Vec<f64>> {
-    let mut pts = Vec::new();
+/// Two components of length-128 windows from AR processes that differ *only* in autocovariance —
+/// each window is standardised, so the marginal mean and variance carry no signal at all. This is
+/// the fixture shape `toeplitz_separates_ar_mixture` in the head's own module uses, and the length
+/// matters: an AR order cannot be estimated from a four-sample window, and a short-window fixture
+/// makes the head look blind to covariance when it is only starved of data.
+fn ar_windows() -> Vec<Vec<f64>> {
     let mut state = 0x9E37_79B9_7F4A_7C15u64;
     let mut noise = || {
         state ^= state >> 12;
         state ^= state << 25;
         state ^= state >> 27;
-        ((state.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 11) as f64) / (1u64 << 53) as f64 - 0.5
+        let u = ((state.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 11) as f64) / (1u64 << 53) as f64;
+        // Irwin-Hall-free: a cheap symmetric variate is enough, the process does the shaping.
+        u - 0.5
     };
-    for (rho, shift) in [(0.92f64, 0.0f64), (-0.92, 20.0)] {
-        for _ in 0..80 {
-            let mut x = vec![noise()];
-            for t in 1..4 {
-                let prev = x[t - 1];
-                x.push(rho * prev + 0.25 * noise());
+    let mut pts = Vec::new();
+    for a in [vec![0.8f64], vec![1.1, -0.4]] {
+        for _ in 0..40 {
+            let burn = 256;
+            let mut buf = vec![0.0f64; WINDOW + burn];
+            for t in a.len()..WINDOW + burn {
+                let mut x = noise();
+                for (j, &aj) in a.iter().enumerate() {
+                    x += aj * buf[t - 1 - j];
+                }
+                buf[t] = x;
             }
-            pts.push(x.iter().map(|v| v + shift).collect());
+            let mut win = buf[burn..].to_vec();
+            let mean = win.iter().sum::<f64>() / WINDOW as f64;
+            let sd = (win.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / WINDOW as f64)
+                .sqrt()
+                .max(1e-9);
+            for v in &mut win {
+                *v = (*v - mean) / sd;
+            }
+            pts.push(win);
         }
     }
     pts
 }
 
-/// `(0,1,2,3) -> (0,2,1,3)`: a permutation of the coordinates, which for `d >= 3` is not an
-/// automorphism of a Toeplitz matrix. In two dimensions it would be — `[[s, r], [r, s]]` is
-/// symmetric under the only non-trivial swap — which is why this fixture is four-dimensional.
-fn permute_lags(pts: &[Vec<f64>]) -> Vec<Vec<f64>> {
-    pts.iter().map(|p| vec![p[0], p[2], p[1], p[3]]).collect()
+const WINDOW: usize = 128;
+
+/// One leaf per window: the Toeplitz head reads each leaf's mean vector as a realisation of a
+/// stationary process, so chunking several windows into one leaf would average the very sequence it
+/// is trying to model.
+fn window_leaves(pts: &[Vec<f64>]) -> Vec<Full<f64>> {
+    pts.iter()
+        .map(|w| {
+            let mut f = Full::new(WINDOW);
+            f.push(w, 1.0);
+            f
+        })
+        .collect()
+}
+
+/// Even indices then odd ones. Unlike a reversal — which any stationary process is invariant to —
+/// this sends lag-1 neighbours 64 apart and destroys the AR structure outright.
+fn interleave(pts: &[Vec<f64>]) -> Vec<Vec<f64>> {
+    pts.iter()
+        .map(|p| {
+            p.iter()
+                .step_by(2)
+                .chain(p.iter().skip(1).step_by(2))
+                .copied()
+                .collect()
+        })
+        .collect()
 }
 
 #[test]
-fn the_toeplitz_fit_reads_the_coordinate_order_even_where_the_partition_does_not() {
+fn the_toeplitz_head_is_translation_invariant_and_not_invariant_under_reordering_the_coordinates() {
     // The stationary head is the one row of the table that is neither Euclidean nor directional. An
-    // AR(w) covariance says the coordinates are an evenly spaced *sequence*, so translation leaves
-    // the model alone while any permutation of the axes is a different model — and for `d >= 3` a
-    // permutation really is non-trivial, where in two dimensions `[[s, r], [r, s]]` is symmetric
-    // under the only swap there is.
-    //
-    // The partition, though, is not where that shows. Assignment here is driven by the means, and
-    // means are permutation equivariant, so the labels come out identical; it is the fitted
-    // likelihood that moves. Asserting the labels differ would be asserting something false.
-    let pts = ar_signals();
+    // AR(w) covariance says the coordinates are an evenly spaced *sequence*: shifting the whole
+    // sequence leaves the model alone, while permuting the axes is a different model. For `d >= 3` a
+    // permutation is genuinely non-trivial — in two dimensions `[[s, r], [r, s]]` is symmetric under
+    // the only swap there is, which is why this fixture is 128-dimensional rather than 2.
+    let pts = ar_windows();
     let fit = |p: &[Vec<f64>]| {
-        let g = gmm_toeplitz(&leaves_as::<Full<f64>>(p), 2, 200, SEED);
+        let g = gmm_toeplitz(&window_leaves(p), 2, 200, SEED);
         (as_i64(&g.labels), g.loglik)
     };
+    let truth: Vec<i64> = (0..pts.len())
+        .map(|i| (i >= pts.len() / 2) as i64)
+        .collect();
     let (base, ll) = fit(&pts);
+    assert!(
+        same_partition(&base, &truth),
+        "the head must separate two AR processes that differ only in autocovariance, or the \
+         assertions below are about a degenerate answer: {base:?}"
+    );
 
-    let (moved, ll_moved) = fit(&translate4(&pts));
+    let (moved, ll_moved) = fit(&translate_all(&pts));
     assert!(
         same_partition(&base, &moved),
         "an AR covariance does not see the origin, so the head must be translation invariant"
@@ -414,29 +453,24 @@ fn the_toeplitz_fit_reads_the_coordinate_order_even_where_the_partition_does_not
     );
 
     assert!(
-        same_partition(&base, &fit(&scale4(&pts)).0),
+        same_partition(&base, &fit(&scale_all(&pts)).0),
         "uniform scaling multiplies every Toeplitz band alike and must not move the partition"
     );
 
-    let (reordered, ll_reordered) = fit(&permute_lags(&pts));
     assert!(
-        same_partition(&base, &reordered),
-        "the partition is mean-driven here, and means are permutation equivariant"
-    );
-    assert!(
-        (ll - ll_reordered).abs() > 1e-3 * ll.abs(),
-        "reordering the coordinates reorders the lags; a fit that does not move ({ll} against \
-         {ll_reordered}) is not reading the band structure it claims to model"
+        !same_partition(&base, &fit(&interleave(&pts)).0),
+        "sending lag-1 neighbours 64 apart destroys the band structure both components are told \
+         apart by; a head that answers the same either way is not reading it"
     );
 }
 
-fn translate4(pts: &[Vec<f64>]) -> Vec<Vec<f64>> {
+fn translate_all(pts: &[Vec<f64>]) -> Vec<Vec<f64>> {
     pts.iter()
         .map(|p| p.iter().map(|v| v + 31.75).collect())
         .collect()
 }
 
-fn scale4(pts: &[Vec<f64>]) -> Vec<Vec<f64>> {
+fn scale_all(pts: &[Vec<f64>]) -> Vec<Vec<f64>> {
     pts.iter()
         .map(|p| p.iter().map(|v| v * 37.5).collect())
         .collect()
