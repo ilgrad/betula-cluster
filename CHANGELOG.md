@@ -40,6 +40,36 @@ All notable changes to this project are documented here. The format follows
   [`bench/RESULTS.md`](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md).
 
 ### Added
+- **The symmetry group of every `(feature, head)` pair is now stated and enforced.** A head answers a
+  question about the data, not about the coordinates it arrived in, and which frame changes it may
+  ignore is a property of its model that is easy to lose by accident — to a bandwidth in absolute data
+  units, a covariance floor applied before whitening, or an initialisation that reads coordinate 0.
+  `tests/equivariance.rs` runs all eleven Euclidean heads in five frames (translation, rotation,
+  uniform scaling, an axis swap, and the identity) and compares the partitions up to relabelling, with
+  the two exceptions asserted to **differ** rather than skipped: `gmm_diagonal` is not rotation
+  invariant because an axis-aligned covariance is a claim *about the axes*, and the directional heads
+  are not translation invariant because a direction is read from the origin. The audit found **no head
+  violating its claimed group** — reportable only because the suite carries its own controls, including
+  one that superimposes two of the four groups and requires most heads to notice, since blobs separated
+  far enough to be found in any frame would pass an invariance suite without exercising a symmetry.
+
+  The measured half is the second axis: the **leaf summary** is as much of the group as the head is. A
+  symmetry the feature has already discarded cannot be recovered downstream, so `gmm_full` — a
+  rotation-invariant model — is rotation invariant on `Full` leaves, **not** invariant on `Diagonal`
+  ones (the default `cov_dense` keeps only `diag(variance)`, and the off-diagonal scatter these
+  clusters live along is gone), and invariant again on `Spherical` ones for the trivial reason that an
+  isotropic summary has nothing a rotation can change. Choosing `feature="diagonal"` for memory is
+  therefore also a choice about which frames the answer may depend on.
+
+  Auditing `gmm_toeplitz` — neither Euclidean nor directional, since an AR(*w*) covariance says the
+  coordinates are an evenly spaced *sequence* — turned up a limitation worth stating on its own. Two
+  AR(1) components with `rho = +0.92` and `-0.92` and **identical** means, in four dimensions, land in
+  a **single cluster** at every leaf size tried; separating the means by 20 makes the split perfect at
+  the same sizes. The head's assignment on CF leaves is entirely mean-driven: the lag structure enters
+  the likelihood — the fit does move when the coordinates are permuted, which is what the test asserts
+  — but never the responsibility that decides a label. Tables in
+  [`docs/MATH.md`](https://github.com/ilgrad/betula-cluster/blob/main/docs/MATH.md). Tests only — no
+  behaviour changes.
 - **`dyn_msc`: medoid-silhouette clustering that chooses its own `k`.** (Rust API —
   `clustering::dyn_msc`, `clustering::MedoidClustering`.) Lenssen & Schubert's DynMSC
   (Inf. Syst. 120, 2024): optimise the medoid silhouette by swaps, then sweep `k` downward reusing

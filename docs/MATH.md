@@ -385,6 +385,61 @@ non-convex-aware, but still the weakest head on `covtype`, where every cell scor
   $(n, \mu, S)$ triple, so every downstream head is unchanged. The clipped value flows identically
   into the leaf entry and its ancestors, preserving the "each node = merge of its subtree" invariant.
 
+## Symmetries of a (feature, head) pair
+
+A clustering head answers a question about the *data*, not about the coordinates it arrived in.
+Which change of frame it is allowed to ignore is a property of its model — and one that is easy to
+lose by accident, to a bandwidth in absolute data units, a covariance floor added before whitening,
+or an initialisation that reads coordinate 0. The groups the crate claims, and enforces in
+`tests/equivariance.rs`:
+
+| head | translate | rotate | uniform scale | swap axes |
+|---|---|---|---|---|
+| `kmeans`, `ward_hac`, `agglomerative`, `dyn_msc`, `hdbscan` | yes | yes | yes | yes |
+| `gmm_full`, `mppca`, `spectral`, `scale_space` | yes | yes | yes | yes |
+| `gmm_diagonal` | yes | **no** | yes | yes |
+| `spherical_kmeans`, `movmf` | **no** | yes | yes | yes |
+| `gmm_toeplitz` (its fit, not its partition) | yes | **no** | no — the likelihood carries a Jacobian | **no** |
+
+Three rows are exceptions by construction, not defects. An axis-aligned covariance is a claim *about
+the axes*, so rotation is not a symmetry of `gmm_diagonal`'s model; rotating a diagonal fit and
+expecting the same answer is the error. The directional heads read a direction from the origin, so
+translating the data moves it relative to the very thing they measure. And `gmm_toeplitz` is neither
+Euclidean nor directional: an AR($w$) covariance says the coordinates are an evenly spaced
+*sequence*, so reordering the axes is a different model. That last one only shows in the **fit** —
+the partition it emits is driven by the component means, which are permutation equivariant, so the
+labels come out identical while the log-likelihood moves. The audit asserts the likelihood, because
+asserting the labels differ would assert something false.
+
+Measuring that turned up a limitation worth stating on its own. Two AR(1) components with
+$\rho = \pm 0.92$ and *identical* means, in four dimensions, are put in a **single cluster** by
+`gmm_toeplitz` at every leaf size tried; separating the means by 20 makes the split perfect at the
+same sizes. The head's assignment on CF leaves is entirely mean-driven — the lag structure enters the
+likelihood but never the responsibility that decides a label. Mean-seeded EM starts two co-located
+components at the symmetric fixed point and has no gradient to leave it.
+
+The head is only half of the pair. A symmetry the **leaf summary** has already discarded cannot be
+recovered by any head reading it, so the group of a `(feature, head)` pair is the *intersection* of
+the two:
+
+| feature | what it keeps of the scatter | rotate |
+|---|---|---|
+| `Spherical` | its trace only | yes — nothing anisotropic is left to rotate |
+| `Diagonal` | its axis-aligned part | **no** — the off-diagonal scatter is gone |
+| `Full`, `FdSketch` | all of it (`FdSketch` up to sketch error) | yes |
+
+So `gmm_full` — a rotation-invariant model — has three different symmetry groups depending on what
+it is handed: invariant on `Full` leaves, *not* invariant on `Diagonal` ones, and invariant again on
+`Spherical` ones for the trivial reason that an isotropic summary has nothing a rotation can change.
+Choosing `feature="diagonal"` for memory is therefore also a choice about which frames the answer is
+allowed to depend on.
+
+The audit found no head violating its claimed group. That is only worth reporting because the tests
+carry their own controls: each exception is asserted to *differ* rather than quietly skipped, and a
+fixture check confirms the comparison can tell two answers apart at all — blobs separated far enough
+that every head finds them in any frame would pass an invariance suite without exercising a single
+symmetry.
+
 ## Relation to BIRCH and BETULA
 
 This library is a from-scratch Rust implementation of the **BETULA** cluster feature — the
