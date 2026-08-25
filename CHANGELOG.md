@@ -41,6 +41,14 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- `max_leaves` accepts a **fraction of the row count**: a float in `(0, 1)` resolves to
+  `ceil(frac · N)` at `fit` time, alongside the absolute integer cap. One parameter carries both
+  forms, discriminated by range rather than by a second flag, which is ELKI's `-cftree.maxleaves`
+  convention (its own default is `0.05`) and makes a configuration independent of dataset size. A
+  fraction is undefined for `partial_fit`, which never sees a final `N`, and raises there rather
+  than resolving against a batch; `memory_budget_mb` still overrides either form. Reported by
+  `effective_max_leaves_` as before.
+
 - Mapper linkage option `link="bhattacharyya"`: microclusters inside a cover bin are linked on the
   Bhattacharyya distance between their Gaussian surrogates — the centroid gap divided by the pair's
   own spread — instead of centroid distance alone. It attacks chaining, where a thin bridge of

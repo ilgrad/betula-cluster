@@ -194,7 +194,7 @@ class Betula:
         threshold: float | Literal["auto"] = ...,
         branching: int = ...,
         leaf_cap: int = ...,
-        max_leaves: int = ...,
+        max_leaves: int | float = ...,
         max_iter: int = ...,
         min_samples: int = ...,
         min_cluster_size: int = ...,

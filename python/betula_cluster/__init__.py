@@ -9,6 +9,7 @@ constructor was handed, which a compiled getter (returning freshly built Python 
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError, version
 
@@ -367,6 +368,38 @@ def _bytes_per_leaf(feature: str, dim: int) -> int:
     return base + 96
 
 
+def _rows_of(X, csr) -> int:
+    """Row count of the input, for resolving a fractional ``max_leaves`` against it.
+
+    ``len`` rather than ``shape[0]`` so a nested list works the same as an array; the CSR row count
+    is one less than the length of ``indptr``.
+    """
+    return len(csr[2]) - 1 if csr is not None else len(X)
+
+
+def _absolute_max_leaves(max_leaves, n_rows: int | None) -> int:
+    """``max_leaves`` as the engine takes it: a count, or a fraction of ``N`` resolved against it.
+
+    One parameter carries both forms, discriminated by range rather than by a second flag: a value
+    strictly between 0 and 1 is a fraction (ELKI's ``-cftree.maxleaves`` convention, whose
+    default is ``0.05``), anything else is an absolute count and must be an integer. No value could
+    mean either, so no precedence rule is needed between them.
+    """
+    if isinstance(max_leaves, float) and 0.0 < max_leaves < 1.0:
+        if n_rows is None:
+            raise ValueError(
+                "a fractional max_leaves needs the row count, which streaming does not have: "
+                "pass an absolute integer to partial_fit, or fit() on an array."
+            )
+        return max(1, math.ceil(max_leaves * n_rows))
+    if isinstance(max_leaves, bool) or not isinstance(max_leaves, int) or max_leaves < 1:
+        raise ValueError(
+            "max_leaves must be an integer >= 1 (an absolute leaf cap) or a float in (0, 1) "
+            f"(a fraction of the row count); got {max_leaves!r}"
+        )
+    return max_leaves
+
+
 def _budget_max_leaves(budget_mb: float, dim: int, feature: str, branching: int) -> int:
     """Translate a memory budget (MiB) into a ``max_leaves`` cap for the resident CF-tree."""
     derived = int(budget_mb * 1_048_576 / _bytes_per_leaf(feature, dim))
@@ -610,16 +643,17 @@ class Betula:
         return self
 
     # ── fit / predict ────────────────────────────────────────────────────────────────────────
-    def _resolve_max_leaves(self, dim):
+    def _resolve_max_leaves(self, dim, n_rows=None):
         # `memory_budget_mb` is a wrapper-only knob: when set (and the dimension is known),
-        # translate it into the `max_leaves` the engine actually uses; otherwise pass it through.
+        # translate it into the `max_leaves` the engine actually uses. It wins over `max_leaves` in
+        # either form, because it is the harder constraint — a budget the tree must fit inside.
         if self.memory_budget_mb is not None and dim is not None:
             return _budget_max_leaves(self.memory_budget_mb, dim, self.feature, self.branching)
-        return self.max_leaves
+        return _absolute_max_leaves(self.max_leaves, n_rows)
 
-    def _build(self, dim=None, threshold_override=None):
+    def _build(self, dim=None, threshold_override=None, n_rows=None):
         params = {k: getattr(self, k) for k in _PARAM_NAMES if k != "memory_budget_mb"}
-        params["max_leaves"] = self._resolve_max_leaves(dim)
+        params["max_leaves"] = self._resolve_max_leaves(dim, n_rows)
         # `threshold="auto"` is resolved to a float by the caller (see `_resolve_auto`); the engine
         # only ever receives a concrete threshold.
         if threshold_override is not None:
@@ -646,7 +680,7 @@ class Betula:
 
     def _pilot_threshold(self, X):
         dim = X.shape[1] if X.ndim == 2 else 1
-        max_leaves = self._resolve_max_leaves(dim)
+        max_leaves = self._resolve_max_leaves(dim, X.shape[0])
         cap = max(_AUTO_PILOT_CAP_FACTOR * max_leaves, _AUTO_PILOT_MIN)
         n = X.shape[0]
         if n <= cap:
@@ -693,11 +727,12 @@ class Betula:
         csr = _to_csr(X)
         self._check_projection_input(X, csr)
         override = self._resolve_auto(X, csr)
+        rows = _rows_of(X, csr)
         if csr is not None:
-            est = self._build(csr[3], override)
+            est = self._build(csr[3], override, rows)
             est.fit_csr(*csr)
         else:
-            est = self._build(_dim_of(X), override)
+            est = self._build(_dim_of(X), override, rows)
             est.fit(X)
         self._est = est
         return self
@@ -713,11 +748,12 @@ class Betula:
         csr = _to_csr(X)
         self._check_projection_input(X, csr)
         override = self._resolve_auto(X, csr)
+        rows = _rows_of(X, csr)
         if csr is not None:
-            est = self._build(csr[3], override)
+            est = self._build(csr[3], override, rows)
             labels = est.fit_predict_csr(*csr)
         else:
-            est = self._build(_dim_of(X), override)
+            est = self._build(_dim_of(X), override, rows)
             labels = est.fit_predict(X)
         self._est = est
         return labels
@@ -733,7 +769,7 @@ class Betula:
         ml = _constraint_pairs(must_link)
         cl = _constraint_pairs(cannot_link)
         override = self._resolve_auto(X, None)
-        est = self._build(_dim_of(X), override)
+        est = self._build(_dim_of(X), override, _rows_of(X, None))
         est.fit_constrained(X, ml, cl)
         self._est = est
         return self

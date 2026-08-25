@@ -211,6 +211,140 @@ mod tests {
             .collect()
     }
 
+    /// The median heuristic written out independently: `median‖x − y‖² / 2` over all row pairs.
+    fn median_h2(flat: &[f64], dim: usize) -> f64 {
+        let rows: Vec<&[f64]> = flat.chunks_exact(dim).collect();
+        let mut d2: Vec<f64> = Vec::new();
+        for i in 0..rows.len() {
+            for j in (i + 1)..rows.len() {
+                d2.push(
+                    rows[i]
+                        .iter()
+                        .zip(rows[j])
+                        .map(|(a, b)| (a - b) * (a - b))
+                        .sum(),
+                );
+            }
+        }
+        d2.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        d2[d2.len() / 2] / 2.0
+    }
+
+    #[test]
+    fn the_default_bandwidth_is_the_median_heuristic_and_nothing_near_it() {
+        // Pins `median_bandwidth_sq` exactly: the pair loop, the rank it selects and the halving.
+        // Every neighbouring rank and every arithmetic slip lands on a different `h`, so the
+        // equality is a much narrower claim than "the default is some sensible bandwidth".
+        let flat = blob_points(5, 12, &[[0.0, 0.0], [4.0, 3.0]], 0.7);
+        let leaves = coarse_leaves(&flat, 4);
+        let h2 = median_h2(&flat, 2);
+        let auto = summary_mmd(&leaves, &flat, None);
+        assert!(
+            (auto - summary_mmd(&leaves, &flat, Some(h2.sqrt()))).abs() < 1e-12,
+            "the default is not the median heuristic"
+        );
+        for wrong in [h2 * 0.5, h2 * 2.0, h2 / 1.05] {
+            assert!(
+                (auto - summary_mmd(&leaves, &flat, Some(wrong.sqrt()))).abs() > 1e-9,
+                "a bandwidth of {wrong} scores the same as the median {h2}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_sample_with_no_spread_falls_back_to_a_unit_bandwidth() {
+        // Every row identical ⇒ the median squared distance is exactly zero, and `h² = 0` would
+        // divide by zero inside the kernel. The fallback is `h² = 1`, and the test pins that
+        // choice rather than only checking the result is finite.
+        let flat = vec![2.0, -1.0, 2.0, -1.0, 2.0, -1.0, 2.0, -1.0];
+        let leaves = coarse_leaves(&[0.0, 0.0, 5.0, 5.0], 1);
+        let auto = summary_mmd(&leaves, &flat, None);
+        assert!(auto.is_finite(), "a zero-spread sample produced {auto}");
+        assert!(
+            (auto - summary_mmd(&leaves, &flat, Some(1.0))).abs() < 1e-12,
+            "the zero-median fallback is not h = 1"
+        );
+    }
+
+    #[test]
+    fn a_non_positive_bandwidth_falls_back_instead_of_dividing_by_zero() {
+        let flat = blob_points(6, 10, &[[0.0, 0.0], [3.0, 0.0]], 0.5);
+        let leaves = coarse_leaves(&flat, 5);
+        let auto = summary_mmd(&leaves, &flat, None);
+        for bad in [0.0, -1.0] {
+            let got = summary_mmd(&leaves, &flat, Some(bad));
+            assert!(got.is_finite(), "bandwidth {bad} produced {got}");
+            assert!(
+                (got - auto).abs() < 1e-12,
+                "bandwidth {bad} must fall back to the median heuristic"
+            );
+        }
+    }
+
+    #[test]
+    fn an_explicit_bandwidth_enters_the_kernel_as_its_own_square() {
+        // The whole statistic recomputed from the closed form by hand at h = 3, where h·h, h + h
+        // and h / h are three different numbers. A tiny fixture, so the triple sum is checkable.
+        let leaves = coarse_leaves(&[0.0, 0.0, 1.0, 0.0, 4.0, 2.0, 4.0, 3.0], 2);
+        let flat = [0.0, 0.0, 4.0, 2.5, 1.0, 1.0];
+        let (h, dim) = (3.0_f64, 2usize);
+        let h2 = h * h;
+        let kernel = |m2: f64, s: f64| {
+            (1.0 + s / h2).powf(-(dim as f64) / 2.0) * (-m2 / (2.0 * (h2 + s))).exp()
+        };
+        let w: Vec<f64> = leaves.iter().map(|f| f.weight()).collect();
+        let total: f64 = w.iter().sum();
+        let mu: Vec<Vec<f64>> = leaves.iter().map(|f| f.mean().to_vec()).collect();
+        let s: Vec<f64> = leaves
+            .iter()
+            .map(|f| f.ssd() / (f.weight() * dim as f64))
+            .collect();
+        let rows: Vec<&[f64]> = flat.chunks_exact(dim).collect();
+        let sq =
+            |a: &[f64], b: &[f64]| a.iter().zip(b).map(|(x, y)| (x - y) * (x - y)).sum::<f64>();
+        let mut e_pp = 0.0;
+        for i in 0..leaves.len() {
+            for j in 0..leaves.len() {
+                e_pp += (w[i] / total) * (w[j] / total) * kernel(sq(&mu[i], &mu[j]), s[i] + s[j]);
+            }
+        }
+        let m_inv = 1.0 / rows.len() as f64;
+        let mut e_pq = 0.0;
+        for i in 0..leaves.len() {
+            for r in &rows {
+                e_pq += (w[i] / total) * m_inv * kernel(sq(&mu[i], r), s[i]);
+            }
+        }
+        let mut e_qq = 0.0;
+        for a in &rows {
+            for b in &rows {
+                e_qq += m_inv * m_inv * kernel(sq(a, b), 0.0);
+            }
+        }
+        let want = (e_pp - 2.0 * e_pq + e_qq).max(0.0).sqrt();
+        let got = summary_mmd(&leaves, &flat, Some(h));
+        assert!(
+            (got - want).abs() < 1e-12,
+            "got {got}, the closed form says {want}"
+        );
+    }
+
+    #[test]
+    fn a_leaf_carrying_no_mass_has_no_scale_rather_than_a_nan() {
+        // `S/(n·d)` on an empty leaf is `0/0`. It contributes zero weight to every term, so the
+        // answer must be exactly the one the same summary gives without it.
+        let flat = blob_points(7, 10, &[[0.0, 0.0], [5.0, 5.0]], 0.6);
+        let leaves = coarse_leaves(&flat, 4);
+        let mut padded = leaves.clone();
+        padded.push(Spherical::new(2));
+        let got = summary_mmd(&padded, &flat, Some(1.5));
+        assert!(got.is_finite(), "an empty leaf produced {got}");
+        assert!(
+            (got - summary_mmd(&leaves, &flat, Some(1.5))).abs() < 1e-12,
+            "an empty leaf changed the score"
+        );
+    }
+
     #[test]
     fn a_summary_that_kept_every_point_is_at_zero_distance_from_it() {
         let flat = blob_points(7, 40, &[[0.0, 0.0], [6.0, 5.0], [-4.0, 3.0]], 0.6);

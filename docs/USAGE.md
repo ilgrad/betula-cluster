@@ -31,7 +31,11 @@ it is now a wash — 0.307 → 0.346, inside the seed spread and sign-flipping b
 tree-rebuild fix removed most of the Euclidean collapse it used to compensate for. Leave it off for
 tabular data where magnitude is signal: it takes covtype ward to **−0.049**, worse than random),
 `n_jobs` (parallel shard+merge tree build — `>1` gives ~4–5× on large
-`N`), `threshold`, `branching`, `leaf_cap`, `max_leaves`, `max_iter`, `min_samples`
+`N`), `threshold`, `branching`, `leaf_cap`, `max_leaves` (an integer is an absolute leaf cap; a
+float in `(0, 1)` is a **fraction of the row count**, resolved as `ceil(frac·N)` at `fit` time —
+ELKI's `-cftree.maxleaves` convention, whose own default is `0.05`. A fraction is undefined for
+`partial_fit`, which never sees a final `N`, and raises there rather than guessing a batch size;
+`memory_budget_mb` overrides either form, being the harder constraint), `max_iter`, `min_samples`
 (for `method="hdbscan"`, the core-distance neighbourhood **counting the point itself** —
 the convention of Campello's Def. 3.1, `sklearn.cluster.HDBSCAN` and ELKI, so `min_samples=1`
 leaves every core distance at 0 and HDBSCAN\* degenerates to single linkage;

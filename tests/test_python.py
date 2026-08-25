@@ -5,6 +5,7 @@ and the streaming `Betula` estimator, plus the error contract.
 """
 
 import collections
+import math
 import warnings
 from math import comb
 
@@ -3496,3 +3497,49 @@ def test_mapper_rejects_an_unknown_linkage(dumbbell):
     est, _ = _mapped(dumbbell)
     with pytest.raises(ValueError, match="link must be"):
         est.mapper(link="hellinger")
+
+
+def test_max_leaves_accepts_a_fraction_of_the_row_count(blobs):
+    x, _ = blobs
+    est = betula_cluster.Betula(n_clusters=4, threshold=0.5, max_leaves=0.05, seed=0).fit(x)
+    assert est.effective_max_leaves_ == math.ceil(0.05 * len(x))
+    assert est.n_leaves_ <= est.effective_max_leaves_
+
+
+def test_max_leaves_fraction_and_the_equivalent_integer_agree(blobs):
+    x, _ = blobs
+    frac = betula_cluster.Betula(n_clusters=4, threshold=0.5, max_leaves=0.1, seed=0)
+    absolute = betula_cluster.Betula(
+        n_clusters=4, threshold=0.5, max_leaves=math.ceil(0.1 * len(x)), seed=0
+    )
+    assert np.array_equal(frac.fit_predict(x), absolute.fit_predict(x))
+
+
+def test_max_leaves_fraction_resolves_against_the_sparse_row_count():
+    sparse = pytest.importorskip("scipy.sparse")
+    rng = np.random.default_rng(0)
+    x = sparse.csr_matrix((rng.random((400, 12)) > 0.7).astype(np.float64))
+    est = betula_cluster.Betula(n_clusters=3, threshold=0.5, max_leaves=0.25, seed=0).fit(x)
+    assert est.effective_max_leaves_ == 100
+
+
+def test_max_leaves_fraction_is_undefined_for_streaming(blobs):
+    x, _ = blobs
+    est = betula_cluster.Betula(n_clusters=4, max_leaves=0.05)
+    with pytest.raises(ValueError, match="streaming does not have"):
+        est.partial_fit(x)
+
+
+@pytest.mark.parametrize("bad", [0, -3, 1.5, 0.0, "many", True])
+def test_max_leaves_rejects_values_that_are_neither_a_count_nor_a_fraction(blobs, bad):
+    x, _ = blobs
+    with pytest.raises(ValueError, match="max_leaves must be"):
+        betula_cluster.Betula(n_clusters=4, max_leaves=bad).fit(x)
+
+
+def test_memory_budget_overrides_a_fractional_max_leaves(blobs):
+    x, _ = blobs
+    est = betula_cluster.Betula(
+        n_clusters=4, threshold=0.5, max_leaves=0.5, memory_budget_mb=0.05, seed=0
+    ).fit(x)
+    assert est.effective_max_leaves_ != math.ceil(0.5 * len(x))
