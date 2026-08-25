@@ -613,16 +613,29 @@ src/sketch/ddsketch.rs:67:27: replace > with >= in DdSketch::collapse
 src/sketch/ddsketch.rs:82:14: replace > with >= in DdSketch::update
 src/sketch/ddsketch.rs:85:21: replace < with <= in DdSketch::update
 
-# ── src/topology.rs (8) ──
-# Debt: remainder after the 2026-08-19 reference tests.
-src/topology.rs:124:31: replace += with *= in UnionFind::union
-src/topology.rs:191:46: replace > with >= in MapperGraph::persistence_diagram
-src/topology.rs:191:88: replace > with < in MapperGraph::persistence_diagram
-src/topology.rs:191:88: replace > with == in MapperGraph::persistence_diagram
-src/topology.rs:191:88: replace > with >= in MapperGraph::persistence_diagram
-src/topology.rs:424:15: replace > with >= in mapper
-src/topology.rs:437:29: replace + with * in mapper
-src/topology.rs:462:26: replace > with >= in mapper
+# ── src/topology.rs (5) ──
+# Re-measured 2026-08-26 after the `Link::Bhattacharyya` work renumbered the file: 50 mutants,
+# 43 caught / 5 missed / 1 unviable / 1 timeout, whole file at -j1 under a 10G cap
+#   systemd-run --user --scope --unit=mut-topology -p MemoryMax=10G -p MemorySwapMax=0 \
+#     -- timeout 10800 cargo mutants -f src/topology.rs -j1 --test-tool nextest --output /tmp/mut-topology
+# The three `mapper` entries that stood here are now caught -- the bin-cover regression test added
+# with the linkage work kills them. The timeout (`132:30: != -> ==` in UnionFind::find, an infinite
+# loop) is a detection, not a survivor, and is not listed.
+#
+# All five remaining are believed equivalent, and share one argument. Four of them mutate the elder
+# rule's *tie-break*, which only runs when the two components have equal birth values -- and when
+# `cmin[ra] == cmin[rb]`, both `points.push((cmin[young], val))` and
+# `cmin[root] = cmin[elder].min(cmin[young])` are symmetric in the two, so whichever is called the
+# younger the diagram is the same. The fifth drops the union-by-rank increment, which is a balancing
+# heuristic: without it every union takes the Equal branch, so the tree is deeper, but `cmin[root]`
+# is reassigned through `uf.find` immediately after each union and every later read goes through
+# `find` too. Neither is observable in the output; both would need a test asserting on internal
+# tree shape, which would pin an implementation detail rather than a property.
+src/topology.rs:148:31: replace += with *= in UnionFind::union
+src/topology.rs:215:46: replace > with >= in MapperGraph::persistence_diagram
+src/topology.rs:215:88: replace > with < in MapperGraph::persistence_diagram
+src/topology.rs:215:88: replace > with == in MapperGraph::persistence_diagram
+src/topology.rs:215:88: replace > with >= in MapperGraph::persistence_diagram
 
 # ── src/clustering/community.rs (7) ──
 # Debt: remainder after the 2026-08-19 reference tests.
