@@ -40,6 +40,23 @@ All notable changes to this project are documented here. The format follows
   [`bench/RESULTS.md`](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md).
 
 ### Added
+- **`dyn_msc`: medoid-silhouette clustering that chooses its own `k`.** (Rust API —
+  `clustering::dyn_msc`, `clustering::MedoidClustering`.) Lenssen & Schubert's DynMSC
+  (Inf. Syst. 120, 2024): optimise the medoid silhouette by swaps, then sweep `k` downward reusing
+  the medoid set and keep the best-scoring level. Its objective is exactly the already-published
+  `validity::medoid_silhouette`, asserted rather than assumed, so the head cannot win on a number the
+  metric would score differently.
+
+  It is the crate's **second** automatic `k`, and it does not replace the first. Over 24 measured
+  cells it is 11 wins to Calinski–Harabasz's 9 with 4 ties, and the split is by cluster *shape*: on
+  round clusters DynMSC recovers `k` in 9 of 12 cells and gives the better partition whenever both
+  agree on `k`, while on clusters stretched 4× along one axis CH returns the top of the `k` range it
+  was handed in 5 of 12 cells — the monotone failure of a variance ratio on non-spherical data — where
+  DynMSC's error is bounded by collapsing toward 2. Cost scales as `m^2.4`–`m^2.6`, about 0.37 s at
+  960 leaves, so it belongs to the same hundreds-of-leaves envelope as the other quadratic heads.
+  `ward_hac_auto` keeps the default and there is no Python surface. Tables in
+  [`bench/RESULTS.md`](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md).
+
 - **`Selection`: PLSCAN's persistence-chosen minimum cluster size, alongside excess of mass.**
   (Rust API — `clustering::hdbscan_selected`, `clustering::Selection`.) Raising HDBSCAN\*'s
   `min_cluster_size` never moves a merge, it only prunes branches that fail to reach the size, so one

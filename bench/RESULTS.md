@@ -1346,6 +1346,72 @@ leaf. That is the mass-balancing lever from the covtype work seen from the other
 spends budget on keeping leaves comparable in weight rather than on shrinking the worst radius, and
 the squared-radius metric charges it for that.
 
+## DynMSC: a second automatic `k`, and the shape that decides which one to use (task #52)
+
+The crate already chooses `k` on its own — Calinski–Harabasz over the Ward cuts, behind
+`ward_hac_auto` and the other `_auto` heads. `clustering::dyn_msc` adds the alternative from Lenssen
+& Schubert (Inf. Syst. 120, 2024): optimise the **medoid** silhouette by swaps, then sweep `k`
+downward reusing the medoid set, and keep the `k` that scored best. So the question is not whether a
+selector works but whether this one picks better than the one already shipped, and the answer turns
+out to depend on cluster *shape* rather than on anything about the data's size or dimension.
+
+`cargo test --lib measure_dyn_msc_against_the_ch_selector -- --ignored --nocapture`. Blobs on a
+circle of radius 9, `k_true ∈ {3, 4, 6, 8}` × spread `∈ {1.6, 2.4, 3.2}`, run twice: once round and
+once with one axis stretched 4×, which leaves the ground truth untouched and removes the sphericity
+the variance ratio is built on. Both selectors see the same leaves and the same `2..=12` range;
+medians of seeds 1/5/9/13/21.
+
+| shape | `k_true` | spread | DynMSC `k` | ARI | Ward+CH `k` | ARI |
+|---|---:|---:|---:|---:|---:|---:|
+| round | 4 | 2.4 | 4 | **0.978** | 4 | 0.948 |
+| round | 4 | 3.2 | 4 | **0.867** | 4 | 0.752 |
+| round | 6 | 2.4 | 6 | **0.834** | 6 | 0.747 |
+| round | 8 | 2.4 | 4 | 0.478 | 8 | **0.574** |
+| round | 8 | 3.2 | 3 | 0.311 | 5 | **0.383** |
+| elongated | 4 | 1.6 | **4** | **0.991** | 12 | 0.494 |
+| elongated | 6 | 1.6 | 2 | 0.331 | 12 | **0.583** |
+| elongated | 8 | 2.4 | 2 | 0.185 | 3 | **0.308** |
+
+Across all 24 cells: **DynMSC 11 wins, CH 9, 4 ties** — no winner, and the aggregate hides the only
+thing worth knowing, which is *when*.
+
+**Where DynMSC is better: round clusters that genuinely separate.** It recovers `k` exactly in 9 of
+12 round cells and, whenever both selectors agree on `k`, it produces the better partition — six
+cells, by 0.006 to 0.115 ARI. Optimising the silhouette rather than scoring it afterwards is what
+buys that: the swap search moves medoids to sharpen the own-versus-other ratio, which is closer to
+what ARI rewards than minimising within-cluster scatter is.
+
+**Where it fails: heavy overlap.** As spread grows the silhouette stops seeing a boundary and the
+sweep collapses `k` — 3 instead of 8 at spread 3.2. CH degrades more gracefully there because the
+variance ratio still sees a between-cluster term where the silhouette sees none.
+
+**Where CH fails: elongated clusters, and it fails at the ceiling.** In 5 of 12 stretched cells CH
+returns `k = 10` or `k = 12` — the top of the range it was given, the textbook monotone failure of a
+variance ratio on non-spherical data, and a number that would have grown further with a wider range.
+The `k_true = 4, spread 1.6` cell is the sharp case: DynMSC gets `k = 4` and ARI **0.991** where CH
+takes the ceiling and scores 0.494. Neither selector recovers `k` on the harder stretched cells
+(DynMSC 1 of 12, CH 0 of 12), but DynMSC's error is bounded — it collapses toward 2 — where CH's runs
+to whatever `k_max` it is handed.
+
+**Cost.** `cargo test --release --lib measure_dyn_msc_cost -- --ignored --nocapture`, one fixture at
+four grid resolutions:
+
+| leaves | seconds (release) |
+|---:|---:|
+| 199 | 0.01 |
+| 340 | 0.03 |
+| 572 | 0.10 |
+| 960 | 0.37 |
+
+The fitted exponent is **≈ 2.4–2.6**, above the `O(m²)` a single swap pass costs, because a larger
+leaf set also needs more passes before the search settles. That extrapolates to roughly 13 s at
+`max_leaves = 4000`, so this is a selector for a leaf budget in the hundreds, not thousands — which
+is the same envelope the other quadratic Phase-3 heads live in.
+
+Rust-only, and `ward_hac_auto` keeps the default: a selector that wins on round data and loses on
+elongated data is a choice the caller has to make with the shape in hand, and there is no way to
+express that in a `method=` string.
+
 ## Insertion-order sensitivity — the property the whole BIRCH family inherits
 
 `bench/insertion_order.py`, `bench/results_order.csv` (54 cells). A CF-tree routes each point against

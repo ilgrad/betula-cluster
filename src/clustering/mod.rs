@@ -13,6 +13,7 @@ pub mod hdbscan;
 pub mod kmeans;
 pub(crate) mod knn;
 pub mod kprototypes;
+pub mod medoid;
 pub mod mppca;
 pub mod nmf;
 pub(crate) mod pca;
@@ -36,6 +37,7 @@ pub use gmm_toeplitz::{
 pub use hdbscan::{Hdbscan, Selection, hdbscan, hdbscan_selected};
 pub use kmeans::{ConstraintError, KMeans, cop_kmeans, kmeans, xmeans};
 pub use kprototypes::{MixedCf, kprototypes, nearest_micro, summarize_mixed};
+pub use medoid::{MedoidClustering, dyn_msc};
 pub use mppca::{Mppca, mppca, mppca_auto};
 pub use scalespace::{ScaleSpace, scale_space};
 pub use spectral::{Spectral, spectral};
