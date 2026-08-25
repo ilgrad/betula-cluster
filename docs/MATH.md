@@ -356,8 +356,8 @@ stable CF from scratch and then adds everything betulars leaves to the user:
 - AVX2/FMA distance kernels with a scalar fallback, and rayon-parallel build + labeling.
 
 The concrete, reproducible quality/speed/memory comparison is against the labeled scikit-learn
-clusterers practitioners actually reach for: at **matching ARI**, betula labels 1 M points **35×
-faster** than `sklearn.cluster.Birch` (8.59 s → 0.24 s) and **13×** faster than `KMeans`, while
+clusterers practitioners actually reach for: at **matching ARI**, betula labels 1 M points **30×
+faster** than `sklearn.cluster.Birch` (8.01 s → 0.26 s) and **9×** faster than `KMeans`, while
 streaming memory stays flat at ~60 MB; see [`bench/RESULTS.md`](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md) and the
 [method-comparison notebook](https://github.com/ilgrad/betula-cluster/blob/main/examples/04_method_comparison.ipynb). (betulars produces no labels, so
 it is not in that comparison; on the raw Phase-1 *build* the two are at parity — betula-cluster builds

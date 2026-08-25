@@ -633,6 +633,32 @@ All notable changes to this project are documented here. The format follows
   term, so hoisting it would buy nothing measurable and those loops are unchanged. Recorded here so
   the next reader does not re-derive it.
 
+- **Every published table re-measured on the current build; the `hdbscan` rows moved both ways.** The
+  committed CSVs predated `835d05f`, the commit that made `min_samples` and `min_cluster_size` count
+  points rather than leaves and whose own message says the summary route relabels. Nothing else in
+  the record had caught up. Re-run over seeds 0/1/2: **only `betula-hdbscan` quality cells moved**,
+  every other method reproducing cell for cell, which attributes the deltas to that commit and
+  nothing else.
+
+  It is a trade, not a win, and both halves are published. `mnist` at n = 20 000 goes from
+  **all-noise (ARI 0.000, zero clusters)** to **0.117 with 49 clusters**, and `covtype` from 21
+  clusters to 43 at a flat ARI -- the catastrophic case is fixed. But `varied` drops **0.536 → 0.479**
+  with the cluster count going 2 → 73, and `blobs` 0.154 → 0.142: counting in points makes the size
+  gate roughly `N/max_leaves` times weaker at the benchmark's own settings, so the head now
+  over-splits where it used to under-split. The three-seed range on `aniso` is **0.016–0.993**, which
+  is the honest summary of that row -- a regime without a stable answer rather than six numbers.
+
+  Speed moved too, and not uniformly. Streaming 20-D is **1.29×** faster and the sparse pipeline
+  1.10–1.42×; the `d = 2` scaling fixture is **0.92×**, the AVX2 gate's residual cost on the one shape
+  in the suite where packed kernels cannot help; `betula-hdbscan` is 0.79–0.84×, the price of the same
+  units fix doing more work per core distance. Full covtype now clusters in **1.06 s** against
+  scikit-learn's 4.92 s.
+
+  The scoreboard ratchet fired and was accepted deliberately rather than overwritten: one genuine
+  demotion (`betula-nmf` speed, win → tie, because scikit-learn's NMF got faster by more than ours
+  did) and six `vs-best` pairings that *vanished* rather than lost, because the non-betula champion
+  changed identity at 1 M. `bench/RESULTS.md` names each one.
+
 ### Fixed
 - **`absorb` was validated in two places that had to agree and did not.** The `Betula` estimator
   restated the accepted names and the `chi2_scale > 0` rule inline, next to `resolve_gate`'s own copy

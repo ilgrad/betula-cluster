@@ -35,7 +35,7 @@ with peak RSS sampled from `/proc/self/statm`. Full methodology, every metric, a
 > three seeds, so a margin below that is a tie and is written as one here.
 
 - ⚡🪶 **Always faster — and lighter — at scale (the unconditional win).** betula labels **1 M points
-  in 0.24 s**: 13× faster than scikit-learn KMeans, 18× vs GaussianMixture, 35× vs Birch — and
+  in 0.26 s**: 9× faster than scikit-learn KMeans, 15× vs GaussianMixture, 30× vs Birch — and
   streams **10 M in a flat ~60 MB** where an in-core KMeans needs **~5.0 GB** (**82× less**, and the
   gap grows without bound). This holds for *every* method at *every* size.
 - 🎯 **Parity on the centroid heads, ahead on the structured ones.** betula's k-means ties
@@ -47,7 +47,7 @@ with peak RSS sampled from `/proc/self/statm`. Full methodology, every metric, a
   claim there is *scaling* (cost set by `max_leaves`, not `N`), not a constant factor.
 - 🌍 **Real data, and two losses stated plainly.** betula's diagonal GMM overtakes scikit-learn on hard
   `covtype` (**0.104 vs 0.080** at adequate leaf resolution — at the default 4 000-leaf budget the two
-  are a tie inside their seed spreads) and it clusters **full covtype (581 k rows) 5.9× faster** at no
+  are a tie inside their seed spreads) and it clusters **full covtype (581 k rows) 4.7× faster** at no
   worse ARI (0.070 vs 0.049). But `sklearn-birch` beats **every** betula
   head on both `covtype` (0.131) and MNIST (0.426 vs 0.377). On `covtype` that is a loss on the merits
   — tested in both directions, and the mechanism is the leaf budget's unequal cell *mass*; on MNIST
@@ -58,7 +58,7 @@ with peak RSS sampled from `/proc/self/statm`. Full methodology, every metric, a
 
 | ![Fit time vs N](https://raw.githubusercontent.com/ilgrad/betula-cluster/main/bench/plots/scaling_time.png) | ![Peak memory vs N](https://raw.githubusercontent.com/ilgrad/betula-cluster/main/bench/plots/memory_streaming.png) |
 |:--:|:--:|
-| Phase-3 clusters only the ~2 000 leaf microclusters, not the raw points, so every head finishes 1 M points in **under 0.7 s** (k-means in 0.24 s). | The CF-tree is capped by `max_leaves`, so streaming memory stays **flat** — it clusters data larger than RAM. |
+| Phase-3 clusters only the ~2 000 leaf microclusters, not the raw points, so every head finishes 1 M points in **under 0.9 s** (k-means in 0.26 s). | The CF-tree is capped by `max_leaves`, so streaming memory stays **flat** — it clusters data larger than RAM. |
 
 ## Why
 
