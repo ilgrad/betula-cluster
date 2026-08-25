@@ -509,12 +509,16 @@ isolated in its own subprocess (`bench/results_sparse.csv`):
 
 | reduction | clusterer | time | ARI |
 |---|---|---|---|
-| raw 2 000-D (none) | betula `fit_predict_sparse` (O(nnz)) | 6.6 s | 0.004 |
-| raw 2 000-D (none) | sklearn k-means | 0.59 s | 0.056 |
-| **betula CF-weighted PCA(50)** | **betula** spherical k-means | 5.12 s | **0.164** |
-| TruncatedSVD(50) | sklearn k-means | **0.43 s** | 0.130 |
-| NMF(20) | **betula** k-means | 2.08 s | 0.130 |
-| NMF(20) | sklearn k-means | 2.19 s | 0.124 |
+| raw 2 000-D (none) | betula `fit_predict_sparse` (O(nnz)) | 1.94 s | 0.004 |
+| raw 2 000-D (none) | sklearn k-means | 0.61 s | 0.056 |
+| **betula CF-weighted PCA(50)** | **betula** spherical k-means | 3.31 s | **0.164** |
+| TruncatedSVD(50) | sklearn k-means | **0.41 s** | 0.130 |
+| NMF(20) | **betula** k-means | 2.14 s | 0.130 |
+| NMF(20) | sklearn k-means | 2.42 s | 0.124 |
+
+The two betula times fell **3.4×** and **1.5×** against the previous edition of this table with the
+labels bit-identical at every budget — task #71, the transposed micro-cluster storage described
+below. Nothing about the partition changed; only the memory traffic it took to reach it.
 
 The `betula-svd` row changed meaning. It used to call scikit-learn's `TruncatedSVD` and then
 cluster with betula, so it measured scikit-learn's reducer; it now runs betula's own
@@ -527,13 +531,18 @@ only, like every other sparse row — this sweep is the **median of seeds 0/1/2*
 its 2048 cell (0.152, spread [0.135, 0.164]) reads lower than the 0.164 above: seed 0 is the top of
 that spread, not a different measurement.
 
-| `max_leaves` | ARI | time |
-|---|---|---|
-| 128 | 0.098 | 0.17 s |
-| 256 | 0.130 | 0.30 s |
-| 512 | 0.144 | 0.58 s |
-| 1024 | 0.150 | 2.35 s |
-| 2048 | 0.152 | 5.42 s |
+| `max_leaves` | ARI | time, before #71 | time, after |
+|---|---|---|---|
+| 128 | 0.097 | 0.22 s | 0.20 s |
+| 256 | 0.130 | 0.43 s | 0.37 s |
+| 512 | 0.143 | 0.87 s | 0.74 s |
+| 1024 | 0.150 | 2.62 s | 1.53 s |
+| 2048 | 0.152 | 6.99 s | **3.44 s** |
+
+All fifteen label digests (five budgets × three seeds) are identical on both sides, so the ARI column
+is the *same* measurement re-timed. Two cells read 0.001 below the previous edition of this table
+(128 and 512); that predates this change — the earlier numbers were taken on an older build, which is
+also why its 2048 time (5.42 s) sits between the two columns above.
 
 Read honestly:
 
@@ -542,13 +551,46 @@ Read honestly:
   even raw sklearn k-means (0.056) barely beat chance. The standard fix for sparse text is
   **reduce-then-cluster**, and `projection="svd"` now does it inside the same call.
 - **On quality the leaf-summary PCA wins; on time it does not.** 0.164 against `sklearn-svd`'s 0.130
-  at this budget, but 5.12 s against 0.43 s. The basis is not the compromise — labelling raw rows in
+  at this budget, but 3.31 s against 0.41 s. The basis is not the compromise — labelling raw rows in
   it scores 0.159 against 0.143 for `TruncatedSVD`'s own basis on the same rows, since the within-leaf
   scatter the summary discards is isotropic under the spherical cluster feature and so moves no
   direction. The time is the **leaf budget**: sweeping the rank from 1 to 100 moves the total by
-  1.2 s, while `max_leaves` 256 → 2048 moves it from 0.30 s to 5.4 s, because the sparse summarizer is
-  a flat leader pass that scores each row against every micro-cluster so far. At 256 leaves the same
-  call is 0.130 ARI in 0.30 s — scikit-learn's quality at 2.3× its speed.
+  1.2 s, while `max_leaves` 256 → 2048 moves it from 0.37 s to 3.4 s, because both sparse passes are
+  flat scans that score each row against every micro-cluster. At 256 leaves the same call is 0.130 ARI
+  in 0.37 s — scikit-learn's quality at close to its speed.
+
+### The 20news rows were memory-bound, not compute-bound (task #71)
+
+The scan is linear in the leaf budget by construction, so the budget sweep is the cheap test of where
+the time goes: if the leader pass dominates, wall time is linear in `max_leaves`. It was worse than
+linear. Doubling 512 → 1024 cost **6.3×**, and 128 → 2048 (16× the budget) cost 76×.
+
+That elbow is not an algorithm, it is a cache. Each micro-cluster held its coordinate sum as its own
+dense `Vec<f64>` of length `n_features`, so scoring one row against `L` of them pulled `L · nnz`
+scattered cache lines out of `L · n_features · 8` bytes of state — 32 MB at `L = 2048` on this
+fixture, none of it reused before eviction. The jump sits exactly where that working set leaves L3.
+
+Both sparse passes now hold the coordinates **feature-major** — `[c · L + i]` rather than a vector per
+cluster — so a row walks `nnz` contiguous runs of `L` doubles instead. The arithmetic is untouched and
+deliberately so: for a fixed cluster the row's terms are still accumulated in row order, which is why
+every label digest above is unchanged. Measured on the raw `method="kmeans"` path, seed 0:
+
+| `max_leaves` | before | after | |
+|---|---|---|---|
+| 128 | 0.169 s | 0.081 s | 2.09× |
+| 512 | 0.789 s | 0.315 s | 2.50× |
+| 1024 | 4.942 s | 0.840 s | **5.88×** |
+| 2048 | 12.764 s | 2.185 s | **5.84×** |
+
+The super-linear elbow is gone (1024 → 2048 now costs 2.60×, against 2.58× at the low end where the
+old layout was still cache-resident). The speedup is largest exactly where the old code fell out of
+cache, which is what makes the diagnosis a mechanism rather than a story.
+
+A `perf` profile taken between the two halves of the change is what kept it honest: after fixing the
+summarisation pass alone the fit was only 1.5× faster, and the profile put **65% of remaining samples
+in the row-labelling pass** and 6% in summarisation. The task named summarisation; the profile named
+labelling. Both have the same defect and both are fixed, and the 3.4× on the headline row is mostly
+the half the task did not ask for.
 - **Use a cosine head on the codes.** `method="kmeans"` on the same codes scores 0.014 against
   `spherical-kmeans`'s 0.152: the leading principal direction of a TF-IDF corpus is document length,
   and only an angular objective ignores it.
@@ -681,7 +723,7 @@ single runs by construction and fall back to a per-axis tolerance.
 
 ```
 ## quality — 8 win · 54 tie · 6 loss
-## speed   — 32 win · 1 tie · 5 loss
+## speed   — 33 win · 0 tie · 5 loss
 ## memory  — 30 win · 4 tie · 0 loss
 ```
 
@@ -689,7 +731,7 @@ single runs by construction and fall back to a per-axis tolerance.
 any cell got worse or vanished, and `--update` is the deliberate act of accepting a new board. The
 six quality losses are the `covtype` and `digits` rows discussed above, the raw-TF-IDF `20news` row,
 MNIST k-means, and the two `fast_hdbscan` cells; the five speed losses are the two FAISS cells and the
-three `20news` rows the sparse leader pass owns (task #71).
+three `20news` rows the sparse scans own — 3.4× and 1.5× closer after task #71, but still losses.
 
 **The ratchet fired on this edition, and it was right to.** Accepting the new board took one genuine
 demotion and six vanished pairings, listed here because the whole point of the file is that a board is
@@ -705,6 +747,16 @@ accepted deliberately rather than overwritten:
   survive under the new rival's name, which is why the speed column moved *up* (31 → 32 wins) in the
   same run that reported six disappearances. A pairing key that embeds the opponent cannot tell
   "we lost" from "the opponent changed", so the tool reports both and leaves the call here.
+- Task #71 moved the speed column to **33 win · 0 tie · 5 loss** and vanished two more pairings, both
+  re-namings rather than regressions. `results_sparse/speed/vs-best/20news` names the *fastest betula*
+  row in its key, and `betula-sparse` (6.57 s → 1.94 s) has overtaken `betula-nmf` (2.14 s) for that
+  slot, so the cell survives as `betula-sparse-vs-sklearn-svd` and is still a loss.
+  `results_sparse/memory/vs-best/20news` re-named for the opposite reason — the best non-betula RSS
+  moved from `sklearn-nmf` to `sklearn-svd` by **0.004 MB**, which is the pairing key being more
+  precise than the measurement. The one genuine promotion is `results_sparse/speed/vs-same/betula-nmf`
+  **tie → win**, and it is not ours: `betula-nmf` went 2.08 s → 2.14 s while `sklearn-nmf` went 2.19 s
+  → 2.42 s, so the margin re-opened because the rival got slower. Both sides sit inside the same
+  scikit-learn NMF call; treat the cell as noise in both directions.
 - Adding the `faiss-kmeans-matched` row **vanished** one more pairing the same way:
   `results_external/quality/vs-external/highdim/200000/…/betula-kmeans-vs-sklearn-kmeans`. The new
   row ties betula at ARI 1.000 and becomes the named rival for that cell, so the verdict survives as

@@ -128,7 +128,7 @@
   "results_scaling/speed/vs-same/50000/betula-gmm": "win",
   "results_scaling/speed/vs-same/50000/betula-gmm-full": "win",
   "results_scaling/speed/vs-same/50000/betula-kmeans": "win",
-  "results_sparse/memory/vs-best/20news/betula-sparse-vs-sklearn-nmf": "tie",
+  "results_sparse/memory/vs-best/20news/betula-sparse-vs-sklearn-svd": "tie",
   "results_sparse/memory/vs-same/20news/betula-nmf": "tie",
   "results_sparse/memory/vs-same/20news/betula-sparse": "tie",
   "results_sparse/memory/vs-same/20news/betula-svd": "tie",
@@ -136,8 +136,8 @@
   "results_sparse/quality/vs-same/20news/betula-nmf": "tie",
   "results_sparse/quality/vs-same/20news/betula-sparse": "loss",
   "results_sparse/quality/vs-same/20news/betula-svd": "win",
-  "results_sparse/speed/vs-best/20news/betula-nmf-vs-sklearn-svd": "loss",
-  "results_sparse/speed/vs-same/20news/betula-nmf": "tie",
+  "results_sparse/speed/vs-best/20news/betula-sparse-vs-sklearn-svd": "loss",
+  "results_sparse/speed/vs-same/20news/betula-nmf": "win",
   "results_sparse/speed/vs-same/20news/betula-sparse": "loss",
   "results_sparse/speed/vs-same/20news/betula-svd": "loss"
  }

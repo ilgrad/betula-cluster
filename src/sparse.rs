@@ -14,67 +14,127 @@
 //! inherits the expansion's caveat. The resulting micro-clusters are materialised to dense
 //! [`Spherical`] features once and handed to the ordinary Phase-3 heads.
 
-use crate::feature::Spherical;
+use crate::feature::{ClusterFeature, Spherical};
 
-/// A sparse-native spherical accumulator: weight `n`, coordinate sum `ΣX`, cached `‖ΣX‖²`, scatter `S`.
-struct SparseSpherical {
-    n: f64,
-    sumx: Vec<f64>,
-    sumx_sq: f64,
-    ssd: f64,
+/// The leader set, held **feature-major**: `sumx_t[c * cap + i]` is leader `i`'s coordinate sum for
+/// feature `c`. Weight, `‖ΣX‖²` and scatter stay leader-major, one small array each.
+///
+/// The obvious layout — a `Vec<f64>` of length `n_features` per leader — is what this replaces, and
+/// the reason is memory traffic rather than arithmetic. Scoring one row against `L` leaders touches
+/// `nnz` scattered entries in each of `L` separate `n_features`-long vectors: `L · nnz` cache lines
+/// pulled out of `L · n_features · 8` bytes of leader state, none of it reused before eviction. On
+/// the 20-newsgroups fixture that working set crosses L3 between 512 and 1024 leaders, and the fit
+/// time jumps **6× for a 2× budget** right there. Transposed, the same scoring walks `nnz` contiguous
+/// runs of `len` doubles, which is cache-resident and is an elementwise `axpy` rather than a float
+/// reduction — so, unlike the per-leader dot product, the compiler is free to vectorize it.
+///
+/// The arithmetic is unchanged and deliberately so: for a fixed leader the row's terms are still
+/// accumulated in row order, so every `dot`, and therefore every distance, absorption decision and
+/// scatter update, is bit-for-bit what the per-leader layout produced.
+struct LeaderSet {
+    n_features: usize,
+    /// Column capacity of `sumx_t`; the stride between consecutive features.
+    cap: usize,
+    /// Leaders in use, `len <= cap`.
+    len: usize,
+    sumx_t: Vec<f64>,
+    n: Vec<f64>,
+    sumx_sq: Vec<f64>,
+    ssd: Vec<f64>,
 }
 
-impl SparseSpherical {
-    fn new(dim: usize) -> Self {
+impl LeaderSet {
+    /// `hard_cap` is the most leaders that can ever exist, so the capacity never has to grow past it.
+    fn new(n_features: usize, hard_cap: usize) -> Self {
+        let cap = hard_cap.clamp(1, 16);
         Self {
-            n: 0.0,
-            sumx: vec![0.0; dim],
-            sumx_sq: 0.0,
-            ssd: 0.0,
+            n_features,
+            cap,
+            len: 0,
+            sumx_t: vec![0.0; n_features * cap],
+            n: Vec::new(),
+            sumx_sq: Vec::new(),
+            ssd: Vec::new(),
         }
     }
 
-    /// `⟨x, ΣX⟩` over the row's non-zeros.
-    fn dot(&self, idx: &[usize], val: &[f64]) -> f64 {
-        idx.iter().zip(val).map(|(&j, &v)| v * self.sumx[j]).sum()
-    }
-
-    /// Squared distance from the row `x` to this micro-cluster's centroid (`O(nnz)`).
-    fn dist2(&self, idx: &[usize], val: &[f64], x_sq: f64) -> f64 {
-        if self.n == 0.0 {
-            return x_sq;
-        }
-        let dot = self.dot(idx, val);
-        (x_sq - 2.0 * dot / self.n + self.sumx_sq / (self.n * self.n)).max(0.0)
-    }
-
-    /// Fold the sparse row `x` (`x_sq = ‖x‖²` precomputed) into the accumulator in `O(nnz)`.
-    fn push(&mut self, idx: &[usize], val: &[f64], x_sq: f64) {
-        if self.n == 0.0 {
-            for (&j, &v) in idx.iter().zip(val) {
-                self.sumx[j] = v;
+    /// `⟨x, ΣX_i⟩` for every leader `i`, written into `acc`.
+    fn dots(&self, idx: &[usize], val: &[f64], acc: &mut Vec<f64>) {
+        acc.clear();
+        acc.resize(self.len, 0.0);
+        for (&c, &v) in idx.iter().zip(val) {
+            let base = c * self.cap;
+            for (a, &s) in acc.iter_mut().zip(&self.sumx_t[base..base + self.len]) {
+                *a += v * s;
             }
-            self.sumx_sq = x_sq;
-            self.ssd = 0.0;
-            self.n = 1.0;
-            return;
         }
-        let dot = self.dot(idx, val);
-        // ‖x − μ‖² with μ = ΣX/n (expanded form — see the module note on its numerical trade-off).
-        let delta_sq = (x_sq - 2.0 * dot / self.n + self.sumx_sq / (self.n * self.n)).max(0.0);
-        let w_new = self.n + 1.0;
-        self.ssd += (self.n / w_new) * delta_sq; // Welford coefficient w·(1 − w/W') = n/(n+1)
-        self.sumx_sq += 2.0 * dot + x_sq; // ‖ΣX + x‖² = ‖ΣX‖² + 2⟨ΣX, x⟩ + ‖x‖²
-        for (&j, &v) in idx.iter().zip(val) {
-            self.sumx[j] += v;
-        }
-        self.n = w_new;
     }
 
-    /// Materialise into a dense spherical feature `(n, μ = ΣX/n, S)`.
-    fn into_spherical(self) -> Spherical<f64> {
-        let mean: Vec<f64> = self.sumx.iter().map(|&s| s / self.n).collect();
-        Spherical::from_moments(self.n, mean, self.ssd)
+    /// `‖x − μ_i‖²` from the already-computed `⟨x, ΣX_i⟩`, in the expanded `O(nnz)` form.
+    fn dist2(&self, i: usize, dot: f64, x_sq: f64) -> f64 {
+        let n = self.n[i];
+        debug_assert!(
+            n > 0.0,
+            "a leader is created by absorbing a row, so its weight is >= 1"
+        );
+        (x_sq - 2.0 * dot / n + self.sumx_sq[i] / (n * n)).max(0.0)
+    }
+
+    /// Widen the column capacity in place. `Vec::resize` on a multi-megabyte buffer is an `mremap`
+    /// rather than a copy, and re-striding backwards keeps every block's destination at or above its
+    /// source, so no second buffer is ever live and peak RSS is that of the final capacity alone.
+    fn grow(&mut self, hard_cap: usize) {
+        let new_cap = (self.cap * 2).min(hard_cap);
+        debug_assert!(new_cap > self.cap, "grow is only called below the hard cap");
+        self.sumx_t.resize(self.n_features * new_cap, 0.0);
+        for c in (0..self.n_features).rev() {
+            self.sumx_t
+                .copy_within(c * self.cap..c * self.cap + self.len, c * new_cap);
+            self.sumx_t[c * new_cap + self.len..(c + 1) * new_cap].fill(0.0);
+        }
+        self.cap = new_cap;
+    }
+
+    /// Seed a new leader from the row. The column is untouched since allocation, hence still zero.
+    fn push_new(&mut self, idx: &[usize], val: &[f64], x_sq: f64, hard_cap: usize) {
+        if self.len == self.cap {
+            self.grow(hard_cap);
+        }
+        let i = self.len;
+        for (&c, &v) in idx.iter().zip(val) {
+            self.sumx_t[c * self.cap + i] = v;
+        }
+        self.n.push(1.0);
+        self.sumx_sq.push(x_sq);
+        self.ssd.push(0.0);
+        self.len += 1;
+    }
+
+    /// Fold the row into leader `i`, given its already-computed `⟨x, ΣX_i⟩`.
+    fn push_into(&mut self, i: usize, idx: &[usize], val: &[f64], x_sq: f64, dot: f64) {
+        let n = self.n[i];
+        // ‖x − μ‖² with μ = ΣX/n (expanded form — see the module note on its numerical trade-off).
+        let delta_sq = (x_sq - 2.0 * dot / n + self.sumx_sq[i] / (n * n)).max(0.0);
+        let w_new = n + 1.0;
+        self.ssd[i] += (n / w_new) * delta_sq; // Welford coefficient w·(1 − w/W') = n/(n+1)
+        self.sumx_sq[i] += 2.0 * dot + x_sq; // ‖ΣX + x‖² = ‖ΣX‖² + 2⟨ΣX, x⟩ + ‖x‖²
+        for (&c, &v) in idx.iter().zip(val) {
+            self.sumx_t[c * self.cap + i] += v;
+        }
+        self.n[i] = w_new;
+    }
+
+    /// Materialise each leader into a dense spherical feature `(n, μ = ΣX/n, S)`.
+    fn into_features(self) -> Vec<Spherical<f64>> {
+        (0..self.len)
+            .map(|i| {
+                let n = self.n[i];
+                let mean: Vec<f64> = (0..self.n_features)
+                    .map(|c| self.sumx_t[c * self.cap + i] / n)
+                    .collect();
+                Spherical::from_moments(n, mean, self.ssd[i])
+            })
+            .collect()
     }
 }
 
@@ -95,53 +155,93 @@ pub fn summarize_sparse(
     threshold: f64,
     max_leaders: usize,
 ) -> Vec<Spherical<f64>> {
-    let mut leaders: Vec<SparseSpherical> = Vec::new();
+    // A leader is seeded by a row, so there can never be more of them than rows; taking the tighter
+    // of the two bounds keeps the transposed buffer from over-allocating on a short input.
+    let hard_cap = max_leaders.max(1).min(indptr.len() - 1);
+    let mut leaders = LeaderSet::new(n_features, hard_cap);
     let mut idx_buf: Vec<usize> = Vec::new();
+    let mut dots: Vec<f64> = Vec::new();
     for w in indptr.windows(2) {
         let (lo, hi) = (w[0] as usize, w[1] as usize);
         let val = &data[lo..hi];
         idx_buf.clear();
         idx_buf.extend(indices[lo..hi].iter().map(|&c| c as usize));
         let x_sq = norm_sq(val);
+        leaders.dots(&idx_buf, val, &mut dots);
         let mut best = usize::MAX;
         let mut bd = f64::INFINITY;
-        for (li, l) in leaders.iter().enumerate() {
-            let d = l.dist2(&idx_buf, val, x_sq);
+        for (li, &dot) in dots.iter().enumerate() {
+            let d = leaders.dist2(li, dot, x_sq);
             if d < bd {
                 bd = d;
                 best = li;
             }
         }
-        if best != usize::MAX && (bd <= threshold || leaders.len() >= max_leaders) {
-            leaders[best].push(&idx_buf, val, x_sq);
+        if best != usize::MAX && (bd <= threshold || leaders.len >= max_leaders) {
+            leaders.push_into(best, &idx_buf, val, x_sq, dots[best]);
         } else {
-            let mut l = SparseSpherical::new(n_features);
-            l.push(&idx_buf, val, x_sq);
-            leaders.push(l);
+            leaders.push_new(&idx_buf, val, x_sq, hard_cap);
         }
     }
-    leaders.into_iter().map(|l| l.into_spherical()).collect()
+    leaders.into_features()
 }
 
-/// Index of the micro-cluster nearest to a sparse row, given precomputed dense means and `‖μ‖²`.
-pub fn nearest_sparse(
-    means: &[Vec<f64>],
-    musq: &[f64],
-    idx: &[usize],
-    val: &[f64],
-    x_sq: f64,
-) -> usize {
-    let mut best = 0;
-    let mut bd = f64::INFINITY;
-    for (i, mean) in means.iter().enumerate() {
-        let dot: f64 = idx.iter().zip(val).map(|(&j, &v)| v * mean[j]).sum();
-        let d = (x_sq - 2.0 * dot + musq[i]).max(0.0);
-        if d < bd {
-            bd = d;
-            best = i;
+/// The micro-cluster centroids, held **feature-major** for the row-labelling pass:
+/// `means_t[c * len + i]` is centroid `i`'s coordinate for feature `c`, with `‖μ_i‖²` cached beside
+/// it.
+///
+/// Labelling is the same shape of scan as the leader pass in [`summarize_sparse`] and had the same
+/// defect: one dense `Vec<f64>` per centroid means a row pulls `len · nnz` scattered cache lines out
+/// of `len · n_features · 8` bytes. It is also where the call actually spends its time — a `perf`
+/// profile of the 20-newsgroups fit at `max_leaves = 2048` put **65% of samples in this pass** and
+/// 6% in summarisation. Transposed, one row walks `nnz` contiguous runs of `len` doubles.
+///
+/// Owning `‖μ‖²` next to the means it was derived from is the other half: the free function this
+/// replaces took the two as separate slices, and nothing could tell a caller they had to agree.
+pub struct SparseCentroids {
+    len: usize,
+    means_t: Vec<f64>,
+    musq: Vec<f64>,
+}
+
+impl SparseCentroids {
+    /// Transpose the micro-clusters' dense centroids once, for repeated row lookups.
+    pub fn from_features(micros: &[Spherical<f64>]) -> Self {
+        let len = micros.len();
+        let n_features = micros.first().map_or(0, |c| c.mean().len());
+        let mut means_t = vec![0.0; n_features * len];
+        let mut musq = Vec::with_capacity(len);
+        for (i, c) in micros.iter().enumerate() {
+            let mean = c.mean();
+            debug_assert_eq!(mean.len(), n_features, "micro-clusters share a dimension");
+            for (c, &v) in mean.iter().enumerate() {
+                means_t[c * len + i] = v;
+            }
+            musq.push(mean.iter().map(|v| v * v).sum());
         }
+        Self { len, means_t, musq }
     }
-    best
+
+    /// Index of the centroid nearest the sparse row `x`; equally near centroids keep the lowest index.
+    pub fn nearest(&self, idx: &[usize], val: &[f64], x_sq: f64) -> usize {
+        let mut dots = vec![0.0; self.len];
+        for (&c, &v) in idx.iter().zip(val) {
+            let base = c * self.len;
+            for (a, &m) in dots.iter_mut().zip(&self.means_t[base..base + self.len]) {
+                *a += v * m;
+            }
+        }
+        let mut best = 0;
+        let mut bd = f64::INFINITY;
+        for (i, &dot) in dots.iter().enumerate() {
+            let d = (x_sq - 2.0 * dot + self.musq[i]).max(0.0);
+            if d < bd {
+                bd = d;
+                best = i;
+            }
+        }
+        best
+    }
 }
 
 /// Upper bound on `n_features` for the sparse-native path. This path materialises a **dense** centroid
@@ -207,18 +307,24 @@ mod tests {
             (vec![1, 3], vec![4.0, 1.0]),
             (vec![0, 5], vec![2.0, 3.0]),
         ];
-        let mut sp = SparseSpherical::new(dim);
+        let mut set = LeaderSet::new(dim, 1);
+        let mut dots = Vec::new();
         let mut dense = Spherical::<f64>::new(dim);
-        for (idx, val) in &rows {
+        for (i, (idx, val)) in rows.iter().enumerate() {
             let x_sq = norm_sq(val);
-            sp.push(idx, val, x_sq);
+            if i == 0 {
+                set.push_new(idx, val, x_sq, 1);
+            } else {
+                set.dots(idx, val, &mut dots);
+                set.push_into(0, idx, val, x_sq, dots[0]);
+            }
             let mut d = vec![0.0; dim];
             for (&j, &v) in idx.iter().zip(val) {
                 d[j] = v;
             }
             dense.push(&d, 1.0);
         }
-        let got = sp.into_spherical();
+        let got = set.into_features().remove(0);
         assert!((got.weight() - dense.weight()).abs() < 1e-9);
         for (a, b) in got.mean().iter().zip(dense.mean()) {
             assert!((a - b).abs() < 1e-9, "mean {a} vs {b}");
@@ -274,16 +380,21 @@ mod tests {
         assert_eq!(total as i64, 200); // mass conserved despite the cap
     }
 
+    /// Micro-clusters carrying the given centroids; only the mean is read by `SparseCentroids`.
+    fn centroids(means: &[Vec<f64>]) -> SparseCentroids {
+        let micros: Vec<Spherical<f64>> = means
+            .iter()
+            .map(|m| Spherical::from_moments(1.0, m.clone(), 0.0))
+            .collect();
+        SparseCentroids::from_features(&micros)
+    }
+
     #[test]
     fn nearest_routes_to_closest_micro() {
-        let means = vec![vec![1.0, 0.0, 0.0], vec![0.0, 0.0, 5.0]];
-        let musq: Vec<f64> = means
-            .iter()
-            .map(|m| m.iter().map(|v| v * v).sum())
-            .collect();
+        let c = centroids(&[vec![1.0, 0.0, 0.0], vec![0.0, 0.0, 5.0]]);
         // a row close to micro 1 (large value on axis 2)
-        assert_eq!(nearest_sparse(&means, &musq, &[2], &[4.5], 4.5 * 4.5), 1);
-        assert_eq!(nearest_sparse(&means, &musq, &[0], &[1.2], 1.2 * 1.2), 0);
+        assert_eq!(c.nearest(&[2], &[4.5], 4.5 * 4.5), 1);
+        assert_eq!(c.nearest(&[0], &[1.2], 1.2 * 1.2), 0);
     }
 
     #[test]
@@ -296,13 +407,15 @@ mod tests {
         let idx = [0usize, 1usize];
         let rows = [[b, b], [b + 1.0, b - 1.0]];
 
-        let mut sp = SparseSpherical::new(dim);
+        let mut set = LeaderSet::new(dim, 1);
+        let mut dots = Vec::new();
         let mut dense = Spherical::<f64>::new(dim);
-        for r in &rows {
-            sp.push(&idx, r, norm_sq(r));
-            dense.push(r, 1.0); // cancellation-free Welford reference
-        }
-        let sparse = sp.into_spherical();
+        set.push_new(&idx, &rows[0], norm_sq(&rows[0]), 1);
+        dense.push(&rows[0], 1.0); // cancellation-free Welford reference
+        set.dots(&idx, &rows[1], &mut dots);
+        set.push_into(0, &idx, &rows[1], norm_sq(&rows[1]), dots[0]);
+        dense.push(&rows[1], 1.0);
+        let sparse = set.into_features().remove(0);
         let true_ssd = 1.0; // mean [b+0.5, b−0.5]; each point contributes 0.5 ⇒ Σ = 1.0
 
         for (a, d) in sparse.mean().iter().zip(dense.mean()) {
@@ -421,19 +534,17 @@ mod tests {
     fn nearest_sparse_expands_the_squared_distance_and_keeps_the_first_tie() {
         // ‖x − μ‖² = ‖x‖² − 2⟨x, μ⟩ + ‖μ‖². Row x = (1, 0, 2) against μ0 = (1, 0, 0) and
         // μ1 = (0, 0, 2): d0 = 5 − 2·1 + 1 = 4, d1 = 5 − 2·4 + 4 = 1, so μ1 wins.
-        let means = vec![vec![1.0, 0.0, 0.0], vec![0.0, 0.0, 2.0]];
-        let musq = vec![1.0, 4.0];
         let (idx, val) = (vec![0usize, 2], vec![1.0, 2.0]);
-        assert_eq!(nearest_sparse(&means, &musq, &idx, &val, 5.0), 1);
+        let c = centroids(&[vec![1.0, 0.0, 0.0], vec![0.0, 0.0, 2.0]]);
+        assert_eq!(c.nearest(&idx, &val, 5.0), 1);
 
         // Exact tie: μ0 = (1,0,2) and μ1 = (1,0,2) are both at distance 0; the first must win.
-        let means = vec![vec![1.0, 0.0, 2.0], vec![1.0, 0.0, 2.0]];
-        let musq = vec![5.0, 5.0];
-        assert_eq!(nearest_sparse(&means, &musq, &idx, &val, 5.0), 0);
+        let c = centroids(&[vec![1.0, 0.0, 2.0], vec![1.0, 0.0, 2.0]]);
+        assert_eq!(c.nearest(&idx, &val, 5.0), 0);
 
         // A single candidate is returned whatever the distance.
-        let means = vec![vec![9.0, 9.0, 9.0]];
-        assert_eq!(nearest_sparse(&means, &[243.0], &idx, &val, 5.0), 0);
+        let c = centroids(&[vec![9.0, 9.0, 9.0]]);
+        assert_eq!(c.nearest(&idx, &val, 5.0), 0);
     }
 
     #[test]
@@ -441,22 +552,47 @@ mod tests {
         // Two rows folded in: ΣX = (3, 0, 4), n = 2, so μ = (1.5, 0, 2) and ‖ΣX‖² = 25.
         // A third row x = (1, 0, 0) is at ‖x‖² − 2⟨ΣX, x⟩/n + ‖ΣX‖²/n² = 1 − 3 + 6.25 = 4.25,
         // which is exactly ‖x − μ‖² = 0.25 + 4.
-        let mut acc = SparseSpherical::new(3);
-        acc.push(&[0, 2], &[1.0, 2.0], 5.0);
-        acc.push(&[0, 2], &[2.0, 2.0], 8.0);
-        let d = acc.dist2(&[0], &[1.0], 1.0);
+        let mut set = LeaderSet::new(3, 4);
+        let mut dots = Vec::new();
+        set.push_new(&[0, 2], &[1.0, 2.0], 5.0, 4);
+        set.dots(&[0, 2], &[2.0, 2.0], &mut dots);
+        set.push_into(0, &[0, 2], &[2.0, 2.0], 8.0, dots[0]);
+        set.dots(&[0], &[1.0], &mut dots);
+        let d = set.dist2(0, dots[0], 1.0);
         assert!((d - 4.25).abs() < 1e-12, "dist2 = {d}");
 
-        // An empty accumulator has no centroid, so the distance is the row's own norm.
-        let empty = SparseSpherical::new(3);
-        assert!((empty.dist2(&[0], &[1.0], 1.0) - 1.0).abs() < 1e-12);
+        // There is no empty-accumulator case to test any more: a leader exists only once a row has
+        // been absorbed into it, so weight >= 1 is structural rather than a branch in `dist2`.
 
         // The scatter matches the dense Welford value: two points 0.5 either side of the mean in
         // dim 0 give ssd = 0.5.
-        let sph = acc.into_spherical();
+        let sph = set.into_features().remove(0);
         assert!((sph.weight() - 2.0).abs() < 1e-12);
         assert!((sph.mean()[0] - 1.5).abs() < 1e-12);
         assert!((sph.ssd() - 0.5).abs() < 1e-9, "ssd = {}", sph.ssd());
+    }
+
+    #[test]
+    fn widening_the_leader_capacity_moves_every_column_intact() {
+        // `LeaderSet` starts at 16 columns and re-strides in place as leaders arrive, which is the
+        // one piece of index arithmetic in this module that a wrong bound would silently corrupt
+        // rather than crash: a stale stride reads a *neighbouring leader's* coordinate, which is a
+        // finite, plausible number. Forty single-entry rows at threshold 0 cross the doubling three
+        // times, and each leader's mean must still be the basis vector that seeded it.
+        let n = 40usize;
+        let data: Vec<f64> = (0..n).map(|i| (i + 1) as f64).collect();
+        let indices: Vec<i64> = (0..n as i64).collect();
+        let indptr: Vec<i64> = (0..=n as i64).collect();
+
+        let leaders = summarize_sparse(&data, &indices, &indptr, n, 0.0, n);
+        assert_eq!(leaders.len(), n, "distinct rows were merged at threshold 0");
+        for (i, l) in leaders.iter().enumerate() {
+            assert_eq!(l.weight(), 1.0);
+            for (c, &m) in l.mean().iter().enumerate() {
+                let want = if c == i { (i + 1) as f64 } else { 0.0 };
+                assert_eq!(m, want, "leader {i} feature {c} is {m}, want {want}");
+            }
+        }
     }
 
     #[test]

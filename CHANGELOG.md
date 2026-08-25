@@ -464,6 +464,37 @@ All notable changes to this project are documented here. The format follows
   the tree routinely settles below its cap and at `n < max_leaves` the cap never binds at all.
 
 ### Changed
+- **The sparse path stores micro-cluster coordinates feature-major, and the 20-newsgroups fit is
+  3.4× faster with every label bit-identical.** Both sparse passes — the leader summarisation and the
+  row labelling — held each micro-cluster's coordinates as its own dense `Vec<f64>` of length
+  `n_features`. Scoring one row against `L` of them therefore pulled `L · nnz` scattered cache lines
+  out of `L · n_features · 8` bytes of state, none of it reused before eviction: 32 MB at `L = 2048`
+  on the 20news fixture. The symptom was an elbow in the leaf-budget curve exactly where that working
+  set leaves L3 — doubling `max_leaves` from 512 to 1024 cost **6.3×**, not 2×.
+
+  Transposed to `[c · L + i]`, a row instead walks `nnz` contiguous runs of `L` doubles, which is both
+  cache-resident and an elementwise `axpy` the compiler may vectorize — unlike the per-cluster dot
+  product, which is a float reduction and so may not be reassociated. The arithmetic is deliberately
+  untouched: for a fixed cluster the row's terms are still accumulated in row order, so every
+  distance, absorption decision and scatter update is bit-for-bit what the old layout produced. That
+  is measured, not asserted — all twenty label digests across five budgets, three seeds and both
+  pipelines are identical between the two builds.
+
+  Measured single-threaded on 18 846 × 2 000 TF-IDF: `betula-sparse` **6.57 s → 1.94 s**,
+  `betula-svd` **5.12 s → 3.31 s**, and at `max_leaves = 2048` on the raw `kmeans` path
+  **12.76 s → 2.19 s (5.8×)**. The super-linear elbow is gone. Peak RSS is unchanged (332 MB): the
+  transposed buffer is bounded by `min(max_leaves, n_rows) · n_features`, the same worst case as one
+  vector per cluster, and it widens in place rather than through a second live copy.
+
+  A `perf` profile is what made this complete rather than half-done. After fixing the summarisation
+  pass named by the task the fit was only 1.5× faster, and the profile put **65% of the remaining
+  samples in the row-labelling pass** against 6% in summarisation. The task named one half; the
+  profile named the other.
+
+  **Breaking (Rust API):** `sparse::nearest_sparse(&means, &musq, …)` is replaced by
+  `sparse::SparseCentroids::from_features(&micros).nearest(…)`. The free function took the centroids
+  and their cached `‖μ‖²` as two independent slices that had to agree, and nothing could enforce it;
+  the type derives one from the other. The Python API is unchanged.
 - **The FAISS baseline is now measured in two configurations, and the "quality-per-second" hedge is
   withdrawn.** `bench/external_baselines.py` timed `faiss.Kmeans` at its defaults, which is not a
   like-for-like fit: `max_points_per_centroid` defaults to 256, so at `k = 8` FAISS trains on **2 048

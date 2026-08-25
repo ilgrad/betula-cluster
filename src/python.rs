@@ -31,7 +31,7 @@ use crate::distance::{
 use crate::feature::{ClusterFeature, Diagonal, FdSketch, Full, Spherical};
 use crate::mixture::Mixture;
 use crate::model::{Method, Model, Rule, assignment_rule, fit_head, refine_centers};
-use crate::sparse::{nearest_sparse, summarize_sparse};
+use crate::sparse::{SparseCentroids, summarize_sparse};
 use crate::stats::chi2_quantile;
 use crate::stream::{DbStream, DenStream};
 use crate::topology::{Lens, MapperGraph, MapperParams, mapper};
@@ -4007,17 +4007,13 @@ fn fit_predict_sparse<'py>(
             Some(rule) => rule.label_csr(data, indices, indptr, n_features),
             None => {
                 let micro_labels = out.labels;
-                let means: Vec<Vec<f64>> = micros.iter().map(|c| c.mean().to_vec()).collect();
-                let musq: Vec<f64> = means
-                    .iter()
-                    .map(|mu| mu.iter().map(|v| v * v).sum())
-                    .collect();
+                let centroids = SparseCentroids::from_features(&micros);
                 map_rows(indptr.len() - 1, |r| {
                     let (lo, hi) = (indptr[r] as usize, indptr[r + 1] as usize);
                     let val = &data[lo..hi];
                     let idx: Vec<usize> = indices[lo..hi].iter().map(|&c| c as usize).collect();
                     let x_sq: f64 = val.iter().map(|v| v * v).sum();
-                    micro_labels[nearest_sparse(&means, &musq, &idx, val, x_sq)]
+                    micro_labels[centroids.nearest(&idx, val, x_sq)]
                 })
             }
         };
