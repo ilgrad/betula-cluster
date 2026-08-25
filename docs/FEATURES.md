@@ -152,6 +152,18 @@ A capability-by-capability reference. For runnable code see [`USAGE.md`](USAGE.m
   category-count histogram per categorical attribute (its mode is the categorical centroid). Distance
   is $\|\Delta_\text{numeric}\|^2 + \gamma \cdot (\text{categorical mismatch})$, with $\gamma$ auto-set to Huang's heuristic. Rows are
   leader-summarized into bounded mixed micro-clusters first, so it scales like the rest of the library.
+- **Bregman geometry** (`BregmanBetula`) — the CF-tree and three heads over an arbitrary Bregman
+  divergence instead of squared Euclidean: `divergence="kl"` for distributions, `"itakura-saito"` for
+  spectra (scale-invariant), `"logistic"` for probabilities, `"euclidean"` for the case that reduces
+  to the shipped estimator. The feature is $(n, \mu, S_\varphi)$ with $S_\varphi$ the Bregman
+  *information*, and the merge is unchanged — the arithmetic mean is the right-sided Bregman centroid
+  for **every** $\varphi$ (Banerjee et al. 2005), so the tree machinery carries over untouched.
+  Heads: `method="kmeans"` (Bregman k-means), `"ward"` (Bregman-Ward HAC on an Anderberg driver,
+  because reducibility fails from $d \ge 2$ — [`docs/adr/002`](adr/002-bregman-ward-anderberg.md)),
+  `"mixture"` (soft mixture by variational EM, with `beta` the inverse dispersion, measured in nats).
+  A **separate estimator** rather than a keyword on `Betula`, so the meaningless combinations cannot
+  be written at all — [`docs/adr/004`](adr/004-bregman-public-api.md). The domain (`x > 0` for KL and
+  Itakura–Saito, `x ∈ (0,1)` for logistic) is validated at the Python boundary.
 - Python bindings: abi3 wheel, zero-copy numpy (one-shot `fit_predict` takes **float32 or
   float64** — `f32` data is clustered in `f32`, halving memory on embeddings), GIL released during
   compute, plus a scikit-learn-style `Betula` estimator with `partial_fit` (float32 or float64 — an

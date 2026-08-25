@@ -3214,3 +3214,134 @@ def test_a_per_dimension_feature_does_not_warn_about_isotropic_scatter():
         betula_cluster.fit_predict(
             x, 3, method="kmeans", feature="spherical", max_leaves=200, threshold=0.0, seed=0
         )
+
+
+# ───────────────────────────── BregmanBetula (ADR 004) ─────────────────────────────
+
+
+@pytest.fixture(scope="module")
+def simplex_blobs():
+    """Three groups of positive vectors: the domain KL and Itakura-Saito are defined on."""
+    rng = np.random.default_rng(11)
+    bases = np.array([[6.0, 1.0, 1.0], [1.0, 6.0, 1.0], [1.0, 1.0, 6.0]])
+    xs, ys = [], []
+    for c, b in enumerate(bases):
+        xs.append(b * rng.lognormal(0.0, 0.12, (300, 3)))
+        ys += [c] * 300
+    return np.vstack(xs).astype(np.float64), np.array(ys)
+
+
+@pytest.mark.parametrize("divergence", ["euclidean", "kl", "itakura-saito"])
+@pytest.mark.parametrize("method", ["kmeans", "ward"])
+def test_bregman_betula_recovers_positive_groups(simplex_blobs, divergence, method):
+    x, y = simplex_blobs
+    est = betula_cluster.BregmanBetula(
+        n_clusters=3, divergence=divergence, method=method, max_leaves=200, seed=0
+    )
+    labels = est.fit_predict(x)
+    assert labels.shape == (len(x),)
+    assert ari(y, labels) > 0.9
+
+
+def test_the_euclidean_divergence_reduces_to_the_shipped_estimator(blobs):
+    """ADR 004 keeps `divergence="euclidean"` precisely so this identity is testable: squared
+    Euclidean *is* a Bregman divergence, so the two estimators must agree where they overlap."""
+    x, _ = blobs
+    a = betula_cluster.BregmanBetula(
+        n_clusters=4, divergence="euclidean", method="kmeans", max_leaves=300, seed=0
+    ).fit_predict(x)
+    b = betula_cluster.Betula(
+        n_clusters=4, feature="spherical", method="kmeans", threshold=0.0, max_leaves=300, seed=0
+    ).fit_predict(x)
+    assert ari(a, b) > 0.99
+
+
+def test_the_mixture_head_is_soft_and_beta_sharpens_it(simplex_blobs):
+    x, y = simplex_blobs
+    est = betula_cluster.BregmanBetula(
+        n_clusters=3, divergence="kl", method="mixture", beta=40.0, max_leaves=200, seed=0
+    )
+    labels = est.fit_predict(x)
+    assert ari(y, labels) > 0.9
+    assert est.n_leaves_ > 0
+    assert np.array_equal(est.labels_, labels)
+
+
+def test_beta_is_rejected_rather_than_ignored_outside_the_mixture(simplex_blobs):
+    """Silently ignoring a parameter that does nothing is how users conclude it did something."""
+    x, _ = simplex_blobs
+    est = betula_cluster.BregmanBetula(n_clusters=3, method="kmeans", beta=5.0)
+    with pytest.raises(ValueError, match="inverse dispersion"):
+        est.fit_predict(x)
+
+
+@pytest.mark.parametrize(
+    ("divergence", "bad", "match"),
+    [
+        ("kl", 0.0, "> 0"),
+        ("itakura-saito", -1.0, "> 0"),
+        ("logistic", 1.5, r"in \(0, 1\)"),
+        ("logistic", 0.0, r"in \(0, 1\)"),
+    ],
+)
+def test_the_domain_is_checked_before_the_engine_sees_it(divergence, bad, match):
+    """`BregmanCf::push` only debug-asserts its domain, so a release build would return NaN
+    instead of failing. The check has to live at the boundary, and it has to name the value."""
+    x = np.full((40, 3), 0.5)
+    x[7, 2] = bad
+    est = betula_cluster.BregmanBetula(n_clusters=2, divergence=divergence, max_leaves=20)
+    with pytest.raises(ValueError, match=match) as err:
+        est.fit_predict(x)
+    assert "row 7 column 2" in str(err.value)
+
+
+def test_the_logistic_divergence_clusters_probabilities(blobs):
+    del blobs
+    rng = np.random.default_rng(3)
+    lo = rng.beta(2.0, 8.0, (250, 4))
+    hi = rng.beta(8.0, 2.0, (250, 4))
+    x = np.vstack([lo, hi])
+    y = np.array([0] * 250 + [1] * 250)
+    est = betula_cluster.BregmanBetula(
+        n_clusters=2, divergence="logistic", method="kmeans", max_leaves=120, seed=0
+    )
+    assert ari(y, est.fit_predict(x)) > 0.9
+
+
+def test_bregman_betula_rejects_unknown_keywords_and_reports_before_fitting(simplex_blobs):
+    x, _ = simplex_blobs
+    est = betula_cluster.BregmanBetula(n_clusters=3)
+    with pytest.raises(ValueError, match="unknown divergence"):
+        est.set_params(divergence="hellinger").fit_predict(x)
+    with pytest.raises(ValueError, match="unknown method"):
+        est.set_params(divergence="kl", method="hdbscan").fit_predict(x)
+    with pytest.raises(ValueError, match="Invalid parameter"):
+        est.set_params(feature="full")
+
+
+def test_bregman_betula_validates_its_own_arguments(simplex_blobs):
+    x, _ = simplex_blobs
+    with pytest.raises(ValueError, match="n_clusters"):
+        betula_cluster.BregmanBetula(n_clusters=0).fit_predict(x)
+    with pytest.raises(ValueError, match="beta must be positive"):
+        betula_cluster.BregmanBetula(n_clusters=3, method="mixture", beta=float("inf")).fit_predict(
+            x
+        )
+    with pytest.raises(ValueError, match="at least n_clusters rows"):
+        betula_cluster.BregmanBetula(n_clusters=8).fit_predict(x[:3])
+
+
+def test_bregman_betula_is_a_scikit_learn_style_estimator(simplex_blobs):
+    x, _ = simplex_blobs
+    est = betula_cluster.BregmanBetula(n_clusters=3, divergence="kl", max_leaves=150)
+    assert est.get_params()["divergence"] == "kl"
+    assert "divergence='kl'" in repr(est)
+    with pytest.raises(AttributeError, match="not fitted"):
+        _ = est.labels_
+    with pytest.raises(AttributeError, match="not fitted"):
+        _ = est.n_leaves_
+    assert est.fit(x) is est
+    assert est.labels_.shape == (len(x),)
+    est.set_params(n_clusters=2)
+    with pytest.raises(AttributeError, match="not fitted"):
+        _ = est.labels_

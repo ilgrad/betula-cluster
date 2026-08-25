@@ -18,11 +18,16 @@ use std::ffi::CString;
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
 
+use crate::bregman::{
+    BregmanCentroid, BregmanCf, BregmanDivergence, BregmanIncrease, ItakuraSaito, KullbackLeibler,
+    Logistic, SquaredEuclidean,
+};
 use crate::clustering::hdbscan::hdbscan_with;
 use crate::clustering::nmf::{Projection, ProjectionKind, ProjectionSpec};
 use crate::clustering::scalespace::scale_space;
 use crate::clustering::{
-    ConstraintError, Linkage, MixedCf, cop_kmeans, kprototypes, nearest_micro, summarize_mixed,
+    ConstraintError, Linkage, MixedCf, bregman_agglomerative, bregman_em, bregman_kmeans,
+    cop_kmeans, kprototypes, nearest_micro, summarize_mixed,
 };
 use crate::distance::{
     AverageIntercluster, AverageIntracluster, CFDistance, CentroidEuclidean, CentroidManhattan,
@@ -3654,6 +3659,282 @@ impl KpModel {
     }
 }
 
+// ──────────────────────── Bregman geometry: a second estimator ────────────────────────
+
+/// Which Bregman geometry the tree and heads work in. Names match the `divergence=` keyword.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DivKind {
+    Euclidean,
+    Kl,
+    ItakuraSaito,
+    Logistic,
+}
+
+impl DivKind {
+    fn parse(name: &str) -> PyResult<Self> {
+        match name {
+            "euclidean" => Ok(DivKind::Euclidean),
+            "kl" => Ok(DivKind::Kl),
+            "itakura-saito" => Ok(DivKind::ItakuraSaito),
+            "logistic" => Ok(DivKind::Logistic),
+            other => Err(PyValueError::new_err(format!(
+                "unknown divergence {other:?}: expected \"euclidean\", \"kl\", \
+                 \"itakura-saito\" or \"logistic\""
+            ))),
+        }
+    }
+
+    /// The domain `φ` is finite on, as `(low, high, low_open, high_open)`; `None` = all of `ℝ`.
+    /// `BregmanCf::push` only `debug_assert!`s this, so a release build would return `NaN` instead
+    /// of failing — the check has to happen here, before any value reaches Rust's hot path.
+    fn domain(self) -> Option<(f64, f64, bool, bool)> {
+        match self {
+            DivKind::Euclidean => None,
+            DivKind::Kl | DivKind::ItakuraSaito => Some((0.0, f64::INFINITY, true, false)),
+            DivKind::Logistic => Some((0.0, 1.0, true, true)),
+        }
+    }
+
+    fn validate(self, flat: &[f64], dim: usize) -> PyResult<()> {
+        let Some((lo, hi, lo_open, hi_open)) = self.domain() else {
+            return Ok(());
+        };
+        for (i, &v) in flat.iter().enumerate() {
+            let ok = v.is_finite()
+                && (if lo_open { v > lo } else { v >= lo })
+                && (if hi_open { v < hi } else { v <= hi });
+            if !ok {
+                let bound = if hi.is_finite() {
+                    format!("in ({lo}, {hi})")
+                } else {
+                    format!("> {lo}")
+                };
+                return Err(PyValueError::new_err(format!(
+                    "divergence requires every value {bound}, but row {} column {} is {v}",
+                    i / dim,
+                    i % dim
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Which head runs over the Bregman leaves.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BregmanHead {
+    KMeans,
+    Ward,
+    Mixture,
+}
+
+impl BregmanHead {
+    fn parse(name: &str) -> PyResult<Self> {
+        match name {
+            "kmeans" => Ok(BregmanHead::KMeans),
+            "ward" => Ok(BregmanHead::Ward),
+            "mixture" => Ok(BregmanHead::Mixture),
+            other => Err(PyValueError::new_err(format!(
+                "unknown method {other:?}: expected \"kmeans\", \"ward\" or \"mixture\""
+            ))),
+        }
+    }
+}
+
+/// Build a Bregman CF-tree and label every row, monomorphised over one divergence.
+#[allow(clippy::too_many_arguments)]
+fn bregman_run<B: BregmanDivergence<f64>>(
+    flat: &[f64],
+    n: usize,
+    dim: usize,
+    k: usize,
+    head: BregmanHead,
+    threshold: f64,
+    branching: usize,
+    leaf_cap: usize,
+    max_leaves: usize,
+    max_iter: usize,
+    n_init: usize,
+    beta: f64,
+    seed: u64,
+) -> (Vec<i64>, usize) {
+    let mut tree: CFTree<f64, BregmanCf<f64, B>, BregmanCentroid<B>, BregmanIncrease<B>> =
+        CFTree::new(
+            dim,
+            branching,
+            leaf_cap,
+            threshold,
+            max_leaves,
+            BregmanCentroid::<B>::new(),
+            BregmanIncrease::<B>::new(),
+        );
+    for i in 0..n {
+        tree.insert(&flat[i * dim..(i + 1) * dim]);
+    }
+    let leaves = tree.num_leaves();
+    let micro: Vec<usize> = match head {
+        BregmanHead::KMeans => {
+            bregman_kmeans::<f64, B>(tree.leaf_features(), k, max_iter, n_init, seed).labels
+        }
+        BregmanHead::Ward => bregman_agglomerative::<f64, B>(tree.leaf_features(), k).labels,
+        BregmanHead::Mixture => {
+            bregman_em::<f64, B>(tree.leaf_features(), k, beta, max_iter, seed).labels
+        }
+    };
+    let labels = map_rows(n, |i| {
+        micro[tree.nearest_entry(&flat[i * dim..(i + 1) * dim])] as i64
+    });
+    (labels, leaves)
+}
+
+/// Clusterer for data whose natural geometry is a **Bregman divergence** rather than squared
+/// Euclidean: KL on the simplex, Itakura–Saito on spectra, logistic loss on probabilities.
+///
+/// A separate estimator rather than a `divergence=` keyword on [`Betula`], because the combinations
+/// that would be legal to write there are not legal to run: a Gaussian head reading a Bregman
+/// information as a variance, a χ² gate applying a variance prior to a quantity that is not one.
+/// See `docs/adr/004-bregman-public-api.md`.
+#[pyclass(name = "BregmanBetula", module = "betula_cluster._core")]
+struct PyBregmanBetula {
+    n_clusters: usize,
+    divergence: String,
+    method: String,
+    beta: f64,
+    threshold: f64,
+    branching: usize,
+    leaf_cap: usize,
+    max_leaves: usize,
+    max_iter: usize,
+    n_init: usize,
+    seed: u64,
+    labels: Option<Vec<i64>>,
+    leaves: usize,
+}
+
+#[pymethods]
+impl PyBregmanBetula {
+    #[new]
+    #[pyo3(signature = (
+        n_clusters = 8, divergence = "kl".to_string(), method = "kmeans".to_string(), beta = 1.0,
+        threshold = 0.0, branching = 50, leaf_cap = 50, max_leaves = 2048, max_iter = 100,
+        n_init = 4, seed = 0
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        n_clusters: usize,
+        divergence: String,
+        method: String,
+        beta: f64,
+        threshold: f64,
+        branching: usize,
+        leaf_cap: usize,
+        max_leaves: usize,
+        max_iter: usize,
+        n_init: usize,
+        seed: u64,
+    ) -> Self {
+        Self {
+            n_clusters,
+            divergence,
+            method,
+            beta,
+            threshold,
+            branching,
+            leaf_cap,
+            max_leaves,
+            max_iter,
+            n_init,
+            seed,
+            labels: None,
+            leaves: 0,
+        }
+    }
+
+    /// Construction params as a dict (read by the Python wrapper's scikit-learn `get_params`).
+    fn get_params<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
+        let d = pyo3::types::PyDict::new(py);
+        d.set_item("n_clusters", self.n_clusters)?;
+        d.set_item("divergence", self.divergence.clone())?;
+        d.set_item("method", self.method.clone())?;
+        d.set_item("beta", self.beta)?;
+        d.set_item("threshold", self.threshold)?;
+        d.set_item("branching", self.branching)?;
+        d.set_item("leaf_cap", self.leaf_cap)?;
+        d.set_item("max_leaves", self.max_leaves)?;
+        d.set_item("max_iter", self.max_iter)?;
+        d.set_item("n_init", self.n_init)?;
+        d.set_item("seed", self.seed)?;
+        Ok(d)
+    }
+
+    /// Leaf count of the fitted tree.
+    #[getter]
+    fn n_leaves(&self) -> usize {
+        self.leaves
+    }
+
+    /// Fit and return the training-row labels.
+    fn fit_predict<'py>(
+        &mut self,
+        py: Python<'py>,
+        data: &Bound<'py, PyAny>,
+    ) -> PyResult<Bound<'py, PyArray1<i64>>> {
+        let div = DivKind::parse(&self.divergence)?;
+        let head = BregmanHead::parse(&self.method)?;
+        if self.n_clusters < 1 {
+            return Err(PyValueError::new_err("n_clusters must be >= 1"));
+        }
+        if !(self.beta > 0.0 && self.beta.is_finite()) {
+            return Err(PyValueError::new_err("beta must be positive and finite"));
+        }
+        let (flat, n, dim) = flat_as::<f64>(data, false)?;
+        if n < self.n_clusters {
+            return Err(PyValueError::new_err(
+                "need at least n_clusters rows to fit",
+            ));
+        }
+        div.validate(&flat, dim)?;
+        let (k, thr, br, lc, ml, mi, ni, beta, seed) = (
+            self.n_clusters,
+            self.threshold,
+            self.branching,
+            self.leaf_cap,
+            self.max_leaves,
+            self.max_iter,
+            self.n_init,
+            self.beta,
+            self.seed,
+        );
+        let (labels, leaves) = py.detach(|| match div {
+            DivKind::Euclidean => bregman_run::<SquaredEuclidean>(
+                &flat, n, dim, k, head, thr, br, lc, ml, mi, ni, beta, seed,
+            ),
+            DivKind::Kl => bregman_run::<KullbackLeibler>(
+                &flat, n, dim, k, head, thr, br, lc, ml, mi, ni, beta, seed,
+            ),
+            DivKind::ItakuraSaito => bregman_run::<ItakuraSaito>(
+                &flat, n, dim, k, head, thr, br, lc, ml, mi, ni, beta, seed,
+            ),
+            DivKind::Logistic => {
+                bregman_run::<Logistic>(&flat, n, dim, k, head, thr, br, lc, ml, mi, ni, beta, seed)
+            }
+        });
+        self.leaves = leaves;
+        self.labels = Some(labels.clone());
+        Ok(labels.into_pyarray(py))
+    }
+
+    /// Training-row labels from the last fit.
+    #[getter]
+    fn labels<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray1<i64>>> {
+        let l = self
+            .labels
+            .as_ref()
+            .ok_or_else(|| PyValueError::new_err("call fit_predict() first"))?;
+        Ok(l.clone().into_pyarray(py))
+    }
+}
+
 /// k-prototypes clusterer for **mixed numeric + categorical** data (Huang, 1997). `categorical` lists
 /// the integer-coded categorical column indices; the remaining columns are numeric. Rows are summarised
 /// into bounded mixed micro-clusters by a flat leader pass, then k-prototypes clusters those. `f64`.
@@ -4116,6 +4397,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(fit_predict, m)?)?;
     m.add_function(wrap_pyfunction!(fit_predict_sparse, m)?)?;
     m.add_class::<Betula>()?;
+    m.add_class::<PyBregmanBetula>()?;
     m.add_class::<PyDenStream>()?;
     m.add_class::<PyWindowStream>()?;
     m.add_class::<PyDbStream>()?;

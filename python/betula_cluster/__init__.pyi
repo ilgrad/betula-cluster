@@ -12,6 +12,7 @@ from .tuning import tune as tune
 
 __all__ = [
     "Betula",
+    "BregmanBetula",
     "ConsensusResult",
     "Coreset",
     "DbStream",
@@ -375,6 +376,32 @@ class DbStream:
     def microcluster_weights_(self) -> NDArray[np.float64]: ...
     @property
     def microcluster_radii_(self) -> NDArray[np.float64]: ...
+
+class BregmanBetula:
+    """CF-tree clustering in a Bregman geometry rather than squared Euclidean."""
+
+    def __init__(
+        self,
+        n_clusters: int = ...,
+        divergence: str = ...,
+        method: str = ...,
+        beta: float = ...,
+        threshold: float = ...,
+        branching: int = ...,
+        leaf_cap: int = ...,
+        max_leaves: int = ...,
+        max_iter: int = ...,
+        n_init: int = ...,
+        seed: int = ...,
+    ) -> None: ...
+    def get_params(self, deep: bool = ...) -> dict[str, Any]: ...
+    def set_params(self, **params: Any) -> BregmanBetula: ...
+    def fit(self, X: _FloatArray, y: Any = ...) -> BregmanBetula: ...
+    def fit_predict(self, X: _FloatArray, y: Any = ...) -> NDArray[np.int64]: ...
+    @property
+    def labels_(self) -> NDArray[np.int64]: ...
+    @property
+    def n_leaves_(self) -> int: ...
 
 class KPrototypes:
     """k-prototypes clustering of mixed numeric + categorical data (Huang, 1997)."""

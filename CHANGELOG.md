@@ -7,6 +7,28 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **`BregmanBetula`: the CF-tree in a Bregman geometry, as a second estimator.** Lane A shipped the
+  Rust side in this release — `BregmanCf`, `D4_φ`, Bregman k-means / Ward / EM — with no Python
+  surface, because the wiring is a type-1 door. It is now decided and recorded in
+  [`docs/adr/004-bregman-public-api.md`](https://github.com/ilgrad/betula-cluster/blob/main/docs/adr/004-bregman-public-api.md):
+  a separate class, not a `divergence=` keyword on `Betula`.
+
+  The reason is that `feature=` names a *covariance model* and every one of its values summarises the
+  same Euclidean geometry, while a Bregman feature names the **geometry**. Collapsing the two axes
+  makes meaningless combinations writable — `feature="kl"` with `method="gmm"` hands a Gaussian head
+  a Bregman information to read as a variance, `absorb="chi2"` applies a variance prior to a quantity
+  that is not one. With a second class they are not rejected; they cannot be typed.
+
+  `BregmanBetula(divergence=…, method=…, beta=…)` takes `divergence` in
+  `{"euclidean", "kl", "itakura-saito", "logistic"}` and `method` in `{"kmeans", "ward", "mixture"}`.
+  `beta` is the mixture's inverse dispersion in **nats of divergence**, and it is *rejected* rather
+  than ignored under the other two heads. The domain each `φ` needs — `x > 0` for KL and
+  Itakura–Saito, `x ∈ (0, 1)` for logistic — is validated at the Python boundary and the error names
+  the offending row and column, because `BregmanCf::push` only `debug_assert!`s it and a release
+  build would otherwise return `NaN`. `divergence="euclidean"` is kept deliberately: squared
+  Euclidean *is* a Bregman divergence, so it reduces to the shipped path, which is what makes the
+  agreement between the two estimators a test rather than a claim.
+
 - **`balance`: a mass-balanced leaf budget, for the data where the geometric one fails.** The
   absorption gate is purely geometric — one global radius, raised by the rebuild until the leaf count
   fits — and a single radius cannot serve two densities. Once it passes a dense region's diameter that

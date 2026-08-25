@@ -17,6 +17,7 @@ import numpy as np
 # `_core` is the compiled Rust extension — opaque to source-level type checkers; the public API is
 # typed via `__init__.pyi` (validated against the runtime by `mypy.stubtest`).
 from ._core import Betula as _CoreBetula  # type: ignore
+from ._core import BregmanBetula as _CoreBregmanBetula  # type: ignore
 from ._core import DbStream as _CoreDbStream  # type: ignore
 from ._core import DdSketch, KllSketch, fit_predict  # type: ignore
 from ._core import DenStream as _CoreDenStream  # type: ignore
@@ -32,6 +33,7 @@ except PackageNotFoundError:  # pragma: no cover - source tree without install m
 
 __all__ = [
     "Betula",
+    "BregmanBetula",
     "ConsensusResult",
     "Coreset",
     "DbStream",
@@ -1697,3 +1699,134 @@ class KPrototypes:
 
     def __repr__(self):
         return f"KPrototypes(n_clusters={self.n_clusters}, categorical={list(self.categorical)})"
+
+
+_BREGMAN_PARAMS = (
+    "n_clusters",
+    "divergence",
+    "method",
+    "beta",
+    "threshold",
+    "branching",
+    "leaf_cap",
+    "max_leaves",
+    "max_iter",
+    "n_init",
+    "seed",
+)
+
+_BREGMAN_DOMAIN = {
+    "kl": "every value must be > 0",
+    "itakura-saito": "every value must be > 0",
+    "logistic": "every value must be in (0, 1)",
+}
+
+
+class BregmanBetula:
+    """CF-tree clustering in a **Bregman geometry** rather than squared Euclidean.
+
+    A second estimator rather than a ``divergence=`` keyword on :class:`Betula`, because the two
+    axes are orthogonal and collapsing them makes meaningless combinations writable — a Gaussian
+    head reading a Bregman information as if it were a variance, a chi-squared gate applying a
+    variance prior to a quantity that is not one. See ``docs/adr/004-bregman-public-api.md``.
+
+    ``divergence`` picks the geometry: ``"kl"`` for distributions on the simplex,
+    ``"itakura-saito"`` for spectra (scale-invariant), ``"logistic"`` for probabilities, and
+    ``"euclidean"`` for the squared-Euclidean case, which is a Bregman divergence too and makes
+    this estimator reduce to the shipped one.
+
+    ``method`` picks the head over the leaves: ``"kmeans"`` (Bregman k-means, Banerjee et al.),
+    ``"ward"`` (Bregman-Ward HAC by Anderberg — see ``docs/adr/002``), or ``"mixture"`` (soft
+    Bregman mixture by variational EM).
+
+    ``beta`` is the mixture's **inverse dispersion**: the model is
+    ``p(x | k) ∝ exp(−beta · d_φ(x, μ_k)) · b_φ(x)``, and ``beta = 1`` is Banerjee's soft Bregman
+    clustering exactly. Separation is measured in *nats of divergence*, not in coordinates — under
+    a scale-invariant divergence like Itakura–Saito, centres that look far apart can be a fraction
+    of a nat apart, and the mixture will correctly report that they overlap. Raise ``beta`` until
+    the responsibilities are as sharp as the application needs. It is rejected rather than ignored
+    when ``method`` is not ``"mixture"``.
+
+    The domain is checked here, before any value reaches the engine: KL and Itakura–Saito need
+    ``x > 0``, logistic needs ``x`` in ``(0, 1)``. ``float64``.
+    """
+
+    def __init__(
+        self,
+        n_clusters=8,
+        divergence="kl",
+        method="kmeans",
+        beta=1.0,
+        threshold=0.0,
+        branching=50,
+        leaf_cap=50,
+        max_leaves=2048,
+        max_iter=100,
+        n_init=4,
+        seed=0,
+    ):
+        self.n_clusters = n_clusters
+        self.divergence = divergence
+        self.method = method
+        self.beta = beta
+        self.threshold = threshold
+        self.branching = branching
+        self.leaf_cap = leaf_cap
+        self.max_leaves = max_leaves
+        self.max_iter = max_iter
+        self.n_init = n_init
+        self.seed = seed
+        self._est = None
+
+    def get_params(self, deep=True):
+        return {k: getattr(self, k) for k in _BREGMAN_PARAMS}
+
+    def set_params(self, **params):
+        for key, value in params.items():
+            if key not in _BREGMAN_PARAMS:
+                raise ValueError(
+                    f"Invalid parameter {key!r} for estimator BregmanBetula. "
+                    f"Valid parameters are: {sorted(_BREGMAN_PARAMS)}."
+                )
+            setattr(self, key, value)
+        self._est = None
+        return self
+
+    def _build(self):
+        if self.method != "mixture" and self.beta != 1.0:
+            raise ValueError(
+                f"beta is the mixture's inverse dispersion and does nothing under "
+                f"method={self.method!r}; drop it or set method='mixture'."
+            )
+        return _CoreBregmanBetula(**self.get_params())
+
+    def _require_fit(self):
+        if self._est is None:
+            raise AttributeError("This BregmanBetula instance is not fitted yet.")
+        return self._est
+
+    def fit(self, X, y=None):
+        self.fit_predict(X)
+        return self
+
+    def fit_predict(self, X, y=None):
+        est = self._build()
+        labels = est.fit_predict(X)
+        self._est = est
+        return labels
+
+    @property
+    def labels_(self):
+        """Training-row labels from the last fit."""
+        return self._require_fit().labels
+
+    @property
+    def n_leaves_(self):
+        """Leaf count of the fitted tree — how much of ``max_leaves`` the geometry used."""
+        return self._require_fit().n_leaves
+
+    def __repr__(self):
+        return (
+            f"BregmanBetula(n_clusters={self.n_clusters}, divergence={self.divergence!r}, "
+            f"method={self.method!r})"
+        )
