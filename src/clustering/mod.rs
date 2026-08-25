@@ -33,7 +33,7 @@ pub use gmm_toeplitz::{
     GmmToeplitz, gmm_toeplitz, gmm_toeplitz_auto, gmm_toeplitz_full, gmm_toeplitz_full_auto,
     gmm_toeplitz_gs, gmm_toeplitz_gs_auto,
 };
-pub use hdbscan::{Hdbscan, hdbscan};
+pub use hdbscan::{Hdbscan, Selection, hdbscan, hdbscan_selected};
 pub use kmeans::{ConstraintError, KMeans, cop_kmeans, kmeans, xmeans};
 pub use kprototypes::{MixedCf, kprototypes, nearest_micro, summarize_mixed};
 pub use mppca::{Mppca, mppca, mppca_auto};

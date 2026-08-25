@@ -6,6 +6,12 @@
 //! of mass), labelling low-stability points as noise (`-1`). This finds non-convex /
 //! variable-density clusters and chooses the number of clusters automatically.
 //!
+//! Flattening that hierarchy is a separate decision from building it, and [`Selection`] carries the
+//! two rules on offer: excess of mass at a minimum cluster size the caller names, or PLSCAN, which
+//! reads the size off the hierarchy's own leaf-cluster barcode. Which one is better depends on how
+//! the clusters differ — measured, and stated with its regime, in the `PLSCAN` section of
+//! `bench/RESULTS.md`.
+//!
 //! Working precision is `f64` for the graph/topology math regardless of `R`.
 
 use crate::feature::ClusterFeature;
@@ -17,6 +23,35 @@ pub struct Hdbscan {
     pub labels: Vec<i64>,
     /// Number of clusters found.
     pub n_clusters: usize,
+    /// Minimum cluster size the flattening used, in points. Echoes the argument under
+    /// [`Selection::ExcessOfMass`]; under [`Selection::Persistence`] it is the size the run *chose*,
+    /// and is the diagnostic worth logging — everything else about that arm follows from it.
+    pub selected_size: f64,
+}
+
+/// How a flat clustering is read off the mutual-reachability hierarchy.
+///
+/// The two arms differ in what they do with the minimum cluster size, not in how the hierarchy is
+/// built: both see the same mutual-reachability MST and the same core distances.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Selection {
+    /// HDBSCAN\*'s excess of mass at a **fixed** minimum cluster size, counted in points
+    /// (Campello, Moulavi & Sander 2015).
+    ExcessOfMass {
+        /// Smallest admissible cluster, in points.
+        min_cluster_size: usize,
+    },
+    /// PLSCAN: the minimum cluster size is **chosen, not given** (Bot, McInnes & Aerts,
+    /// *Persistent Multiscale Density-based Clustering*, arXiv:2512.16558).
+    ///
+    /// Raising the minimum cluster size never changes where the hierarchy merges, only which
+    /// branches are pruned, so one dendrogram already contains every clustering the parameter can
+    /// produce. Each segment therefore has a size interval `(s_min, s_max]` over which it is a
+    /// *leaf* cluster, and the total length of those intervals alive at a given size rates that
+    /// size. The run reports the clustering at the size that maximises it.
+    ///
+    /// `min_samples` is the floor of the search, matching the paper's `m_c ≥ k`.
+    Persistence,
 }
 
 struct UnionFind {
@@ -271,17 +306,43 @@ pub fn hdbscan_with<R: Real, C: ClusterFeature<R>>(
     graph_degree: usize,
     seed: u64,
 ) -> Hdbscan {
+    hdbscan_selected(
+        features,
+        min_samples,
+        Selection::ExcessOfMass { min_cluster_size },
+        graph_degree,
+        seed,
+    )
+}
+
+/// [`hdbscan_with`], with the flattening rule chosen explicitly — see [`Selection`].
+///
+/// Everything up to the mutual-reachability MST is shared, so the two rules are genuinely comparable:
+/// they differ only in how the same hierarchy is cut.
+pub fn hdbscan_selected<R: Real, C: ClusterFeature<R>>(
+    features: &[C],
+    min_samples: usize,
+    selection: Selection,
+    graph_degree: usize,
+    seed: u64,
+) -> Hdbscan {
     let m = features.len();
+    let size_of = |s: Selection| match s {
+        Selection::ExcessOfMass { min_cluster_size } => min_cluster_size as f64,
+        Selection::Persistence => min_samples as f64,
+    };
     if m == 0 {
         return Hdbscan {
             labels: vec![],
             n_clusters: 0,
+            selected_size: size_of(selection),
         };
     }
     if m == 1 {
         return Hdbscan {
             labels: vec![0],
             n_clusters: 1,
+            selected_size: size_of(selection),
         };
     }
 
@@ -306,7 +367,141 @@ pub fn hdbscan_with<R: Real, C: ClusterFeature<R>>(
         mst_over_graph(m, &adj, &mreach)
     };
 
-    from_mst(m, &mass, mst, min_cluster_size)
+    match selection {
+        Selection::ExcessOfMass { min_cluster_size } => from_mst(m, &mass, mst, min_cluster_size),
+        Selection::Persistence => from_mst_persistence(m, &mass, mst, min_samples as f64),
+    }
+}
+
+/// The size interval `(s_min, s_max]` over which each dendrogram segment is a **leaf cluster**.
+///
+/// Reading it off one dendrogram is the whole trick, and it rests on a monotonicity: raising the
+/// minimum cluster size never moves a merge, it only prunes branches that fail to reach the size.
+/// So a segment `c` under a split of `p` into `(l, r)` exists exactly while
+/// `m_c ≤ min(mass(l), mass(r))` — above that the split is not admitted and `c` is absorbed into
+/// `p` — and it is a *leaf* once every split inside it has likewise stopped being admitted, which is
+/// `max` over its own split threshold and its children's. That `max` is monotone up the tree, so the
+/// root's `s_min` is the global maximum; the root is capped there and consequently never a leaf
+/// cluster, which is the same convention as the excess-of-mass arm's "the root is never selected".
+///
+/// Segments with `s_min ≥ s_max` are leaf clusters at no size at all and drop out of everything below.
+fn leaf_barcode(m: usize, d: &Dendrogram) -> (Vec<f64>, Vec<f64>) {
+    let total = d.children.len();
+    let mut s_min = vec![0.0f64; total];
+    let mut s_max = vec![f64::INFINITY; total];
+    for nd in m..=d.root {
+        let (l, r) = d.children[nd];
+        let split = d.node_mass[l].min(d.node_mass[r]);
+        s_max[l] = split;
+        s_max[r] = split;
+        // A single feature never splits, so its `s_min` stays at zero: a leaf heavy enough to carry
+        // the minimum size on its own is a cluster on its own, which weighted leaves make reachable
+        // and unit-weight points do not.
+        s_min[nd] = split.max(s_min[l]).max(s_min[r]);
+    }
+    s_max[d.root] = s_min[d.root];
+    (s_min, s_max)
+}
+
+/// Total leaf-cluster persistence at every size worth testing.
+///
+/// Only sizes where a segment is born or dies can be local maxima of the total, so the candidates
+/// are the barcode's own endpoints. A segment alive on `[s_min, s_max)` contributes its whole
+/// lifetime `s_max − s_min` at every one of them, accumulated through a difference array.
+fn persistence_trace(
+    root: usize,
+    s_min: &[f64],
+    s_max: &[f64],
+    floor: f64,
+) -> (Vec<f64>, Vec<f64>) {
+    let mut cuts: Vec<f64> = Vec::with_capacity(2 * (root + 1));
+    for nd in 0..=root {
+        // `floor` bounds the search, not the barcode: a size below it is not on offer, so a segment's
+        // lifetime is scored from the floor up. That clamp is what makes a single feature behave the
+        // way the paper's points do — on unit weights `s_max ≤ 1 < floor` and it drops out entirely.
+        if s_min[nd].max(floor) < s_max[nd] {
+            cuts.push(s_min[nd].max(floor));
+            cuts.push(s_max[nd]);
+        }
+    }
+    cuts.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    cuts.dedup();
+    if cuts.is_empty() {
+        return (cuts, Vec::new());
+    }
+    // `(s_min, s_max]`: the first candidate strictly above `s_min`, the first strictly above `s_max`.
+    let after = |v: f64| cuts.partition_point(|&c| c <= v);
+    let mut diff = vec![0.0f64; cuts.len() + 1];
+    for nd in 0..=root {
+        let birth = s_min[nd].max(floor);
+        if birth < s_max[nd] {
+            let p = s_max[nd] - birth;
+            diff[after(birth)] += p;
+            diff[after(s_max[nd])] -= p;
+        }
+    }
+    let mut trace = Vec::with_capacity(cuts.len());
+    let mut acc = 0.0;
+    for &d in &diff[..cuts.len()] {
+        acc += d;
+        trace.push(acc);
+    }
+    (cuts, trace)
+}
+
+/// Turn the mutual-reachability MST into labels by [`Selection::Persistence`].
+fn from_mst_persistence(
+    m: usize,
+    mass: &[f64],
+    mst: Vec<(f64, usize, usize)>,
+    floor: f64,
+) -> Hdbscan {
+    let d = dendrogram(m, mass, mst);
+    let (s_min, s_max) = leaf_barcode(m, &d);
+    let (cuts, trace) = persistence_trace(d.root, &s_min, &s_max, floor);
+
+    // Ties go to the smallest size, i.e. the finer clustering: a tie means two thresholds rate the
+    // hierarchy equally well, and the coarser one is the one that has already thrown structure away.
+    let Some(cut) = trace
+        .iter()
+        .enumerate()
+        .fold(None::<(usize, f64)>, |best, (i, &t)| match best {
+            Some((_, b)) if b >= t => best,
+            _ => Some((i, t)),
+        })
+        .map(|(i, _)| cuts[i])
+    else {
+        // No segment is a leaf cluster at any size — a hierarchy with nothing to flatten.
+        return Hdbscan {
+            labels: vec![-1; m],
+            n_clusters: 0,
+            selected_size: floor,
+        };
+    };
+
+    // Leaf clusters at `cut` are disjoint by construction — a leaf has no surviving descendant — so
+    // labelling is one downward pass: a selected segment names a cluster, everything below inherits,
+    // and anything reaching a feature without passing one is noise. Merge ids increase with distance,
+    // so descending ids visits every parent before its children.
+    let mut node_label = vec![-1i64; d.children.len()];
+    let mut next_label = 0i64;
+    for nd in (0..=d.root).rev() {
+        if s_min[nd] < cut && cut <= s_max[nd] {
+            node_label[nd] = next_label;
+            next_label += 1;
+        }
+        if nd >= m {
+            let (l, r) = d.children[nd];
+            node_label[l] = node_label[nd];
+            node_label[r] = node_label[nd];
+        }
+    }
+
+    Hdbscan {
+        labels: node_label[..m].to_vec(),
+        n_clusters: next_label as usize,
+        selected_size: cut,
+    }
 }
 
 /// Prim's MST over the complete graph — `O(m²)` edge weights, the exact path.
@@ -347,13 +542,16 @@ fn prim_complete(m: usize, weight: &impl Fn(usize, usize) -> f64) -> Vec<(f64, u
 
 /// Turn the mutual-reachability MST into labels: single-linkage dendrogram, condensation by
 /// mass-weighted stability, then excess-of-mass selection.
-fn from_mst(
-    m: usize,
-    mass: &[f64],
-    mut mst: Vec<(f64, usize, usize)>,
-    min_cluster_size: usize,
-) -> Hdbscan {
-    // single-linkage dendrogram: leaves 0..m, merges m..2m-1
+/// Single-linkage dendrogram over the mutual-reachability MST: ids `0..m` are the features, ids
+/// `m..` the merges, in increasing merge distance — so a node's id always exceeds its children's.
+struct Dendrogram {
+    children: Vec<(usize, usize)>,
+    node_dist: Vec<f64>,
+    node_mass: Vec<f64>,
+    root: usize,
+}
+
+fn dendrogram(m: usize, mass: &[f64], mut mst: Vec<(f64, usize, usize)>) -> Dendrogram {
     let total = 2 * m;
     let mut children: Vec<(usize, usize)> = vec![(usize::MAX, usize::MAX); total];
     let mut node_dist = vec![0.0f64; total];
@@ -374,7 +572,27 @@ fn from_mst(
         let r = uf.union(ra, rb);
         comp_node[r] = id;
     }
-    let root = next - 1;
+    Dendrogram {
+        children,
+        node_dist,
+        node_mass,
+        root: next - 1,
+    }
+}
+
+fn from_mst(
+    m: usize,
+    mass: &[f64],
+    mst: Vec<(f64, usize, usize)>,
+    min_cluster_size: usize,
+) -> Hdbscan {
+    let Dendrogram {
+        children,
+        node_dist,
+        node_mass,
+        root,
+    } = dendrogram(m, mass, mst);
+    let total = children.len();
 
     // condense + mass-weighted stability
     let lam = |nd: usize| -> f64 {
@@ -490,6 +708,7 @@ fn from_mst(
     Hdbscan {
         labels,
         n_clusters: next_label as usize,
+        selected_size: min_cluster_size as f64,
     }
 }
 
@@ -497,7 +716,7 @@ fn from_mst(
 mod tests {
     use super::*;
     use crate::clustering::rng::SplitMix64;
-    use crate::clustering::testutil::{ari, grid_micros, two_moons};
+    use crate::clustering::testutil::{ari, blobs, grid_micros, two_moons};
     use crate::feature::Spherical;
 
     #[test]
@@ -1113,6 +1332,226 @@ mod tests {
             for &(_, a, b) in &mst {
                 assert_ne!(uf.find(a), uf.find(b), "the MST has a cycle");
                 uf.union(a, b);
+            }
+        }
+    }
+
+    /// Blobs whose sizes span an order of magnitude, summarised at grid cell `cell`. One minimum
+    /// cluster size cannot cover that range, which is the regime the persistence arm exists for.
+    fn uneven(seed: u64, cell: f64) -> (Vec<Spherical<f64>>, Vec<usize>, Vec<usize>) {
+        let mut rng = SplitMix64::new(seed);
+        let sizes = [400usize, 200, 70, 25];
+        let centres = [[0.0, 0.0], [14.0, 0.0], [7.0, 12.0], [21.0, 12.0]];
+        let mut pts = Vec::new();
+        let mut truth = Vec::new();
+        for (c, (&n, ctr)) in sizes.iter().zip(centres.iter()).enumerate() {
+            for _ in 0..n {
+                pts.push(vec![ctr[0] + 0.9 * rng.gauss(), ctr[1] + 0.9 * rng.gauss()]);
+                truth.push(c);
+            }
+        }
+        let (micros, assign) = grid_micros(&pts, cell);
+        (micros, assign, truth)
+    }
+
+    /// Four clusters of equal size but spreads from 0.4 to 3.2 — the variable-density regime, where a
+    /// single minimum cluster size is the classic weak spot of excess of mass.
+    fn uneven_density(seed: u64, cell: f64) -> (Vec<Spherical<f64>>, Vec<usize>, Vec<usize>) {
+        let mut rng = SplitMix64::new(seed);
+        let spreads = [0.4f64, 0.8, 1.6, 3.2];
+        let centres = [[0.0, 0.0], [16.0, 0.0], [8.0, 16.0], [26.0, 16.0]];
+        let mut pts = Vec::new();
+        let mut truth = Vec::new();
+        for (c, (&sd, ctr)) in spreads.iter().zip(centres.iter()).enumerate() {
+            for _ in 0..175 {
+                pts.push(vec![ctr[0] + sd * rng.gauss(), ctr[1] + sd * rng.gauss()]);
+                truth.push(c);
+            }
+        }
+        let (micros, assign) = grid_micros(&pts, cell);
+        (micros, assign, truth)
+    }
+
+    fn mst_of(micros: &[Spherical<f64>], min_samples: usize) -> (usize, Vec<f64>, Dendrogram) {
+        let m = micros.len();
+        let mass: Vec<f64> = micros.iter().map(ClusterFeature::weight).collect();
+        let mu: Vec<Vec<f64>> = micros.iter().map(|f| f.mean().to_vec()).collect();
+        let dist = |i: usize, j: usize| crate::kernels::sq_euclidean(&mu[i], &mu[j]).sqrt();
+        let core = core_distances(m, min_samples, &mass, dist);
+        let mst = prim_complete(m, &|i, j| core[i].max(core[j]).max(dist(i, j)));
+        let d = dendrogram(m, &mass, mst);
+        (m, mass, d)
+    }
+
+    /// Independent re-derivation of "which segments are leaf clusters at minimum size `t`": prune the
+    /// dendrogram directly. A split is admitted only when both sides carry `t` points; otherwise the
+    /// cluster follows the surviving side and keeps the identity of the node it entered on. The
+    /// clusters that never split are the leaf clusters. The barcode claims to answer this for every
+    /// `t` at once, off one traversal, which is the whole reason it exists.
+    fn reference_leaf_clusters(m: usize, d: &Dendrogram, t: f64) -> Vec<usize> {
+        let mut out = Vec::new();
+        let mut stack = vec![d.root];
+        while let Some(top) = stack.pop() {
+            let mut nd = top;
+            loop {
+                if nd < m {
+                    out.push(top);
+                    break;
+                }
+                let (l, r) = d.children[nd];
+                let (ml, mr) = (d.node_mass[l], d.node_mass[r]);
+                if ml >= t && mr >= t {
+                    stack.push(l);
+                    stack.push(r);
+                    break;
+                } else if ml >= t {
+                    nd = l;
+                } else if mr >= t {
+                    nd = r;
+                } else {
+                    out.push(top);
+                    break;
+                }
+            }
+        }
+        out.sort_unstable();
+        out
+    }
+
+    #[test]
+    fn the_leaf_barcode_answers_for_every_size_what_pruning_answers_for_one() {
+        for seed in [7u64, 11, 23] {
+            let (micros, _, _) = uneven(seed, 0.5);
+            let (m, _, d) = mst_of(&micros, 3);
+            let (s_min, s_max) = leaf_barcode(m, &d);
+            for t in 1..=700 {
+                let t = t as f64;
+                let mut want = reference_leaf_clusters(m, &d, t);
+                // The top-level cluster is the whole dataset and is never a cluster of its own —
+                // the same convention the excess-of-mass arm applies to its root.
+                want.retain(|&nd| nd != d.root);
+                let got: Vec<usize> = (0..=d.root)
+                    .filter(|&nd| s_min[nd] < t && t <= s_max[nd])
+                    .collect();
+                assert_eq!(got, want, "seed {seed}, minimum cluster size {t}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_persistence_arm_takes_no_minimum_cluster_size_and_still_finds_the_blobs() {
+        let mut rng = SplitMix64::new(7);
+        let centres = [[0.0, 0.0], [10.0, 0.0], [5.0, 9.0], [16.0, 9.0]];
+        let (pts, truth) = blobs(&mut rng, 200, &centres, 0.7);
+        let (micros, assign) = grid_micros(&pts, 0.5);
+        for min_samples in [3usize, 10, 40] {
+            let res = hdbscan_selected(&micros, min_samples, Selection::Persistence, 0, 0);
+            assert_eq!(res.n_clusters, 4, "min_samples = {min_samples}");
+            let labels: Vec<usize> = assign
+                .iter()
+                .map(|&i| (res.labels[i] + 1) as usize)
+                .collect();
+            assert!(
+                ari(&labels, &truth) > 0.99,
+                "min_samples = {min_samples}: ARI = {}",
+                ari(&labels, &truth)
+            );
+            assert!(
+                res.selected_size >= min_samples as f64,
+                "the chosen size must respect its floor"
+            );
+        }
+    }
+
+    #[test]
+    fn the_persistence_arm_answers_the_degenerate_inputs() {
+        let empty: Vec<Spherical<f64>> = Vec::new();
+        let res = hdbscan_selected(&empty, 3, Selection::Persistence, 0, 0);
+        assert_eq!(res.n_clusters, 0);
+        assert!(res.labels.is_empty());
+
+        let mut one = Spherical::<f64>::new(2);
+        one.push(&[0.0, 0.0], 1.0);
+        let res = hdbscan_selected(std::slice::from_ref(&one), 3, Selection::Persistence, 0, 0);
+        assert_eq!(res.labels, vec![0]);
+
+        // Two features: the only merge is the root, which is never a cluster, so everything is noise
+        // rather than a spurious pair.
+        let mut two = one.clone();
+        two.push(&[5.0, 5.0], 1.0);
+        let pair = [one, two];
+        let res = hdbscan_selected(&pair, 3, Selection::Persistence, 0, 0);
+        assert_eq!(res.n_clusters, 0);
+        assert_eq!(res.labels, vec![-1, -1]);
+    }
+
+    #[test]
+    fn selected_size_reports_the_argument_under_excess_of_mass_and_the_choice_under_persistence() {
+        let (micros, _, _) = uneven(7, 0.5);
+        let eom = hdbscan_selected(
+            &micros,
+            3,
+            Selection::ExcessOfMass {
+                min_cluster_size: 17,
+            },
+            0,
+            0,
+        );
+        assert_eq!(eom.selected_size, 17.0);
+        let per = hdbscan_selected(&micros, 3, Selection::Persistence, 0, 0);
+        assert_ne!(
+            per.selected_size, 3.0,
+            "the floor is a floor, not the answer"
+        );
+    }
+
+    /// The measurement behind the `PLSCAN` section of `bench/RESULTS.md`. Not a test — run it with
+    /// `cargo test --lib measure_persistence_against_excess_of_mass -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn measure_persistence_against_excess_of_mass() {
+        type Fixture = fn(u64, f64) -> (Vec<Spherical<f64>>, Vec<usize>, Vec<usize>);
+        let sweep = [3usize, 5, 10, 15, 25, 40, 60, 100];
+        let fixtures: [(&str, Fixture); 2] = [("size", uneven), ("density", uneven_density)];
+        println!("fixture  cell  leaves  mass  |  EOM mean  spread  |  persistence mean  spread");
+        for (tag, make) in fixtures {
+            for cell in [0.02f64, 0.1, 0.25, 0.5, 1.0] {
+                for seed in [7u64, 11, 23, 31, 47] {
+                    let (micros, assign, truth) = make(seed, cell);
+                    let mass = micros.iter().map(ClusterFeature::weight).sum::<f64>()
+                        / micros.len() as f64;
+                    let score = |sel: &dyn Fn(usize) -> Hdbscan| -> (f64, f64) {
+                        let a: Vec<f64> = sweep
+                            .iter()
+                            .map(|&ms| {
+                                let r = sel(ms);
+                                let l: Vec<usize> =
+                                    assign.iter().map(|&i| (r.labels[i] + 1) as usize).collect();
+                                ari(&l, &truth)
+                            })
+                            .collect();
+                        let hi = a.iter().cloned().fold(f64::MIN, f64::max);
+                        let lo = a.iter().cloned().fold(f64::MAX, f64::min);
+                        (a.iter().sum::<f64>() / a.len() as f64, hi - lo)
+                    };
+                    let (em, es) = score(&|ms| {
+                        hdbscan_selected(
+                            &micros,
+                            ms,
+                            Selection::ExcessOfMass {
+                                min_cluster_size: ms,
+                            },
+                            0,
+                            0,
+                        )
+                    });
+                    let (pm, ps) =
+                        score(&|ms| hdbscan_selected(&micros, ms, Selection::Persistence, 0, 0));
+                    println!(
+                        "{tag:8} {cell:4}  {:5}  {mass:4.2}  |  {em:.3}  {es:.3}  |  {pm:.3}  {ps:.3}   (seed {seed})",
+                        micros.len()
+                    );
+                }
             }
         }
     }

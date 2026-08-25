@@ -1255,6 +1255,58 @@ head finds structure there that anti-correlates with the cover-type labels, whic
 the head on that data, not about the selector; `k = 1` was never the better answer, only the emptier
 one. Prefer `hdbscan` or `kmeans` on `covtype`.
 
+## PLSCAN: the minimum cluster size is worth choosing when clusters differ in density, not in size (task #86)
+
+`Selection::Persistence` (Rust API) replaces HDBSCAN\*'s fixed `min_cluster_size` with the rule from
+Bot, McInnes & Aerts, *Persistent Multiscale Density-based Clustering*, arXiv:2512.16558. The trick it
+rests on is a monotonicity: raising the minimum cluster size never moves a merge, it only prunes
+branches that fail to reach the size. One dendrogram therefore already contains every clustering the
+parameter can produce, and each segment has a size interval `(s_min, s_max]` over which it is a *leaf*
+cluster. Summing those lifetimes rates a candidate size; the run reports the clustering at the argmax.
+
+Measured with
+`cargo test --lib measure_persistence_against_excess_of_mass -- --ignored --nocapture`. Two fixture
+families of 695 points and four clusters, each summarised at five grid resolutions so the mean leaf
+mass sweeps from 1 point (the raw-point regime the paper measures in) to ~9; `min_samples` swept over
+`{3, 5, 10, 15, 25, 40, 60, 100}` with the excess-of-mass arm tied to `min_cluster_size = min_samples`,
+as the paper ties them; medians of seeds 7/11/23/31/47. **spread** is the ARI range across that
+`min_samples` sweep — the paper's own claim is that its arm has less of it.
+
+| fixture | leaf mass | EOM ARI | EOM spread | persistence ARI | persistence spread |
+|---|---:|---:|---:|---:|---:|
+| sizes 400/200/70/25 | 1.00 | **0.979** | 0.156 | 0.862 | 0.157 |
+| ” | 1.84 | **0.998** | **0.015** | 0.862 | 0.567 |
+| ” | 8.80 | **0.998** | **0.015** | 0.483 | 0.863 |
+| spreads 0.4/0.8/1.6/3.2 | 1.01 | 0.959 | 0.154 | **0.988** | **0.050** |
+| ” | 1.49 | 0.972 | 0.148 | **0.988** | **0.047** |
+| ” | 3.91 | 0.989 | 0.047 | 0.989 | 0.047 |
+
+Over all 25 cells per family: on **density** imbalance the persistence arm wins 14 and loses **0**
+(11 exact ties), and its `min_samples` spread is smaller in the same 14 and never larger. On **size**
+imbalance it wins 3 and loses 22, with the spread worse in 20. The paper's insensitivity claim is
+real, and it is a claim about the density axis.
+
+**The CF tree has already bought part of it.** Read the `leaf mass` column down each family. On the
+density fixture the two arms *converge* as leaves get heavier — identical in every seed at mass 3.9 —
+because a leaf of `w` points cannot express a cluster finer than `w`, which is the same smoothing the
+minimum cluster size was being tuned for. So the summary is doing the job the parameter search would
+have done, and the search has less left to win. On the size fixture the opposite happens: excess of
+mass locks onto ARI 0.998 with spread 0.015 from mass 1.8 upward, while the persistence arm degrades
+to 0.483 — leaf-cluster selection keeps splitting the 400-point blob that a stability rule holds
+together, and heavier leaves make each spurious split cost more.
+
+**Two implementation points the paper leaves open, both forced by weighted leaves.** A single feature
+can carry more than the minimum cluster size and so be a cluster on its own — impossible for an
+unweighted point, where `m_c ≥ 2`. It is admitted here as a segment that never splits, and on unit
+weights it drops out automatically because its `s_max ≤ 1 < min_samples`. And the paper's `(s_min,
+s_max]` prose and its Alg. C3's `[birth, death)` disagree; the interval derived here is `(s_min,
+s_max]` — a segment exists while its parent's split is admitted, `t ≤ s_max`, and is a leaf once every
+split inside it is not, `t > s_min` — and the barcode is checked against an independent pruning of the
+same dendrogram at every integer size from 1 to 700.
+
+It ships as a Rust-only `Selection`, with the default untouched and no Python surface: a conditional
+win needs the condition stated at the call site, and a `method=` string cannot carry one.
+
 ## Insertion-order sensitivity — the property the whole BIRCH family inherits
 
 `bench/insertion_order.py`, `bench/results_order.csv` (54 cells). A CF-tree routes each point against

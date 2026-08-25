@@ -40,6 +40,22 @@ All notable changes to this project are documented here. The format follows
   [`bench/RESULTS.md`](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md).
 
 ### Added
+- **`Selection`: PLSCAN's persistence-chosen minimum cluster size, alongside excess of mass.**
+  (Rust API — `clustering::hdbscan_selected`, `clustering::Selection`.) Raising HDBSCAN\*'s
+  `min_cluster_size` never moves a merge, it only prunes branches that fail to reach the size, so one
+  dendrogram already contains every clustering the parameter can produce. Each segment therefore has a
+  size interval over which it is a *leaf* cluster; summing those lifetimes rates a candidate size, and
+  `Selection::Persistence` reports the clustering at the argmax (Bot, McInnes & Aerts,
+  arXiv:2512.16558). `Hdbscan` gained `selected_size` so the chosen number is visible.
+
+  Measured over 50 cells, it is a **conditional** win and ships with the condition stated: on clusters
+  that differ in *density* it wins 14 / loses 0 / ties 11 and its ARI spread across `min_samples` is
+  never larger; on clusters that differ in *size* it wins 3 and loses 22. The excess-of-mass default is
+  unchanged and there is no Python surface — a `method=` string cannot carry a condition. Part of the
+  paper's benefit is already bought by the CF tree, since a leaf of `w` points cannot express a cluster
+  finer than `w`; the two arms converge as leaves get heavier. Tables in
+  [`bench/RESULTS.md`](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md).
+
 - **`dendrogram_below`: exact agglomerative clustering below a height bound, with a certificate.**
   (Rust API — `clustering::dendrogram_below`, `certificate_radius`, `BoundedDendrogram`.) A cut at `k`
   clusters only needs the merges *below* one height, and those can be computed over a candidate radius
