@@ -464,6 +464,25 @@ All notable changes to this project are documented here. The format follows
   the tree routinely settles below its cap and at `n < max_leaves` the cap never binds at all.
 
 ### Changed
+- **The FAISS baseline is now measured in two configurations, and the "quality-per-second" hedge is
+  withdrawn.** `bench/external_baselines.py` timed `faiss.Kmeans` at its defaults, which is not a
+  like-for-like fit: `max_points_per_centroid` defaults to 256, so at `k = 8` FAISS trains on **2 048
+  of the 200 000 rows** and assigns the rest, and it seeds from a random subset rather than
+  k-means++, at `nredo = 1`. Two of the three things that made the row fast are quality-costing
+  shortcuts.
+
+  A new `faiss-kmeans-matched` row hands it every row and ten restarts — the cheapest setting whose
+  median ARI reaches betula's. It costs **1.19 s at 200 000 (6.3× betula) and 5.38 s at 1 000 000
+  (7.7× betula), and at 1 M still returns 0.835.** The ceiling is initialisation, and scikit-learn is
+  the control that proves it: on the same fixture with every row used, `init="random"` medians 0.692
+  at `n_init=1` and 0.835 at `n_init=10`, while `init="k-means++"` medians **1.000 at `n_init=1` on
+  every seed**. ARI 0.835 is a persistent local optimum — two blobs merged, one split — that neither
+  more data nor more iterations escapes: ARI is flat from `niter = 25` to `niter = 300`.
+
+  So task #73's premise was wrong. There was no throughput gap to close; betula's edge is k-means++
+  on the exact CF potential over a summary small enough that restarts are free. The board totals are
+  unchanged (8/54/6 quality, 32/1/5 speed, 30/4/0 memory) and the two default-configuration FAISS
+  speed losses stand as measured.
 - **`method="ward"` with `n_clusters=0` selects `k` by the variance ratio, not by the elbow.** The
   auto-`k` path cut the dendrogram at the largest *relative* jump in merge height, which is the
   elbow criterion wearing a dendrogram, and Schubert (SIGKDD Explorations 25(1), 2023) is a direct

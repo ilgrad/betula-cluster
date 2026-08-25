@@ -3,7 +3,7 @@
   "results_external/quality/vs-external/blobs/100000/hdbscan-scale/betula-hdbscan-vs-fast-hdbscan": "loss",
   "results_external/quality/vs-external/blobs/500000/hdbscan-scale/betula-hdbscan-vs-fast-hdbscan": "loss",
   "results_external/quality/vs-external/highdim/1000000/kmeans-speed/betula-kmeans-vs-sklearn-kmeans": "tie",
-  "results_external/quality/vs-external/highdim/200000/kmeans-speed/betula-kmeans-vs-sklearn-kmeans": "tie",
+  "results_external/quality/vs-external/highdim/200000/kmeans-speed/betula-kmeans-vs-faiss-kmeans-matched": "tie",
   "results_external/speed/vs-external/blobs/100000/hdbscan-scale/betula-hdbscan-vs-fast-hdbscan": "win",
   "results_external/speed/vs-external/blobs/500000/hdbscan-scale/betula-hdbscan-vs-fast-hdbscan": "win",
   "results_external/speed/vs-external/highdim/1000000/kmeans-speed/betula-kmeans-vs-faiss-kmeans": "loss",

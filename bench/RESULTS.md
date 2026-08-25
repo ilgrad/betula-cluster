@@ -573,24 +573,64 @@ Single-threaded, seed 0, `max_leaves = 2000`, one subprocess per row so peak RSS
 
 | contest | n | method | time | peak RSS | clusters found | ARI |
 |---|---:|---|---:|---:|---:|---:|
-| k-means, `highdim`, k=8 | 200 000 | **betula-kmeans** | 0.21 s | 220 MB | 8 | **1.000** |
-| | 200 000 | faiss-kmeans | **0.05 s** | 208 MB | 8 | 0.630 |
-| | 200 000 | sklearn-kmeans | 1.44 s | 266 MB | 8 | 1.000 |
-| | 1 000 000 | **betula-kmeans** | 0.85 s | 538 MB | 8 | **1.000** |
-| | 1 000 000 | faiss-kmeans | **0.10 s** | 538 MB | 8 | 0.624 |
-| | 1 000 000 | sklearn-kmeans | 5.38 s | 655 MB | 8 | 1.000 |
-| HDBSCAN, `blobs`, k=6 | 100 000 | **betula-hdbscan** | **0.16 s** | **163 MB** | 3 | 0.478 |
-| | 100 000 | fast-hdbscan | 1.43 s | 316 MB | 6 | **0.910** |
-| | 500 000 | **betula-hdbscan** | **0.25 s** | **176 MB** | 3 | 0.478 |
-| | 500 000 | fast-hdbscan | 2.93 s | 425 MB | 6 | **0.892** |
+| k-means, `highdim`, k=8 | 200 000 | **betula-kmeans** | 0.19 s | 219 MB | 8 | **1.000** |
+| | 200 000 | faiss-kmeans, defaults | **0.07 s** | 208 MB | 8 | 0.630 |
+| | 200 000 | faiss-kmeans, matched | 1.19 s | 208 MB | 8 | **1.000** |
+| | 200 000 | sklearn-kmeans | 1.40 s | 266 MB | 8 | **1.000** |
+| | 1 000 000 | **betula-kmeans** | **0.70 s** | 538 MB | 8 | **1.000** |
+| | 1 000 000 | faiss-kmeans, defaults | **0.08 s** | 538 MB | 8 | 0.624 |
+| | 1 000 000 | faiss-kmeans, matched | 5.38 s | 538 MB | 8 | 0.835 |
+| | 1 000 000 | sklearn-kmeans | 5.00 s | 655 MB | 8 | **1.000** |
+| HDBSCAN, `blobs`, k=6 | 100 000 | **betula-hdbscan** | **0.18 s** | **162 MB** | 3 | 0.478 |
+| | 100 000 | fast-hdbscan | 1.65 s | 315 MB | 6 | **0.910** |
+| | 500 000 | **betula-hdbscan** | **0.32 s** | **175 MB** | 3 | 0.478 |
+| | 500 000 | fast-hdbscan | 3.02 s | 411 MB | 6 | **0.892** |
 
-Both contests are losses on one axis and wins on another, and both are recorded as such rather than
-dropped.
+One contest is a win once both sides answer the same question; the other is a loss on quality and a
+win on cost. Both are recorded as such rather than dropped.
 
-**FAISS is 4.5×–8.3× faster and does not recover the partition** (0.62–0.63 against betula's 1.000).
-It runs a fixed 25 Lloyd iterations from a single random init in float32 with its own SIMD kernels. So
-the defensible claim against FAISS is quality-per-second, not raw throughput — and the gap is still
-worth attacking, which is what task #73 is for.
+### The FAISS row is two rows, because FAISS's defaults are not a like-for-like fit
+
+**At its own defaults FAISS is 2.7×–8.8× faster and does not recover the partition** (0.62–0.63
+against betula's 1.000). Task #73 asked whether that is a throughput gap worth closing. It is not,
+and the reason is that two of the three things making the default row fast are quality-costing
+shortcuts rather than engineering:
+
+- **`faiss.Kmeans` defaults to `max_points_per_centroid = 256`.** At `k = 8` it trains on **2 048 of
+  the 200 000 rows** and then assigns the rest. The 0.07 s is a fit on 1% of the data.
+- **It seeds from a random subset, never k-means++**, and runs `nredo = 1` — a single random init.
+- Only the third — a fixed 25 Lloyd iterations over float32 with hand-written SIMD kernels — is
+  throughput.
+
+The `matched` row hands FAISS every row and ten restarts, the cheapest setting whose *median* ARI
+reaches betula's on this fixture. It costs **1.19 s at 200 000 (6.3× betula) and 5.38 s at 1 000 000
+(7.7× betula), and at 1 M it still lands at 0.835.** So there is no budget at which FAISS answers
+betula's question faster than betula does.
+
+The ceiling is initialisation, and sklearn is the control that proves it. Same fixture, same `k`,
+every row used, medians over seeds 0/1/2 (`local/scratch/faiss_mechanism.py`):
+
+| method | median time | median ARI | across seeds |
+|---|---:|---:|---|
+| betula-kmeans | 0.16 s | **1.000** | — |
+| faiss, 2 048 train rows, `nredo=1` | 0.008 s | 0.693 | [0.630, 0.718] |
+| faiss, all rows, `nredo=1` | 0.114 s | 0.835 | [0.692, 0.835] |
+| faiss, all rows, `nredo=3` | 0.401 s | 0.835 | [0.835, 0.835] |
+| faiss, all rows, `nredo=10` | 1.208 s | **1.000** | [0.835, 1.000] |
+| sklearn, `init="random"`, `n_init=1` | 0.077 s | 0.692 | [0.692, 0.717] |
+| sklearn, `init="random"`, `n_init=10` | 0.320 s | 0.835 | [0.835, 1.000] |
+| sklearn, `init="k-means++"`, `n_init=1` | 0.107 s | **1.000** | [1.000, 1.000] |
+
+Read the last two rows against each other: one random init reaches 0.69, ten reach 0.835, and **one
+k-means++ init reaches 1.000 on every seed**. ARI 0.835 is not an unlucky draw, it is a persistent
+local optimum — two of the eight blobs merged and one split — that random restarts land in and cannot
+climb out of. Adding data does not help (all-rows `nredo=1` is no better than the 1% subsample);
+adding iterations does not help (ARI is flat from `niter = 25` to `niter = 300`); only the seeding
+rule helps.
+
+That is the whole finding. betula's advantage here is not a faster kernel — it is that it runs
+k-means++ on the exact CF potential (`8cb3439`), on a leaf summary small enough that ten restarts are
+free. **Task #73 is closed by measurement: the gap was never throughput.**
 
 **`fast_hdbscan` finds all six clusters at every setting; betula needs a much larger `min_samples`
 and a much larger leaf budget to get there.** The `blobs` fixture is not the easy case its name
@@ -665,6 +705,12 @@ accepted deliberately rather than overwritten:
   survive under the new rival's name, which is why the speed column moved *up* (31 → 32 wins) in the
   same run that reported six disappearances. A pairing key that embeds the opponent cannot tell
   "we lost" from "the opponent changed", so the tool reports both and leaves the call here.
+- Adding the `faiss-kmeans-matched` row **vanished** one more pairing the same way:
+  `results_external/quality/vs-external/highdim/200000/…/betula-kmeans-vs-sklearn-kmeans`. The new
+  row ties betula at ARI 1.000 and becomes the named rival for that cell, so the verdict survives as
+  `…-vs-faiss-kmeans-matched`. The three column totals are unchanged (8/54/6, 32/1/5, 30/4/0): a
+  configuration of FAISS that reaches betula's quality also costs 6.3× the time, so it converts a
+  quality cell from tie-against-sklearn to tie-against-FAISS and adds nothing on speed.
 
 ## Quality against the leaf budget — the knob the tables never varied
 
@@ -781,10 +827,12 @@ single-permutation ARI at high compression as a draw from a distribution roughly
   point-level algorithm with no compression — at small `N` the two-phase overhead removes betula's
   speed edge, and raw HDBSCAN is stronger on overlapping density.
 - **Use FAISS** if k-means throughput is the only criterion and an approximate partition is
-  acceptable, and **`fast_hdbscan`** for density clustering in low dimension when the data fits in
-  memory and the densities overlap: each beats betula outright on its own axis. betula's answer is
-  quality-per-second in the first case, and in the second it needs `min_samples` above the mass of a
-  single leaf — the summary erases the small-radius density estimate HDBSCAN\* runs on.
+  acceptable — at its defaults it fits 256·k sampled rows from one random init, which is 2.7×–8.8×
+  faster than betula and lands at ARI 0.62. Configured to recover the same partition it is 6.3×–7.7×
+  *slower* than betula and still misses at 1 M, so it is not the choice when the partition matters.
+  Use **`fast_hdbscan`** for density clustering in low dimension when the data fits in memory and the
+  densities overlap: it beats betula outright on that axis, where betula needs `min_samples` above the
+  mass of a single leaf — the summary erases the small-radius density estimate HDBSCAN\* runs on.
 - **Use `sklearn-birch`** if `covtype`-like all-methods quality at ~20 k rows is the only criterion and
   no summary is needed: it beats every betula head there, and the compression-ratio defence does not
   hold. Its MNIST lead comes with no compression at all (20 000 subclusters for 20 000 points), so it

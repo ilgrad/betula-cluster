@@ -40,11 +40,13 @@ from _worker import Peak, cap_memory, gen
 # cluster count the generator planted.
 CONTESTS = {
     # The strongest "fastest k-means" claim in the ecosystem. FAISS runs a fixed 25 iterations of
-    # Lloyd over the raw points with its own SIMD kernels; betula clusters the leaf summary.
+    # Lloyd over the raw points with its own SIMD kernels; betula clusters the leaf summary. Both
+    # FAISS configurations are measured: its own defaults, and the settings that make it answer the
+    # same question — see `fit` for what separates them.
     "kmeans-speed": {
         "dataset": "highdim",
         "sizes": (200_000, 1_000_000),
-        "methods": ("betula-kmeans", "faiss-kmeans", "sklearn-kmeans"),
+        "methods": ("betula-kmeans", "faiss-kmeans", "faiss-kmeans-matched", "sklearn-kmeans"),
     },
     # `fast_hdbscan` is numba-compiled and restricted to low dimension and Euclidean, which is
     # exactly the regime where the CF summary has least to offer.
@@ -84,11 +86,24 @@ def fit(method: str, X, k: int):
             max_leaves=2000,
             n_jobs=1,
         )
-    if method == "faiss-kmeans":
+    if method.startswith("faiss-kmeans"):
         import faiss
 
+        # Two configurations, because FAISS's defaults are not a like-for-like fit. `Kmeans` defaults
+        # to `max_points_per_centroid=256`, so at k=8 it trains on 2 048 of the n rows and assigns
+        # the rest; and it seeds from a random subset, never k-means++. `-matched` hands it every row
+        # and ten restarts — the cheapest setting whose median ARI reaches betula's on this fixture.
+        matched = method.endswith("-matched")
         x = np.ascontiguousarray(X, dtype=np.float32)
-        km = faiss.Kmeans(x.shape[1], k, niter=25, seed=0, verbose=False)
+        km = faiss.Kmeans(
+            x.shape[1],
+            k,
+            niter=25,
+            nredo=10 if matched else 1,
+            seed=0,
+            verbose=False,
+            max_points_per_centroid=n if matched else 256,
+        )
         km.train(x)
         return km.index.search(x, 1)[1].ravel()
     if method == "fast-hdbscan":
