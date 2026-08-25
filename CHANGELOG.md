@@ -782,6 +782,24 @@ All notable changes to this project are documented here. The format follows
   changed identity at 1 M. `bench/RESULTS.md` names each one.
 
 ### Fixed
+- **A rebuild now refolds every node CF from its children instead of trusting the push chain.**
+  A node CF is *defined* as the merge of its subtree, but insertion maintains it by pushing each
+  point along its leaf→root path — so the root holds one sequential chain of `N` merges, which is
+  exactly the `O(N·u)` accumulation Higham's analysis warns about. Measured on an `f32` tree of
+  200 000 offset points, root scatter against the `f64` fold of the same leaves, read right after a
+  rebuild: **`5.1e-5` before, `6.7e-8` after — a factor of 750.** This is not bookkeeping: `descend`
+  routes on node CFs, so their drift decides which leaf a point lands in. Labels can therefore move
+  on `float32` trees; on `float64` the correction is at the last bit.
+
+  The task this closes (#44) proposed *pairwise* accumulation, and that half is **refuted**:
+  Higham's `O(m·u)` vs `O(log m · u)` separation needs a long chain, and at the leaf counts this
+  library runs at (180–4000) a sequential fold of the leaves and a balanced one measure `2.2e-7`
+  against `3.2e-7` — indistinguishable. What was worth 750× is folding from the children *at all*.
+  The halving is kept because it is free and the right shape, not because it was measured to matter.
+
+  Between rebuilds the root drifts again (`5.1e-5` by the end of the same stream), so `summary()`
+  documents the trade and points at folding `leaf_features()` when the aggregate is the answer.
+
 - **`absorb` was validated in two places that had to agree and did not.** The `Betula` estimator
   restated the accepted names and the `chi2_scale > 0` rule inline, next to `resolve_gate`'s own copy
   of both. Adding a gate to one left the other rejecting it — precisely the drift the shared

@@ -227,7 +227,14 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> CF
         tree
     }
 
-    /// Root summary (covers all inserted points).
+    /// Root summary (covers all inserted points), maintained incrementally.
+    ///
+    /// `O(1)`, and that is the trade it makes: the root CF is a sequential chain of one merge per
+    /// inserted point, refreshed from the children at every rebuild (see
+    /// [`Self::refold_node_cfs`]) but free to drift again afterwards. On an `f32` tree of 200 000
+    /// offset points that drift reached `5.1e-5` relative on the scatter, against `2.2e-7` for a
+    /// fold of [`Self::leaf_features`]. Fold the leaves when the aggregate is the answer rather
+    /// than a progress indicator.
     pub fn summary(&self) -> &C {
         &self.nodes[self.root].cf
     }
@@ -404,6 +411,7 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> CF
                 self.reinsert();
             }
         }
+        self.refold_node_cfs();
         self.rebuilds += 1;
     }
 
@@ -486,6 +494,68 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> CF
         // descend paths short — a faster *and* better-shaped tree than forward reinsertion.
         for e in entries.into_iter().rev() {
             self.place_cf(e);
+        }
+    }
+
+    /// Rebuild every node CF bottom-up from its children, replacing what insertion's leaf→root
+    /// pushes left behind.
+    ///
+    /// A node CF is *defined* as the merge of its subtree, but insertion maintains it by pushing
+    /// each point along its path — so the root holds one sequential chain of `N` merges, which is
+    /// the `O(N·u)` accumulation Higham's analysis warns about. Folding from the children replaces
+    /// that chain with one of the tree's own depth. Measured on an `f32` tree of 200 000 offset
+    /// points, root scatter against the `f64` fold of the same leaves, read right after a rebuild:
+    /// **`5.1e-5` without this pass, `6.7e-8` with it** — a factor of 750.
+    ///
+    /// It is not bookkeeping: `descend` routes on node CFs, so their drift changes which leaf a
+    /// point lands in, not only what a report says.
+    ///
+    /// *What is not worth anything here is the fold order.* Higham's `O(m·u)` vs `O(log m · u)`
+    /// separation needs a long chain, and a node has at most `branching` children while the whole
+    /// tree has `max_leaves` leaves — at the leaf counts this library runs at, a sequential fold of
+    /// the leaves and a balanced one land at `2.2e-7` and `3.2e-7`, indistinguishable. The halving
+    /// below is kept because it costs nothing and is the right shape, not because it was measured to
+    /// matter. Between rebuilds the root drifts again (`5.1e-5` at the end of the same stream), so a
+    /// caller that wants the accurate aggregate should fold [`Self::leaf_features`] rather than read
+    /// [`Self::summary`].
+    ///
+    /// Cost is one pass over the arena per rebuild, `O(nodes · branching · d)`, against the
+    /// `O(Σ_leaf child²)` sibling scan the rebuild already paid.
+    fn refold_node_cfs(&mut self) {
+        // Reverse pre-order: a parent precedes its descendants in pre-order, so reversing puts
+        // every child before its parent — exactly the order a bottom-up fold needs.
+        let mut order = Vec::with_capacity(self.nodes.len());
+        let mut stack = vec![self.root];
+        while let Some(id) = stack.pop() {
+            order.push(id);
+            if !self.nodes[id].leaf {
+                stack.extend(self.nodes[id].children.iter().copied());
+            }
+        }
+        for id in order.into_iter().rev() {
+            let children = std::mem::take(&mut self.nodes[id].children);
+            self.nodes[id].cf = self.fold_balanced(&children, self.nodes[id].leaf);
+            self.nodes[id].children = children;
+        }
+    }
+
+    /// Merge `ids` — leaf entries or child nodes — by recursive halving rather than left to right.
+    fn fold_balanced(&self, ids: &[usize], leaf: bool) -> C {
+        match ids {
+            [] => C::new(self.dim),
+            [one] => {
+                if leaf {
+                    self.entries[*one].clone()
+                } else {
+                    self.nodes[*one].cf.clone()
+                }
+            }
+            _ => {
+                let (lo, hi) = ids.split_at(ids.len() / 2);
+                let mut acc = self.fold_balanced(lo, leaf);
+                acc.merge(&self.fold_balanced(hi, leaf));
+                acc
+            }
         }
     }
 
@@ -1186,6 +1256,50 @@ mod tests {
             t.num_leaves()
         );
         verify(&t, 1000);
+    }
+
+    /// A node CF is defined as the merge of its subtree, but insertion maintains it by pushing each
+    /// point along its leaf→root path — so the root holds one sequential chain of `N` merges, and in
+    /// `f32` that chain is what the reported scatter is made of. Rebuilding every node CF from its
+    /// children resets the chain to the depth of the tree.
+    ///
+    /// Measured here (200 000 points offset by 1000, `f32` tree, read right after a rebuild): the
+    /// refolded root is within `6.7e-8` of the `f64` fold of the same leaves, the incrementally
+    /// pushed one within `5.1e-5` — a factor of 750. The threshold below sits between them.
+    #[test]
+    fn a_rebuild_refolds_the_node_cfs_instead_of_trusting_the_push_chain() {
+        let n = 200_000usize;
+        let dim = 2usize;
+        let mut t: CFTree<f32, Spherical<f32>, _, _> =
+            CFTree::new(dim, 32, 32, 0.0, 200, CentroidEuclidean, CentroidEuclidean);
+        let mut row = vec![0.0f32; dim];
+        for i in 0..n {
+            for (j, v) in row.iter_mut().enumerate() {
+                *v = (1000.0 + (((i * 1103515245 + j * 12345 + 7) % 100_003) as f64) / 1000.0)
+                    as f32;
+            }
+            t.insert(&row);
+        }
+        t.rebuild();
+        assert!(
+            t.rebuilds() > 1,
+            "the fixture must rebuild, or it tests nothing"
+        );
+
+        // The truth for these leaves: the same values folded in double precision.
+        let mut exact: Spherical<f64> = Spherical::new(dim);
+        for e in t.leaf_features() {
+            exact.merge(&Spherical::from_moments(
+                f64::from(e.weight()),
+                e.mean().iter().map(|&v| f64::from(v)).collect(),
+                f64::from(e.ssd()),
+            ));
+        }
+        let relerr = ((f64::from(t.summary().ssd()) - exact.ssd()) / exact.ssd()).abs();
+        assert!(
+            relerr < 1e-6,
+            "root scatter drifted from the fold of its own leaves: {relerr:e}"
+        );
     }
 
     #[test]
