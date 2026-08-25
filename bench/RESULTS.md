@@ -1561,6 +1561,60 @@ Harness: `local/scratch/mw2_drift.py` (untracked). Cross-checked against an inde
 programme and `scipy.linalg.sqrtm`, sharing no code with the crate — worst relative difference
 3.8e-16.
 
+## Mapper chaining: the second moments fix it, but only the unbounded one does (task #62)
+
+Mapper linked microclusters inside a cover bin by centroid distance, which sees the gap between two
+leaves and nothing else. A leaf's own radius is a local density estimate, and the cluster features
+carry it for free, so the note behind this task proposed dividing by it — as a Bhattacharyya
+distance, or as the bounded Hellinger distance the same coefficient gives.
+
+The fixture is a dumbbell inserted into a real CF-tree (two dense round lobes, a sparse straight
+bridge, `threshold=0.6`), so the leaves are the tree's own. A run is **chained** when one linked
+component holds leaves from both lobes; **blob pieces** counts how many components the two lobes are
+broken into between them, because refusing to cross the bridge is trivial if nothing links at all.
+Median of seeds 0/1/2, one cover bin so the cover cannot do the separating.
+
+| bridge | link | s=0.5 | s=0.75 | s=1 | s=1.25 | s=1.5 | s=2 | s=3 |
+|---|---|---|---|---|---|---|---|---|
+| 12 pts | centroid | 0/3 [16] | 0/3 [16] | 0/3 [11] | 0/3 [3] | 0/3 [3] | 0/3 [2] | **1/3** [2] |
+| 12 pts | Hellinger | 0/3 [16] | 0/3 [16] | 0/3 [10] | **2/3** [1] | **3/3** [1] | **3/3** [1] | **3/3** [1] |
+| 12 pts | Bhattacharyya | 0/3 [16] | 0/3 [15] | 0/3 [10] | 0/3 [5] | 0/3 [3] | 0/3 [3] | 0/3 [3] |
+| 25 pts | centroid | 0/3 [16] | 0/3 [16] | 0/3 [11] | 0/3 [3] | 0/3 [3] | 0/3 [2] | **2/3** [1] |
+| 25 pts | Hellinger | 0/3 [16] | 0/3 [16] | 0/3 [10] | **2/3** [1] | **3/3** [1] | **3/3** [1] | **3/3** [1] |
+| 25 pts | Bhattacharyya | 0/3 [16] | 0/3 [15] | 0/3 [10] | 0/3 [5] | 0/3 [3] | 0/3 [3] | 0/3 [2] |
+| 60 pts | centroid | 0/3 [17] | 0/3 [17] | 0/3 [11] | 0/3 [3] | 0/3 [2] | 0/3 [2] | **3/3** [1] |
+| 60 pts | Hellinger | 0/3 [17] | 0/3 [17] | 0/3 [10] | **3/3** [1] | **3/3** [1] | **3/3** [1] | **3/3** [1] |
+| 60 pts | Bhattacharyya | 0/3 [17] | 0/3 [15] | 0/3 [10] | 0/3 [6] | 0/3 [4] | 0/3 [3] | 0/3 [2] |
+
+**Bhattacharyya chains in none of the 63 runs**, and at `link_scale = 3` with the widest bridge it
+lands on exactly the right answer — two lobes, two pieces, bridge refused — where the centroid rule
+merges everything into one on all three seeds. That is both halves of the acceptance: the bridge
+edge drops below the threshold and the intra-lobe edges survive. It is shipped as
+`link="bhattacharyya"`, with `"centroid"` still the default.
+
+**Hellinger is refuted, and the mechanism is saturation.** `√(1 − BC)` is bounded by 1, which is
+what made it attractive for a threshold. But at the leaf spacing a CF-tree actually produces,
+neighbouring leaves barely overlap: `BC ≈ 0` for almost every pair, so the median nearest-neighbour
+distance is already ≈ 1, and `link_scale × median` crosses the metric's own maximum at
+`link_scale ≈ 1.1`. Past that the threshold exceeds every possible distance and the whole bin links
+— which is exactly what the table shows, from `s = 1.25` onward, in every row. It loses to plain
+centroid distance in every cell it differs in, so it is not in the API; the harness keeps its
+definition so the refutation stays reproducible.
+
+**The cost of the fix, stated plainly.** A leaf holding one point has no spread, so a
+spread-normalised distance sends every pair involving it to a huge value. That is precisely why the
+bridge fragments — and it means a genuinely sparse *cluster* fragments the same way. Bhattacharyya
+also keeps more pieces than centroid distance at every scale (5–6 against 3 at `s = 1.25`), so it
+trades some over-merging for some over-splitting rather than being free.
+
+A control in the harness surfaced a separate defect while this was being measured: the cover
+recomputed the last bin's upper edge as `lo + resolution·step`, and `lo + (hi − lo)` is not
+guaranteed to reproduce `hi` in floating point. One seed in three had the microcluster holding the
+maximum lens value land one ulp outside every bin and vanish from the skeleton entirely. The outer
+edges are now the observed range.
+
+Harness: `cargo test --lib topology::tests::measure_chaining_linkage -- --ignored --nocapture`.
+
 ## DynMSC: a second automatic `k`, and the shape that decides which one to use (task #52)
 
 The crate already chooses `k` on its own — Calinski–Harabasz over the Ward cuts, behind

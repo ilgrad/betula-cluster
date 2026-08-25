@@ -62,6 +62,7 @@ _Absorb = Literal[
     "euclidean", "manhattan", "average", "diameter", "ward", "radius", "chi2", "subspace"
 ]
 _Lens = Literal["density", "radius", "l2norm", "coordinate", "eccentricity"]
+_Link = Literal["centroid", "bhattacharyya"]
 _Repr = Literal["medoid", "boundary", "outlier", "diverse"]
 _Strategy = Literal["uncertain", "outlier"]
 
@@ -283,6 +284,7 @@ class Betula:
         min_node_mass: float = ...,
         density_k: int = ...,
         coordinate: int = ...,
+        link: _Link = ...,
     ) -> MapperGraph: ...
     def mapper_stability(
         self, resolutions: Sequence[int] | None = ..., **mapper_kwargs: Any

@@ -42,7 +42,7 @@ use crate::model::{Method, Model, Rule, assignment_rule, fit_head, refine_center
 use crate::sparse::{SparseCentroids, summarize_sparse};
 use crate::stats::chi2_quantile;
 use crate::stream::{DbStream, DenStream};
-use crate::topology::{Lens, MapperGraph, MapperParams, mapper};
+use crate::topology::{Lens, Link, MapperGraph, MapperParams, mapper};
 use crate::tree::CFTree;
 use crate::types::Real;
 use crate::wasserstein::{GaussianMixture, Spread, mixture_w2};
@@ -2933,7 +2933,8 @@ impl Betula {
     /// single-linkage scale (× the median NN gap); nodes lighter than `min_node_mass` are dropped. Returns node
     /// members / mass / bin / lens / centroids, weighted `edges`, `branch_points` and `bridges`.
     #[pyo3(signature = (lens = "density", resolution = 10, gain = 0.3, link_scale = 1.0,
-                        min_node_mass = 0.0, density_k = 5, coordinate = 0))]
+                        min_node_mass = 0.0, density_k = 5, coordinate = 0,
+                        link = "centroid"))]
     #[allow(clippy::too_many_arguments)]
     fn mapper<'py>(
         &self,
@@ -2945,6 +2946,7 @@ impl Betula {
         min_node_mass: f64,
         density_k: usize,
         coordinate: usize,
+        link: &str,
     ) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
         let lens = match lens {
             "density" => Lens::Density { k: density_k },
@@ -2965,12 +2967,22 @@ impl Betula {
                 ));
             }
         };
+        let link = match link {
+            "centroid" => Link::Centroid,
+            "bhattacharyya" => Link::Bhattacharyya,
+            _ => {
+                return Err(PyValueError::new_err(
+                    "link must be 'centroid' or 'bhattacharyya'",
+                ));
+            }
+        };
         let p = MapperParams {
             lens,
             resolution,
             gain,
             link_scale,
             min_node_mass,
+            link,
         };
         let g = match (&self.state64, &self.state32) {
             (Some(t), _) => py.detach(|| t.mapper(&p)),

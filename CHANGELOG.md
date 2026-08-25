@@ -41,6 +41,16 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- Mapper linkage option `link="bhattacharyya"`: microclusters inside a cover bin are linked on the
+  Bhattacharyya distance between their Gaussian surrogates — the centroid gap divided by the pair's
+  own spread — instead of centroid distance alone. It attacks chaining, where a thin bridge of
+  sparse microclusters merges two dense regions: on a dumbbell fixture at three seeds it crosses the
+  bridge in none of 63 runs while the centroid rule merges the two lobes into one at
+  `link_scale = 3`. The default is unchanged. The bounded Hellinger distance was measured on the same
+  fixture and **refuted** — it saturates at the leaf spacing a CF-tree produces, so any `link_scale`
+  past ≈ 1.1 links the whole bin — and is not exposed. Table in
+  [bench/RESULTS.md](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md).
+
 - `mixture_w2` and `Betula.summary_w2`, the mixture-Wasserstein distance `MW₂` between two fitted
   Gaussian mixtures (Delon & Desolneux, SIAM J. Imaging Sci. 13(2), 2020). The pair cost is the
   closed-form Bures `W₂`; the transport over the component grid is solved exactly by a transportation
@@ -971,6 +981,10 @@ All notable changes to this project are documented here. The format follows
   changed identity at 1 M. `bench/RESULTS.md` names each one.
 
 ### Fixed
+- Mapper dropped a microcluster outright when `lo + (hi − lo)` rounded below `hi`: the cover
+  recomputed the last bin's upper edge from the step rather than from the observed range, so the
+  leaf holding the maximum lens value could fall outside every bin. It happened on one seed in three
+  of the fixture that found it. The outer bin edges are now the observed range.
 - **`feature="fd"` was reporting up to a third less scatter than the leaf holds.** The
   Frequent-Directions shrink subtracts the lower-median squared singular value from every direction,
   and that mass was discarded outright — so `ssd()`, which the radius, the absorption gate, D2/D3 and

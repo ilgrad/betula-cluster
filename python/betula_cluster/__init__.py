@@ -1034,6 +1034,7 @@ class Betula:
         min_node_mass=0.0,
         density_k=5,
         coordinate=0,
+        link="centroid",
     ):
         """Build a Mapper topological-skeleton :class:`MapperGraph` over the fitted microclusters.
 
@@ -1043,6 +1044,15 @@ class Betula:
         bin's median nearest-neighbour gap; one node per (bin, component).
         It surfaces non-convex structure, branch points and bridges (topic leakage) over the
         ``M << N`` microclusters — an exploration tool, not a partition. Build the model first.
+
+        ``link`` chooses what "close" means inside a bin. ``"centroid"`` (the default) is the
+        Euclidean distance between leaf centroids and sees only the gap. ``"bhattacharyya"`` divides
+        that gap by the pair's own spread, using the second moments the cluster features already
+        carry, which is what stops a thin bridge of sparse microclusters from chaining two dense
+        regions together: on a dumbbell fixture the centroid rule merges the two lobes at
+        ``link_scale=3`` on all three seeds and the Bhattacharyya rule merges neither, at any
+        ``link_scale`` measured. It is not free — a leaf that holds one point has no spread, so
+        every bridge of singletons stays fragmented whether or not it was real structure.
         """
         d = self._require_fit().mapper(
             lens=lens,
@@ -1052,6 +1062,7 @@ class Betula:
             min_node_mass=min_node_mass,
             density_k=density_k,
             coordinate=coordinate,
+            link=link,
         )
         return MapperGraph(
             node_members=[np.asarray(m, dtype=np.int64) for m in d["node_members"]],

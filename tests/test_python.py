@@ -3475,3 +3475,24 @@ def test_summary_w2_requires_both_models_to_be_fitted(blobs):
     est, _, _ = _fitted(blobs)
     with pytest.raises(AttributeError, match="not fitted yet"):
         est.summary_w2(betula_cluster.Betula())
+
+
+def test_mapper_bhattacharyya_linkage_keeps_the_blobs_apart_where_the_centroid_rule_merges_them(
+    dumbbell,
+):
+    # The chaining scenario: a link_scale large enough that the centroid rule links straight across
+    # the sparse neck and returns a single node. Dividing the gap by the pair's own spread refuses
+    # that link. A nonzero threshold is required — at threshold=0 every leaf is one point with no
+    # spread, and a spread-normalised distance has nothing to normalise by.
+    est = betula_cluster.Betula(
+        feature="spherical", method="hdbscan", threshold=0.6, max_leaves=300
+    ).fit(dumbbell)
+    wide = dict(lens="coordinate", coordinate=1, resolution=1, gain=0.0, link_scale=6.0)
+    assert est.mapper(link="centroid", **wide).n_nodes == 1
+    assert est.mapper(link="bhattacharyya", **wide).n_nodes > 1
+
+
+def test_mapper_rejects_an_unknown_linkage(dumbbell):
+    est, _ = _mapped(dumbbell)
+    with pytest.raises(ValueError, match="link must be"):
+        est.mapper(link="hellinger")

@@ -3,7 +3,8 @@
 //! Standard TDA Mapper (Singh–Mémoli–Carlsson 2007) specialised to BETULA microclusters:
 //!   1. a *lens* `f` maps each microcluster to `R` (density / radius / a coordinate / ‖μ‖ / eccentricity),
 //!   2. the lens range is covered by `resolution` overlapping bins (overlap fraction `gain`),
-//!   3. microclusters in a bin are single-linked at `link_scale ×` the bin's median nearest-neighbour gap,
+//!   3. microclusters in a bin are single-linked at `link_scale ×` the bin's median nearest-neighbour
+//!      gap, measured either between centroids or between the leaves' Gaussian surrogates ([`Link`]),
 //!   4. one graph node per (bin, component); nodes sharing a microcluster (from the cover overlap) link.
 //!
 //! The nerve graph exposes branches, bridges and loops in the data's shape — for RAG curation, dedup,
@@ -31,6 +32,26 @@ pub enum Lens {
     Eccentricity,
 }
 
+/// How two microclusters inside a cover bin are judged close enough to link.
+///
+/// The choice matters where a bin holds both a dense blob and the thin bridge that leaves it.
+/// Centroid distance sees only the gap between two leaves; a leaf's own radius is a local density
+/// estimate, and dividing the gap by it is what tells "far apart in a crowded place" from "the usual
+/// spacing out here".
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Link {
+    /// Euclidean distance between the leaf centroids. Ignores the second moments the CFs carry.
+    Centroid,
+    /// Bhattacharyya distance `⅛(μ_i−μ_j)ᵀΣ̄⁻¹(μ_i−μ_j) + ½ ln(|Σ̄|/√(|Σ_i||Σ_j|))`, unbounded.
+    ///
+    /// The centroid gap divided by the pair's own spread. Not a metric — it violates the triangle
+    /// inequality — which single linkage does not need. The bounded Hellinger distance `√(1 − BC)`
+    /// was measured on the same fixtures and refuted: at the leaf spacing a CF-tree actually
+    /// produces, almost every pair sits at `BC ≈ 0`, so the median is ≈ 1 and any `link_scale` past
+    /// ≈ 1.1 puts the threshold above the metric's own maximum and links the whole bin.
+    Bhattacharyya,
+}
+
 /// Mapper construction parameters.
 #[derive(Clone, Copy, Debug)]
 pub struct MapperParams {
@@ -40,11 +61,13 @@ pub struct MapperParams {
     pub resolution: usize,
     /// Cover overlap as a fraction of the bin step, in `[0, 1)`; the source of nerve edges.
     pub gain: f64,
-    /// Single-linkage multiplier: microclusters `i, j` in a bin link iff `d(μ_i,μ_j) ≤ link_scale ×`
+    /// Single-linkage multiplier: microclusters `i, j` in a bin link iff `d(i, j) ≤ link_scale ×`
     /// the bin's median nearest-neighbour gap (data-adaptive; larger ⇒ a more connected skeleton).
     pub link_scale: f64,
     /// Drop graph nodes whose total mass is below this (cover-induced specks / noise).
     pub min_node_mass: f64,
+    /// The distance the single-linkage rule is applied to.
+    pub link: Link,
 }
 
 impl Default for MapperParams {
@@ -55,6 +78,7 @@ impl Default for MapperParams {
             gain: 0.3,
             link_scale: 2.0,
             min_node_mass: 0.0,
+            link: Link::Centroid,
         }
     }
 }
@@ -260,6 +284,14 @@ fn bhattacharyya_diag(mu_a: &[f64], var_a: &[f64], mu_b: &[f64], var_b: &[f64]) 
     (-d_b).exp().clamp(0.0, 1.0)
 }
 
+/// The Bhattacharyya *distance*, `−ln BC`, recovered from the coefficient so the two share one
+/// definition of the floored variances.
+fn bhattacharyya_distance(mu_a: &[f64], var_a: &[f64], mu_b: &[f64], var_b: &[f64]) -> f64 {
+    -bhattacharyya_diag(mu_a, var_a, mu_b, var_b)
+        .max(f64::MIN_POSITIVE)
+        .ln()
+}
+
 /// Evaluate the lens for every microcluster.
 fn lens_values(mu: &[Vec<f64>], radius: &[f64], lens: Lens) -> Vec<f64> {
     let m = mu.len();
@@ -377,6 +409,21 @@ pub fn mapper<R: Real, C: ClusterFeature<R>>(features: &[C], p: &MapperParams) -
         .map(|f| f.weight().to_f64().unwrap())
         .collect();
     let radius: Vec<f64> = features.iter().map(rms_radius).collect();
+    let var: Vec<Vec<f64>> = match p.link {
+        Link::Centroid => Vec::new(),
+        Link::Bhattacharyya => features
+            .iter()
+            .map(|c| {
+                (0..c.dim())
+                    .map(|k| c.variance(k).to_f64().unwrap())
+                    .collect()
+            })
+            .collect(),
+    };
+    let link_distance = |a: usize, b: usize| match p.link {
+        Link::Centroid => euclid(&mu[a], &mu[b]),
+        Link::Bhattacharyya => bhattacharyya_distance(&mu[a], &var[a], &mu[b], &var[b]),
+    };
     let f = lens_values(&mu, &radius, p.lens);
 
     let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
@@ -398,12 +445,22 @@ pub fn mapper<R: Real, C: ClusterFeature<R>>(features: &[C], p: &MapperParams) -
     let pad = p.gain.clamp(0.0, 0.999) * step / 2.0;
 
     // Cover: assign each microcluster to every bin whose padded interval contains its lens value.
+    //
+    // The outermost edges are the observed range, not `lo + resolution·step`: floating-point
+    // `lo + (hi − lo)` is not guaranteed to reproduce `hi`, and when it lands one ulp short the
+    // microcluster holding the maximum lens value belongs to no bin at all and disappears from the
+    // skeleton. Clamping the two ends makes "every microcluster is in some bin" hold by
+    // construction rather than by luck.
     let mut bin_members: Vec<Vec<usize>> = vec![Vec::new(); resolution];
     for (i, &fi) in f.iter().enumerate() {
         let v = if fi.is_finite() { fi } else { lo };
         for (b, members) in bin_members.iter_mut().enumerate() {
-            let blo = lo + b as f64 * step - pad;
-            let bhi = lo + (b as f64 + 1.0) * step + pad;
+            let blo = if b == 0 { lo } else { lo + b as f64 * step } - pad;
+            let bhi = if b + 1 == resolution {
+                hi
+            } else {
+                lo + (b as f64 + 1.0) * step
+            } + pad;
             if v >= blo && v <= bhi {
                 members.push(i);
             }
@@ -425,7 +482,7 @@ pub fn mapper<R: Real, C: ClusterFeature<R>>(features: &[C], p: &MapperParams) -
             let mut nn = vec![f64::INFINITY; bn];
             for a in 0..bn {
                 for b in (a + 1)..bn {
-                    let d = euclid(&mu[members[a]], &mu[members[b]]);
+                    let d = link_distance(members[a], members[b]);
                     nn[a] = nn[a].min(d);
                     nn[b] = nn[b].min(d);
                 }
@@ -435,7 +492,7 @@ pub fn mapper<R: Real, C: ClusterFeature<R>>(features: &[C], p: &MapperParams) -
             let thresh = p.link_scale * sorted[bn / 2]; // link_scale × median nearest-neighbour gap
             for a in 0..bn {
                 for b in (a + 1)..bn {
-                    if euclid(&mu[members[a]], &mu[members[b]]) <= thresh {
+                    if link_distance(members[a], members[b]) <= thresh {
                         uf.union(a, b);
                     }
                 }
@@ -533,7 +590,9 @@ pub fn mapper<R: Real, C: ClusterFeature<R>>(features: &[C], p: &MapperParams) -
 mod tests {
     use super::*;
     use crate::clustering::testutil::grid_micros;
+    use crate::distance::{CentroidEuclidean, Radius};
     use crate::feature::Spherical;
+    use crate::tree::CFTree;
 
     /// Microclusters on a line: a dense blob, a thin bridge, a second dense blob (a "dumbbell").
     /// A coordinate lens must recover a connected skeleton whose only links across the gap are bridges.
@@ -550,6 +609,248 @@ mod tests {
         grid_micros(&pts, 0.25).0
     }
 
+    /// A dumbbell built the way the crate actually sees one: two dense round blobs joined by a
+    /// sparse straight bridge, inserted into a real CF-tree so the leaves are the tree's own, with
+    /// the radius and mass the absorption threshold gives them.
+    fn tree_dumbbell(seed: u64, bridge: usize) -> Vec<Spherical<f64>> {
+        let mut state = seed.wrapping_mul(2_862_933_555_777_941_757).wrapping_add(3);
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            ((state >> 11) as f64) / ((1u64 << 53) as f64)
+        };
+        let mut pts: Vec<Vec<f64>> = Vec::new();
+        for centre in [0.0, 12.0] {
+            for _ in 0..600 {
+                pts.push(vec![centre + 4.0 * (next() - 0.5), 4.0 * (next() - 0.5)]);
+            }
+        }
+        for i in 0..bridge {
+            let t = (i as f64 + 0.5) / bridge as f64;
+            pts.push(vec![2.0 + 8.0 * t, 0.4 * (next() - 0.5)]);
+        }
+        let mut tree: CFTree<f64, Spherical<f64>, CentroidEuclidean, Radius> =
+            CFTree::new(2, 8, 8, 0.6, 4096, CentroidEuclidean, Radius);
+        for p in &pts {
+            tree.insert(p);
+        }
+        tree.leaf_features().to_vec()
+    }
+
+    #[test]
+    fn every_microcluster_lands_in_a_bin_even_when_the_range_does_not_round_back() {
+        // `lo + (hi - lo)` is one ulp below `hi` for this pair, so recomputing the last bin's upper
+        // edge from `lo` and the step puts the highest microcluster outside every bin. Before the
+        // outer edges were clamped to the observed range it vanished from the graph entirely.
+        let (lo, hi) = (-1.542_475_557_459_094_7, 1.890_541_391_107_844_6);
+        assert!(
+            lo + (hi - lo) < hi,
+            "the fixture no longer exercises the rounding"
+        );
+        let feats: Vec<Spherical<f64>> = [lo, 0.0, hi]
+            .iter()
+            .map(|&y| {
+                let mut cf = Spherical::new(2);
+                cf.push(&[0.0, y], 1.0);
+                cf
+            })
+            .collect();
+        let g = mapper(
+            &feats,
+            &MapperParams {
+                lens: Lens::Coordinate(1),
+                resolution: 1,
+                gain: 0.0,
+                link_scale: 0.1,
+                link: Link::Centroid,
+                min_node_mass: 0.0,
+            },
+        );
+        let mut seen: Vec<usize> = g.nodes.iter().flat_map(|n| n.members.clone()).collect();
+        seen.sort_unstable();
+        seen.dedup();
+        assert_eq!(
+            seen,
+            vec![0, 1, 2],
+            "a microcluster is missing from the skeleton"
+        );
+    }
+
+    #[test]
+    fn the_bhattacharyya_linkage_refuses_the_bridge_the_centroid_rule_chains_through() {
+        // The chaining failure and its fix, at the one (bridge, link_scale) cell where the centroid
+        // rule fails on all three seeds. Both halves matter: not chaining is trivial if nothing
+        // links at all, so the blobs must also still be one piece each.
+        let params = |link| MapperParams {
+            lens: Lens::Coordinate(1),
+            resolution: 1,
+            gain: 0.0,
+            link_scale: 3.0,
+            link,
+            min_node_mass: 0.0,
+        };
+        for seed in 0..3u64 {
+            let feats = tree_dumbbell(seed, 60);
+            let (chained, _) = chaining_and_fragmentation(&feats, &params(Link::Centroid));
+            assert!(
+                chained,
+                "seed {seed}: the fixture stopped chaining under centroid distance"
+            );
+            let (chained, pieces) =
+                chaining_and_fragmentation(&feats, &params(Link::Bhattacharyya));
+            assert!(
+                !chained,
+                "seed {seed}: the Bhattacharyya rule crossed the bridge"
+            );
+            assert_eq!(
+                pieces, 2,
+                "seed {seed}: the blobs fragmented instead of staying whole"
+            );
+        }
+    }
+
+    /// The refuted bounded metric, kept here so its refutation stays reproducible from the repo.
+    /// Not in [`Link`]: it never won a cell.
+    fn hellinger_diag(mu_a: &[f64], var_a: &[f64], mu_b: &[f64], var_b: &[f64]) -> f64 {
+        (1.0 - bhattacharyya_diag(mu_a, var_a, mu_b, var_b))
+            .max(0.0)
+            .sqrt()
+    }
+
+    /// The single-bin linkage rule written out by hand, so a metric that is not in [`Link`] can be
+    /// put through exactly the same rule. Verified against [`mapper`] in the harness itself.
+    fn hand_linkage(
+        feats: &[Spherical<f64>],
+        scale: f64,
+        dist: impl Fn(usize, usize) -> f64,
+    ) -> (bool, usize) {
+        let n = feats.len();
+        let mut nn = vec![f64::INFINITY; n];
+        for a in 0..n {
+            for b in (a + 1)..n {
+                let d = dist(a, b);
+                nn[a] = nn[a].min(d);
+                nn[b] = nn[b].min(d);
+            }
+        }
+        let mut sorted = nn.clone();
+        sorted.sort_by(|x, y| x.partial_cmp(y).unwrap());
+        let thresh = scale * sorted[n / 2];
+        let mut uf = UnionFind::new(n);
+        for a in 0..n {
+            for b in (a + 1)..n {
+                if dist(a, b) <= thresh {
+                    uf.union(a, b);
+                }
+            }
+        }
+        let mut sides: HashMap<usize, (bool, bool)> = HashMap::new();
+        for (i, feat) in feats.iter().enumerate() {
+            let x = feat.mean()[0];
+            let e = sides.entry(uf.find(i)).or_insert((false, false));
+            e.0 |= x < 4.0;
+            e.1 |= x > 8.0;
+        }
+        let chained = sides.values().any(|&(l, r)| l && r);
+        let pieces = sides.values().filter(|&&(l, r)| l || r).count();
+        (chained, pieces)
+    }
+
+    /// Chaining, and the fragmentation that trading against it would cost.
+    ///
+    /// Returns `(chained, blob_pieces)`: whether some node holds leaves from both blobs, and how
+    /// many nodes the two blobs are broken into between them. A linkage that refuses to cross the
+    /// bridge by refusing to link anything at all scores `false` on the first and badly on the
+    /// second, so the two have to be read together.
+    fn chaining_and_fragmentation(feats: &[Spherical<f64>], p: &MapperParams) -> (bool, usize) {
+        let g = mapper(feats, p);
+        let side = |i: usize| {
+            let x = feats[i].mean()[0];
+            if x < 4.0 {
+                Some(0)
+            } else if x > 8.0 {
+                Some(1)
+            } else {
+                None
+            }
+        };
+        let chained = g.nodes.iter().any(|node| {
+            let sides: Vec<usize> = node.members.iter().filter_map(|&i| side(i)).collect();
+            sides.contains(&0) && sides.contains(&1)
+        });
+        let pieces = g
+            .nodes
+            .iter()
+            .filter(|node| node.members.iter().any(|&i| side(i).is_some()))
+            .count();
+        (chained, pieces)
+    }
+
+    #[test]
+    #[ignore = "prints the chaining sweep behind the linkage table"]
+    fn measure_chaining_linkage() {
+        println!(
+            "chained? per (link, link_scale), median of seeds 0/1/2; blob pieces in brackets (2 is ideal)"
+        );
+        for bridge in [12usize, 25, 60] {
+            println!("\nbridge of {bridge} points");
+            print!("{:>12}", "link");
+            for scale in [0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0] {
+                print!("{:>12}", format!("s={scale}"));
+            }
+            println!();
+            for (name, link) in [
+                ("Centroid", Some(Link::Centroid)),
+                ("Hellinger", None),
+                ("Bhattacharyya", Some(Link::Bhattacharyya)),
+            ] {
+                print!("{name:>14}");
+                for scale in [0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0] {
+                    let mut chained = 0;
+                    let mut pieces = Vec::new();
+                    for seed in 0..3u64 {
+                        let feats = tree_dumbbell(seed, bridge);
+                        let p = MapperParams {
+                            lens: Lens::Coordinate(1),
+                            resolution: 1,
+                            gain: 0.0,
+                            link_scale: scale,
+                            link: link.unwrap_or(Link::Centroid),
+                            min_node_mass: 0.0,
+                        };
+                        let mu: Vec<Vec<f64>> = feats.iter().map(centroid64).collect();
+                        let var: Vec<Vec<f64>> = feats
+                            .iter()
+                            .map(|c| (0..c.dim()).map(|k| c.variance(k)).collect())
+                            .collect();
+                        let (c, f) = match link {
+                            Some(_) => {
+                                let shipped = chaining_and_fragmentation(&feats, &p);
+                                if link == Some(Link::Centroid) {
+                                    // The hand-written rule must reproduce the shipped one, or the
+                                    // Hellinger row below is measuring a different algorithm.
+                                    let by_hand =
+                                        hand_linkage(&feats, scale, |a, b| euclid(&mu[a], &mu[b]));
+                                    assert_eq!(shipped, by_hand, "the hand rule diverged");
+                                }
+                                shipped
+                            }
+                            None => hand_linkage(&feats, scale, |a, b| {
+                                hellinger_diag(&mu[a], &var[a], &mu[b], &var[b])
+                            }),
+                        };
+                        chained += usize::from(c);
+                        pieces.push(f);
+                    }
+                    pieces.sort_unstable();
+                    print!("{:>12}", format!("{chained}/3 [{}]", pieces[1]));
+                }
+                println!();
+            }
+        }
+    }
+
     #[test]
     fn mapper_dumbbell_skeleton_has_a_bridge() {
         let g = mapper(
@@ -559,6 +860,7 @@ mod tests {
                 resolution: 8,
                 gain: 0.4,
                 link_scale: 3.0,
+                link: Link::Centroid,
                 min_node_mass: 0.0,
             },
         );
@@ -688,6 +990,7 @@ mod tests {
                 resolution: 4,
                 gain: 0.3,
                 link_scale: 1.0,
+                link: Link::Centroid,
                 min_node_mass: 0.0,
             },
         );
@@ -757,6 +1060,7 @@ mod tests {
             resolution: 8,
             gain: 0.4,
             link_scale: 3.0,
+            link: Link::Centroid,
             min_node_mass: 0.0,
         };
         let kept = mapper(&micros, &base);
@@ -783,6 +1087,7 @@ mod tests {
                 resolution: 8,
                 gain: 0.4,
                 link_scale: 3.0,
+                link: Link::Centroid,
                 min_node_mass: 0.0,
             },
         );
@@ -855,6 +1160,7 @@ mod tests {
             resolution: 8,
             gain: 0.3,
             link_scale: 2.0,
+            link: Link::Centroid,
             min_node_mass: 0.0,
         };
         let g = mapper(&feats, &p);
@@ -931,6 +1237,7 @@ mod tests {
                 resolution: 6,
                 gain: 0.25,
                 link_scale,
+                link: Link::Centroid,
                 min_node_mass: 0.0,
             };
             let g = mapper(&feats, &p);
@@ -1348,6 +1655,7 @@ mod tests {
                         resolution,
                         gain,
                         link_scale,
+                        link: Link::Centroid,
                         min_node_mass: 0.0,
                     };
                     let ctx =
@@ -1381,6 +1689,7 @@ mod tests {
             resolution: 8,
             gain: 0.3,
             link_scale: 2.0,
+            link: Link::Centroid,
             min_node_mass: 0.0,
         };
         let f = lens_values(&mu, &radius, base.lens);
@@ -1487,6 +1796,7 @@ mod tests {
                     resolution,
                     gain,
                     link_scale,
+                    link: Link::Centroid,
                     min_node_mass: 0.0,
                 },
             );
