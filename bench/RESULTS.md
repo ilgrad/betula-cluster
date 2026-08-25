@@ -1307,6 +1307,45 @@ same dendrogram at every integer size from 1 to 700.
 It ships as a Rust-only `Selection`, with the default untouched and no Python surface: a conditional
 win needs the condition stated at the call site, and a `method=` string cannot carry one.
 
+## What the leaf budget actually buys: the Zador slope, and why it is not the intrinsic dimension (task #60)
+
+`bench/leaf_budget.py` records the summary's mean squared quantization error alongside the realised
+leaf count. Zador's theorem gives the asymptotics of an optimal `m`-point quantizer of a source of
+intrinsic dimension `d`, `D(m) ~ C·m^(−2/d)`, so the slope of `log D` against `log m` estimates
+`−2/d` **without ever seeing a label**. `bench/zador_fit.py` fits it, and cross-checks against TWO-NN
+(Facco et al., Sci. Rep. 7, 2017), which estimates the same quantity from nearest-neighbour ratios
+and knows nothing about quantizers:
+
+| dataset | routing | budgets | slope | `d_eff` | TWO-NN | ambient |
+|---|---|---:|---:|---:|---:|---:|
+| covtype-20k | euclidean | 7 (99–7295) | −0.745 ± 0.068 | 2.68 ± 0.24 | 4.61 | 54 |
+| covtype-20k | ward | 7 (90–7302) | −0.674 ± 0.053 | 2.97 ± 0.23 | 4.61 | 54 |
+| digits | euclidean | 6 (44–898) | −0.703 ± 0.103 | 2.85 ± 0.42 | 12.91 | 64 |
+| digits | ward | 6 (41–828) | −0.544 ± 0.071 | **3.67 ± 0.48** | 12.91 | 64 |
+| mnist-10k | euclidean | 6 (97–3904) | −0.432 ± 0.082 | 4.63 ± 0.88 | 18.65 | 784 |
+| mnist-10k | ward | 6 (90–3840) | −0.417 ± 0.051 | 4.79 ± 0.59 | 18.65 | 784 |
+
+`R²` is 0.87–0.97 across all twelve `(dataset × routing)` fits, so the power law itself is a good
+description over the range users operate in. What it is *not* is an intrinsic-dimension estimate:
+TWO-NN says 4.6 / 12.9 / 18.7 and the Zador slope says 2.7 / 2.9 / 4.6, a gap that widens with
+dimension and is far outside the fitted uncertainty. **The disagreement is the result, not noise.**
+
+The error falls *faster* than a uniform `d`-dimensional source allows, because at these budgets the
+tree is not resolving a manifold — it is still eating between-cluster variance. Zador's law is
+asymptotic in `m`, and resolving `d` dimensions needs `m ≫ 2^d`; at `m = 900` and `d = 12.9`,
+`m^(1/d) = 1.7`, under two cells per axis. So the number to quote is not "the intrinsic dimension of
+`digits` is 2.85" — it is the operational statement the slope licenses directly: **doubling the leaf
+budget divides the quantization error by `2^(2/d_eff)`**, which is 1.6× on `digits` and 1.36× on
+`mnist-10k`. Had the exponent been the true intrinsic dimension, doubling would have bought 1.11×
+and 1.08× — the budget knob is a great deal more useful than an ID-based estimate would predict, and
+this is why the quality-vs-budget curves saturate as early as they do.
+
+One row stands out. On `digits`, `ward` routing has the shallowest slope of the four — `d_eff`
+3.67 ± 0.48 against euclidean's 2.85 ± 0.42 — i.e. its quantization error improves *least* per extra
+leaf. That is the mass-balancing lever from the covtype work seen from the other side: ward routing
+spends budget on keeping leaves comparable in weight rather than on shrinking the worst radius, and
+the squared-radius metric charges it for that.
+
 ## Insertion-order sensitivity — the property the whole BIRCH family inherits
 
 `bench/insertion_order.py`, `bench/results_order.csv` (54 cells). A CF-tree routes each point against
