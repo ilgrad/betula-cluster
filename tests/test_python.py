@@ -13,7 +13,7 @@ from math import comb
 import betula_cluster
 import numpy as np
 import pytest
-from betula_cluster import estimate_threshold
+from betula_cluster import estimate_threshold, gap_statistic
 
 
 def ari(a, b):
@@ -1166,6 +1166,43 @@ def test_tree_report_adds_the_abirch_estimate_when_given_the_data():
     assert report["suggested_n_clusters"] == 4
     assert report["threshold"] > 2.0 * report["suggested_threshold"]
     assert "leaves are absorbing points from more than one cluster" in " ".join(report["diagnosis"])
+
+
+def _gap_fixture(kind, seed=0):
+    rng = np.random.default_rng(seed)
+    if kind == "blobs":
+        return np.vstack(
+            [np.array([40.0 * i, 0.0, 0.0]) + rng.standard_normal((150, 3)) for i in range(3)]
+        )
+    return rng.normal(0.0, 1.0, (450, 3))
+
+
+def test_gap_statistic_recovers_a_known_k():
+    curve = gap_statistic(_gap_fixture("blobs"), k_max=5, n_refs=4, max_leaves=100, seed=0)
+    assert curve.k == 3
+    assert curve.ks == [1, 2, 3, 4, 5]
+    assert len(curve.gaps) == len(curve.standard_errors) == 5
+    assert curve.gaps[2] == max(curve.gaps)
+
+
+def test_gap_statistic_answers_one_on_a_single_blob():
+    # The capability Calinski-Harabasz and Davies-Bouldin do not have: `k = 1` is a possible answer,
+    # and on an unstructured sample it is the one that comes back.
+    curve = gap_statistic(_gap_fixture("gaussian"), k_max=5, n_refs=4, max_leaves=100, seed=0)
+    assert curve.k == 1
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({}, "2-D sample of at least 2 rows"),
+        ({"k_max": 0}, "k_max >= 1"),
+    ],
+)
+def test_gap_statistic_rejects_arguments_it_cannot_use(kwargs, message):
+    rows = np.zeros(4) if not kwargs else np.zeros((10, 2))
+    with pytest.raises(ValueError, match=message):
+        gap_statistic(rows, **kwargs)
 
 
 def test_estimate_threshold_recovers_well_separated_blobs():

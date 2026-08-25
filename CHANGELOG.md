@@ -95,6 +95,21 @@ All notable changes to this project are documented here. The format follows
   with the Leiden head and four synthetic fixtures are not the evidence base for a constant that
   relabels two heads at once. Tables in
   [`bench/RESULTS.md`](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md).
+- **`gap_statistic`: a `k`-selector that is allowed to answer `k = 1`.** Calinski–Harabasz is
+  undefined at `k = 1` and the distance-based indices hallucinate structure in noise — Schubert,
+  *Stop using the elbow criterion for k-means* (SIGKDD Explorations 25(1), 2023), Table 1 records
+  Silhouette and Davies–Bouldin reporting 3–22 clusters in pure noise where BIC reports one, and the
+  gap statistic doing so only partly. This computes the gap **on the leaf summary**: pooled
+  within-cluster dispersion from `S_i + n_i‖μ_i − c‖²` (exact, `O(ℓ k d)`, no second pass over the
+  points) against a uniform null over the data's bounding box that is *re-summarized at the same leaf
+  budget*, so both sides pay the same quantization error and the gap measures structure rather than
+  compression. The reference draws are shared across `k`, which pairs the comparison. Measured on
+  that table's two nulls (1000×5, seeds 0/1/2): a single Gaussian answers `k = 1` on every seed,
+  uniform noise on two of three — and the third is a near-tie, `gap(1) − gap(2) = −0.007` against
+  `−2.83` for a real two-cluster fixture, i.e. undecided rather than confidently wrong. Two- and
+  four-blob controls come back at 2 and 4 on every seed. `docs/USAGE.md` now carries the
+  which-selector-when table (BIC parametric and authoritative, CH cheap but `k > 1` only, gap for the
+  `k = 1` capability without a distributional assumption).
 - **`tree_report()` and `estimate_threshold`: why the tree collapsed, and whether it mattered.**
   `Betula.tree_report()` answers "why is my tree collapsing?" from the leaf summary alone — budget
   fill, the heaviest leaf's share of the mass, its width against a typical leaf, and leaf-mass

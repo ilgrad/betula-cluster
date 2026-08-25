@@ -7,9 +7,11 @@ from typing import Any, Literal, final
 import numpy as np
 from numpy.typing import NDArray
 
+from .tuning import GapCurve as GapCurve
 from .tuning import ThresholdEstimate as ThresholdEstimate
 from .tuning import TuneResult as TuneResult
 from .tuning import estimate_threshold as estimate_threshold
+from .tuning import gap_statistic as gap_statistic
 from .tuning import tune as tune
 
 __all__ = [
@@ -20,6 +22,7 @@ __all__ = [
     "DbStream",
     "DdSketch",
     "DenStream",
+    "GapCurve",
     "KPrototypes",
     "KllSketch",
     "MapperGraph",
@@ -31,6 +34,7 @@ __all__ = [
     "estimate_threshold",
     "fit_predict",
     "fit_predict_sparse",
+    "gap_statistic",
     "mixture_w2",
     "tune",
 ]

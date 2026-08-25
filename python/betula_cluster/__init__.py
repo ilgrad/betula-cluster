@@ -26,7 +26,7 @@ from ._core import KPrototypes as _CoreKPrototypes  # type: ignore
 from ._core import WindowStream as _CoreWindowStream  # type: ignore
 from ._core import fit_predict_sparse as _core_fit_predict_sparse  # type: ignore
 from ._core import mixture_w2 as _core_mixture_w2  # type: ignore
-from .tuning import ThresholdEstimate, TuneResult, estimate_threshold, tune
+from .tuning import GapCurve, ThresholdEstimate, TuneResult, estimate_threshold, gap_statistic, tune
 
 try:
     __version__ = version("betula-cluster")
@@ -41,6 +41,7 @@ __all__ = [
     "DbStream",
     "DdSketch",
     "DenStream",
+    "GapCurve",
     "KPrototypes",
     "KllSketch",
     "MapperGraph",
@@ -52,6 +53,7 @@ __all__ = [
     "estimate_threshold",
     "fit_predict",
     "fit_predict_sparse",
+    "gap_statistic",
     "mixture_w2",
     "tune",
 ]

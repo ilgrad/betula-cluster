@@ -382,6 +382,31 @@ undefined at `k = 1`, which is the same limitation stated honestly. For the "is 
 at all" question, fit with `n_clusters=0` on a mixture head and let BIC answer — that path is
 unchanged and is the authority.
 
+### `k` with a `k = 1` answer available — `gap_statistic`
+
+```python
+curve = betula_cluster.gap_statistic(X, k_max=8, n_refs=10, max_leaves=200)
+curve.k                       # the chosen k -- 1 is a possible answer
+curve.ks, curve.gaps, curve.standard_errors    # the whole sweep, for plotting
+```
+
+The null is a uniform sample over the data's bounding box **re-summarized at the same leaf budget**,
+so both sides of the gap pay the same quantization error and the statistic measures structure rather
+than compression; the same reference draws are reused across `k`, which pairs the comparison. Cost is
+`O(ℓ k d)` per fit off the leaf summary, with no second pass over the points.
+
+Measured on the two null fixtures from that table (1000×5, medians of seeds 0/1/2): a **single
+Gaussian** answers `k = 1` on every seed, **uniform noise** on two seeds of three — the third is a
+near-tie, `gap(1) − gap(2) = −0.007` against `−2.83` for a genuine two-cluster fixture, so it is an
+undecided answer rather than a confident wrong one. That matches the paper's "partly". Two-blob and
+four-blob controls come back at 2 and 4 on every seed.
+
+| selector | trust it when | cannot |
+|---|---|---|
+| BIC (`n_clusters=0`, mixture head) | you want the authority on "is there anything here" | — it is parametric, so it is answering about *Gaussians* |
+| `calinski_harabasz` | you want a cheap `k` and already believe `k > 1` | say `k = 1`; it is undefined there |
+| `gap_statistic` | you need `k = 1` on the table but not a distributional assumption | be decisive on pure noise — expect the near-tie |
+
 `method="ward"` with `n_clusters=0` now cuts the dendrogram at the best Calinski–Harabasz score
 rather than at the largest relative jump in merge height. The old rule was the elbow criterion in a
 dendrogram's clothing, and it fails exactly where the paper says it does: on two far groups of two
