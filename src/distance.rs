@@ -259,10 +259,12 @@ impl<R: Real> SubspaceChi2<R> {
         }
     }
 
-    fn subspace_sq<C: ClusterFeature<R>>(&self, cf: &C, x: &[R], rows: &[Vec<R>]) -> R {
+    fn subspace_sq<C: ClusterFeature<R>>(&self, cf: &C, x: &[R], rows: &[Vec<R>], iso: R) -> R {
         let n = cf.weight();
         let denom = n + self.diagonal.prior_count;
-        let b = self.diagonal.prior_count * self.diagonal.prior_scale / denom;
+        // Σ_eff = a·(FᵀF + iso·I) + b·I, so the sketch's isotropic residual joins the prior's own
+        // isotropic term and Woodbury is unchanged.
+        let b = (self.diagonal.prior_count * self.diagonal.prior_scale + n * iso) / denom;
         if b <= R::zero() {
             return self.diagonal.maha_sq(cf, x);
         }
@@ -311,7 +313,7 @@ impl<R: Real> SubspaceChi2<R> {
 impl<R: Real, C: ClusterFeature<R>> CFDistance<R, C> for SubspaceChi2<R> {
     fn point(&self, cf: &C, x: &[R]) -> R {
         match cf.second_moment() {
-            SecondMoment::LowRank(rows) => self.subspace_sq(cf, x, &rows),
+            SecondMoment::LowRank { rows, iso, .. } => self.subspace_sq(cf, x, &rows, iso),
             SecondMoment::Dense(_) => self.diagonal.maha_sq(cf, x),
         }
     }
@@ -571,7 +573,7 @@ mod tests {
     /// `yᵀ(a·FᵀF + b·I)⁻¹y` the slow way: materialise the `d×d` matrix and invert it. Independent of
     /// the Woodbury path under test, which never forms a `d×d` matrix at all.
     fn dense_maha_sq(cf: &FdSketch<f64>, x: &[f64], s0: f64, kappa: f64) -> f64 {
-        let SecondMoment::LowRank(rows) = cf.second_moment() else {
+        let SecondMoment::LowRank { rows, iso, .. } = cf.second_moment() else {
             unreachable!("FdSketch reports LowRank")
         };
         let (n, d) = (cf.weight(), x.len());
@@ -585,7 +587,7 @@ mod tests {
             }
         }
         for (i, mi) in m.iter_mut().enumerate() {
-            mi[i] += b;
+            mi[i] += b + a * iso;
         }
         let y: Vec<f64> = x.iter().zip(cf.mean()).map(|(&xj, &mj)| xj - mj).collect();
         let chol = linalg::cholesky_lower(&m).expect("Σ_eff is positive definite for b > 0");

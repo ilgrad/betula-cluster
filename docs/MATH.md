@@ -302,7 +302,12 @@ clusters). This is parameter-free and non-convex-aware.
   size-imbalance failure where a 12-point vs a $10^4$-point cluster decide differently (sklearn #22854).
 - **Frequent-Directions sketch** (high $d$): the full-cov GMM consumes it in **low-rank** form —
   $\mathrm{tr}(\Sigma_k^{-1}\Sigma_i) = \sum_r \|L_k^{-1} f_r\|^2$ — so it never materializes a $d \times d$ matrix per leaf and keeps
-  $O(\ell d)$ memory through clustering. Identical math to the dense path.
+  $O(\ell d)$ memory through clustering. Identical math to the dense path. The shrink step subtracts
+  the lower-median $\sigma^2$ from every direction; that trace is banked rather than discarded, so
+  $S = \mathrm{tr}(B^\mathsf{T}B) + \text{lost}$ is the leaf's *exact* scatter, and the covariance is
+  reported as $\Sigma = \frac{S}{\mathrm{tr}(B^\mathsf{T}B)}\cdot\frac{B^\mathsf{T}B}{n}$ — the retained
+  directions scaled to carry the missing mass. Measured against the isotropic alternative in
+  `bench/RESULTS.md`; without either, the sketch reports as little as 66 % of its own scatter.
 - **Rebuild** merges the $k$ closest within-leaf sibling pairs, where $k$ is what the leaf budget asks
   for, and raises the threshold to the widest gap it took (monotone, $O(M \cdot \text{capacity})$ scan,
   no global all-pairs). Two consequences. *In place*: merging two entries inside one leaf node leaves

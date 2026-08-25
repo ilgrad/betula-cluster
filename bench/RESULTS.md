@@ -997,6 +997,54 @@ The `mean_sq_radius` column is Σᵢwᵢrᵢ²/n, the summary's mean squared qua
 the input to task #60's Zador-form fit. It is monotone in the leaf count on all three datasets and is
 label-free, so it can be reported for data with no ground truth at all.
 
+## The FD sketch was reporting a third less scatter than it holds (task #75)
+
+`FdSketch` approximates a leaf's scatter by a Frequent-Directions sketch, and the shrink step
+subtracts the lower-median squared singular value from every direction. That subtracted mass was
+discarded outright, so `ssd()` — the number the radius, the absorption gate, D2/D3 and the k-means++
+potential all read — under-reported the leaf. How much is not a rounding question:
+
+| `d` | `ℓ` | fraction of the true scatter still reported |
+|---:|---:|---:|
+| 64 | 16 | 0.670 |
+| 64 | 32 | 0.820 |
+| 784 | 16 | 0.660 |
+| 784 | 64 | 0.897 |
+
+(uniform-ish synthetic rows, `n = 5000`; the ratio is stable in `n` past a few hundred points.)
+
+The fix banks the discarded trace, so `ssd()` is now exact — asserted against the `Full` feature over
+the same points in both a unit test and a property test, both of which fail on revert.
+
+**Giving the trace back to the *shape* is a separate question, and it was measured, not assumed.**
+The sketch destroyed the directions along with the magnitudes, so two completions are available:
+scale the retained directions up to carry the trace, or spread it isotropically over all `d`. Median
+ARI of seeds 0/1/2, `feature="fd"`:
+
+| dataset | head | budget | no fix | isotropic | proportional |
+|---|---|---:|---:|---:|---:|
+| digits | gmm | 900 | 0.3840 | 0.3828 | **0.4386** |
+| digits | gmm | 450 | 0.4538 | 0.1346 | **0.5456** |
+| digits | gmm | 225 | 0.4179 | 0.3081 | **0.4929** |
+| mnist-10k | gmm | 2000 | **0.2736** | 0.1247 | 0.2363 |
+| mnist-10k | gmm | 500 | **0.2512** | 0.1718 | 0.1580 |
+| mnist-10k | gmm | 250 | **0.1841** | 0.1286 | 0.1393 |
+
+Three things the table settles:
+
+- **Isotropic is refuted.** It loses in all six cells, by up to 0.32 ARI. The mechanism is visible in
+  the shape of the two datasets: on MNIST it spreads a third of the leaf's mass across 784
+  directions when the sketch only ever saw 32, filling 752 directions that hold no data at all.
+- **The shipped completion is proportional**, and its sign is dimension-dependent: +0.05…+0.09 on
+  64-dimensional `digits`, −0.04…−0.09 on 784-dimensional MNIST. At `d ≫ ℓ` it concentrates the
+  recovered mass in too few directions, which is the opposite error and a smaller one. There is no
+  completion that is right for both, because the sketch no longer holds the information that would
+  decide between them; the trace is the only part it can track exactly, and now does.
+- **Only the `gmm` head can see any of this.** `ward` is byte-identical across all three variants
+  (D4 is a pure centroid measure), and `kmeans` moves only within its own seed spread. The leaf
+  counts are identical in every cell, so the tree itself — absorption and routing — is unchanged by
+  the exact trace at these budgets.
+
 ## Insertion-order sensitivity — the property the whole BIRCH family inherits
 
 `bench/insertion_order.py`, `bench/results_order.csv` (54 cells). A CF-tree routes each point against

@@ -14,16 +14,24 @@ use crate::linalg;
 use crate::types::Real;
 
 /// A feature's covariance `Σ = M / n` in the form the full-covariance GMM E-step needs: `Dense` for
-/// the dense models, or `LowRank` rows `{f_r}` with `Σ = Σ_r f_r f_rᵀ` for the Frequent-Directions
-/// sketch. The low-rank form keeps the GMM at `O(ℓ·d)` per leaf instead of materialising `d×d`
-/// (which would undo FD's whole memory advantage). Both encode the same matrix, so every accessor
-/// here — `trace_under`, `trace`, `apply_rows`, `add_scaled` — returns identical values for either
-/// variant.
+/// the dense models, or `LowRank` rows `{f_r}` plus an isotropic floor with
+/// `Σ = Σ_r f_r f_rᵀ + iso·I` for the Frequent-Directions sketch. The low-rank form keeps the GMM at
+/// `O(ℓ·d)` per leaf instead of materialising `d×d` (which would undo FD's whole memory advantage).
+/// Both encode the same matrix, so every accessor here — `trace_under`, `trace`, `apply_rows`,
+/// `add_scaled` — returns identical values for either variant.
 pub enum SecondMoment<R: Real> {
     /// Dense `d×d` covariance.
     Dense(Vec<Vec<R>>),
-    /// Rows `f_r` such that `Σ = Σ_r f_r f_rᵀ`.
-    LowRank(Vec<Vec<R>>),
+    /// Rows `f_r` and an isotropic term with `Σ = Σ_r f_r f_rᵀ + iso·I`. `iso` carries the scatter
+    /// the sketch shrink discarded, whose directions are no longer known — see [`FdSketch`].
+    LowRank {
+        /// Rank-1 factors of the retained directions.
+        rows: Vec<Vec<R>>,
+        /// Per-dimension variance of the discarded mass (`0` for an exact sketch).
+        iso: R,
+        /// Ambient dimension — `rows` may be empty, and `iso·I` still has a trace.
+        dim: usize,
+    },
 }
 
 #[allow(clippy::needless_range_loop)] // dense matrix arithmetic reads clearest with (i, j) indices
@@ -42,14 +50,21 @@ impl<R: Real> SecondMoment<R> {
                 }
                 s
             }
-            SecondMoment::LowRank(rows) => rows
-                .iter()
-                .map(|f| linalg::mahalanobis_sq_from_chol(chol, f))
-                .fold(R::zero(), |a, b| a + b),
+            SecondMoment::LowRank { rows, iso, .. } => {
+                let low = rows
+                    .iter()
+                    .map(|f| linalg::mahalanobis_sq_from_chol(chol, f))
+                    .fold(R::zero(), |a, b| a + b);
+                // tr(A⁻¹·iso·I) = iso·tr(A⁻¹).
+                let t = (0..inv.len())
+                    .map(|i| inv[i][i])
+                    .fold(R::zero(), |a, b| a + b);
+                low + *iso * t
+            }
         }
     }
 
-    /// `tr(Σ)`. For `LowRank` this is `Σ_r ‖f_r‖²`, so the diagonal is never materialised.
+    /// `tr(Σ)`. For `LowRank` this is `Σ_r ‖f_r‖² + iso·d`, so the diagonal is never materialised.
     pub fn trace(&self) -> R {
         match self {
             SecondMoment::Dense(cov) => cov
@@ -57,10 +72,12 @@ impl<R: Real> SecondMoment<R> {
                 .enumerate()
                 .map(|(d, row)| row[d])
                 .fold(R::zero(), |a, b| a + b),
-            SecondMoment::LowRank(rows) => rows
-                .iter()
-                .map(|f| f.iter().map(|&v| v * v).fold(R::zero(), |a, b| a + b))
-                .fold(R::zero(), |a, b| a + b),
+            SecondMoment::LowRank { rows, iso, dim } => {
+                rows.iter()
+                    .map(|f| f.iter().map(|&v| v * v).fold(R::zero(), |a, b| a + b))
+                    .fold(R::zero(), |a, b| a + b)
+                    + *iso * R::from_usize(*dim).unwrap()
+            }
         }
     }
 
@@ -81,7 +98,7 @@ impl<R: Real> SecondMoment<R> {
                     }
                 }
             }
-            SecondMoment::LowRank(rows) => {
+            SecondMoment::LowRank { rows, iso, .. } => {
                 for (vr, o) in v.iter().zip(out.iter_mut()) {
                     for f in rows {
                         let dot = f
@@ -94,6 +111,12 @@ impl<R: Real> SecondMoment<R> {
                             for (ov, &fv) in o.iter_mut().zip(f) {
                                 *ov = *ov + c * fv;
                             }
+                        }
+                    }
+                    let c = w * *iso; // (iso·I)v = iso·v
+                    if c != R::zero() {
+                        for (ov, &vv) in o.iter_mut().zip(vr) {
+                            *ov = *ov + c * vv;
                         }
                     }
                 }
@@ -111,7 +134,7 @@ impl<R: Real> SecondMoment<R> {
                     }
                 }
             }
-            SecondMoment::LowRank(rows) => {
+            SecondMoment::LowRank { rows, iso, .. } => {
                 let d = target.len();
                 for f in rows {
                     for a in 0..d {
@@ -121,6 +144,12 @@ impl<R: Real> SecondMoment<R> {
                                 target[a][b] = target[a][b] + wfa * f[b];
                             }
                         }
+                    }
+                }
+                let c = w * *iso;
+                if c != R::zero() {
+                    for a in 0..d {
+                        target[a][a] = target[a][a] + c;
                     }
                 }
             }
@@ -498,6 +527,17 @@ pub const FD_DEFAULT_ELL: usize = 32;
 /// weight are exact; each Welford rank-1 scatter update inserts one weighted, centred row, and the
 /// sketch is periodically shrunk (Liberty 2013) keeping the dominant directions. For large `d`
 /// (embeddings) where a full `d×d` covariance per leaf is too big to store.
+///
+/// The shrink discards real mass — measured at 10–34 % of a leaf's scatter for `ℓ` between 16 and 64
+/// — and used to drop it on the floor, so the radius, the absorption gate, Ward's cost and the GMM
+/// all saw a leaf up to a third tighter than it is. `lost` now records the discarded trace exactly,
+/// and [`ssd`](ClusterFeature::ssd) reports `tr(BᵀB) + lost`, which is the leaf's true total scatter.
+///
+/// Giving that trace back to the *shape* is a modelling choice, since the shrink destroyed the
+/// directions along with the magnitudes, and both candidates were measured on the `gmm` head:
+/// scaling the retained directions up to carry it (chosen) against spreading it isotropically over
+/// all `d` (refuted — it fills `d − ℓ` directions that hold no data, and costs up to 0.32 ARI). See
+/// `bench/RESULTS.md`. When a shrink leaves no direction at all, isotropic is the only choice left.
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "persistence", derive(serde::Serialize, serde::Deserialize))]
 pub struct FdSketch<R: Real> {
@@ -507,6 +547,9 @@ pub struct FdSketch<R: Real> {
     rows: usize,
     ell: usize,
     dim: usize,
+    /// Trace of the scatter the shrinks discarded, in the same units as [`ClusterFeature::ssd`].
+    #[cfg_attr(feature = "persistence", serde(default = "R::zero"))]
+    lost: R,
 }
 
 #[allow(clippy::needless_range_loop)] // sketch/gram math reads clearest with explicit indices
@@ -521,6 +564,34 @@ impl<R: Real> FdSketch<R> {
             rows: 0,
             ell,
             dim,
+            lost: R::zero(),
+        }
+    }
+
+    /// Trace of the scatter the sketch still holds explicitly, `tr(BᵀB)`.
+    fn kept(&self) -> R {
+        self.sketch
+            .iter()
+            .take(self.rows)
+            .flatten()
+            .map(|&x| x * x)
+            .fold(R::zero(), |a, b| a + b)
+    }
+
+    /// How to give the discarded trace back: a factor on the retained directions, or — only when the
+    /// shrink left no direction at all — an isotropic per-dimension variance.
+    fn completion(&self) -> (R, R) {
+        if self.lost <= R::zero() || self.w <= R::zero() || self.dim == 0 {
+            return (R::one(), R::zero());
+        }
+        let kept = self.kept();
+        if kept > R::zero() {
+            ((kept + self.lost) / kept, R::zero())
+        } else {
+            (
+                R::one(),
+                self.lost / (self.w * R::from_usize(self.dim).unwrap()),
+            )
         }
     }
 
@@ -553,6 +624,9 @@ impl<R: Real> FdSketch<R> {
             let sigma2 = eig[i].max(R::zero());
             let sigma = sigma2.sqrt();
             let sigma_p = (sigma2 - delta).max(R::zero()).sqrt();
+            // Whatever this direction gives up — `delta`, or all of `sigma2` for a freed row — is
+            // real scatter of the leaf. Bank its trace instead of dropping it on the floor.
+            self.lost = self.lost + sigma2 - sigma_p * sigma_p;
             if sigma <= tiny || sigma_p <= tiny {
                 continue; // null or shrunk-to-zero direction → row freed
             }
@@ -597,21 +671,17 @@ impl<R: Real> ClusterFeature<R> for FdSketch<R> {
         &self.mean
     }
     fn ssd(&self) -> R {
-        self.sketch
-            .iter()
-            .take(self.rows)
-            .flatten()
-            .map(|&x| x * x)
-            .fold(R::zero(), |a, b| a + b)
+        self.kept() + self.lost
     }
     fn variance(&self, d: usize) -> R {
         if self.w <= R::zero() {
             return R::zero();
         }
+        let (scale, iso) = self.completion();
         let s: R = (0..self.rows)
             .map(|i| self.sketch[i][d] * self.sketch[i][d])
             .fold(R::zero(), |a, b| a + b);
-        s / self.w
+        scale * s / self.w + iso
     }
     fn cov_dense(&self) -> Vec<Vec<R>> {
         let dim = self.dim;
@@ -626,11 +696,18 @@ impl<R: Real> ClusterFeature<R> for FdSketch<R> {
                 }
             }
         }
+        let (scale, iso) = self.completion();
         if self.w > R::zero() {
+            let f = scale / self.w;
             for row in m.iter_mut() {
                 for x in row.iter_mut() {
-                    *x = *x / self.w;
+                    *x = *x * f;
                 }
+            }
+        }
+        if iso != R::zero() {
+            for (i, row) in m.iter_mut().enumerate() {
+                row[i] = row[i] + iso;
             }
         }
         m
@@ -665,6 +742,7 @@ impl<R: Real> ClusterFeature<R> for FdSketch<R> {
         let delta: Vec<R> = (0..self.dim)
             .map(|i| other.mean[i] - self.mean[i])
             .collect();
+        self.lost = self.lost + other.lost;
         for i in 0..other.rows {
             self.insert_row(other.sketch[i].clone());
         }
@@ -678,6 +756,7 @@ impl<R: Real> ClusterFeature<R> for FdSketch<R> {
     }
     fn decay(&mut self, factor: R) {
         self.w = self.w * factor;
+        self.lost = self.lost * factor; // rows scale by √factor, so their scatter scales by factor
         let s = factor.sqrt();
         for row in self.sketch.iter_mut().take(self.rows) {
             for x in row.iter_mut() {
@@ -686,19 +765,28 @@ impl<R: Real> ClusterFeature<R> for FdSketch<R> {
         }
     }
     fn second_moment(&self) -> SecondMoment<R> {
-        // Σ = BᵀB / n = Σ_r (b_r/√n)(b_r/√n)ᵀ — the sketch rows scaled by 1/√n are the low-rank
-        // factors, so the GMM never reconstructs the `d×d` covariance for this leaf.
+        // Σ = BᵀB / n + iso·I = Σ_r (b_r/√n)(b_r/√n)ᵀ + iso·I — the sketch rows scaled by 1/√n are
+        // the low-rank factors, so the GMM never reconstructs the `d×d` covariance for this leaf.
         if self.w <= R::zero() {
-            return SecondMoment::LowRank(Vec::new());
+            return SecondMoment::LowRank {
+                rows: Vec::new(),
+                iso: R::zero(),
+                dim: self.dim,
+            };
         }
-        let scale = R::one() / self.w.sqrt();
+        let (fill, iso) = self.completion();
+        let scale = (fill / self.w).sqrt();
         let rows = self
             .sketch
             .iter()
             .take(self.rows)
             .map(|row| row.iter().map(|&x| x * scale).collect())
             .collect();
-        SecondMoment::LowRank(rows)
+        SecondMoment::LowRank {
+            rows,
+            iso,
+            dim: self.dim,
+        }
     }
 }
 
@@ -882,9 +970,11 @@ mod tests {
 
     #[test]
     #[allow(clippy::needless_range_loop)] // symmetric-matrix check reads clearest with (i, j)
-    fn fd_sketch_undershoots_and_stays_symmetric() {
-        // Full-rank data with ℓ < d: the sketch covariance is symmetric and underestimates the
-        // scatter (FD's BᵀB ⪯ AᵀA), never blowing up.
+    fn fd_sketch_reports_the_exact_scatter_and_stays_symmetric() {
+        // Full-rank data with ℓ < d: the retained sketch underestimates the scatter (FD's
+        // BᵀB ⪯ AᵀA), but the shrink banks what it drops, so the total this leaf reports is exact —
+        // the radius, the absorption gate and Ward all read `ssd()`, and a third of it going
+        // missing is not a rounding question.
         let pts: Vec<Vec<f64>> = (0..40)
             .map(|i| {
                 (0..10)
@@ -898,9 +988,18 @@ mod tests {
         for p in &refs {
             fd.push(p, 1.0);
         }
+        let retained: f64 = fd
+            .cov_dense()
+            .iter()
+            .enumerate()
+            .map(|(i, r)| r[i])
+            .sum::<f64>()
+            * fd.weight()
+            - fd.ssd();
+        assert!(retained.abs() < 1e-9, "cov_dense trace must equal ssd");
         assert!(
-            fd.ssd() <= full.ssd() + 1e-9,
-            "fd ssd {} > full {}",
+            (fd.ssd() - full.ssd()).abs() < 1e-9,
+            "fd ssd {} != full {}",
             fd.ssd(),
             full.ssd()
         );
@@ -1010,7 +1109,11 @@ mod tests {
     fn fd_sketch_empty_second_moment_is_empty_low_rank() {
         let e: FdSketch<f64> = FdSketch::new(3);
         match e.second_moment() {
-            SecondMoment::LowRank(rows) => assert!(rows.is_empty()),
+            SecondMoment::LowRank { rows, iso, dim } => {
+                assert!(rows.is_empty());
+                assert_eq!(iso, 0.0);
+                assert_eq!(dim, 3);
+            }
             SecondMoment::Dense(_) => panic!("FD sketch must yield a low-rank second moment"),
         }
     }
@@ -1031,12 +1134,13 @@ mod tests {
             fd.push(&p, 1.0);
         }
         let dense = fd.cov_dense();
-        let SecondMoment::LowRank(rows) = fd.second_moment() else {
+        let SecondMoment::LowRank { rows, iso, .. } = fd.second_moment() else {
             panic!("FdSketch must expose low-rank factors");
         };
         for a in 0..d {
             for b in 0..d {
-                let got: f64 = rows.iter().map(|r| r[a] * r[b]).sum();
+                let got: f64 =
+                    rows.iter().map(|r| r[a] * r[b]).sum::<f64>() + if a == b { iso } else { 0.0 };
                 assert!(
                     (got - dense[a][b]).abs() < 1e-9,
                     "Σ_r r_a r_b at ({a},{b}) = {got}, cov_dense = {}",
@@ -1047,7 +1151,7 @@ mod tests {
 
         // An empty sketch has no covariance and therefore no factors.
         let e: FdSketch<f64> = FdSketch::with_ell(d, d);
-        assert!(matches!(e.second_moment(), SecondMoment::LowRank(r) if r.is_empty()));
+        assert!(matches!(e.second_moment(), SecondMoment::LowRank { rows, .. } if rows.is_empty()));
         for row in e.cov_dense() {
             assert!(
                 row.iter().all(|&x| x == 0.0),
@@ -1180,7 +1284,11 @@ mod tests {
                 }
             }
         }
-        let low = SecondMoment::LowRank(rows);
+        let low = SecondMoment::LowRank {
+            rows,
+            iso: 0.0,
+            dim: 4,
+        };
         let full = SecondMoment::Dense(dense.clone());
         assert!(close(low.trace(), full.trace()));
         assert!(close(low.trace(), (0..4).map(|i| dense[i][i]).sum()));
@@ -1212,7 +1320,11 @@ mod tests {
     /// what lets the M-step sum leaf contributions into one buffer.
     #[test]
     fn apply_rows_accumulates_into_its_target() {
-        let low = SecondMoment::LowRank(vec![vec![1.0_f64, 2.0], vec![-0.5, 0.25]]);
+        let low = SecondMoment::LowRank {
+            rows: vec![vec![1.0_f64, 2.0], vec![-0.5, 0.25]],
+            iso: 0.0,
+            dim: 2,
+        };
         let v = vec![vec![1.0_f64, -1.0]];
         let mut once = vec![vec![0.0_f64; 2]; 1];
         let mut twice = vec![vec![0.0_f64; 2]; 1];
@@ -1395,10 +1507,11 @@ mod prop_tests {
             }
         }
 
-        /// FD sketch with `ell < d` never overshoots (`BᵀB ⪯ AᵀA`, so total scatter <= exact) and
-        /// stays symmetric.
+        /// FD sketch with `ell < d` loses directions, not mass: `BᵀB ⪯ AᵀA` strictly, but the shrink's
+        /// discarded trace is banked, so the reported total scatter is exact. Covariance stays
+        /// symmetric.
         #[test]
-        fn fd_undershoots_and_symmetric((d, pts) in dim_points(3, 8, 6, 40), e in 0usize..100) {
+        fn fd_reports_the_exact_scatter_and_stays_symmetric((d, pts) in dim_points(3, 8, 6, 40), e in 0usize..100) {
             let ell = 1 + e % (d - 1); // 1..=d-1
             let full: Full<f64> = build(d, &pts);
             let mut fd = FdSketch::<f64>::with_ell(d, ell);
@@ -1406,8 +1519,8 @@ mod prop_tests {
                 fd.push(p, 1.0);
             }
             prop_assert!(
-                fd.ssd() <= full.ssd() * (1.0 + 1e-9) + 1e-9,
-                "overshoot: {} > {}",
+                (fd.ssd() - full.ssd()).abs() <= full.ssd() * 1e-9 + 1e-9,
+                "scatter {} != exact {}",
                 fd.ssd(),
                 full.ssd()
             );

@@ -782,6 +782,23 @@ All notable changes to this project are documented here. The format follows
   changed identity at 1 M. `bench/RESULTS.md` names each one.
 
 ### Fixed
+- **`feature="fd"` was reporting up to a third less scatter than the leaf holds.** The
+  Frequent-Directions shrink subtracts the lower-median squared singular value from every direction,
+  and that mass was discarded outright — so `ssd()`, which the radius, the absorption gate, D2/D3 and
+  the k-means++ potential all read, under-reported the leaf. Measured share of the true scatter still
+  reported: **0.670** at `d=64, ℓ=16`, **0.660** at `d=784, ℓ=16`, 0.897 at `d=784, ℓ=64`. The
+  discarded trace is now banked, so `ssd()` is exact — asserted against the `Full` feature in a unit
+  test and a property test, both of which fail on revert.
+
+  Handing that trace back to the covariance *shape* is a modelling choice, since the shrink destroys
+  the directions along with the magnitudes, and both candidates were measured on the `gmm` head.
+  Spreading it isotropically over all `d` is **refuted**: it loses in all six cells, by up to 0.32
+  ARI, because at `d ≫ ℓ` it fills hundreds of directions the sketch never saw. The shipped
+  completion scales the retained directions up to carry the trace, which gains +0.05…+0.09 ARI on
+  64-dimensional `digits` and costs −0.04…−0.09 on 784-dimensional MNIST — the opposite error, and
+  the smaller one. `ward` is byte-identical across all variants and `kmeans` moves only within seed
+  spread, so the `gmm` head is the only one that can see this at all. Table in
+  [`bench/RESULTS.md`](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md).
 - **A rebuild now refolds every node CF from its children instead of trusting the push chain.**
   A node CF is *defined* as the merge of its subtree, but insertion maintains it by pushing each
   point along its leaf→root path — so the root holds one sequential chain of `N` merges, which is
