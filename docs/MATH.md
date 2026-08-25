@@ -275,16 +275,27 @@ projection distance between the two rank-`r` principal subspaces `U_i` (top-`r` 
 manifolds that share a centroid neighbourhood but differ in local tangent. Both reuse the in-house
 Jacobi eigensolver; both default to `0` (plain centroid affinity).
 
-**Scale-space modes (`method="scale-space"`).** Treat the leaves as a weighted sample and take the
-modes of the KDE `ρ_h(x) = Σ_j n_j exp(−‖x−μ_j‖²/2h²)` (found by mean-shift) as clusters. Increasing
+**Scale-space modes (`method="scale-space"`).** Treat the leaves as a weighted sample of **Gaussians,
+not points** — a leaf is a cloud, and convolving that cloud with the kernel is what the data's own
+kernel density is, $N(\mu_j, \Sigma_j) * N(0, h^2 I) = N(\mu_j, \Sigma_j + h^2 I)$. With
+$\sigma_j^2 = S_j/(n_j d)$ from the summary, every leaf carries its own width $s_j^2 = h^2 + \sigma_j^2$:
+
+$$\rho_h(x) = \sum_j n_j\, s_j^{-d}\, \exp\bigl(-\|x - \mu_j\|^2 / 2 s_j^2\bigr)$$
+
+The $s_j^{-d}$ amplitude is what stops a fat leaf peaking as high as a tight one, and the mean-shift
+fixed point becomes $x = \sum_j (w_j/s_j^2)\mu_j / \sum_j (w_j/s_j^2)$ (Comaniciu, Ramesh & Meer 2001);
+at zero leaf scatter both collapse to the point-kernel form exactly. Take the
+modes of this KDE (found by mean-shift) as clusters. Increasing
 the bandwidth `h` merges modes — a one-parameter Morse filtration. Rather than fix `h` (or `k`), the
 head sweeps `h` log-spaced and reports the labelling at the **most persistent** mode count: the widest
 plateau of the "number of modes vs `log h`" curve, with the trivial fully-merged tail winning only when
 no multi-mode structure is at least as persistent. At each scale, raw mean-shift modes separated by
 only a **shallow density valley** (`ρ` along the connecting segment stays ≥ `VALLEY_RATIO = 0.8` of the
 lower peak) are merged by prominence — this collapses the spurious sub-peaks a single cluster produces
-at fine bandwidths, cleaning the curve so the persistent plateau is unambiguous (robust from 2 to ~8+
-clusters). This is parameter-free and non-convex-aware.
+at fine bandwidths, cleaning the curve so the persistent plateau is unambiguous. This is parameter-free
+and non-convex-aware — and **its operating envelope is narrow**: measured over 52
+`(PCA dimension × leaf budget)` cells on `digits`, 38 return a single cluster, and the plateau selector
+rather than the kernel is what the measurement indicts. See `bench/RESULTS.md` before relying on it.
 
 ## Other verified improvements
 

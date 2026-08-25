@@ -1143,6 +1143,59 @@ resolved through union-find on read (so the relation stays symmetric for free) a
 stamp array (a `contains` scan makes the union quadratic in the degree, which on a 4 %-dense graph of
 32 000 leaves *is* the running time). Sparsity is a data structure, not a smaller number of pairs.
 
+## The `scale-space` head returns one cluster in three quarters of its own parameter space (task #54)
+
+This head had no row in this file until now. It has one because the first attempt to measure a change
+to it found something larger than the change: **on `digits`, 38 of 52 `(dimension, leaf budget)` cells
+return `k = 1`**, and on `covtype-20k` every cell either returns `k = 1` or returns modes whose ARI is
+*negative*. The head is documented, exported and untested against ground truth.
+
+The change under test was a correction. The head advertises the density modes of the *data*, but it was
+building the kernel density of the leaf **centroids** — `ρ_h(x) = Σ_j n_j exp(−‖x−μ_j‖²/2h²)`, one point
+per leaf. A leaf is a cloud, and convolving that cloud with the kernel is what the data's own density
+is: `N(μ_j, Σ_j) * N(0, h²I) = N(μ_j, Σ_j + h²I)`. With `σ²_j = S_j/(n_j·d)` from the summary the head
+now gives every leaf its own width `s²_j = h² + σ²_j` and its own amplitude `s_j^(−d)`, which is what
+stops a fat leaf peaking as high as a tight one. At zero leaf scatter `s_j = h`, the amplitude becomes a
+constant that cancels in every ratio the head takes, and the two are bit-identical — asserted as a test.
+
+`digits`, PCA to `d`, ARI against the ten digit classes, seeds 0/1/2 (the head is deterministic given
+the tree, so all three agree exactly — which is itself worth stating):
+
+| cells | mollified better | point-kernel better | tie |
+|---|---:|---:|---:|
+| 52 (`d ∈ 2..14` × `max_leaves ∈ {300, 600, 900, 1400}`) | 7 | 7 | 38 |
+
+Seven-all, and 38 of the ties are `k = 1` on both sides. The wins are knife-edges, not regions:
+
+| cell | mollified | point kernel |
+|---|---|---|
+| `d=8`, 300 | 0.0000 (`k=1`) | **0.5897** (`k=12`) |
+| `d=8`, 600 | 0.0000 (`k=1`) | 0.0000 (`k=1`) |
+| `d=8`, 900 | 0.1713 (`k=4`) | **0.5530** (`k=9`) |
+| `d=8`, 1400 | 0.5391 (`k=9`) | 0.5392 (`k=9`) |
+| `d=5`, 300 | **0.4412** (`k=8`) | 0.0000 (`k=1`) |
+| `d=6`, 600 | 0.0000 (`k=1`) | **0.2987** (`k=7`) |
+| `d=12`, 300 | **0.4764** (`k=7`) | 0.0000 (`k=1`) |
+
+The best cell in the whole grid, ARI 0.59, sits next to a `k=1` cell one budget away. On `covtype-20k`
+the mollified arm manufactures 4–10 modes at ARI −0.04 to −0.05 where the point kernel returns one at
+0.00: structure that anti-correlates with the labels is worse than no structure at all.
+
+**The fragile part is the selector, not the kernel.** The scale is chosen as the widest plateau of the
+mode-count-versus-`log h` curve over a 15-point grid whose ends come from the centroid geometry —
+`h_min` = half the median nearest-neighbour gap, `h_max` = half the diameter. Two consequences the
+numbers show. A plateau is a *count* of grid points, so it moves when the grid moves, and adding
+`σ²_j` to `h²` moves the whole curve: with equal leaf widths `s² = h² + σ²` is a monotone
+reparameterisation of the sweep, which is exactly why 72 synthetic cells (`grid_micros` at four cell
+sizes, and two blobs summarised at deliberately different resolutions) came back with **identical
+labels** in both arms — a uniform leaf radius is invisible to a plateau count. And a CF-tree at one
+global threshold gives near-uniform leaf radii by construction, so the correction can only bite where
+the radii vary, which on this data is where the sweep is already unstable.
+
+The mollification ships because it is the model the head documents and it costs nothing, not because it
+measures better — it does not. What the grid actually indicts is the plateau selector, filed as its own
+task rather than smuggled into this one.
+
 ## Insertion-order sensitivity — the property the whole BIRCH family inherits
 
 `bench/insertion_order.py`, `bench/results_order.csv` (54 cells). A CF-tree routes each point against

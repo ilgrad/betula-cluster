@@ -1,7 +1,21 @@
 //! Scale-space mode clustering over CF microclusters (Morse persistence).
 //!
-//! Treats the leaf microclusters as a weighted point set and clusters the **modes** of the kernel
-//! density `ρ_h(x) = Σ_j n_j exp(−‖x − μ_j‖² / 2h²)`. At a bandwidth `h`, mean-shift moves every
+//! Treats the leaf microclusters as a weighted set of **Gaussians, not points**, and clusters the
+//! modes of the kernel density. A leaf is a cloud, and convolving that cloud with the kernel is what
+//! the kernel density of the underlying data actually is: `N(μ_j, Σ_j) * N(0, h²I) = N(μ_j, Σ_j+h²I)`.
+//! The `(n, μ, S)` summary carries the leaf's own scatter, so with `σ²_j = S_j/(n_j·d)` the isotropic
+//! part of `Σ_j` is known and every leaf gets its own width `s²_j = h² + σ²_j`:
+//!
+//! ```text
+//! ρ_h(x) = Σ_j n_j · s_j^(−d) · exp(−‖x − μ_j‖² / 2s²_j)
+//! ```
+//!
+//! The `s_j^(−d)` factor is not decoration: once widths differ per leaf it is what stops a fat leaf
+//! from having the same peak density as a tight one. On unit-mass leaves every `σ²_j` is zero, `s_j`
+//! collapses to `h`, the factor becomes a constant that cancels in every ratio taken below, and the
+//! head reduces exactly to the point-kernel version — which is what the tests assert.
+//!
+//! At a bandwidth `h`, mean-shift moves every
 //! microcluster uphill to a density mode; microclusters reaching the same mode form a cluster. As `h`
 //! grows, modes merge — the classic scale-space / Morse picture. Rather than ask the user for `h`
 //! (or `k`), the head sweeps `h` and keeps the labelling at the **most persistent** mode count: the
@@ -47,6 +61,19 @@ pub fn scale_space<R: Real, C: ClusterFeature<R>>(
         .map(|f| f.weight().to_f64().unwrap())
         .collect();
     let m = mu.len();
+    // Per-dimension variance of the leaf's own points: `ssd` is the total scatter `Σ‖x − μ‖²`.
+    let var: Vec<f64> = features
+        .iter()
+        .zip(&n)
+        .map(|(f, &w)| {
+            let dim = f.mean().len().max(1) as f64;
+            if w > 0.0 {
+                (f.ssd().to_f64().unwrap() / (w * dim)).max(0.0)
+            } else {
+                0.0
+            }
+        })
+        .collect();
     if m <= 1 {
         return ScaleSpace {
             labels: vec![0; m],
@@ -66,7 +93,7 @@ pub fn scale_space<R: Real, C: ClusterFeature<R>>(
 
     let runs: Vec<(Vec<usize>, usize)> = bandwidths
         .iter()
-        .map(|&h| mean_shift(&mu, &n, h, max_iter))
+        .map(|&h| mean_shift(&mu, &n, &var, h, max_iter))
         .collect();
 
     // Most persistent scale = the widest plateau of equal mode counts. A multi-mode (`≥ 2`) plateau
@@ -108,14 +135,36 @@ fn bandwidth_range(mu: &[Vec<f64>]) -> (f64, f64) {
     (0.5 * median_nn, (0.5 * diameter).max(median_nn))
 }
 
-/// Mean-shift every microcluster mean uphill on `ρ_h` (data points fixed at `μ`, weighted by `n`),
-/// then group the converged positions into modes by [`prominence_modes`]. Returns
-/// `(mode label per point, #modes)`.
+/// Per-leaf kernel constants at bandwidth `h`: `(1/2s²_j, n_j·s_j^(−d))`, with `s²_j = h² + σ²_j` the
+/// mollified width of leaf `j` and the second entry its already-scaled mass.
+fn widths(n: &[f64], var: &[f64], h: f64, d: usize) -> Vec<(f64, f64)> {
+    n.iter()
+        .zip(var)
+        .map(|(&nj, &vj)| {
+            let s2 = h * h + vj;
+            (0.5 / s2, nj * s2.powf(-0.5 * d as f64))
+        })
+        .collect()
+}
+
+/// Mean-shift every microcluster mean uphill on `ρ_h` (the leaves fixed at `μ`, each a Gaussian of
+/// width `s²_j = h² + σ²_j` carrying mass `n_j`), then group the converged positions into modes by
+/// [`prominence_modes`]. Returns `(mode label per point, #modes)`.
+///
+/// The stationary point of a variable-width kernel sum is `x = Σ_j (w_j/s²_j)·μ_j / Σ_j (w_j/s²_j)`,
+/// not `Σ w_j μ_j / Σ w_j`: the `1/s²_j` comes straight out of `∇ρ = Σ_j w_j (μ_j − x)/s²_j`
+/// (Comaniciu, Ramesh & Meer 2001). With equal widths it is a constant and the two agree.
 #[allow(clippy::needless_range_loop)] // mean-shift mutates pts[i] in place while reading μ/pts by index
-fn mean_shift(mu: &[Vec<f64>], n: &[f64], h: f64, max_iter: usize) -> (Vec<usize>, usize) {
+fn mean_shift(
+    mu: &[Vec<f64>],
+    n: &[f64],
+    var: &[f64],
+    h: f64,
+    max_iter: usize,
+) -> (Vec<usize>, usize) {
     let m = mu.len();
     let d = mu[0].len();
-    let inv2h2 = 1.0 / (2.0 * h * h);
+    let ker = widths(n, var, h, d);
     let tol = 1e-4 * h;
     let mut pts = mu.to_vec();
     for _ in 0..max_iter.max(1) {
@@ -124,10 +173,12 @@ fn mean_shift(mu: &[Vec<f64>], n: &[f64], h: f64, max_iter: usize) -> (Vec<usize
             let mut num = vec![0.0; d];
             let mut den = 0.0;
             for j in 0..m {
-                let w = n[j] * (-sq_euclidean::<f64>(&pts[i], &mu[j]) * inv2h2).exp();
-                den += w;
+                let (inv2s2, mass) = ker[j];
+                let g =
+                    mass * (-sq_euclidean::<f64>(&pts[i], &mu[j]) * inv2s2).exp() * 2.0 * inv2s2;
+                den += g;
                 for k in 0..d {
-                    num[k] += w * mu[j][k];
+                    num[k] += g * mu[j][k];
                 }
             }
             if den > 0.0 {
@@ -144,7 +195,7 @@ fn mean_shift(mu: &[Vec<f64>], n: &[f64], h: f64, max_iter: usize) -> (Vec<usize
             break;
         }
     }
-    prominence_modes(&pts, mu, n, h)
+    prominence_modes(&pts, mu, n, var, h)
 }
 
 /// Group converged mean-shift points into modes by **prominence**: tight-unique the endpoints into
@@ -153,8 +204,14 @@ fn mean_shift(mu: &[Vec<f64>], n: &[f64], h: f64, max_iter: usize) -> (Vec<usize
 /// single cluster produces at fine bandwidths while keeping separated clusters apart, so the
 /// mode-count-vs-scale curve is clean. Returns `(mode label per point, #modes)`.
 #[allow(clippy::needless_range_loop)] // pairwise valley checks read clearest with (a, b, t, k) indices
-fn prominence_modes(pts: &[Vec<f64>], mu: &[Vec<f64>], n: &[f64], h: f64) -> (Vec<usize>, usize) {
-    let inv2h2 = 1.0 / (2.0 * h * h);
+fn prominence_modes(
+    pts: &[Vec<f64>],
+    mu: &[Vec<f64>],
+    n: &[f64],
+    var: &[f64],
+    h: f64,
+) -> (Vec<usize>, usize) {
+    let ker = widths(n, var, h, mu[0].len());
     // Tight-unique the converged points into raw modes.
     let tol2 = (0.1 * h).powi(2);
     let mut reps: Vec<Vec<f64>> = Vec::new();
@@ -171,16 +228,22 @@ fn prominence_modes(pts: &[Vec<f64>], mu: &[Vec<f64>], n: &[f64], h: f64) -> (Ve
     let m = reps.len();
     let rho = |x: &[f64]| -> f64 {
         mu.iter()
-            .zip(n)
-            .map(|(muj, &nj)| nj * (-sq_euclidean::<f64>(x, muj) * inv2h2).exp())
+            .zip(&ker)
+            .map(|(muj, &(inv2s2, mass))| mass * (-sq_euclidean::<f64>(x, muj) * inv2s2).exp())
             .sum()
     };
     let peak: Vec<f64> = reps.iter().map(|r| rho(r)).collect();
 
     // Union raw modes joined by a shallow valley. Only nearby pairs can qualify — modes farther than
-    // `4h` apart always have a deep valley, so they are skipped (keeps this out of `O(m²·dim)`).
+    // four times the *widest* leaf apart always have a deep valley, so they are skipped (keeps this
+    // out of `O(m²·dim)`). The cut-off has to follow the widest `s_j`, not `h`: a fat leaf spreads
+    // density further than the bandwidth alone would.
     let mut parent: Vec<usize> = (0..m).collect();
-    let cutoff2 = (4.0 * h).powi(2);
+    let s_max = ker
+        .iter()
+        .map(|&(inv2s2, _)| (0.5 / inv2s2).sqrt())
+        .fold(h, f64::max);
+    let cutoff2 = (4.0 * s_max).powi(2);
     let dim = mu[0].len();
     for a in 0..m {
         for b in (a + 1)..m {
@@ -274,6 +337,15 @@ mod tests {
     use super::*;
     use crate::clustering::rng::SplitMix64;
     use crate::clustering::testutil::{ari, blobs, grid_micros};
+    use crate::feature::Spherical;
+
+    /// Per-dimension leaf variance, re-derived rather than shared with the source.
+    fn leaf_variances(micros: &[Spherical<f64>]) -> Vec<f64> {
+        micros
+            .iter()
+            .map(|f| f.ssd() / (f.weight() * f.mean().len() as f64))
+            .collect()
+    }
 
     #[test]
     fn scale_space_recovers_well_separated_blobs() {
@@ -357,6 +429,7 @@ mod tests {
     fn reference_shift_endpoints(
         mu: &[Vec<f64>],
         n: &[f64],
+        var: &[f64],
         h: f64,
         max_iter: usize,
     ) -> Vec<Vec<f64>> {
@@ -369,8 +442,9 @@ mod tests {
                 let mut num = vec![0.0; d];
                 let mut den = 0.0;
                 for j in 0..m {
+                    let s2 = h * h + var[j];
                     let d2: f64 = (0..d).map(|k| (pts[i][k] - mu[j][k]).powi(2)).sum();
-                    let w = n[j] * (-d2 / (2.0 * h * h)).exp();
+                    let w = n[j] / s2.sqrt().powi(d as i32) * (-d2 / (2.0 * s2)).exp() / s2;
                     den += w;
                     for k in 0..d {
                         num[k] += w * mu[j][k];
@@ -404,13 +478,14 @@ mod tests {
         let (micros, _) = grid_micros(&pts, 0.5);
         let mu: Vec<Vec<f64>> = micros.iter().map(|f| f.mean().to_vec()).collect();
         let n: Vec<f64> = micros.iter().map(|f| f.weight()).collect();
+        let var: Vec<f64> = leaf_variances(&micros);
 
         let mut counts = Vec::new();
         for step in 0..8 {
             let h = 0.25 * 1.45_f64.powi(step);
-            let (labels, modes) = mean_shift(&mu, &n, h, 100);
-            let endpoints = reference_shift_endpoints(&mu, &n, h, 100);
-            let (rlabels, rmodes) = prominence_modes(&endpoints, &mu, &n, h);
+            let (labels, modes) = mean_shift(&mu, &n, &var, h, 100);
+            let endpoints = reference_shift_endpoints(&mu, &n, &var, h, 100);
+            let (rlabels, rmodes) = prominence_modes(&endpoints, &mu, &n, &var, h);
             assert_eq!(modes, rmodes, "h = {h}: mode count");
             assert_eq!(labels, rlabels, "h = {h}: labelling");
             counts.push(modes);
@@ -419,6 +494,64 @@ mod tests {
             counts.first() > counts.last(),
             "sweep did not traverse a merge cascade: {counts:?}"
         );
+    }
+
+    /// Leaves wide enough to overlap, whose centroids are not. The point kernel sees the centroid
+    /// lattice and reports one mode per leaf; the mollified kernel sees the clouds and reports the two
+    /// groups. This is the whole content of the fix, so it is stated as `var` against `var = 0` on the
+    /// same fixture at the same bandwidth — reverting the mollification collapses it to the second arm.
+    #[test]
+    fn wide_leaves_merge_under_mollification_and_not_under_the_point_kernel() {
+        let mu: Vec<Vec<f64>> = [0.0, 4.0, 8.0, 30.0, 34.0, 38.0]
+            .iter()
+            .map(|&x| vec![x])
+            .collect();
+        let n = vec![30.0; 6];
+        let var = vec![4.0; 6]; // sigma = 2, so neighbouring leaves overlap heavily
+        let zero = vec![0.0; 6];
+        let h = 1.0;
+
+        let (labels, modes) = mean_shift(&mu, &n, &var, h, 200);
+        assert_eq!(modes, 2, "mollified: the two groups");
+        assert_eq!(labels[0], labels[2], "left group is one cluster");
+        assert_eq!(labels[3], labels[5], "right group is one cluster");
+        assert_ne!(labels[0], labels[3], "the groups stay apart");
+
+        let (_, point_modes) = mean_shift(&mu, &n, &zero, h, 200);
+        assert!(
+            point_modes > modes,
+            "point kernel should over-split: {point_modes} vs {modes}"
+        );
+    }
+
+    /// The reduction the module docs claim: with no leaf scatter the per-leaf width collapses to `h`
+    /// and the `s^-d` amplitude becomes a constant that cancels in every ratio, so the head is
+    /// bit-identical to the point-kernel version it replaced.
+    #[test]
+    fn zero_scatter_leaves_reduce_to_the_point_kernel_exactly() {
+        let mut rng = SplitMix64::new(17);
+        let centers = [[0.0, 0.0], [5.0, 0.5], [2.0, 5.0]];
+        let (pts, _) = blobs(&mut rng, 90, &centers, 0.5);
+        // One leaf per point: weight 1, ssd 0, so every `sigma^2` is exactly zero.
+        let singles: Vec<Spherical<f64>> = pts
+            .iter()
+            .map(|p| {
+                let mut cf = Spherical::new(p.len());
+                cf.push(p, 1.0);
+                cf
+            })
+            .collect();
+        assert!(leaf_variances(&singles).iter().all(|&v| v == 0.0));
+
+        let mu: Vec<Vec<f64>> = singles.iter().map(|f| f.mean().to_vec()).collect();
+        let n = vec![1.0; mu.len()];
+        let zero = vec![0.0; mu.len()];
+        for step in 0..6 {
+            let h = 0.3 * 1.5_f64.powi(step);
+            let got = mean_shift(&mu, &n, &leaf_variances(&singles), h, 100);
+            let want = mean_shift(&mu, &n, &zero, h, 100);
+            assert_eq!(got, want, "h = {h}");
+        }
     }
 
     #[test]
@@ -459,14 +592,19 @@ mod tests {
         pts: &[Vec<f64>],
         mu: &[Vec<f64>],
         n: &[f64],
+        var: &[f64],
         h: f64,
     ) -> (Vec<usize>, usize) {
         let dim = mu[0].len();
         let d2 = |a: &[f64], b: &[f64]| -> f64 { (0..dim).map(|k| (a[k] - b[k]).powi(2)).sum() };
+        let s2: Vec<f64> = var.iter().map(|v| h * h + v).collect();
         let rho = |x: &[f64]| -> f64 {
             mu.iter()
                 .zip(n)
-                .map(|(m, &nj)| nj * (-d2(x, m) / (2.0 * h * h)).exp())
+                .zip(&s2)
+                .map(|((m, &nj), &sj)| {
+                    nj / sj.sqrt().powi(dim as i32) * (-d2(x, m) / (2.0 * sj)).exp()
+                })
                 .sum()
         };
         let tol2 = (0.1 * h) * (0.1 * h);
@@ -492,7 +630,8 @@ mod tests {
             }
             r
         };
-        let cutoff2 = (4.0 * h) * (4.0 * h);
+        let s_max = s2.iter().fold(h * h, |acc, &v| acc.max(v)).sqrt();
+        let cutoff2 = (4.0 * s_max) * (4.0 * s_max);
         for a in 0..m {
             for b in (a + 1)..m {
                 if d2(&reps[a], &reps[b]) > cutoff2 {
@@ -542,13 +681,14 @@ mod tests {
         let (micros, _assign) = grid_micros(&pts, 0.4);
         let mu: Vec<Vec<f64>> = micros.iter().map(|f| f.mean().to_vec()).collect();
         let n: Vec<f64> = micros.iter().map(|f| f.weight()).collect();
+        let var: Vec<f64> = leaf_variances(&micros);
 
         let mut counts = Vec::new();
         for step in 0..14 {
             let h = 0.18 * 1.28f64.powi(step);
-            let (labels, modes) = mean_shift(&mu, &n, h, 200);
-            let ends = reference_shift_endpoints(&mu, &n, h, 200);
-            let (rlabels, rmodes) = reference_prominence(&ends, &mu, &n, h);
+            let (labels, modes) = mean_shift(&mu, &n, &var, h, 200);
+            let ends = reference_shift_endpoints(&mu, &n, &var, h, 200);
+            let (rlabels, rmodes) = reference_prominence(&ends, &mu, &n, &var, h);
             assert_eq!(modes, rmodes, "h = {h}: mode count");
             assert_eq!(labels, rlabels, "h = {h}: labelling");
             counts.push(modes);
@@ -594,7 +734,7 @@ mod tests {
                 let s = 0.05 * h + 0.09 * h * step as f64;
                 let mu = vec![vec![0.0, 0.0], vec![s, 0.0]];
                 let n = vec![1.0, 1.0];
-                let (labels, modes) = prominence_modes(&mu.clone(), &mu, &n, h);
+                let (labels, modes) = prominence_modes(&mu.clone(), &mu, &n, &[0.0, 0.0], h);
                 let want = expected_two_bump_modes(s, h);
                 assert_eq!(modes, want, "h = {h}, s = {s}: mode count");
                 assert_eq!(labels.len(), 2, "h = {h}, s = {s}: one label per point");

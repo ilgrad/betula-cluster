@@ -6,6 +6,25 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+- **`method="scale-space"` mollifies each leaf with its own scatter, and the head's operating envelope
+  is now published.** The head advertises the density modes of the *data* but was building the kernel
+  density of the leaf **centroids**, one point per leaf. A leaf is a cloud, and convolving that cloud
+  with the kernel is what the data's density is: `N(μ_j, Σ_j) * N(0, h²I) = N(μ_j, Σ_j + h²I)`. Every
+  leaf now carries its own width `s²_j = h² + σ²_j` with `σ²_j = S_j/(n_j·d)` from the summary, its own
+  `s_j^(−d)` amplitude — without which a fat leaf peaks as high as a tight one — and the variable-width
+  mean-shift fixed point. At zero leaf scatter this is bit-identical to the previous path, which is a
+  test rather than a claim. **Labels can change** where leaf radii vary.
+
+  Measuring it turned up something larger. Over 52 `(PCA dimension × leaf budget)` cells on `digits`
+  the correction is **7 wins, 7 losses, 38 ties — and 38 of the ties are `k = 1` on both sides**; on
+  `covtype-20k` every cell either returns one cluster or returns modes at *negative* ARI. The best cell
+  in the grid (ARI 0.59) sits one budget away from a `k = 1` cell. The fragile part is the plateau
+  selector, which counts grid points on the mode-count-versus-`log h` curve rather than measuring a
+  persistence, so it moves whenever the sweep moves. The mollification ships because it is the model
+  the head documents and costs nothing, not because it measures better. Envelope and tables in
+  [`bench/RESULTS.md`](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md).
+
 ### Added
 - **`dendrogram_below`: exact agglomerative clustering below a height bound, with a certificate.**
   (Rust API — `clustering::dendrogram_below`, `certificate_radius`, `BoundedDendrogram`.) A cut at `k`
