@@ -1104,6 +1104,48 @@ def test_validity_requires_a_finalized_clustering(blobs):
         est.validity()
 
 
+def test_summary_mmd_falls_as_the_leaf_budget_stops_throwing_data_away(blobs):
+    x, _ = blobs
+    kwargs = dict(feature="spherical", method="kmeans", n_clusters=4, threshold=0.0, seed=1)
+
+    def mmd(max_leaves):
+        est = betula_cluster.Betula(max_leaves=max_leaves, **kwargs)
+        est.partial_fit(x)  # a tree is enough; the number is a property of the summary
+        return est.summary_mmd(x, bandwidth=1.5)
+
+    coarse, fine = mmd(16), mmd(1000)
+    assert 0.0 <= fine < coarse, f"{fine} against {coarse}"
+
+
+def test_summary_mmd_vanishes_when_the_summary_kept_every_point(blobs):
+    x, _ = blobs
+    # threshold=0 with a budget above N is one leaf per point: the surrogate *is* the sample.
+    est = betula_cluster.Betula(
+        n_clusters=4, feature="spherical", threshold=0.0, max_leaves=4000, seed=0
+    )
+    est.partial_fit(x)
+    assert est.summary_mmd(x, bandwidth=2.0) < 1e-9
+
+
+def test_summary_mmd_defaults_to_the_median_heuristic_and_needs_no_labels(blobs):
+    est, x, _ = _fitted(blobs)
+    auto = est.summary_mmd(x)
+    assert np.isfinite(auto)
+    assert auto != est.summary_mmd(x, bandwidth=0.05)
+
+
+def test_summary_mmd_rejects_a_sample_of_the_wrong_width(blobs):
+    est, x, _ = _fitted(blobs)
+    with pytest.raises(ValueError, match="columns but the summary"):
+        est.summary_mmd(np.hstack([x, x]))
+
+
+def test_summary_mmd_requires_a_tree(blobs):
+    est = betula_cluster.Betula(n_clusters=3, max_leaves=300)
+    with pytest.raises(AttributeError, match="not fitted yet"):
+        est.summary_mmd(blobs[0])
+
+
 def test_find_outliers_returns_injected(blobs):
     est, x, _ = _fitted(blobs)
     xo = np.vstack([x, [[100.0, 100.0]]])

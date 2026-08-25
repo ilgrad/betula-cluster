@@ -1562,6 +1562,34 @@ impl<R: Real> TreeState<R> {
         }
     }
 
+    /// Point dimension of the leaf summary, or `0` before anything has been inserted.
+    fn leaf_dim(&self) -> usize {
+        fn go<R: Real, C: ClusterFeature<R>>(f: &[C]) -> usize {
+            f.first().map_or(0, |c| c.dim())
+        }
+        match self {
+            TreeState::Spherical(t) => go(t.leaf_features()),
+            TreeState::Diagonal(t) => go(t.leaf_features()),
+            TreeState::Full(t) => go(t.leaf_features()),
+            TreeState::Fd(t) => go(t.leaf_features()),
+        }
+    }
+
+    /// Gaussian-kernel MMD between the leaf surrogate and a raw sample, row-major `M × dim`.
+    fn summary_mmd(&self, sample: &[R], bandwidth: Option<R>) -> f64 {
+        fn go<R: Real, C: ClusterFeature<R>>(f: &[C], s: &[R], h: Option<R>) -> f64 {
+            crate::fidelity::summary_mmd(f, s, h)
+                .to_f64()
+                .unwrap_or(f64::NAN)
+        }
+        match self {
+            TreeState::Spherical(t) => go(t.leaf_features(), sample, bandwidth),
+            TreeState::Diagonal(t) => go(t.leaf_features(), sample, bandwidth),
+            TreeState::Full(t) => go(t.leaf_features(), sample, bandwidth),
+            TreeState::Fd(t) => go(t.leaf_features(), sample, bandwidth),
+        }
+    }
+
     /// `(calinski_harabasz, davies_bouldin, medoid_silhouette)` over the labelled leaves.
     fn validity(&self, labels: &[i64], k: usize) -> (f64, f64, f64) {
         match self {
@@ -2297,6 +2325,31 @@ impl Betula {
         }
     }
 
+    /// MMD of the leaf summary against `sample`. Needs only a built tree, not a finalized head:
+    /// the number is a property of the summary, not of any clustering of it.
+    fn summary_mmd_any(&self, flat: &[f64], dim: usize, bandwidth: Option<f64>) -> PyResult<f64> {
+        let want = if let Some(t) = &self.state64 {
+            t.leaf_dim()
+        } else if let Some(t) = &self.state32 {
+            t.leaf_dim()
+        } else {
+            return Err(PyValueError::new_err("not fitted"));
+        };
+        if dim != want {
+            return Err(PyValueError::new_err(format!(
+                "sample has {dim} columns but the summary is {want}-dimensional"
+            )));
+        }
+        if let Some(t) = &self.state64 {
+            Ok(t.summary_mmd(flat, bandwidth))
+        } else if let Some(t) = &self.state32 {
+            let narrowed: Vec<f32> = flat.iter().map(|&v| v as f32).collect();
+            Ok(t.summary_mmd(&narrowed, bandwidth.map(|h| h as f32)))
+        } else {
+            Err(PyValueError::new_err("not fitted"))
+        }
+    }
+
     /// The three internal validity indices; errors if the clustering has not been finalized.
     fn validity_any(&self) -> PyResult<(f64, f64, f64)> {
         let labels = self.labels.as_ref().ok_or_else(|| {
@@ -2774,6 +2827,17 @@ impl Betula {
     /// finalized clustering.
     fn validity_(&self) -> PyResult<(f64, f64, f64)> {
         self.validity_any()
+    }
+
+    /// Gaussian-kernel MMD between the leaf summary and `sample`; requires a built tree only.
+    #[pyo3(signature = (sample, bandwidth=None))]
+    fn summary_mmd_(
+        &self,
+        sample: PyReadonlyArray2<'_, f64>,
+        bandwidth: Option<f64>,
+    ) -> PyResult<f64> {
+        let (flat, _n, dim) = to_flat(&sample)?;
+        self.summary_mmd_any(&flat, dim, bandwidth)
     }
 
     /// `(points, weights, offset, reference_cost, total_sensitivity, n_leaves, radii)` for a

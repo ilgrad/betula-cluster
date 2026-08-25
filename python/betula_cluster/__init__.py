@@ -854,6 +854,28 @@ class Betula:
             "medoid_silhouette": ms,
         }
 
+    def summary_mmd(self, X, *, bandwidth=None):
+        """Kernel distance between the leaf summary and the raw sample ``X``. Lower is better.
+
+        A label-free, head-independent fidelity number: the leaves are read as the Gaussian mixture
+        ``Σ (n_i/N)·N(μ_i, s_i I)`` with ``s_i = S_i/(n_i·d)`` and compared to ``X`` by maximum mean
+        discrepancy under a Gaussian kernel, in closed form — no sampling from the surrogate. Unlike
+        :meth:`validity` it needs no labels, no ``k`` and no head, so a tree built with
+        ``partial_fit`` alone can be scored.
+
+        ``bandwidth`` is the kernel's ``h``; ``None`` takes the median heuristic on ``X``, which
+        makes values comparable across leaf budgets of the *same* data and meaningless across
+        different data.
+
+        Use it to find the leaf budget past which more leaves buy nothing: it flattens where the
+        clustering stops changing, which ``mean_sq_radius`` does not. It is **not** monotone in the
+        budget — very coarse leaves can model a smooth blob better than two-point ones — and it
+        costs ``O(n_leaves² + n_leaves·N + N²)`` kernel evaluations, so it is a diagnostic to run at
+        a few budgets rather than something to put in a loop.
+        """
+        arr = np.ascontiguousarray(X, dtype=np.float64)
+        return float(self._require_fit().summary_mmd_(arr, bandwidth))
+
     def find_outliers(self, X, top_k=100):
         """Row indices of the ``top_k`` most outlying points (highest score first)."""
         scores = np.asarray(self.outlier_scores(X))

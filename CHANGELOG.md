@@ -57,8 +57,10 @@ All notable changes to this project are documented here. The format follows
   `mean_sq_radius` slides smoothly 212 → 80 with no feature at the knee. It is **not** a monotone
   axis — in two dimensions it rises from 0.0054 at 8 leaves to 0.0092 at 32 before falling, because
   coarsening also lets a leaf's ball fit a Gaussian blob better than a two-point leaf's does, and the
-  ARI column dips at exactly the same budget. Rust-only; `O(m² + m·M + M²)` kernel evaluations, a
-  diagnostic rather than something to run inside a fit. Tables in
+  ARI column dips at exactly the same budget. Exposed as `Betula.summary_mmd(X, bandwidth=None)`,
+  which needs only a built tree — no labels, no `k`, no head, so a `partial_fit` tree can be scored.
+  `O(m² + m·M + M²)` kernel evaluations: a diagnostic to run at a few budgets, not inside a fit.
+  Tables in
   [`bench/RESULTS.md`](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md).
 - **The symmetry group of every `(feature, head)` pair is now stated and enforced.** A head answers a
   question about the data, not about the coordinates it arrived in, and which frame changes it may
