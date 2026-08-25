@@ -818,6 +818,36 @@ issue #22854 on our own tree, and it is the mechanism behind the `covtype` and M
 where `top10` reaches 0.61–0.98. Fixing it means a budget that is allocated by mass rather than by
 radius; that is task #70's remaining half and is not in this edition.
 
+### It is the CF-tree family, not this implementation (task #47)
+
+scikit-learn's Birch issue #22854 reports the same shape from the other implementation, so the
+comparison belongs in the benchmark rather than in a footnote. `bench/size_imbalance.py`, both
+fixtures, medians of seeds 0/1/2 for the betula rows (Birch is deterministic and runs once):
+
+| fixture | method | budget | leaves | ARI | top1 |
+|---|---|---:|---:|---:|---:|
+| structured | sklearn-kmeans (raw points) | — | — | **1.0000** | — |
+| structured | sklearn-birch (defaults, `threshold=0.5`) | — | 7 140 | 0.3600 | 0.800 |
+| structured | sklearn-birch, threshold matched to the budget | 250 | 210 | 0.4180 | 0.800 |
+| structured | sklearn-birch, threshold matched to the budget | 1000 | 971 | 0.3535 | 0.800 |
+| structured | sklearn-birch, threshold matched to the budget | 4000 | 4 183 | 0.3266 | 0.800 |
+| structured | betula-kmeans | 250 / 1000 / 4000 | 241 / 914 / 3 767 | 0.4174 | 0.800 |
+| flat | sklearn-birch (defaults) | — | 7 162 | 0.8519 | 0.800 |
+| flat | sklearn-birch, matched | 1000 | 987 | 0.8521 | 0.800 |
+| flat | betula-kmeans | 250 / 1000 / 4000 | 232 / 920 / 3 792 | **1.0000** | 0.800 |
+
+Three things this settles. **`top1 = 0.800` in every row**: both trees put the entire core in one
+leaf, so the mis-allocation is a property of the shared design — one global absorption radius — and
+not of either implementation. **Birch is measured at its defaults *and* matched**, because its
+default threshold produced ~7 000 subclusters against budgets of 250–4 000, and a rival compared only
+at its defaults is a rival misreported (the same discipline as the FAISS row above). **More leaves
+make Birch worse** on `structured` — 0.4180 → 0.3266 as its subcluster count goes 210 → 4 183 —
+which is what mis-allocation looks like when the extra budget goes to the minorities.
+
+betula is on the better side of the shared defect at every budget, and on `flat` it recovers the
+answer exactly where Birch loses 15 points. That is worth saying plainly: this row is not a win
+claimed over a fixed rival, it is the same known failure measured in both.
+
 ## Quality against the leaf budget — the knob the tables never varied
 
 `bench/leaf_budget.py`, median of seeds 0/1/2, `feature="spherical"`, `threshold=0.0`, crossed over
