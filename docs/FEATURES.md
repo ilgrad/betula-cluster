@@ -37,7 +37,11 @@ A capability-by-capability reference. For runnable code see [`USAGE.md`](USAGE.m
   scatter is already low-rank,
   **Ward agglomerative HAC** (exact, via nearest-neighbour chain; dendrogram-cut auto-k) and the
   four non-Ward linkages **`average`** (UPGMA), **`weighted`** (WPGMA), **`centroid`** (UPGMC) and
-  **`median`** (WPGMC) on an Anderberg driver,
+  **`median`** (WPGMC) on an Anderberg driver — with a **height-bounded exact** variant
+  (`clustering::dendrogram_below`, Rust API) that computes every merge below a chosen $h_{\max}$ over
+  a candidate radius graph and reports how far it is certified, so a cut it cannot serve exactly is
+  *refused* rather than approximated; average and weighted get radius $r^2 = h$, Ward
+  $r^2 = h/w_{\min}$, and centroid/median get no radius at all because they invert,
   **spectral clustering** (self-tuning k-NN affinity + normalized Laplacian embedding via the
   in-house Jacobi eigensolver, k-means-landmark-reduced above 256 microclusters — separates
   non-convex / manifold clusters the centroid heads cannot; pair it with a small `threshold` so the

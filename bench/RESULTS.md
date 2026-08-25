@@ -1086,6 +1086,63 @@ to read "no measured effect" is API debt, and on-by-default would change every l
 What is kept is the measurement — and the note that a swap costs `O(m·d + m·k)`, so if a future leaf
 model produces a genuinely adversarial instance, the guarantee is one function away.
 
+## Exact HAC below a height bound: 7.9× at 32 000 leaves, and one linkage that gets nothing (task #87)
+
+An agglomerative run over `m` leaves costs `O(m²·d)` because it looks at every pair. It does not have
+to: if only the merges *below* some height `h_max` are wanted — which is what a cut at `k` clusters
+is — then a candidate graph of pairs within a radius suffices, and the result is **exact**, not
+approximate. The whole argument is one inequality, `min over cross pairs ≤ mean over cross pairs`,
+and the mean is `‖Δμ‖² + S_A/n_A + S_B/n_B` for any pair of clusters. Per linkage:
+
+| linkage | value | certificate radius |
+|---|---|---|
+| average (UPGMA), weighted (WPGMA) | *is* that mean | `r² = h` |
+| Ward | `2·(n_A n_B/(n_A+n_B))·‖Δμ‖²`, and `S_A ≤ (m_A−1)h/2` | `r² = h/w_min` |
+| centroid (UPGMC), median (WPGMC) | `‖Δμ‖²` alone | **none, at any height** |
+
+Cross-checked numerically at every merge of 150 random instances (`d ∈ 1..6`, weighted and unit
+masses): the first three come out at a worst ratio of exactly `1.0000` — the bounds are *attained*,
+not merely valid — and centroid/median exceed theirs at 1.30 and 1.41, which is the counterexample,
+not a slack constant. Two concentric shells have coincident centroids and no close cross pair at all.
+`dendrogram_below` returns `CertificateError::NoRadius` for those two rather than a wrong dendrogram.
+
+Wall clock on Gaussian blobs (`d = 8`, 25 centres, 3 points per leaf, seed 7), median of 3 runs, cut
+at the height that leaves 25 clusters:
+
+| leaves `m` | dense Anderberg | `dendrogram_below` | speed-up | graph density | merges |
+|---:|---:|---:|---:|---:|---|
+| 2 000 | 147 ms | **25 ms** | 5.9× | 3.95 % | 1975 / 1999 |
+| 8 000 | 3 626 ms | **476 ms** | 7.6× | 3.99 % | 7975 / 7999 |
+| 32 000 | 81 926 ms | **10 317 ms** | 7.9× | 4.00 % | 31 975 / 31 999 |
+
+**The graph density is set by the cluster structure, not by the height.** Sweeping the cut from
+`k = 25` to `k = 1600` at `m = 8000` moves the density from 3.988 % to 3.977 % and the time from
+476 ms to 443 ms — because the radius stays wider than a blob's own diameter, so the edge count is
+essentially "pairs inside the same true cluster", `≈ 1/25`. That is the regime a CF-tree leaf set is
+*in* by construction, which is why the certificate pays here at all; on data with one blob it would
+buy nothing, and `BoundedDendrogram::complete` is reported so the caller can see which happened.
+
+**Where the remaining 8× of the theoretical 25× goes.** The radius graph is still an `O(m²·d)` scan —
+an exact radius query has no sublinear structure at these dimensions, and an approximate k-NN index is
+*not* a substitute, because one missing edge is precisely the edge the certificate was resting on.
+Measured share of `dendrogram_below`'s own time:
+
+| leaves `m` | graph build | merge loop | build share |
+|---:|---:|---:|---:|
+| 2 000 | 11 ms | 15 ms | 42 % |
+| 8 000 | 182 ms | 310 ms | 37 % |
+| 32 000 | 2 785 ms | 8 085 ms | 26 % |
+
+So the build is a floor of roughly a quarter to a half, and the sparsity only buys the merge loop.
+
+**A sparse driver without a nearest-neighbour cache is slower than the dense one, not faster** — by
+30× at `m = 32 000`. The first implementation rescanned the whole adjacency for the global minimum at
+every step, `O(m·|E|)`: 427 ms / 38 882 ms / 2 449 501 ms against the dense 147 / 3 626 / 81 926. The
+fix is Anderberg's cache over adjacency lists rather than over all `m` clusters, with the lists
+resolved through union-find on read (so the relation stays symmetric for free) and deduplicated by a
+stamp array (a `contains` scan makes the union quadratic in the degree, which on a 4 %-dense graph of
+32 000 leaves *is* the running time). Sparsity is a data structure, not a smaller number of pairs.
+
 ## Insertion-order sensitivity — the property the whole BIRCH family inherits
 
 `bench/insertion_order.py`, `bench/results_order.csv` (54 cells). A CF-tree routes each point against

@@ -267,6 +267,235 @@ pub(crate) fn anderberg<R: Real, N>(
     merges
 }
 
+/// Why a height-bounded run could not be certified.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CertificateError {
+    /// The linkage admits inversions, so its value bounds nothing about the leaves underneath: two
+    /// clusters can have coincident centroids — value zero — with every cross pair far apart. There
+    /// is no radius that makes the sparse run exact, at any height.
+    NoRadius,
+}
+
+/// The exact prefix of a dendrogram, with the height it is certified to.
+pub struct BoundedDendrogram<R> {
+    pub(crate) merges: Vec<Merge<R>>,
+    /// Every merge here is identical to the dense driver's; the run stopped at the first merge whose
+    /// height would have exceeded this.
+    pub certified_to: R,
+    /// Whether the dendrogram is complete (`m − 1` merges) rather than cut short by `h_max`.
+    pub complete: bool,
+}
+
+impl<R: Real> BoundedDendrogram<R> {
+    /// Labels at `k` clusters, or `None` when reaching `k` would need a merge above `certified_to` —
+    /// the certificate's whole point is that it says so instead of quietly approximating.
+    pub fn labels_at_k(&self, m: usize, k: usize) -> Option<Vec<usize>> {
+        let k = k.max(1).min(m);
+        let want = m - k;
+        (want <= self.merges.len()).then(|| labels_at(m, &self.merges, want))
+    }
+}
+
+/// The radius a candidate graph needs so that every merge of height `≤ h_max` has a cross edge in it.
+///
+/// The argument is one inequality. `min` over cross pairs `≤` mean over cross pairs, and the mean is
+/// `‖Δμ‖² + S_A/n_A + S_B/n_B` for any pair of clusters. What differs per linkage is how the value
+/// bounds that mean:
+///
+/// - **Average / weighted**: the value *is* a (convex) average of cross-pair squared distances, so
+///   `min ≤ value ≤ h`. Radius `√h`.
+/// - **Ward**: the value is `2·(n_A n_B/(n_A+n_B))·‖Δμ‖²`, and a cluster's own scatter is the sum of
+///   the `D4` of the merges inside it, so `S_A ≤ (m_A − 1)h/2`. That gives
+///   `min ≤ (h/2)(m_A/n_A + m_B/n_B) ≤ h/w_min` with `w_min` the lightest leaf. Radius `√(h/w_min)`.
+/// - **Centroid / median**: the value is `‖Δμ‖²` alone, which bounds neither spread. Two concentric
+///   shells have coincident centroids and no close cross pair at all — [`CertificateError::NoRadius`].
+///
+/// Cross-checked numerically at every merge of 150 random instances (`d ∈ 1..6`, weighted and unit
+/// masses): the first three come out at a worst ratio of exactly `1.0000`, so the bounds are attained
+/// and not merely valid, and centroid/median exceed theirs at 1.30 and 1.41.
+///
+/// **Ward's radius is correct and useless**, which the docs say because the measurement does: at the
+/// height that leaves the true cluster count, its graph is 100 % of the pairs at every `(m, d)` in
+/// `bench/RESULTS.md`. The mass factor is why — joining the last well-separated clusters costs ~70×
+/// what the merges just below it cost. Average linkage has no mass factor and holds 2.5–5.7 %.
+pub fn certificate_radius<R: Real>(
+    linkage: Linkage,
+    h_max: R,
+    min_weight: R,
+) -> Result<R, CertificateError> {
+    match linkage {
+        Linkage::Average | Linkage::Weighted => Ok(h_max.max(R::zero())),
+        Linkage::Ward => {
+            let w = if min_weight > R::zero() {
+                min_weight
+            } else {
+                R::one()
+            };
+            Ok((h_max / w).max(R::zero()))
+        }
+        Linkage::Centroid | Linkage::Median => Err(CertificateError::NoRadius),
+    }
+}
+
+/// Every merge of height `≤ h_max`, computed over a candidate graph instead of all pairs.
+///
+/// Exact, not approximate, and the exactness is two lines. The candidate set is a subset of the
+/// pairs, so the candidate minimum is `≥` the true minimum. And if the true minimum is `≤ h_max`,
+/// [`certificate_radius`] puts a cross edge for it in the graph, so it *is* a candidate and the
+/// candidate minimum is `≤` it. The two together force equality at every step below `h_max` — and
+/// the moment the candidate minimum exceeds `h_max`, the same argument says the true minimum does
+/// too, so stopping there is exactly right rather than a heuristic cut-off.
+///
+/// The graph costs `O(m²·d)` to build — an *exact* radius query has no sublinear structure in the
+/// dimensions the leaf summary lives in, and an approximate k-NN index is not a substitute, because a
+/// single missing edge is the one the certificate was resting on. What the sparsity buys is the merge
+/// loop: Anderberg's nearest-neighbour cache over adjacency lists rather than over all `m` clusters,
+/// so a step costs `O(deg·d)` instead of `O(m·d)`. It therefore wins where `h_max` is well below the
+/// top of the tree and loses where it is not — a property of the data, and the reason
+/// [`BoundedDendrogram::complete`] is reported rather than assumed. Measured in `bench/RESULTS.md`.
+pub fn dendrogram_below<R: Real, C: ClusterFeature<R>>(
+    features: &[C],
+    linkage: Linkage,
+    h_max: R,
+) -> Result<BoundedDendrogram<R>, CertificateError> {
+    let m = features.len();
+    let w_min = features
+        .iter()
+        .map(ClusterFeature::weight)
+        .fold(R::infinity(), |a, b| if b < a { b } else { a });
+    let r2 = certificate_radius(linkage, h_max, w_min)?;
+    let mut node: Vec<Node<R>> = features.iter().map(Node::leaf).collect();
+
+    // Candidate adjacency, contracted on merge: a cluster's neighbours are the union of its leaves'.
+    // Entries stay as the leaf indices they were built from and are resolved through `parent` on
+    // read, which is what keeps the union `O(deg)` and keeps the relation symmetric for free — `c`
+    // held `b`, and `b` now resolves to `a`.
+    let mut adj: Vec<Vec<usize>> = vec![Vec::new(); m];
+    for i in 0..m {
+        for j in (i + 1)..m {
+            if sq_euclidean(&node[i].mean, &node[j].mean) <= r2 {
+                adj[i].push(j);
+                adj[j].push(i);
+            }
+        }
+    }
+
+    let mut parent: Vec<usize> = (0..m).collect();
+    let mut alive = vec![true; m];
+    let mut nn = vec![usize::MAX; m];
+    let mut nnd = vec![R::infinity(); m];
+    let mut mark = vec![0usize; m];
+    let mut stamp = 0usize;
+
+    for i in 0..m {
+        stamp += 1;
+        let (b, d) = refresh(&mut adj, &mut parent, &mut mark, stamp, &node, linkage, i);
+        nn[i] = b;
+        nnd[i] = d;
+    }
+
+    let mut merges: Vec<Merge<R>> = Vec::with_capacity(m.saturating_sub(1));
+    for _ in 1..m {
+        let (mut a, mut best) = (usize::MAX, R::infinity());
+        for (i, &live) in alive.iter().enumerate() {
+            if live && nn[i] != usize::MAX && nnd[i] < best {
+                best = nnd[i];
+                a = i;
+            }
+        }
+        if a == usize::MAX || best > h_max {
+            return Ok(BoundedDendrogram {
+                merges,
+                certified_to: h_max,
+                complete: false,
+            });
+        }
+        let b = nn[a];
+
+        let absorbed = Node {
+            mass: node[b].mass,
+            mean: node[b].mean.clone(),
+            spread: node[b].spread,
+        };
+        node[a].absorb(&absorbed, linkage);
+        alive[b] = false;
+        parent[b] = a;
+        merges.push(Merge {
+            into: a,
+            from: b,
+            height: best,
+        });
+
+        let tail = std::mem::take(&mut adj[b]);
+        adj[a].extend(tail);
+        stamp += 1;
+        let (na, da) = refresh(&mut adj, &mut parent, &mut mark, stamp, &node, linkage, a);
+        nn[a] = na;
+        nnd[a] = da;
+
+        // Only `a`'s own neighbours can have changed: everyone else is at the same distance from the
+        // same live clusters. Those whose neighbour died or grew have to look again; the rest can
+        // only have got closer to `a`, which is one distance rather than a scan.
+        let neighbours = std::mem::take(&mut adj[a]);
+        for &c in &neighbours {
+            if nn[c] == a || nn[c] == b {
+                stamp += 1;
+                let (nc, dc) = refresh(&mut adj, &mut parent, &mut mark, stamp, &node, linkage, c);
+                nn[c] = nc;
+                nnd[c] = dc;
+            } else {
+                let v = linkage.value(&node[a], &node[c]);
+                if v < nnd[c] {
+                    nnd[c] = v;
+                    nn[c] = a;
+                }
+            }
+        }
+        adj[a] = neighbours;
+    }
+    Ok(BoundedDendrogram {
+        merges,
+        certified_to: h_max,
+        complete: true,
+    })
+}
+
+/// Resolve `adj[i]` to live roots in place, dropping duplicates and self, and return `i`'s nearest
+/// candidate. `mark` + a fresh `stamp` is the deduplication: a `contains` scan would make the union
+/// quadratic in the degree, which on a 4 %-dense graph of 32 000 leaves is the whole running time.
+fn refresh<R: Real>(
+    adj: &mut [Vec<usize>],
+    parent: &mut [usize],
+    mark: &mut [usize],
+    stamp: usize,
+    node: &[Node<R>],
+    linkage: Linkage,
+    i: usize,
+) -> (usize, R) {
+    let mut list = std::mem::take(&mut adj[i]);
+    let (mut best, mut best_d) = (usize::MAX, R::infinity());
+    let (len, mut w) = (list.len(), 0usize);
+    let mut k = 0usize;
+    while k < len {
+        let c = uf_find(parent, list[k]);
+        k += 1;
+        if c == i || mark[c] == stamp {
+            continue;
+        }
+        mark[c] = stamp;
+        list[w] = c;
+        w += 1;
+        let v = linkage.value(&node[i], &node[c]);
+        if v < best_d {
+            best_d = v;
+            best = c;
+        }
+    }
+    list.truncate(w);
+    adj[i] = list;
+    (best, best_d)
+}
+
 /// Union-find root with path compression.
 pub(crate) fn uf_find(parent: &mut [usize], x: usize) -> usize {
     let mut root = x;
@@ -365,6 +594,7 @@ pub fn agglomerative_auto<R: Real, C: ClusterFeature<R>>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::clustering::rng::SplitMix64;
     use crate::distance::{AverageIntercluster, CFDistance, CentroidEuclidean, VarianceIncrease};
     use crate::feature::Spherical;
 
@@ -395,6 +625,173 @@ mod tests {
             leaf(&[[-2.0, 4.0], [-2.3, 3.1]]),
             leaf(&[[7.0, 7.0]]),
         ]
+    }
+
+    // ───────────────── height-bounded sparse driver (task #87) ─────────────────
+
+    /// A grid of small leaves: many merges well below the top of the tree, which is the regime the
+    /// certificate is *for*. Random-ish masses so the Ward radius's `w_min` term is exercised.
+    fn grid_leaves(side: usize) -> Vec<Spherical<f64>> {
+        let mut out = Vec::new();
+        for i in 0..side {
+            for j in 0..side {
+                let mut cf = Spherical::new(2);
+                let reps = 1 + (i * 7 + j * 3) % 4;
+                for r in 0..reps {
+                    cf.push(&[i as f64 + 0.01 * r as f64, j as f64], 1.0);
+                }
+                out.push(cf);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn the_sparse_run_reproduces_the_dense_dendrogram_below_its_height() {
+        for linkage in [Linkage::Average, Linkage::Weighted, Linkage::Ward] {
+            let feats = grid_leaves(5);
+            let dense = dendrogram(&feats, linkage);
+            // Cut at a height that leaves real work above it, so `complete` must come back false.
+            let h = dense[dense.len() / 2].height;
+            let got = dendrogram_below(&feats, linkage, h).expect("certified linkage");
+            assert!(
+                !got.complete,
+                "{linkage:?}: fixture must not finish below h"
+            );
+            assert!(!got.merges.is_empty(), "{linkage:?}: nothing merged");
+            for (i, (a, b)) in got.merges.iter().zip(&dense).enumerate() {
+                assert_eq!((a.into, a.from), (b.into, b.from), "{linkage:?} merge {i}");
+                assert!(
+                    (a.height - b.height).abs() < 1e-12,
+                    "{linkage:?} height {i}"
+                );
+            }
+            // Every merge it did make is at or below the bound, and the next dense one is above.
+            assert!(got.merges.iter().all(|mg| mg.height <= h));
+            assert!(dense[got.merges.len()].height > h);
+        }
+    }
+
+    #[test]
+    fn the_contracted_adjacency_keeps_every_edge_on_a_fixture_large_enough_to_lose_one() {
+        // The grid fixture is small enough that a candidate graph missing an edge still happens to
+        // stop in the right place. This one is not: 300 leaves in four blobs, cut two thirds of the
+        // way up, so the run makes ~290 merges and any lost edge shows up as an early stop.
+        let mut rng = SplitMix64::new(11);
+        let centres = [[0.0, 0.0], [9.0, 0.5], [1.0, 8.0], [8.0, 9.0]];
+        let feats: Vec<Spherical<f64>> = (0..300)
+            .map(|i| {
+                let c = centres[i % 4];
+                let mut cf = Spherical::new(2);
+                for _ in 0..3 {
+                    cf.push(&[c[0] + rng.gauss(), c[1] + rng.gauss()], 1.0);
+                }
+                cf
+            })
+            .collect();
+        for linkage in [Linkage::Average, Linkage::Weighted, Linkage::Ward] {
+            let dense = dendrogram(&feats, linkage);
+            let h = dense[dense.len() * 2 / 3].height;
+            let got = dendrogram_below(&feats, linkage, h).expect("certified linkage");
+            let want = dense.iter().take_while(|mg| mg.height <= h).count();
+            assert_eq!(got.merges.len(), want, "{linkage:?}: lost a candidate edge");
+            for (i, (a, b)) in got.merges.iter().zip(&dense).enumerate() {
+                assert_eq!((a.into, a.from), (b.into, b.from), "{linkage:?} merge {i}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_height_above_the_whole_tree_returns_the_complete_dendrogram() {
+        for linkage in [Linkage::Average, Linkage::Weighted, Linkage::Ward] {
+            let feats = fixture();
+            let dense = dendrogram(&feats, linkage);
+            let top = dense.last().expect("non-empty").height;
+            let got = dendrogram_below(&feats, linkage, top * 2.0).expect("certified linkage");
+            assert!(got.complete, "{linkage:?}");
+            assert_eq!(got.merges.len(), dense.len(), "{linkage:?}");
+            for (a, b) in got.merges.iter().zip(&dense) {
+                assert_eq!((a.into, a.from), (b.into, b.from), "{linkage:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn an_inverting_linkage_gets_no_certificate_at_any_height() {
+        // Centroid and median admit inversions, so their value bounds nothing about the leaves:
+        // concentric shells have coincident centroids and no close cross pair at all.
+        for linkage in [Linkage::Centroid, Linkage::Median] {
+            assert_eq!(
+                certificate_radius(linkage, 10.0_f64, 1.0),
+                Err(CertificateError::NoRadius),
+                "{linkage:?}"
+            );
+            assert!(
+                dendrogram_below(&fixture(), linkage, 10.0).is_err(),
+                "{linkage:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_ward_radius_carries_the_mass_factor_and_the_others_do_not() {
+        // `min cross <= (h/2)(m_A/n_A + m_B/n_B) <= h/w_min`: light leaves need a wider graph. The
+        // U family's value is already an average of cross-pair distances, so `h` is the whole story.
+        assert_eq!(certificate_radius(Linkage::Average, 8.0_f64, 0.5), Ok(8.0));
+        assert_eq!(certificate_radius(Linkage::Weighted, 8.0_f64, 0.5), Ok(8.0));
+        assert_eq!(certificate_radius(Linkage::Ward, 8.0_f64, 2.0), Ok(4.0));
+        assert_eq!(certificate_radius(Linkage::Ward, 8.0_f64, 0.5), Ok(16.0));
+        // A degenerate or absent mass must not divide by zero and must not shrink the graph.
+        assert_eq!(certificate_radius(Linkage::Ward, 8.0_f64, 0.0), Ok(8.0));
+        assert_eq!(certificate_radius(Linkage::Average, -1.0_f64, 1.0), Ok(0.0));
+    }
+
+    #[test]
+    fn a_cut_above_the_certified_height_is_refused_rather_than_approximated() {
+        let feats = grid_leaves(4);
+        let m = feats.len();
+        let dense = dendrogram(&feats, Linkage::Average);
+        let h = dense[dense.len() / 2].height;
+        let got = dendrogram_below(&feats, Linkage::Average, h).expect("certified linkage");
+        let reachable = m - got.merges.len();
+
+        // A cut the prefix covers is exact...
+        let sparse_labels = got
+            .labels_at_k(m, reachable)
+            .expect("within the certificate");
+        let dense_labels = labels_at(m, &dense, m - reachable);
+        assert_eq!(sparse_labels, dense_labels);
+
+        // ...and one it does not is refused, not silently served from a truncated dendrogram.
+        assert!(got.labels_at_k(m, reachable - 1).is_none());
+        assert!(got.labels_at_k(m, 1).is_none());
+    }
+
+    #[test]
+    fn ward_stays_exact_when_the_lightest_leaf_is_below_unit_mass() {
+        // `r² = h/w_min` differs from `h` only below unit mass, and the bound is *attained* by two
+        // light singletons: their value is `2·(w²/2w)·d² = w·d²`, so a merge at height `h` sits at
+        // `d² = h/w`. A radius that dropped the mass factor would miss those pairs outright, which
+        // is what makes this a regression test and not a restatement of the formula.
+        let w = 0.25;
+        let mut feats = Vec::new();
+        for i in 0..16usize {
+            let mut cf = Spherical::new(2);
+            cf.push(&[(i % 4) as f64 * 1.3, (i / 4) as f64 * 1.1], w);
+            feats.push(cf);
+        }
+        let dense = dendrogram(&feats, Linkage::Ward);
+        let h = dense[dense.len() * 2 / 3].height;
+        assert!(h > 0.0);
+        let got = dendrogram_below(&feats, Linkage::Ward, h).expect("certified linkage");
+        assert!(!got.complete);
+        assert!(
+            got.merges.len() > dense.len() / 2,
+            "too few merges to be a test"
+        );
+        for (i, (a, b)) in got.merges.iter().zip(&dense).enumerate() {
+            assert_eq!((a.into, a.from), (b.into, b.from), "merge {i}");
+        }
     }
 
     // ───────── the independent reference: textbook Lance-Williams on a full matrix ─────────

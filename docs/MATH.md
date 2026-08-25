@@ -308,6 +308,29 @@ clusters). This is parameter-free and non-convex-aware.
   reported as $\Sigma = \frac{S}{\mathrm{tr}(B^\mathsf{T}B)}\cdot\frac{B^\mathsf{T}B}{n}$ — the retained
   directions scaled to carry the missing mass. Measured against the isotropic alternative in
   `bench/RESULTS.md`; without either, the sketch reports as little as 66 % of its own scatter.
+- **Height-bounded exact HAC** (`clustering::dendrogram_below`, Rust API): every merge below a chosen
+  height $h_{\max}$, computed over a candidate graph instead of all pairs, and **exact** rather than
+  approximate. The whole argument is one inequality — the minimum over cross pairs is at most their
+  (mass-weighted) mean, and that mean is
+  $\|\Delta\mu\|^2 + S_A/n_A + S_B/n_B$ for *any* pair of clusters. What differs per linkage is how
+  the linkage value bounds it:
+  - **average / weighted**: the value *is* that mean, so $\min \le h$ and the radius is $r^2 = h$;
+  - **Ward**: the value is $2\frac{n_A n_B}{n_A + n_B}\|\Delta\mu\|^2$ and a cluster's own scatter is
+    the sum of the $D_4$ of the merges inside it, $S_A \le (m_A - 1)h/2$, so
+    $\min \le \frac{h}{2}\bigl(\frac{m_A}{n_A} + \frac{m_B}{n_B}\bigr) \le h/w_{\min}$ with $w_{\min}$
+    the lightest leaf;
+  - **centroid / median**: the value is $\|\Delta\mu\|^2$ alone, which bounds neither spread — two
+    concentric shells have coincident centroids and no close cross pair at all. **No radius exists**,
+    at any height, and the call returns an error rather than a silently wrong dendrogram.
+
+  Exactness then follows in two lines: the candidate set is a subset of the pairs, so the candidate
+  minimum is $\ge$ the true minimum; and if the true minimum is $\le h_{\max}$ the radius puts its
+  edge in the graph, so the candidate minimum is $\le$ it. Equality at every step below $h_{\max}$ —
+  and the moment the candidate minimum exceeds $h_{\max}$ the same argument says the true one does
+  too, so stopping there is right rather than heuristic. The graph must therefore be the **exact**
+  radius graph: an approximate k-NN index may omit the one edge the certificate depends on, which
+  costs the guarantee and leaves an approximation indistinguishable from an exact answer. See
+  `bench/RESULTS.md` for where this pays and where it does not.
 - **Rebuild** merges the $k$ closest within-leaf sibling pairs, where $k$ is what the leaf budget asks
   for, and raises the threshold to the widest gap it took (monotone, $O(M \cdot \text{capacity})$ scan,
   no global all-pairs). Two consequences. *In place*: merging two entries inside one leaf node leaves

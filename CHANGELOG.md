@@ -7,6 +7,25 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **`dendrogram_below`: exact agglomerative clustering below a height bound, with a certificate.**
+  (Rust API — `clustering::dendrogram_below`, `certificate_radius`, `BoundedDendrogram`.) A cut at `k`
+  clusters only needs the merges *below* one height, and those can be computed over a candidate radius
+  graph instead of all pairs — exactly, not approximately. The argument is one inequality: the minimum
+  over cross pairs is at most their mean, `‖Δμ‖² + S_A/n_A + S_B/n_B`. Average and weighted linkage get
+  `r² = h` because their value *is* that mean; Ward gets `r² = h/w_min` because its value carries a
+  mass factor and a cluster's scatter is the sum of the `D4` of the merges inside it. Centroid and
+  median get **no radius at all** — their value is `‖Δμ‖²`, which bounds neither spread, so two
+  concentric shells merge low with no close cross pair anywhere. That case returns
+  `CertificateError::NoRadius` rather than a plausible wrong answer, and a cut above the certified
+  height returns `None` rather than one served from a truncated dendrogram.
+
+  Measured at **7.9× the dense driver on 32 000 leaves** (10.3 s against 81.9 s, median of 3), 7.6× at
+  8000 and 5.9× at 2000. The graph is still an `O(m²·d)` scan — 26–42 % of the total — because an
+  exact radius query has no sublinear structure here, and an approximate k-NN index would forfeit the
+  certificate for the sake of the one edge it drops. Full tables, including the numeric cross-check
+  that the three bounds are *attained*, in
+  [`bench/RESULTS.md`](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md).
+
 - **`BregmanBetula`: the CF-tree in a Bregman geometry, as a second estimator.** Lane A shipped the
   Rust side in this release — `BregmanCf`, `D4_φ`, Bregman k-means / Ward / EM — with no Python
   surface, because the wiring is a type-1 door. It is now decided and recorded in
