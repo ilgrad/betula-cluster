@@ -2582,6 +2582,23 @@ def test_window_stream_is_not_fitted_before_it_is_fed():
         ws.set_params(nonsense=1)
 
 
+def test_window_stream_set_params_discards_the_fitted_state_it_invalidates():
+    """A reconfigured frame width cannot be applied to frames already closed under the old one, so
+    `set_params` drops the estimator rather than mixing two geometries."""
+    x, t = _drifting_stream(n=100, span=10.0)
+    ws = betula_cluster.WindowStream(frame_width=5.0, max_leaves=200)
+    ws.partial_fit(x, t).close_frame()
+    assert ws.set_params(frame_width=2.5) is ws
+    assert ws.get_params()["frame_width"] == 2.5
+    with pytest.raises(AttributeError):
+        _ = ws.n_frames_
+
+
+def test_window_stream_repr_names_the_two_parameters_that_size_the_window():
+    ws = betula_cluster.WindowStream(frame_width=3.0, capacity=32)
+    assert repr(ws) == "WindowStream(frame_width=3.0, capacity=32)"
+
+
 # ── export_coreset ────────────────────────────────────────────────────────────────────────────────
 
 
@@ -2653,6 +2670,36 @@ def test_export_coreset_without_a_size_is_the_unsampled_summary_it_always_was(bl
     assert cs.reference_cost is None and cs.total_sensitivity is None
     with pytest.raises(ValueError, match="needs a sampled coreset"):
         cs.summary_epsilon(1.0)
+
+
+def test_summary_epsilon_grows_with_the_factor_it_is_asked_to_defend(blobs):
+    """`rho` scales with `alpha`, and the bound is `4*sqrt(rho) + 4*rho` — monotone, and strictly
+    positive whenever the leaves carry any within-leaf scatter at all."""
+    x, _ = blobs
+    est = betula_cluster.Betula(n_clusters=4, max_leaves=200, seed=0).fit(x)
+    cs = est.export_coreset(size=100, k=4)
+    eps = [cs.summary_epsilon(a) for a in (0.5, 1.0, 2.0)]
+    assert 0.0 < eps[0] < eps[1] < eps[2]
+    rho = cs.offset / cs.reference_cost
+    assert eps[1] == pytest.approx(4.0 * rho**0.5 + 4.0 * rho)
+
+
+def test_summary_epsilon_of_a_lossless_summary_is_zero():
+    """One leaf per distinct point leaves nothing to bound: the reference cost is zero, and a
+    relative error against zero is zero rather than a division."""
+    x = np.zeros((100, 3))
+    est = betula_cluster.Betula(n_clusters=1, threshold=0.0, max_leaves=100, seed=0).fit(x)
+    cs = est.export_coreset(size=10, k=1)
+    assert cs.reference_cost == pytest.approx(0.0)
+    assert cs.summary_epsilon(1.0) == 0.0
+
+
+def test_export_coreset_defaults_k_to_the_configured_cluster_count(blobs):
+    x, _ = blobs
+    est = betula_cluster.Betula(n_clusters=4, max_leaves=200, seed=0).fit(x)
+    assert est.export_coreset(size=100).total_sensitivity == pytest.approx(
+        est.export_coreset(size=100, k=4).total_sensitivity
+    )
 
 
 @pytest.mark.parametrize(("size", "k"), [(0, 4), (-1, 4), (10, 0)])
