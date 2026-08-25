@@ -73,9 +73,19 @@ impl Leaves {
             .iter()
             .map(|f| f.weight().to_f64().unwrap_or(0.0))
             .collect();
+        // A leaf that carries no mass has no scatter to report, and `S/n` on it is `0/0`. Guarding
+        // here rather than at the four places that read `spread` is the difference between one
+        // invariant and four defensive branches — a NaN loose in this module reaches
+        // `partial_cmp(..).unwrap()` in the seeding and takes the process with it.
         let spread = features
             .iter()
-            .map(|f| (f.ssd() / f.weight()).to_f64().unwrap_or(0.0))
+            .map(|f| {
+                if f.weight() > R::zero() {
+                    (f.ssd() / f.weight()).to_f64().unwrap_or(0.0)
+                } else {
+                    0.0
+                }
+            })
             .collect();
         let total = w.iter().sum();
         Self {
@@ -133,8 +143,19 @@ fn loss_of(lv: &Leaves, near: &[[(f64, usize); 3]]) -> f64 {
 
 /// Greedy weighted k-means++ over the leaves, returning medoid **indices** rather than centroids.
 ///
-/// The sampling weight is the exact CF potential `S_i + n_i·D²_i`, the same one the k-means head
-/// seeds on: a leaf sitting on a chosen medoid still carries its own scatter and stays a candidate.
+/// The exact CF potential of a leaf at squared distance `d2` from its nearest chosen medoid:
+/// `S_i + n_i·D²_i`, written in the mean-scatter form the [`Leaves`] view carries. Named because the
+/// two terms are two different claims — the distance to the seeding set, and the scatter a leaf keeps
+/// even when it sits on one — and a sampling weight that quietly loses either is not detectable in
+/// the clustering the search converges to.
+fn potential(w: f64, d2: f64, spread: f64) -> f64 {
+    w * d2 + w * spread
+}
+
+/// Greedy weighted k-means++ over the leaves, returning medoid **indices** rather than centroids.
+///
+/// The sampling weight is the exact CF [`potential`], the same one the k-means head seeds on: a leaf
+/// sitting on a chosen medoid still carries its own scatter and stays a candidate.
 fn seed_medoids(lv: &Leaves, k: usize, rng: &mut SplitMix64) -> Vec<usize> {
     let m = lv.len();
     let mut medoids = Vec::with_capacity(k);
@@ -149,7 +170,7 @@ fn seed_medoids(lv: &Leaves, k: usize, rng: &mut SplitMix64) -> Vec<usize> {
             if d < d2[i] {
                 d2[i] = d;
             }
-            probs[i] = lv.w[i] * d2[i] + lv.w[i] * lv.spread[i];
+            probs[i] = potential(lv.w[i], d2[i], lv.spread[i]);
         }
         let pick = crate::clustering::kmeans::weighted_pick(&probs, rng);
         if medoids.contains(&pick) {
@@ -339,6 +360,205 @@ mod tests {
         let (pts, truth) = blobs(&mut rng, 150, &centres, spread);
         let (micros, assign) = grid_micros(&pts, 0.6);
         (micros, assign, truth)
+    }
+
+    /// Leaves at fixed positions with unit weight and no scatter, for the pieces whose behaviour is
+    /// a tie-breaking rule rather than a clustering.
+    fn placed(mu: &[[f64; 2]]) -> Leaves {
+        Leaves {
+            mu: mu.iter().map(|p| p.to_vec()).collect(),
+            w: vec![1.0; mu.len()],
+            spread: vec![0.0; mu.len()],
+            total: mu.len() as f64,
+        }
+    }
+
+    #[test]
+    fn a_vanishing_second_distance_scores_the_worst_ratio_rather_than_dividing_by_zero() {
+        // Two medoids on the same point: the silhouette is undefined and the crate's published
+        // metric scores that degeneracy at zero, so the loss it is one minus must be one.
+        assert_eq!(ratio(0.5, 0.0), 1.0);
+        assert_eq!(ratio(0.0, 0.0), 1.0);
+        assert_eq!(ratio(1.0, 4.0), 0.25);
+    }
+
+    #[test]
+    fn the_nearest_three_break_ties_towards_the_earlier_medoid() {
+        // Four medoids at exactly the same distance and one further out. Which of the tied three
+        // land in which slot is not cosmetic: the swap search prices a leaf by slots one and two and
+        // corrects by slot three, so a rule that lets a later tie displace an earlier one silently
+        // reshuffles the corrections.
+        let lv = placed(&[
+            [0.0, 0.0],
+            [1.0, 0.0],
+            [-1.0, 0.0],
+            [0.0, 1.0],
+            [0.0, -1.0],
+            [0.0, 2.0],
+        ]);
+        let near = three_nearest(&lv, &[1, 2, 3, 4, 5]);
+        assert_eq!(
+            near[0],
+            [(1.0, 0), (1.0, 1), (1.0, 2)],
+            "ties must fill the slots in medoid order and the fourth tie must not displace them"
+        );
+    }
+
+    #[test]
+    fn the_seeding_weight_is_the_scatter_plus_the_distance_and_not_either_alone() {
+        // `S_i + n_i·D²_i`. A leaf sitting on a chosen medoid (`d2 = 0`) still carries its scatter
+        // and stays a candidate; a leaf far away with no scatter is a candidate on distance alone.
+        assert_eq!(potential(2.0, 3.0, 5.0), 16.0);
+        assert_eq!(potential(3.0, 0.0, 4.0), 12.0);
+        assert_eq!(potential(3.0, 4.0, 0.0), 12.0);
+        assert_eq!(potential(0.0, 4.0, 5.0), 0.0);
+    }
+
+    #[test]
+    fn the_seeding_returns_exactly_k_distinct_leaves_even_where_the_potential_is_degenerate() {
+        // Every leaf identical: the sampling repeatedly lands on a medoid already held, so the
+        // fallback is the only thing producing progress and the loop is the only thing stopping it.
+        let lv = placed(&[[0.0, 0.0]; 6]);
+        let mut rng = SplitMix64::new(5);
+        let seeded = seed_medoids(&lv, 4, &mut rng);
+        assert_eq!(seeded.len(), 4, "asked for four medoids, got {seeded:?}");
+        let mut sorted = seeded.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), 4, "a medoid was chosen twice: {seeded:?}");
+    }
+
+    #[test]
+    fn the_swap_search_returns_the_best_improving_exchange_and_the_same_one_a_full_search_finds() {
+        let (micros, _, _) = fixture(4, 0.7);
+        let lv = Leaves::of(&micros);
+        let mut rng = SplitMix64::new(3);
+        let mut medoids = seed_medoids(&lv, 5, &mut rng);
+        let mut compared = 0;
+        for _ in 0..40 {
+            let near = three_nearest(&lv, &medoids);
+            let loss = loss_of(&lv, &near);
+            // Candidate-outer, slot-inner, matching `best_swap`'s own order, so that ties resolve
+            // the same way and the comparison is of the choice and not only of its price.
+            let mut brute: Option<(usize, usize, f64)> = None;
+            for x in 0..lv.len() {
+                if medoids.contains(&x) {
+                    continue;
+                }
+                for slot in 0..medoids.len() {
+                    let mut trial = medoids.clone();
+                    trial[slot] = x;
+                    let l = loss_of(&lv, &three_nearest(&lv, &trial));
+                    if l < loss - 1e-12 && brute.is_none_or(|(_, _, b)| l < b) {
+                        brute = Some((slot, x, l));
+                    }
+                }
+            }
+            match (best_swap(&lv, &medoids, &near, loss), brute) {
+                (None, None) => break,
+                (Some((s, x, l)), Some((bs, bx, bl))) => {
+                    assert_eq!(
+                        (s, x),
+                        (bs, bx),
+                        "chose ({s}, {x}), full search says ({bs}, {bx})"
+                    );
+                    assert!(
+                        (l - bl).abs() < 1e-9,
+                        "priced it {l}, full search says {bl}"
+                    );
+                    medoids[s] = x;
+                    compared += 1;
+                }
+                (a, b) => panic!("the incremental and full searches disagree: {a:?} vs {b:?}"),
+            }
+        }
+        assert!(
+            compared >= 2,
+            "the fixture converged too fast to compare anything"
+        );
+    }
+
+    #[test]
+    fn a_swap_that_only_ties_the_current_loss_is_not_an_improvement() {
+        // Every leaf has an exact duplicate, so at any medoid set there is a swap to the twin that
+        // leaves the loss untouched. An improvement test that admits equality would take it, and
+        // the search would cycle between twins instead of stopping.
+        let lv = placed(&[
+            [0.0, 0.0],
+            [0.0, 0.0],
+            [10.0, 0.0],
+            [10.0, 0.0],
+            [0.0, 10.0],
+            [0.0, 10.0],
+        ]);
+        let medoids = vec![0, 2, 4];
+        let near = three_nearest(&lv, &medoids);
+        let loss = loss_of(&lv, &near);
+        assert!(
+            best_swap(&lv, &medoids, &near, loss).is_none(),
+            "a zero-delta swap to a duplicate leaf was reported as an improvement"
+        );
+    }
+
+    #[test]
+    fn a_k_max_of_two_is_a_sweep_and_not_the_single_cluster_shortcut() {
+        let (micros, _, _) = fixture(6, 0.7);
+        let res = dyn_msc(&micros, 2, 100, 6);
+        assert_eq!(
+            res.k, 2,
+            "k_max = 2 must still be optimised, not short-circuited"
+        );
+        assert!(
+            res.score > 0.0,
+            "score {} is the undefined-metric value",
+            res.score
+        );
+    }
+
+    #[test]
+    fn the_iteration_cap_is_taken_literally_and_only_zero_means_the_default() {
+        let (micros, _, _) = fixture(8, 0.9);
+        let one = dyn_msc(&micros, 6, 1, 8);
+        let many = dyn_msc(&micros, 6, 100, 8);
+        let zero = dyn_msc(&micros, 6, 0, 8);
+        assert!(
+            one.score < many.score,
+            "one swap pass scored {} against {} for a hundred — the cap is being ignored",
+            one.score,
+            many.score
+        );
+        assert_eq!(
+            zero.score, many.score,
+            "max_iter = 0 must mean the default, which is a hundred"
+        );
+    }
+
+    #[test]
+    fn a_massless_summary_scores_zero_rather_than_dividing_by_its_own_total_weight() {
+        let empty: Vec<Spherical<f64>> = (0..4).map(|_| Spherical::new(2)).collect();
+        let res = dyn_msc(&empty, 3, 10, 1);
+        assert_eq!(
+            res.score, 0.0,
+            "score {} is not the undefined value",
+            res.score
+        );
+        assert!(res.score.is_finite());
+    }
+
+    #[test]
+    fn a_tie_across_the_sweep_keeps_the_larger_k_it_was_found_at_first() {
+        // Identical leaves make every k score the same. The sweep runs downward from `k_max`, so
+        // keeping the first of the tie means keeping `k_max`; admitting equality would walk the
+        // answer all the way down to two without a single score to justify it.
+        let lv: Vec<Spherical<f64>> = (0..6)
+            .map(|_| {
+                let mut f = Spherical::new(2);
+                f.push(&[1.0, 1.0], 1.0);
+                f
+            })
+            .collect();
+        let res = dyn_msc(&lv, 4, 50, 2);
+        assert_eq!(res.k, 4, "a tied sweep must keep the k it reached first");
     }
 
     #[test]
