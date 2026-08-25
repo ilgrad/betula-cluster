@@ -1660,6 +1660,10 @@ One caveat about the asymptotics, because it is easy to state the complexity wro
 asymptotically better only if the leaf budget grows with the data, which is what a fractional
 `max_leaves` (task #68) expresses: `max_leaves=0.1` holds leaf size constant and the scan linear.
 
+The recall columns are exact counts and independent of the machine. The two wall-clock numbers were
+taken with a mutation run occupying a core, so read them as a ratio (~47x) rather than as absolute
+seconds; they are due a re-measurement on an idle box.
+
 Harness: `local/scratch/dup_recall.py` (untracked).
 
 ## DynMSC: a second automatic `k`, and the shape that decides which one to use (task #52)
