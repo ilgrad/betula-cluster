@@ -963,17 +963,20 @@ fn build_tree<R: Real, C: ClusterFeature<R>>(
     flat: &[R],
     n: usize,
     n_jobs: usize,
+    balance: Option<R>,
 ) -> CFTree<R, C, RouteKind, AbsorbKind<R>> {
     #[cfg(feature = "parallel")]
     if n_jobs > 1 {
         return CFTree::build_parallel(
             dim, branching, leaf_cap, threshold, max_leaves, route, absorb, flat, n, n_jobs,
+            balance,
         );
     }
     let _ = n_jobs;
     let mut tree = CFTree::new(
         dim, branching, leaf_cap, threshold, max_leaves, route, absorb,
     );
+    tree.set_balance(balance);
     for i in 0..n {
         tree.insert(&flat[i * dim..(i + 1) * dim]);
     }
@@ -998,9 +1001,10 @@ fn cluster<R: Real, C: ClusterFeature<R>>(
     n_jobs: usize,
     nmf_dim: Option<ProjectionSpec>,
     refine: usize,
+    balance: Option<R>,
 ) -> (Vec<i64>, usize) {
     let tree = build_tree::<R, C>(
-        dim, branching, leaf_cap, threshold, max_leaves, route, absorb, flat, n, n_jobs,
+        dim, branching, leaf_cap, threshold, max_leaves, route, absorb, flat, n, n_jobs, balance,
     );
     let leaves = tree.num_leaves();
     let labels = match kind {
@@ -1073,6 +1077,7 @@ fn run_oneshot<R: Real + Element>(
     normalize: bool,
     nmf_dim: Option<ProjectionSpec>,
     refine: usize,
+    balance: Option<f64>,
 ) -> PyResult<(Vec<i64>, usize)> {
     let (mut flat, n, dim) = to_flat(&data)?;
     if matches!(nmf_dim.map(|s| s.kind), Some(ProjectionKind::Nmf { .. })) {
@@ -1089,24 +1094,25 @@ fn run_oneshot<R: Real + Element>(
         normalize_rows(&mut flat, n, dim);
     }
     let route = parse_route(distance)?;
+    let balance = balance.and_then(R::from_f64);
     py.detach(|| {
         let (gate, thr) = resolve_gate::<R>(absorb, dim, chi2_p, chi2_scale, threshold)?;
         match feature {
             "spherical" => Ok(cluster::<R, Spherical<R>>(
                 &flat, n, dim, n_clusters, kind, route, gate, thr, branching, leaf_cap, max_leaves,
-                max_iter, seed, n_jobs, nmf_dim, refine,
+                max_iter, seed, n_jobs, nmf_dim, refine, balance,
             )),
             "diagonal" => Ok(cluster::<R, Diagonal<R>>(
                 &flat, n, dim, n_clusters, kind, route, gate, thr, branching, leaf_cap, max_leaves,
-                max_iter, seed, n_jobs, nmf_dim, refine,
+                max_iter, seed, n_jobs, nmf_dim, refine, balance,
             )),
             "full" => Ok(cluster::<R, Full<R>>(
                 &flat, n, dim, n_clusters, kind, route, gate, thr, branching, leaf_cap, max_leaves,
-                max_iter, seed, n_jobs, nmf_dim, refine,
+                max_iter, seed, n_jobs, nmf_dim, refine, balance,
             )),
             "fd" => Ok(cluster::<R, FdSketch<R>>(
                 &flat, n, dim, n_clusters, kind, route, gate, thr, branching, leaf_cap, max_leaves,
-                max_iter, seed, n_jobs, nmf_dim, refine,
+                max_iter, seed, n_jobs, nmf_dim, refine, balance,
             )),
             _ => Err("feature must be 'spherical', 'diagonal', 'full' or 'fd'"),
         }
@@ -1140,7 +1146,7 @@ fn run_oneshot<R: Real + Element>(
     absorb = "euclidean", chi2_p = 0.95, chi2_scale = 0.0, n_jobs = 1, normalize = false,
     resolution = 1.0, covariance_weight = 0.0, tangent_weight = 0.0, tangent_rank = 2,
     projection = "none", projection_dim = 64, projection_max_iter = 100, refine = 0, rank = 2,
-    graph_degree = 0
+    graph_degree = 0, balance = None
 ))]
 #[allow(clippy::too_many_arguments)]
 fn fit_predict<'py>(
@@ -1173,6 +1179,7 @@ fn fit_predict<'py>(
     refine: usize,
     rank: usize,
     graph_degree: usize,
+    balance: Option<f64>,
 ) -> PyResult<Bound<'py, PyArray1<i64>>> {
     let kind = parse_method(
         method,
@@ -1190,11 +1197,13 @@ fn fit_predict<'py>(
         run_oneshot::<f64>(
             py, a, n_clusters, feature, kind, distance, absorb, chi2_p, chi2_scale, threshold,
             branching, leaf_cap, max_leaves, max_iter, seed, n_jobs, normalize, nmf_dim, refine,
+            balance,
         )?
     } else if let Ok(a) = data.extract::<PyReadonlyArray2<'py, f32>>() {
         run_oneshot::<f32>(
             py, a, n_clusters, feature, kind, distance, absorb, chi2_p, chi2_scale, threshold,
             branching, leaf_cap, max_leaves, max_iter, seed, n_jobs, normalize, nmf_dim, refine,
+            balance,
         )?
     } else {
         return Err(PyValueError::new_err(
@@ -1289,12 +1298,14 @@ impl<R: Real> TreeState<R> {
         route: RouteKind,
         gate: AbsorbKind<R>,
         huber_k: Option<R>,
+        balance: Option<R>,
     ) -> Result<Self, &'static str> {
         macro_rules! tree {
             () => {{
                 let mut t =
                     CFTree::new(dim, branching, leaf_cap, threshold, max_leaves, route, gate);
                 t.set_huber_k(huber_k);
+                t.set_balance(balance);
                 t
             }};
         }
@@ -1438,6 +1449,7 @@ impl<R: Real> TreeState<R> {
                 cfg.route,
                 gate,
                 cfg.huber_k.map(|k| R::from_f64(k).unwrap()),
+                cfg.balance.and_then(R::from_f64),
             )?);
         }
         let tree = slot.as_mut().unwrap();
@@ -1482,6 +1494,7 @@ impl<R: Real> TreeState<R> {
                 cfg.route,
                 gate,
                 cfg.huber_k.map(|k| R::from_f64(k).unwrap()),
+                cfg.balance.and_then(R::from_f64),
             )?);
         }
         let tree = slot.as_mut().unwrap();
@@ -1736,6 +1749,7 @@ struct StreamCfg<'a> {
     threshold: f64,
     decay: f64,
     huber_k: Option<f64>,
+    balance: Option<f64>,
 }
 
 /// Stateful BETULA estimator. `partial_fit` streams data into a memory-bounded CF-tree; `fit`
@@ -1788,6 +1802,9 @@ struct Betula {
     /// Huber/winsorization radius in per-dimension std units; `None` disables robust insertion.
     #[serde(default)]
     huber_k: Option<f64>,
+    /// Per-leaf mass cap as a multiple of `n / max_leaves`; `None` is the purely geometric budget.
+    #[serde(default)]
+    balance: Option<f64>,
     /// Leiden resolution `γ` (only used by `method="leiden"` / `"leiden-cpm"`); kept for `get_params`.
     #[serde(default = "default_resolution")]
     resolution: f64,
@@ -1925,6 +1942,7 @@ impl Betula {
             threshold: self.threshold,
             decay: self.decay,
             huber_k: self.huber_k,
+            balance: self.balance,
         };
         if use_f32 {
             let (flat, n, dim) = flat_as::<f32>(data, self.normalize)?;
@@ -1980,6 +1998,7 @@ impl Betula {
             threshold: self.threshold,
             decay: self.decay,
             huber_k: self.huber_k,
+            balance: self.balance,
         };
         TreeState::stream_chunk_csr(&mut self.state64, &cfg, data, indices, indptr, n_features)
             .map_err(PyValueError::new_err)?;
@@ -2301,7 +2320,7 @@ impl Betula {
         distance = "euclidean", absorb = "euclidean", chi2_p = 0.95, chi2_scale = 0.0, decay = 1.0,
         normalize = false, huber_k = None, resolution = 1.0, covariance_weight = 0.0,
         tangent_weight = 0.0, tangent_rank = 2, projection = "none", projection_dim = 64,
-        projection_max_iter = 100, refine = 0, rank = 2, graph_degree = 0
+        projection_max_iter = 100, refine = 0, rank = 2, graph_degree = 0, balance = None
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -2333,6 +2352,7 @@ impl Betula {
         refine: usize,
         rank: usize,
         graph_degree: usize,
+        balance: Option<f64>,
     ) -> PyResult<Self> {
         let kind = parse_method(
             method,
@@ -2375,6 +2395,13 @@ impl Betula {
                 ));
             }
         }
+        if let Some(b) = balance {
+            if b <= 0.0 || b.is_nan() {
+                return Err(PyValueError::new_err(
+                    "balance must be > 0 (multiple of the n / max_leaves ideal), or None to disable",
+                ));
+            }
+        }
         Ok(Self {
             feature: feature.to_string(),
             kind,
@@ -2396,6 +2423,7 @@ impl Betula {
             decay,
             normalize,
             huber_k,
+            balance,
             resolution,
             covariance_weight,
             tangent_weight,
@@ -2982,6 +3010,7 @@ impl Betula {
         d.set_item("decay", self.decay)?;
         d.set_item("normalize", self.normalize)?;
         d.set_item("huber_k", self.huber_k)?;
+        d.set_item("balance", self.balance)?;
         d.set_item("resolution", self.resolution)?;
         d.set_item("covariance_weight", self.covariance_weight)?;
         d.set_item("tangent_weight", self.tangent_weight)?;

@@ -816,7 +816,51 @@ three decimals — this is not a head choosing badly, it is a summary that no lo
 answer. On `flat` the identical collapse is free. This reproduces the shape of scikit-learn's Birch
 issue #22854 on our own tree, and it is the mechanism behind the `covtype` and MNIST rows above,
 where `top10` reaches 0.61–0.98. Fixing it means a budget that is allocated by mass rather than by
-radius; that is task #70's remaining half and is not in this edition.
+radius — see `balance`, below.
+
+### The fix, and the honest range over which it is one (`balance`)
+
+`balance = b` caps a leaf at `b × (mass / max_leaves)`, refusing absorption into a full leaf and
+skipping the same pairs at compaction; `max_leaves` stays a hard bound. On the fixture that motivated
+it, `kmeans`, medians of seeds 0/1/2:
+
+| budget | off | b=8 | b=4 | b=2 | b=1 |
+|---|---:|---:|---:|---:|---:|
+| structured @250 | 0.4174 | 1.0000 | 1.0000 | 1.0000 | 1.0000 (one seed 0.4191) |
+| structured @1000 | 0.4174 | 1.0000 | 1.0000 | 1.0000 | 1.0000 |
+| structured @4000 | 0.4174 | 1.0000 | 1.0000 | 1.0000 | 1.0000 |
+| flat @250–4000 | 1.0000 | 1.0000 | 1.0000 | 1.0000 | 1.0000 |
+
+`top1` falls from 0.800 to 0.001–0.03 and the realised leaf count barely moves, so this is the same
+budget spent differently rather than a larger one. `b = 1` asks for perfect balance and is the only
+setting that is ever unstable; 2–8 are indistinguishable here.
+
+**On data that is not built to expose it, it is a lever and not a free win.** All three exact heads,
+`feature="spherical"`, medians of seeds 0/1/2, `balance=4` against `balance=None` — 19 of 27 cells
+improve, but read the `top1` column, not the average:
+
+| dataset | budget | top1 off → on | kmeans | ward | gmm |
+|---|---:|---|---:|---:|---:|
+| mnist-10k | 250 | 0.594 → 0.016 | **+0.1676** | **+0.2514** | **+0.1873** |
+| mnist-10k | 500 | 0.520 → 0.008 | **+0.1167** | **+0.0785** | **+0.2090** |
+| mnist-10k | 2000 | 0.108 → 0.002 | +0.0219 | −0.0407 | +0.0346 |
+| covtype-20k | 250 | 0.176 → 0.016 | −0.0078 | +0.0001 | −0.0247 |
+| covtype-20k | 1000 | 0.069 → 0.004 | +0.0065 | +0.0007 | +0.0029 |
+| covtype-20k | 4000 | 0.011 → 0.001 | +0.0247 | +0.0004 | −0.0448 |
+| digits | 225 | 0.135 → 0.017 | −0.0424 | +0.1894 | +0.1261 |
+| digits | 450 | 0.089 → 0.008 | +0.0379 | −0.0656 | +0.2444 |
+| digits | 900 | 0.030 → 0.004 | −0.0684 | −0.0004 | +0.2164 |
+
+The rule the table gives is **the heaviest leaf's share of the mass predicts the gain**. Every cell
+where `top1 ≥ 0.5` improves, by +0.08 to +0.25 with all three heads agreeing; where `top1 < 0.1` the
+change is within seed noise in both directions. That is the diagnostic to run before reaching for the
+parameter — `max(microcluster_weights_) / sum(...)` — and it is why the default stays off: on a
+well-spread summary the cap trades geometry for balance and buys nothing.
+
+One cross-effect worth naming rather than claiming: the large `gmm` gains on `digits` (+0.216 at 900
+leaves, +0.244 at 450) are in the *low*-`top1` regime, and they are the isotropic-scatter collapse
+from the section below — a lighter leaf carries less `ssd`, so there is less isotropic variance to
+inflate every dimension with. That is a side-effect of the cap, not the mass-balance argument for it.
 
 ### It is the CF-tree family, not this implementation (task #47)
 

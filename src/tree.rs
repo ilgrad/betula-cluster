@@ -49,6 +49,11 @@ pub struct CFTree<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDista
     /// Entries merged by compaction since the last rebalance.
     #[cfg_attr(feature = "persistence", serde(default))]
     merged_since_rebalance: usize,
+    /// Mass-balance slack: no leaf entry may pass `balance · (total mass / max_leaves)` through
+    /// absorption or compaction while a lighter alternative exists. `None` = off, which is the
+    /// purely geometric budget BIRCH describes. See [`Self::set_balance`].
+    #[cfg_attr(feature = "persistence", serde(default = "Option::default"))]
+    balance: Option<R>,
 }
 
 /// A microcluster must hold at least this many points before its scale is trusted enough to clip
@@ -89,7 +94,44 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> CF
             abs,
             huber_k: None,
             merged_since_rebalance: 0,
+            balance: None,
         }
+    }
+
+    /// Bound how much of the total mass one leaf may hold, as a multiple of the mass-balanced ideal
+    /// `total_mass / max_leaves`. `None` (the default) is the textbook budget: one global absorption
+    /// radius, raised until the leaf count fits.
+    ///
+    /// That radius is the whole problem when the mass is not spread geometrically. It is a single
+    /// number and the data has more than one density, so once it passes a dense core's diameter the
+    /// core collapses into one entry in a single step while diffuse minorities keep splitting —
+    /// measured at 80 000 of 100 000 points in one leaf, at every budget from 250 to 4000, with the
+    /// budget itself 90–96 % filled. The budget is not under-used; it is spent on whichever points
+    /// happen to be far apart.
+    ///
+    /// A cap on leaf mass is the missing constraint, and it has to hold everywhere mass is combined
+    /// or the other site undoes it: absorption refuses a full entry and starts a new one, and
+    /// compaction skips a pair that would overflow. `max_leaves` stays a *hard* bound and the cap a
+    /// *soft* one — a rebuild that cannot reach its target under the cap merges over it rather than
+    /// leave the tree above budget.
+    ///
+    /// `balance = 1.0` asks for perfect balance and will usually be unreachable; the useful range is
+    /// a small multiple. Values at or below zero disable the cap.
+    pub fn set_balance(&mut self, balance: Option<R>) {
+        self.balance = balance.filter(|b| *b > R::zero());
+    }
+
+    /// The largest weight a leaf entry may reach, or `None` when the cap is off.
+    ///
+    /// The ideal is read from the *current* total mass, so a stream tightens it as it goes rather
+    /// than needing `n` up front. The floor of 2 keeps the cap from forbidding the merge of two
+    /// singletons during warm-up, when the tree holds fewer points than it has budget for and the
+    /// cap would otherwise be a fraction of one point.
+    fn mass_cap(&self) -> Option<R> {
+        self.balance.map(|b| {
+            let ideal = self.nodes[self.root].cf.weight() / R::from_usize(self.max_leaves).unwrap();
+            (b * ideal).max(R::from_f64(2.0).unwrap())
+        })
     }
 
     /// Enable robust (Huber/winsorized) point insertion: each point is clamped to within `k`
@@ -140,6 +182,7 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> CF
         flat: &[R],
         n: usize,
         shards: usize,
+        balance: Option<R>,
     ) -> Self
     where
         D: Clone,
@@ -167,6 +210,7 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> CF
                     dist.clone(),
                     abs.clone(),
                 );
+                t.set_balance(balance);
                 for i in lo..hi {
                     t.insert(&flat[i * dim..(i + 1) * dim]);
                 }
@@ -174,6 +218,7 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> CF
             })
             .collect();
         let mut tree = Self::new(dim, branching, leaf_cap, threshold, max_leaves, dist, abs);
+        tree.set_balance(balance);
         for sub in &subtrees {
             for cf in sub.leaf_features() {
                 tree.insert_cf(cf.clone());
@@ -252,15 +297,25 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> CF
         if n == 0 {
             return false;
         }
-        let mut best = self.nodes[leaf].children[0];
-        let mut bd = self.dist.between(&self.entries[best], cf);
-        for i in 1..n {
+        // With the mass cap off this is the plain nearest-entry scan; with it on, an entry that
+        // `cf` would push past the cap is not a candidate at all, so the search falls through to
+        // the nearest entry that still has room rather than refusing outright.
+        let room = self.mass_cap().map(|cap| cap - cf.weight());
+        let mut best = usize::MAX;
+        let mut bd = R::infinity();
+        for i in 0..n {
             let e = self.nodes[leaf].children[i];
+            if room.is_some_and(|r| self.entries[e].weight() > r) {
+                continue;
+            }
             let d = self.dist.between(&self.entries[e], cf);
             if d < bd {
                 bd = d;
                 best = e;
             }
+        }
+        if best == usize::MAX {
+            return false;
         }
         if self.abs.between(&self.entries[best], cf) <= self.threshold {
             self.entries[best].merge(cf);
@@ -303,18 +358,37 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> CF
         let mut alive = vec![true; self.entries.len()];
         let mut merged = 0usize;
         let mut widest = R::zero();
-        for (gap, ei, ej) in pairs {
-            if merged == want {
-                break;
-            }
-            if !alive[ei] || !alive[ej] {
+        // Two passes when a mass cap is set: first the pairs that respect it, then — only if the
+        // budget is still not met — the ones that do not. `max_leaves` is a hard bound and the cap
+        // a soft one, so the tree never stays over budget for the sake of balance. `widest` is the
+        // maximum over merged gaps rather than the last, since the second pass is not sorted
+        // against the first.
+        let cap = self.mass_cap();
+        for respect_cap in [true, false] {
+            if merged == want || (respect_cap && cap.is_none()) {
                 continue;
             }
-            let absorbed = self.entries[ej].clone();
-            self.entries[ei].merge(&absorbed);
-            alive[ej] = false;
-            merged += 1;
-            widest = gap;
+            for &(gap, ei, ej) in &pairs {
+                if merged == want {
+                    break;
+                }
+                if !alive[ei] || !alive[ej] {
+                    continue;
+                }
+                if respect_cap
+                    && cap
+                        .is_some_and(|c| self.entries[ei].weight() + self.entries[ej].weight() > c)
+                {
+                    continue;
+                }
+                let absorbed = self.entries[ej].clone();
+                self.entries[ei].merge(&absorbed);
+                alive[ej] = false;
+                merged += 1;
+                if gap > widest {
+                    widest = gap;
+                }
+            }
         }
         if merged > 0 {
             // Absorption is gated on `<= threshold`, so the widest gap merged here must itself pass;
@@ -574,15 +648,22 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> CF
         }
         // Index into `children` per step (each access copies a `usize`) so no `Vec` is cloned per
         // insert and the borrow of `nodes` never overlaps the `entries` mutation below.
-        let mut best = self.nodes[leaf].children[0];
-        let mut bestd = self.dist.point(&self.entries[best], x);
-        for i in 1..n {
+        let room = self.mass_cap().map(|cap| cap - R::one());
+        let mut best = usize::MAX;
+        let mut bestd = R::infinity();
+        for i in 0..n {
             let e = self.nodes[leaf].children[i];
+            if room.is_some_and(|r| self.entries[e].weight() > r) {
+                continue;
+            }
             let d = self.dist.point(&self.entries[e], x);
             if d < bestd {
                 bestd = d;
                 best = e;
             }
+        }
+        if best == usize::MAX {
+            return false;
         }
         if self.abs.point(&self.entries[best], x) <= self.threshold {
             self.entries[best].push(x, R::one());
@@ -1042,6 +1123,69 @@ mod tests {
         }
         verify(&tree, pts.len());
         assert!(tree.num_leaves() > 1);
+    }
+
+    /// The fixture the geometric budget gets wrong: a dense core whose diameter is well inside the
+    /// absorption threshold, so every one of its points absorbs into a single entry no matter how
+    /// much budget is left over.
+    fn dense_core(n: usize) -> Vec<Vec<f64>> {
+        (0..n)
+            .map(|i| vec![((i % 97) as f64) / 1000.0, ((i % 31) as f64) / 1000.0])
+            .collect()
+    }
+
+    fn core_tree(
+        balance: Option<f64>,
+    ) -> CFTree<f64, Spherical<f64>, CentroidEuclidean, CentroidEuclidean> {
+        let mut t: CFTree<f64, Spherical<f64>, _, _> =
+            CFTree::new(2, 8, 8, 1.0, 40, CentroidEuclidean, CentroidEuclidean);
+        t.set_balance(balance);
+        for p in &dense_core(1000) {
+            t.insert(p);
+        }
+        t
+    }
+
+    #[test]
+    fn a_mass_cap_keeps_a_dense_core_from_collapsing_into_one_leaf() {
+        let plain = core_tree(None);
+        let heaviest = |t: &CFTree<f64, Spherical<f64>, _, _>| {
+            t.leaf_features()
+                .iter()
+                .map(|e| e.weight())
+                .fold(0.0, f64::max)
+        };
+        assert_eq!(
+            plain.num_leaves(),
+            1,
+            "the fixture must actually collapse without the cap, or it tests nothing"
+        );
+
+        // 40 leaves for 1000 points is an ideal of 25; `balance = 2.0` allows 50.
+        let capped = core_tree(Some(2.0));
+        assert!(
+            capped.num_leaves() > 1,
+            "the cap must spread the core over several leaves"
+        );
+        assert!(
+            heaviest(&capped) <= 50.0,
+            "no leaf may pass balance x (mass / max_leaves) = 50, got {}",
+            heaviest(&capped)
+        );
+        verify(&capped, 1000);
+    }
+
+    #[test]
+    fn the_leaf_budget_outranks_the_mass_cap() {
+        // `balance` far below 1 asks for a cap the budget cannot honour (the floor of 2 points per
+        // leaf would need 500 leaves for 1000 points, against a budget of 40). The hard bound wins.
+        let t = core_tree(Some(0.001));
+        assert!(
+            t.num_leaves() <= 40,
+            "max_leaves is a hard bound, got {} leaves",
+            t.num_leaves()
+        );
+        verify(&t, 1000);
     }
 
     #[test]
@@ -1518,6 +1662,7 @@ mod tests {
             &flat,
             n,
             8,
+            None,
         );
         assert!(
             close(par.summary().weight(), n as f64),
@@ -1551,6 +1696,7 @@ mod tests {
             &flat,
             n,
             SHARDS,
+            None,
         );
         assert!(
             par.num_leaves() > SHARDS * LEAF_CAP,

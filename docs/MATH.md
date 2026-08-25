@@ -312,6 +312,18 @@ clusters). This is parameter-free and non-convex-aware.
   concentrate, so the leaf count is near-discontinuous in the threshold (measured on 3000-d TF-IDF:
   7755 leaves at $\tau = 1.0$, 12 at $\tau = 1.3$) and any threshold-first policy either fails to reduce
   or collapses the tree; choosing $k$ instead caps a rebuild at one merge per entry.
+- **Mass-balanced budget** (`balance = b`, optional): the absorption gate above is purely geometric,
+  so nothing bounds how much *mass* one leaf accumulates. With `balance` set, a leaf entry is a
+  candidate for absorption or for a compaction merge only while its weight stays under
+
+  $w_{\max} = \max\bigl(b \cdot W / M,\ 2\bigr), \qquad W = \text{total mass seen so far},\ M = \texttt{max\_leaves}$
+
+  so $W/M$ is the perfectly balanced ideal and $b$ the slack allowed above it. Reading $W$ from the
+  root CF makes the cap self-tuning on a stream — it tightens as data arrives — and the floor of 2
+  keeps it from forbidding the merge of two singletons during warm-up. The cap is enforced at both
+  sites because either one alone undoes the other: absorption refuses a full entry and starts a new
+  one, and the rebuild skips a pair that would overflow. It is **soft** and $M$ is **hard**: a rebuild
+  that cannot reach its target under the cap merges over it rather than leave the tree over budget.
 - **Robust insertion** (`huber_k = k`, optional): before a point $x$ is folded into its target
   microcluster $(n, \mu, S)$, each coordinate is winsorized to the cluster's own scale,
 

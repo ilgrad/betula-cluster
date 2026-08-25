@@ -308,6 +308,30 @@ on your own data rather than assuming higher is better. The warning reads the **
 not the cap: the tree routinely settles below `max_leaves`, and when `N < max_leaves` the cap never
 binds at all.
 
+### When more leaves buy nothing — check where the budget went
+
+A budget can be fully spent and still spent badly. The absorption radius is one global number, so a
+region that is dense relative to it collapses into a single leaf while sparse regions keep splitting:
+the tree fills 90–98 % of `max_leaves` and puts most of the *mass* in a handful of them. The symptom
+is that raising `max_leaves` does not move the score at all.
+
+The diagnostic costs one line, and the heaviest leaf's share of the mass is the number to read:
+
+```python
+w = np.asarray(est.microcluster_weights_)
+print(w.max() / w.sum())          # ≈ 1/n_leaves is healthy; 0.5+ means one leaf holds half your data
+```
+
+If it is large, set **`balance`** — a per-leaf cap of that many times the `n / max_leaves` ideal:
+
+```python
+est = betula_cluster.Betula(n_clusters=7, max_leaves=1000, balance=4.0)
+```
+
+`max_leaves` stays a hard bound; the cap is best-effort and yields to it. On a fixture with 80 % of
+the mass in one tight core this moves `kmeans` from ARI 0.4174 to **1.0000** at every budget from 250
+to 4000 — but it is a lever, not a free win, so measure it against `balance=None` on your own data.
+
 ## Soft assignment, coresets, diagnostics, drift
 
 All over the microclusters the tree already holds (no extra data passes):

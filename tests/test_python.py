@@ -1195,6 +1195,80 @@ def test_unfitted_accessors_raise():
         est.save("/tmp/betula_never_written.bin")  # raises before writing
 
 
+# ── mass-balanced leaf budget (`balance`) ────────────────────────────────────────────────────────
+
+
+def _dense_core_with_a_diffuse_halo(n=6000, seed=0):
+    """80% of the mass in a core an order of magnitude tighter than the rest.
+
+    This is the shape a single global absorption radius cannot serve: the radius that bounds the
+    leaf count is already wider than the core, so the core lands in one leaf while the halo keeps
+    splitting.
+    """
+    rng = np.random.default_rng(seed)
+    core = rng.normal(0.0, 0.05, (int(0.8 * n), 4))
+    halo = rng.normal(0.0, 5.0, (n - int(0.8 * n), 4))
+    return np.vstack([core, halo]).astype(np.float64)
+
+
+def _heaviest_leaf_share(balance):
+    est = betula_cluster.Betula(
+        n_clusters=4,
+        feature="spherical",
+        method="kmeans",
+        threshold=0.0,
+        max_leaves=200,
+        seed=0,
+        balance=balance,
+    )
+    est.fit(_dense_core_with_a_diffuse_halo())
+    w = np.asarray(est.microcluster_weights_, dtype=np.float64)
+    return float(w.max() / w.sum())
+
+
+def test_balance_bounds_the_share_of_mass_one_leaf_may_hold():
+    plain = _heaviest_leaf_share(None)
+    capped = _heaviest_leaf_share(4.0)
+    assert plain > 0.5, "the fixture must collapse without the cap, or it tests nothing"
+    # 200 leaves ⇒ an ideal share of 1/200; `balance=4` allows four times that.
+    assert capped <= 4.0 / 200.0
+    assert capped < plain
+
+
+def test_balance_leaves_the_budget_a_hard_bound():
+    """`max_leaves` outranks the cap: an unreachable balance must not push the tree over budget."""
+    est = betula_cluster.Betula(
+        n_clusters=4, method="kmeans", threshold=0.0, max_leaves=200, seed=0, balance=0.001
+    )
+    est.fit(_dense_core_with_a_diffuse_halo())
+    assert est.n_leaves_ <= 200
+
+
+@pytest.mark.parametrize("bad", [0.0, -1.0, float("nan")])
+def test_balance_nonpositive_raises(blobs, bad):
+    x, _ = blobs
+    est = betula_cluster.Betula(n_clusters=4, balance=bad)
+    with pytest.raises(ValueError):
+        est.fit(x)
+
+
+def test_balance_param_roundtrips():
+    est = betula_cluster.Betula(n_clusters=4, balance=4.0)
+    assert est.get_params()["balance"] == 4.0
+    assert betula_cluster.Betula(**est.get_params()).get_params()["balance"] == 4.0
+    assert (
+        betula_cluster.Betula().get_params()["balance"] is None
+    )  # default is the geometric budget
+
+
+def test_balance_reaches_the_one_shot_path():
+    x = _dense_core_with_a_diffuse_halo()
+    kwargs = dict(n_clusters=4, feature="spherical", method="kmeans", max_leaves=200, seed=0)
+    plain = betula_cluster.fit_predict(x, **kwargs)
+    capped = betula_cluster.fit_predict(x, balance=4.0, **kwargs)
+    assert not np.array_equal(plain, capped)
+
+
 # ── robust CF (Huber / winsorized insertion) ─────────────────────────────────────────────────────
 
 

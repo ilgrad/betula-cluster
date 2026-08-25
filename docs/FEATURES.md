@@ -124,6 +124,18 @@ A capability-by-capability reference. For runnable code see [`USAGE.md`](USAGE.m
   and `reconstruction_err_` expose the parts and the fit; `projection_max_iter` is the solver's own
   budget, independent of the head's `max_iter`. Dense **and** sparse CSR input; signed input is
   rejected, not shifted. See [`MATH.md`](MATH.md).
+- **Mass-balanced leaf budget** (`balance`) — optional per-leaf cap on how much of the total mass one
+  micro-cluster may hold, as a multiple of the `n / max_leaves` ideal. The textbook budget is purely
+  geometric: one global absorption radius, raised until the leaf count fits. That radius is a single
+  number and real data has more than one density, so once it passes a dense region's diameter that
+  region collapses into one leaf while sparse regions keep splitting — measured at 80 % of the mass
+  in a single leaf, at every budget from 250 to 4000, with the budget itself 90–96 % filled. Setting
+  `balance` (e.g. `4.0`) refuses absorption into a full leaf and skips the same pairs at compaction;
+  `max_leaves` stays a **hard** bound, so a rebuild that cannot reach its target under the cap merges
+  over it rather than leave the tree over budget. Off by default, because it is a lever and not a
+  free win: on a size-imbalanced fixture it is worth **+0.58 ARI**, and on well-spread data it is
+  roughly neutral. The diagnostic that tells you which case you are in is the heaviest leaf's share
+  of the mass — `max(microcluster_weights_) / sum(...)`. See [`bench/RESULTS.md`](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md).
 - **Robust insertion** (`huber_k`) — optional Huber/winsorized point updates: each incoming point is
   clamped to within `huber_k` per-dimension standard deviations of its target microcluster *before*
   it is folded in, so a single extreme value cannot stretch a centroid or inflate a radius. Off by

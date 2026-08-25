@@ -7,6 +7,32 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **`balance`: a mass-balanced leaf budget, for the data where the geometric one fails.** The
+  absorption gate is purely geometric — one global radius, raised by the rebuild until the leaf count
+  fits — and a single radius cannot serve two densities. Once it passes a dense region's diameter that
+  region collapses into one leaf in a single step while sparse regions keep splitting: measured at
+  **80 000 of 100 000 points in one leaf** at every budget from 250 to 4000, with the budget itself
+  90–96 % *filled*. The budget was never under-used; it was spent on whichever points happened to be
+  far apart.
+
+  `balance = b` caps a leaf at `b × (total mass / max_leaves)`. The cap is enforced at both sites that
+  combine mass, since either alone undoes the other — absorption refuses a full entry and starts a new
+  one, compaction skips a pair that would overflow — and `max_leaves` stays a **hard** bound: a
+  rebuild that cannot reach its target under the cap merges over it rather than leave the tree over
+  budget. The ideal is read from the root CF, so a stream tightens it as data arrives instead of
+  needing `n` up front.
+
+  On the fixture that motivated it — two true clusters inside a dense core, five diffuse minorities
+  around it — `kmeans` goes from **ARI 0.4174 to 1.0000** at every budget from 250 to 4000, matching
+  sklearn's k-means on the raw points, while the realised leaf count barely moves and the control
+  fixture does not regress.
+
+  **Default off, because it is a lever and not a free win.** Across `digits`, `covtype-20k` and
+  `mnist-10k` × three heads × three budgets, 19 of 27 cells improve — but the useful statistic is the
+  heaviest leaf's share of the mass, not the average: every cell with `top1 ≥ 0.5` gains +0.08 to
+  +0.25 with all three heads agreeing, and every cell with `top1 < 0.1` moves within seed noise in
+  both directions. `max(microcluster_weights_) / sum(...)` is the one-line diagnostic that says which
+  case you are in. Full table in `bench/RESULTS.md`.
 - **`bregman`: the cluster feature, generalised from squared Euclidean to any Bregman divergence.**
   For `d_φ(x,y) = φ(x) − φ(y) − ⟨∇φ(y), x−y⟩` the within-cluster Bregman information
   `S_φ = Σ w_i d_φ(x_i, μ)` obeys exactly the identities the Euclidean scatter does — Maxima

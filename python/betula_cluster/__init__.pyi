@@ -152,6 +152,7 @@ def fit_predict(
     refine: int = ...,
     rank: int = ...,
     graph_degree: int = ...,
+    balance: float | None = ...,
 ) -> NDArray[np.int64]:
     """Cluster ``data`` in one shot and return per-point integer labels (``-1`` = noise)."""
 
@@ -192,6 +193,7 @@ class Betula:
         decay: float = ...,
         normalize: bool = ...,
         huber_k: float | None = ...,
+        balance: float | None = ...,
         resolution: float = ...,
         covariance_weight: float = ...,
         tangent_weight: float = ...,
