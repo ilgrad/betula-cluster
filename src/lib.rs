@@ -10,6 +10,7 @@ pub mod clustering;
 pub mod coreset;
 pub mod distance;
 pub mod feature;
+pub mod fidelity;
 pub mod kernels;
 pub mod linalg;
 pub mod mixture;

@@ -40,6 +40,26 @@ All notable changes to this project are documented here. The format follows
   [`bench/RESULTS.md`](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md).
 
 ### Added
+- **`fidelity::summary_mmd`: a label-free, head-independent fidelity number for the leaf summary.**
+  Every other quality number the crate reports needs something the summary cannot supply — ground
+  truth labels, a head, or a value of `k` — and `mean_sq_radius`, the one that needs none of them, is
+  the exact *k-means* fidelity and falls monotonically forever. Maximum mean discrepancy asks the
+  distributional question instead. The leaf surrogate is the Gaussian mixture `Σ (n_i/N)·N(μ_i, s_i I)`
+  with `s_i = S_i/(n_i·d)`, the same isotropic leaf cloud the scale-space head mollifies with, and the
+  expected Gaussian kernel between two such clouds is
+  `(1 + s/h²)^(−d/2)·exp(−‖m‖²/(2(h² + s)))`, so the MMD against a raw sample needs no sampling at
+  all. Verified against Monte Carlo before use: worst |z| = 3.02 over 24 stochastic cells at 4·10⁶
+  draws, the 8 deterministic cells exact to 10⁻¹².
+
+  Measured, it finds the knee the quantization error hides. On six overlapping Gaussians in 16
+  dimensions, ARI jumps 0.593 → 0.976 between budgets 16 and 32 and is then flat; `summary_mmd` falls
+  0.0665 → 0.0065 across the same steps and is then flat within ±5% for five more budgets, while
+  `mean_sq_radius` slides smoothly 212 → 80 with no feature at the knee. It is **not** a monotone
+  axis — in two dimensions it rises from 0.0054 at 8 leaves to 0.0092 at 32 before falling, because
+  coarsening also lets a leaf's ball fit a Gaussian blob better than a two-point leaf's does, and the
+  ARI column dips at exactly the same budget. Rust-only; `O(m² + m·M + M²)` kernel evaluations, a
+  diagnostic rather than something to run inside a fit. Tables in
+  [`bench/RESULTS.md`](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md).
 - **The symmetry group of every `(feature, head)` pair is now stated and enforced.** A head answers a
   question about the data, not about the coordinates it arrived in, and which frame changes it may
   ignore is a property of its model that is easy to lose by accident — to a bandwidth in absolute data

@@ -1346,6 +1346,76 @@ leaf. That is the mass-balancing lever from the covtype work seen from the other
 spends budget on keeping leaves comparable in weight rather than on shrinking the worst radius, and
 the squared-radius metric charges it for that.
 
+## A label-free fidelity number that finds the knee the quantization error hides (task #55)
+
+`mean_sq_radius` — the mass-weighted `Σ S_i / N` the budget sweep already records — is the exact
+k-means fidelity of the summary, and it falls monotonically as the budget grows. That monotonicity is
+the problem: it never says *where the budget stopped buying anything*, because it keeps improving long
+after the clustering has stopped changing.
+
+`betula_cluster::fidelity::summary_mmd` asks the distributional question instead. The leaf surrogate
+is the Gaussian mixture `Σ (n_i/N)·N(μ_i, s_i I)` with `s_i = S_i/(n_i·d)` — the same isotropic leaf
+cloud the scale-space head mollifies with — and the expected Gaussian kernel between two such clouds
+has a closed form, so the maximum mean discrepancy against the raw sample needs no sampling at all.
+The form was verified against Monte Carlo before use: worst |z| = 3.02 over 24 stochastic cells at
+4·10⁶ draws, the 8 deterministic cells exact to 10⁻¹².
+
+Medians of seeds 31/32/33, `n = 4800`, six Gaussian components, `k = 6` `kmeans` head, ARI against the
+generating component:
+
+| budget | leaves | `mean_sq_radius` | `summary_mmd` | ARI |
+|---:|---:|---:|---:|---:|
+| **d = 2, separated** ||||
+| 8 | 8 | 1.9898 | 0.005354 | 0.9945 |
+| 16 | 15 | 1.8997 | 0.006342 | 0.9906 |
+| 32 | 32 | 1.4739 | **0.009206** | **0.9824** |
+| 64 | 62 | 0.7089 | 0.007864 | 0.9925 |
+| 128 | 124 | 0.3060 | 0.002870 | 0.9955 |
+| 256 | 233 | 0.1467 | 0.001397 | 0.9955 |
+| 512 | 479 | 0.0547 | 0.000343 | 0.9970 |
+| 1024 | 1007 | 0.0164 | 0.000092 | 0.9980 |
+| **d = 16, separated** ||||
+| 8 | 8 | 16.0023 | 0.006435 | 1.0000 |
+| 64 | 58 | 15.5806 | 0.006347 | 1.0000 |
+| 256 | 246 | 13.6452 | 0.006758 | 1.0000 |
+| 1024 | 948 | 9.0348 | 0.005066 | 1.0000 |
+| **d = 16, overlapping** ||||
+| 8 | 8 | 211.8354 | 0.085270 | 0.5662 |
+| 16 | 16 | 194.3765 | 0.066547 | 0.5933 |
+| 32 | 32 | 157.2365 | 0.029797 | 0.9755 |
+| 64 | 60 | 140.1105 | 0.006509 | 0.9885 |
+| 128 | 121 | 133.0676 | 0.006627 | 0.9866 |
+| 256 | 236 | 123.2606 | 0.006672 | 0.9846 |
+| 512 | 487 | 107.2091 | 0.006337 | 0.9955 |
+| 1024 | 1009 | 79.6516 | 0.005029 | 0.9921 |
+
+**The knee.** In the overlapping high-dimensional block ARI jumps from 0.593 to 0.976 between budgets
+16 and 32 and is then flat. `summary_mmd` falls 0.0665 → 0.0298 → 0.0065 across the same two steps and
+is then flat to within ±5% for the remaining five budgets. `mean_sq_radius` slides smoothly from 212
+to 80 with no feature at the knee at all: read it alone and 1024 leaves look four times better than
+16, when the clustering has been unchanged since 32.
+
+**The degenerate direction says the same thing.** In the separated `d = 16` block ARI is 1.0000 at
+every budget. `summary_mmd` is flat there too (0.0064 ± 3%), while `mean_sq_radius` still halves. The
+quantization error keeps reporting progress on a summary whose quality never changed — which is the
+crate's own high-dimensional result (`m ≫ 2^d` is what resolving `d` dimensions would take) showing up
+in a number that needs no labels to see it.
+
+**It is not a monotone axis, and must not be read as one.** In `d = 2` the value *rises* from 0.0054
+at 8 leaves to 0.0092 at 32 before falling to 0.000092 at 1007. Two errors compete: coarsening loses
+the ability to place mass where the data is, but it also lets a leaf's isotropic ball be a better
+model of a genuinely Gaussian blob than a two-point leaf whose ball is fitted to a single gap. The
+rise is asserted in `src/fidelity.rs`, not tolerated — and the ARI column agrees with it, dipping to
+its own minimum of 0.9824 at exactly that budget.
+
+So in all three fixtures the MMD ranking agrees with ARI, and `mean_sq_radius` agrees only where the
+data is two-dimensional. Two caveats bound that: the fixtures are Gaussian, which is precisely where
+the isotropic leaf surrogate is exactly right, so the number scores *the crate's leaf model* rather
+than the data; and it costs `O(m² + m·M + M²)` kernel evaluations, which is a diagnostic to run at a
+few budgets rather than anything to put inside a fit.
+
+Harness: `cargo test --lib fidelity::measure -- --ignored --nocapture`.
+
 ## DynMSC: a second automatic `k`, and the shape that decides which one to use (task #52)
 
 The crate already chooses `k` on its own — Calinski–Harabasz over the Ward cuts, behind
