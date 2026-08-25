@@ -13,6 +13,7 @@ from math import comb
 import betula_cluster
 import numpy as np
 import pytest
+from betula_cluster import estimate_threshold
 
 
 def ari(a, b):
@@ -1109,6 +1110,130 @@ def test_find_outliers_passes_the_metric_through():
     xo = np.vstack([rows, off_axis])
     est = betula_cluster.Betula(n_clusters=1, feature="full", threshold=0.5, seed=0).fit(rows)
     assert est.find_outliers(xo, top_k=5, metric="mahalanobis")[0] == len(rows)
+
+
+def _heavy_leaf(kind, seed=0):
+    """A tree whose heaviest leaf holds the mass, `wide` or `tight` against a typical leaf."""
+    rng = np.random.default_rng(seed)
+    if kind == "tight":  # a near-degenerate dense core, plus a diffuse minority
+        core = np.full((3000, 4), 5.0) + 1e-6 * rng.standard_normal((3000, 4))
+        rest = rng.uniform(-12.0, 12.0, (600, 4))
+    else:  # a broad dense core, plus a minority of tight little clumps
+        core = rng.normal(0.0, 1.0, (3000, 4))
+        rest = np.repeat(
+            rng.uniform(-30.0, 30.0, (30, 4)), 20, axis=0
+        ) + 1e-3 * rng.standard_normal((600, 4))
+    return np.vstack([core, rest])
+
+
+def _spaced_blobs(seed=0, spread=1.0, gap=40.0, k=4, n=200):
+    rng = np.random.default_rng(seed)
+    centres = np.zeros((k, 3))
+    centres[:, 0] = gap * np.arange(k)
+    return np.vstack([c + spread * rng.standard_normal((n, 3)) for c in centres])
+
+
+def test_tree_report_calls_a_wide_heavy_leaf_a_loss():
+    rows = _heavy_leaf("wide")
+    report = betula_cluster.Betula(n_clusters=4, max_leaves=60, seed=0).fit(rows).tree_report()
+    assert report["fill"] >= 0.9
+    assert report["heaviest_leaf_width"] > 0.4
+    assert "structure inside it is unrecoverable" in " ".join(report["diagnosis"])
+
+
+def test_tree_report_absolves_a_tight_heavy_leaf():
+    rows = _heavy_leaf("tight")
+    report = betula_cluster.Betula(n_clusters=4, max_leaves=60, seed=0).fit(rows).tree_report()
+    assert report["heaviest_leaf_mass_fraction"] > 0.5
+    assert report["heaviest_leaf_width"] < 0.4
+    assert "genuinely point-like" in " ".join(report["diagnosis"])
+
+
+def test_tree_report_flags_a_budget_that_compresses_nothing():
+    rows = np.random.default_rng(0).normal(0.0, 1.0, (300, 3))
+    report = betula_cluster.Betula(n_clusters=3, max_leaves=5000, seed=0).fit(rows).tree_report()
+    assert report["fill"] < 0.5
+    assert report["leaf_mass_quantiles"][50] == 1.0
+    assert "the summary is the data" in " ".join(report["diagnosis"])
+
+
+def test_tree_report_adds_the_abirch_estimate_when_given_the_data():
+    # A leaf budget far below what the data needs drives the absorption radius past the spread of a
+    # single cluster, so leaves straddle two of them. The estimate is what makes that visible.
+    rows = _spaced_blobs(n=400)
+    est = betula_cluster.Betula(n_clusters=4, max_leaves=20, seed=0).fit(rows)
+    report = est.tree_report(rows, k_max=6, n_refs=3, sample_size=400)
+    assert report["suggested_n_clusters"] == 4
+    assert report["threshold"] > 2.0 * report["suggested_threshold"]
+    assert "leaves are absorbing points from more than one cluster" in " ".join(report["diagnosis"])
+
+
+def test_estimate_threshold_recovers_well_separated_blobs():
+    estimate = estimate_threshold(_spaced_blobs(), k_max=8, n_refs=5, seed=0)
+    assert estimate.n_clusters == 4
+    assert estimate.threshold == pytest.approx(
+        np.sqrt(3.0), rel=0.2
+    )  # RMS radius of a 3-D unit blob
+    assert estimate.assumptions == []
+
+
+def test_estimate_threshold_names_unequal_radii():
+    rng = np.random.default_rng(0)
+    rows = np.vstack(
+        [
+            0.1 * rng.standard_normal((300, 3)),
+            np.array([60.0, 0.0, 0.0]) + 4.0 * rng.standard_normal((300, 3)),
+        ]
+    )
+    estimate = estimate_threshold(rows, k_max=4, n_refs=5, seed=0)
+    assert estimate.radius_ratio > 2.0
+    assert any("assumes comparable sizes" in note for note in estimate.assumptions)
+
+
+def test_estimate_threshold_names_overlapping_clusters():
+    estimate = estimate_threshold(_spaced_blobs(gap=2.0), k_max=6, n_refs=5, seed=0)
+    assert estimate.separation < 2.0
+    assert any("assumes well-separated" in note for note in estimate.assumptions)
+
+
+def test_estimate_threshold_reports_no_structure_in_a_single_blob():
+    rows = np.random.default_rng(0).normal(0.0, 1.0, (400, 4))
+    estimate = estimate_threshold(rows, k_max=6, n_refs=5, seed=0)
+    assert estimate.n_clusters == 1
+    assert estimate.separation == float("inf")
+    assert any("found no structure" in note for note in estimate.assumptions)
+
+
+def test_estimate_threshold_refuses_to_certify_uniform_noise():
+    # Uniform noise has no separated structure, and the gap curve over k >= 2 is flat at the noise
+    # level -- so no k is distinguishable and the estimate does not get to claim one quietly. It
+    # answers with the assumption failures instead, which is the honest reading.
+    rows = np.random.default_rng(0).uniform(-1.0, 1.0, (400, 4))
+    estimate = estimate_threshold(rows, k_max=6, n_refs=5, seed=0)
+    assert estimate.separation < 2.0
+    assert any("assumes well-separated" in note for note in estimate.assumptions)
+
+
+def test_estimate_threshold_says_when_k_hit_the_ceiling():
+    estimate = estimate_threshold(_spaced_blobs(k=6), k_max=3, n_refs=5, seed=0)
+    assert any("search ceiling" in note for note in estimate.assumptions)
+
+
+def test_estimate_threshold_subsamples_a_large_input():
+    estimate = estimate_threshold(_spaced_blobs(n=800), k_max=6, n_refs=3, sample_size=200, seed=0)
+    assert estimate.n_clusters >= 1
+
+
+@pytest.mark.parametrize(
+    ("rows", "message"),
+    [
+        (np.zeros(5), "2-D sample of at least 2 rows"),
+        (np.zeros((7, 3)), "some spread"),
+    ],
+)
+def test_estimate_threshold_rejects_a_sample_it_cannot_read(rows, message):
+    with pytest.raises(ValueError, match=message):
+        estimate_threshold(rows)
 
 
 def test_summary_reports_structure(blobs):

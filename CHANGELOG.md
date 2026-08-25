@@ -95,6 +95,27 @@ All notable changes to this project are documented here. The format follows
   with the Leiden head and four synthetic fixtures are not the evidence base for a constant that
   relabels two heads at once. Tables in
   [`bench/RESULTS.md`](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md).
+- **`tree_report()` and `estimate_threshold`: why the tree collapsed, and whether it mattered.**
+  `Betula.tree_report()` answers "why is my tree collapsing?" from the leaf summary alone — budget
+  fill, the heaviest leaf's share of the mass, its width against a typical leaf, and leaf-mass
+  quantiles — and turns them into plain-language findings. The width is the part that is not obvious:
+  mass concentration alone does not distinguish a real loss from a faithful summary, because
+  `bench/size_imbalance.py`'s `structured` and `flat` fixtures both put **80%** of the mass in one
+  leaf at a 93–96% full budget. The heaviest leaf's radius over the median leaf radius separates them
+  3×: 0.53 / 0.75 for `structured` (two clusters merged inside that leaf) against 0.17 / 0.27 for
+  `flat` (nothing inside to lose), at `max_leaves` 250 and 4000, medians of seeds 0/1/2. On MNIST the
+  mass trigger fires at exactly the two leaf budgets whose ARI is materially below the best cell
+  (0.185 and 0.235 against 0.284) and stays quiet from ×22 compression down.
+  Passing `X` adds an A-BIRCH gap-statistic threshold estimate
+  (`betula_cluster.estimate_threshold`, Lorbeer et al. 2018) next to the threshold in use, so a tree
+  that settled above twice the sampled estimate is named as absorbing points from more than one
+  cluster. The estimate is **advisory** — `max_leaves` is still the knob that binds — and it reports
+  each of the paper's assumptions the data breaks (comparable cluster sizes, well-separated clusters)
+  rather than assuming them. It departs from Tibshirani, Walther & Hastie's original selection rule
+  for a measured reason: on four blobs 40σ apart the gap curve is non-monotone (`gap(2) = −0.186`,
+  `gap(3) = −0.274`, `gap(4) = +3.379`), so the "first k that beats k+1 within one standard error"
+  rule stops at 2. Restricting that rule to the `k` within one standard error of the *best* gap
+  returns 4, still returns 1 on a single Gaussian blob, and declines to certify uniform noise.
 - **`outlier_scores(X, metric="mahalanobis")`: whiten by the cluster's covariance, not its trace.**
   The default `metric="radius"` divides the centroid deviation by one scalar RMS radius, which *is*
   the trace of the cluster's pooled covariance — so an elongated cluster's short axis is judged by the

@@ -388,6 +388,38 @@ dendrogram's clothing, and it fails exactly where the paper says it does: on two
 nearby subclusters each, the tallest relative jump is the one that joins the far groups, so it
 reported `k = 2` on every seed where the variance ratio reports the true 4.
 
+### Why is my tree collapsing? — `tree_report()`
+
+```python
+est.tree_report()
+# {'n_leaves': 241, 'max_leaves': 250, 'fill': 0.964, 'threshold': 1.681,
+#  'heaviest_leaf_mass_fraction': 0.800, 'heaviest_leaf_width': 0.56,
+#  'leaf_mass_quantiles': {50: 3.0, 90: 41.0, 99: 512.0, 100: 80000.0},
+#  'diagnosis': ['the leaf budget is 96% spent and one leaf holds 80% of the mass: …']}
+```
+
+`fill` and `heaviest_leaf_mass_fraction` locate the size-imbalance pathology of scikit-learn's Birch
+issue [#22854](https://github.com/scikit-learn/scikit-learn/issues/22854) — a spent budget with the
+mass in one leaf means the tree resolved the sparse part of the data and merged the dense part.
+`heaviest_leaf_width` (that leaf's RMS radius over the median leaf's) is what says whether it cost
+anything: a dense region that really is point-like is summarized faithfully by one *tight* leaf,
+while a heavy leaf as wide as a typical one is a merged region and whatever was inside it is gone.
+
+Pass the data for an A-BIRCH threshold estimate beside the threshold in use:
+
+```python
+est.tree_report(X)["suggested_threshold"]     # gap-statistic estimate from a sample
+betula_cluster.estimate_threshold(X)          # …or on its own, without a fitted tree
+# ThresholdEstimate(threshold=1.74, n_clusters=4, radius_ratio=1.08, separation=11.8, assumptions=[])
+```
+
+**Advisory only.** `max_leaves` is the knob that binds — the threshold is what the rebuild derives
+from it — and the estimate assumes well-separated, near-spherical clusters of comparable size.
+`assumptions` names each of those the data breaks rather than leaving you to guess; a non-empty list
+does not make the number useless, it makes it a hint. What it is genuinely good for is the
+comparison: a tree that settled *above twice* the sampled estimate is absorbing points from more
+than one cluster, and `tree_report(X)` says so in `diagnosis`.
+
 ## A coreset with a guarantee — `export_coreset(size=…)`
 
 `export_coreset()` with no arguments is the streaming summary it always was: every leaf, at its own

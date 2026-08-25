@@ -26,7 +26,7 @@ from ._core import KPrototypes as _CoreKPrototypes  # type: ignore
 from ._core import WindowStream as _CoreWindowStream  # type: ignore
 from ._core import fit_predict_sparse as _core_fit_predict_sparse  # type: ignore
 from ._core import mixture_w2 as _core_mixture_w2  # type: ignore
-from .tuning import TuneResult, tune
+from .tuning import ThresholdEstimate, TuneResult, estimate_threshold, tune
 
 try:
     __version__ = version("betula-cluster")
@@ -44,10 +44,12 @@ __all__ = [
     "KPrototypes",
     "KllSketch",
     "MapperGraph",
+    "ThresholdEstimate",
     "TuneResult",
     "WindowStream",
     "__version__",
     "consensus",
+    "estimate_threshold",
     "fit_predict",
     "fit_predict_sparse",
     "mixture_w2",
@@ -917,6 +919,93 @@ class Betula:
         path's ``O(d)``, which is worth watching in high dimension.
         """
         return self._require_fit().outlier_scores(X, metric)
+
+    def tree_report(self, X=None, **estimate_kwargs):
+        """Why the CF-tree looks the way it does — leaf budget, mass concentration, threshold.
+
+        Answers "why is my tree collapsing?" with the numbers that decide it: how much of the
+        leaf budget was spent, how much of the *mass* one leaf ended up holding, and how wide that
+        leaf is against a typical one. A near-full budget with a single leaf carrying most of the
+        points is the size-imbalance pathology of scikit-learn's Birch issue #22854 — the tree spent
+        its leaves resolving the sparse minority and merged the dense majority into one summary.
+
+        Whether that costs anything is a separate question, and the heavy leaf's *radius* answers
+        it: a dense blob that really is point-like is summarized faithfully by one tight leaf, while
+        a heavy leaf as wide as a typical one is a merged region whose internal structure is gone.
+
+        Pass ``X`` to add an A-BIRCH threshold estimate (:func:`~betula_cluster.tuning
+        .estimate_threshold`, Lorbeer et al. 2018) alongside the threshold actually in use. That
+        estimate is **advisory**: it assumes well-separated, near-spherical clusters of comparable
+        size, and ``diagnosis`` names every one of those assumptions the data breaks. ``max_leaves``
+        remains the knob that binds — the threshold is what the rebuild derives from it.
+        """
+        est = self._require_fit()
+        weights = np.asarray(est.microcluster_weights_, dtype=np.float64)
+        centers = np.asarray(est.microcluster_centers_, dtype=np.float64)
+        mass = float(weights.sum())
+        # The row count is what a fractional `max_leaves` resolves against, and after a fit the leaf
+        # mass *is* that count — so the report can answer for a streaming fit too.
+        budget = self._resolve_max_leaves(centers.shape[1] if centers.size else None, round(mass))
+        radii = np.asarray(est.microcluster_radii_, dtype=np.float64)
+        top1 = float(weights.max() / mass) if weights.size and mass > 0 else 0.0
+        fill = float(est.n_leaves_) / budget if budget else 0.0
+        spread = radii[radii > 0.0]
+        heaviest = float(radii[int(np.argmax(weights))]) if weights.size else 0.0
+        width = heaviest / float(np.median(spread)) if spread.size else 0.0
+        report = {
+            "n_leaves": int(est.n_leaves_),
+            "max_leaves": int(budget),
+            "fill": fill,
+            "threshold": float(est.threshold_),
+            "heaviest_leaf_mass_fraction": top1,
+            "heaviest_leaf_width": width,
+            "leaf_mass_quantiles": {
+                q: float(np.quantile(weights, q / 100.0)) for q in (50, 90, 99, 100)
+            }
+            if weights.size
+            else {},
+            "diagnosis": [],
+        }
+        if fill >= 0.9 and top1 >= 0.25:
+            note = (
+                f"the leaf budget is {fill:.0%} spent and one leaf holds {top1:.0%} of the mass: "
+                "the tree spent its leaves resolving the sparse part of the data and merged the "
+                "dense part (scikit-learn Birch #22854). "
+            )
+            # The cut is measured on `bench/size_imbalance.py`'s own positive/negative control pair,
+            # medians of seeds 0/1/2 at budgets 250 and 4000: the `structured` core (two clusters
+            # 2.0 apart inside the heavy leaf) gives 0.53 and 0.75, the `flat` core (nothing inside
+            # to lose) gives 0.17 and 0.27.
+            if width >= 0.4:
+                note += (
+                    f"That leaf is {width:.2f}x as wide as a typical one, so it is a merged region "
+                    "rather than a point-like blob and the structure inside it is unrecoverable. "
+                    "Raise max_leaves, or set balance= to allocate leaves by mass, not geometry."
+                )
+            else:
+                note += (
+                    f"That leaf is only {width:.2f}x as wide as a typical one, so the dense "
+                    "part is genuinely point-like and one leaf summarizes it faithfully — "
+                    "this costs nothing unless you expect structure inside it."
+                )
+            report["diagnosis"].append(note)
+        if weights.size and float(np.quantile(weights, 0.5)) <= 1.0 and fill < 0.5:
+            report["diagnosis"].append(
+                "half the leaves hold a single point and the budget is under half spent: the "
+                "threshold is too small to compress anything, so the summary is the data."
+            )
+        if X is not None:
+            estimate = estimate_threshold(X, **estimate_kwargs)
+            report["suggested_threshold"] = estimate.threshold
+            report["suggested_n_clusters"] = estimate.n_clusters
+            report["diagnosis"].extend(estimate.assumptions)
+            if estimate.threshold > 0 and report["threshold"] > 2.0 * estimate.threshold:
+                report["diagnosis"].append(
+                    f"the tree settled at threshold {report['threshold']:.3g}, over twice the "
+                    f"{estimate.threshold:.3g} a sample of the data suggests: leaves are absorbing "
+                    "points from more than one cluster."
+                )
+        return report
 
     def summary(self):
         """A compact dict describing the dataset's structure (microclusters + macro clusters)."""

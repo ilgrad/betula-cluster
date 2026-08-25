@@ -7,7 +7,9 @@ from typing import Any, Literal, final
 import numpy as np
 from numpy.typing import NDArray
 
+from .tuning import ThresholdEstimate as ThresholdEstimate
 from .tuning import TuneResult as TuneResult
+from .tuning import estimate_threshold as estimate_threshold
 from .tuning import tune as tune
 
 __all__ = [
@@ -21,10 +23,12 @@ __all__ = [
     "KPrototypes",
     "KllSketch",
     "MapperGraph",
+    "ThresholdEstimate",
     "TuneResult",
     "WindowStream",
     "__version__",
     "consensus",
+    "estimate_threshold",
     "fit_predict",
     "fit_predict_sparse",
     "mixture_w2",
@@ -266,6 +270,9 @@ class Betula:
     def outlier_scores(
         self, X: _FloatArray, metric: _OutlierMetric = ...
     ) -> NDArray[np.float64]: ...
+    def tree_report(
+        self, X: _FloatArray | None = ..., **estimate_kwargs: Any
+    ) -> dict[str, Any]: ...
     def summary(self) -> dict[str, float]: ...
     def validity(self) -> dict[str, float]: ...
     def summary_mmd(self, X: _FloatArray, *, bandwidth: float | None = ...) -> float: ...

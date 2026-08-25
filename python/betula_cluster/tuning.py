@@ -415,3 +415,180 @@ def _tune_optuna(  # pragma: no cover - optional Optuna backend
         study = optuna.create_study(direction=quality_dir, sampler=sampler)
     study.optimize(objective_fn, n_trials=n_trials)
     return _finalize(trials, objective, multi_objective)
+
+
+# ── A-BIRCH: a gap-statistic estimate of the absorption threshold ───────────────────────────────
+
+
+@dataclass(frozen=True)
+class ThresholdEstimate:
+    """A gap-statistic estimate of the CF-tree absorption threshold, with its own caveats.
+
+    ``assumptions`` lists, in plain words, every condition of Lorbeer et al. (2018) that the sample
+    violates. A non-empty list does not make ``threshold`` useless — it makes it advisory, which is
+    the only way this number is ever meant to be read.
+    """
+
+    threshold: float
+    n_clusters: int
+    radius_ratio: float
+    separation: float
+    assumptions: list[str]
+
+
+def _kmeans_sample(
+    x: np.ndarray, k: int, rng: np.random.Generator, iters: int = 25, n_init: int = 3
+):
+    """Best of `n_init` Lloyd runs from k-means++ seeds, by dispersion.
+
+    The restarts are not a refinement: the gap statistic compares `log W_k` across `k`, so a single
+    unlucky seed at one `k` inflates that `W_k` and the rule stops one cluster early. Small samples
+    only — this is `O(n k d)` per pass.
+    """
+    runs = []
+    for _ in range(n_init):
+        labels, centers = _lloyd(x, k, rng, iters)
+        runs.append((_dispersion(x, labels, centers), labels, centers))
+    best = min(runs, key=lambda run: run[0])
+    return best[1], best[2]
+
+
+def _lloyd(x: np.ndarray, k: int, rng: np.random.Generator, iters: int):
+    centers = [x[rng.integers(len(x))]]
+    for _ in range(1, k):
+        d2 = np.min(((x[:, None, :] - np.array(centers)[None]) ** 2).sum(-1), axis=1)
+        total = d2.sum()
+        pick = (
+            rng.integers(len(x))
+            if total <= 0
+            else np.searchsorted(np.cumsum(d2 / total), rng.random())
+        )
+        centers.append(x[min(int(pick), len(x) - 1)])
+    c = np.array(centers)
+    labels = np.zeros(len(x), dtype=np.intp)
+    for _ in range(iters):
+        new = np.argmin(((x[:, None, :] - c[None]) ** 2).sum(-1), axis=1)
+        if np.array_equal(new, labels):
+            break
+        labels = new
+        for j in range(k):
+            m = labels == j
+            if m.any():
+                c[j] = x[m].mean(0)
+    return labels, c
+
+
+def _dispersion(x: np.ndarray, labels: np.ndarray, centers: np.ndarray) -> float:
+    """Pooled within-cluster sum of squares, the `W_k` the gap statistic compares against."""
+    return float(sum(((x[labels == j] - centers[j]) ** 2).sum() for j in range(len(centers))))
+
+
+def estimate_threshold(
+    X: np.ndarray,
+    *,
+    k_max: int = 10,
+    n_refs: int = 10,
+    sample_size: int = 1000,
+    seed: int = 0,
+) -> ThresholdEstimate:
+    """Estimate an absorption ``threshold`` from a sample, A-BIRCH style (Lorbeer et al. 2018).
+
+    Picks ``k`` by the gap statistic (Tibshirani, Walther & Hastie 2001) against uniform references
+    over the sample's bounding box, then reports the median cluster RMS radius as the threshold that
+    would let the tree keep those clusters apart.
+
+    The method assumes well-separated, near-spherical clusters of comparable size. Those are checked
+    rather than assumed: the returned ``assumptions`` names each one that fails, and the estimate is
+    advisory in every case — ``max_leaves`` remains the knob that binds.
+    """
+    rows = np.asarray(X, dtype=np.float64)
+    if rows.ndim != 2 or len(rows) < 2:
+        raise ValueError(
+            f"estimate_threshold needs a 2-D sample of at least 2 rows, got {rows.shape}"
+        )
+    rng = np.random.default_rng(seed)
+    if len(rows) > sample_size:
+        rows = rows[rng.choice(len(rows), sample_size, replace=False)]
+    k_top = max(2, min(k_max, len(rows) - 1))
+    lo, hi = rows.min(0), rows.max(0)
+    # Validate the one condition every step below relies on, rather than guarding each of them: a
+    # sample with no spread has no dispersion to compare against a reference, no cluster radius to
+    # report, and no separation to measure.
+    if not np.any(hi > lo):
+        raise ValueError(
+            "estimate_threshold needs a sample with some spread; every row is identical"
+        )
+
+    gaps, sks = [], []
+    for k in range(1, k_top + 1):
+        labels, centers = _kmeans_sample(rows, k, rng)
+        logw = np.log(max(_dispersion(rows, labels, centers), 1e-300))
+        refs = []
+        for _ in range(n_refs):
+            ref = rng.uniform(lo, hi, rows.shape)
+            rl, rc = _kmeans_sample(ref, k, rng)
+            refs.append(np.log(max(_dispersion(ref, rl, rc), 1e-300)))
+        gaps.append(float(np.mean(refs) - logw))
+        sks.append(float(np.std(refs) * np.sqrt(1.0 + 1.0 / n_refs)))
+
+    # One-standard-error rule against the *best* k, not against k+1. Tibshirani's original form —
+    # the first k with `gap(k) >= gap(k+1) - s(k+1)` — stops at the first dip in the gap curve, and
+    # the curve is not monotone: on four blobs 40 sigma apart it reads gap(2) = -0.186 against
+    # gap(3) = -0.274, so the rule returns k = 2 while the true k = 4 sits at gap 3.379. Taking the
+    # simplest k within one standard error of the maximum keeps the "prefer fewer clusters" spirit
+    # and still finds it, and it returns k = 1 on structureless data, where every gap ties.
+    best = int(np.argmax(gaps))
+    cut = gaps[best] - sks[best]
+    undominated = [k for k in range(1, k_top + 1) if gaps[k - 1] >= cut]
+    local = [k for k in undominated if k == k_top or gaps[k - 1] >= gaps[k] - sks[k]]
+    chosen = local[0] if local else undominated[0]
+
+    labels, centers = _kmeans_sample(rows, chosen, rng)
+    radii = np.array(
+        [
+            np.sqrt(((rows[labels == j] - centers[j]) ** 2).sum(1).mean())
+            if (labels == j).any()
+            else 0.0
+            for j in range(chosen)
+        ]
+    )
+    # `tiny` rather than a branch on zero: a cluster with no radius is one whose points coincide,
+    # and both readings that follow from that are the ones we want — its size differs from its
+    # neighbours' by an unbounded factor, and it is unboundedly well separated from them.
+    tiny = np.finfo(np.float64).tiny
+    ratio = float(radii.max() / max(float(radii.min()), tiny))
+    separation = float("inf")
+    if chosen > 1:
+        pair = np.sqrt(((centers[:, None, :] - centers[None]) ** 2).sum(-1))
+        pair[np.diag_indices(chosen)] = np.inf
+        i, j = np.unravel_index(np.argmin(pair), pair.shape)
+        separation = float(pair[i, j] / max(float(radii[i] + radii[j]), tiny))
+
+    notes = []
+    if chosen == 1:
+        notes.append(
+            "the gap statistic found no structure (k = 1): the estimate is the whole "
+            "sample's radius"
+        )
+    if chosen == k_top:
+        notes.append(
+            f"k hit the search ceiling k_max={k_max}: the true k may be larger, so the "
+            "threshold is an over-estimate"
+        )
+    if ratio > 2.0:
+        notes.append(
+            f"cluster radii differ by {ratio:.1f}x: A-BIRCH assumes comparable sizes, and "
+            "one global threshold cannot serve both"
+        )
+    if separation < 2.0:
+        notes.append(
+            f"the closest pair is only {separation:.2f} combined radii apart: A-BIRCH "
+            "assumes well-separated clusters"
+        )
+    return ThresholdEstimate(
+        threshold=float(np.median(radii)),
+        n_clusters=int(chosen),
+        radius_ratio=ratio,
+        separation=separation,
+        assumptions=notes,
+    )

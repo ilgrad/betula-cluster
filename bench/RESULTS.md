@@ -1769,6 +1769,70 @@ product `δ_l δ_lᵀ` is full-rank for every leaf model, so a cluster whose sha
 is anisotropic here whatever the feature. `feature="spherical"` still cannot see a shear confined
 inside a single leaf.
 
+## `tree_report()`: naming the collapse, and the number that says whether it cost anything (task #48)
+
+Two trees can look identically pathological — budget spent, one leaf holding most of the mass — and
+only one of them has lost anything. `bench/size_imbalance.py` ships the control pair that makes this
+checkable: `structured` puts two true clusters 2.0 apart *inside* the dense core, `flat` puts nothing
+there, and both give a heaviest leaf holding exactly 80% of the mass at a 93–96% full budget. Mass
+concentration alone therefore cannot be the diagnosis.
+
+The heaviest leaf's **radius** can. Medians of seeds 0/1/2, as the heaviest leaf's RMS radius over
+the median non-degenerate leaf radius:
+
+| fixture | `max_leaves=250` | `max_leaves=4000` |
+|---|---|---|
+| `structured` (two clusters inside the core) | **0.53** | **0.75** |
+| `flat` (control: nothing inside the core) | 0.17 | 0.27 |
+
+A 3× gap, stable across a 16× change of budget. The reading is mechanical: a dense region that
+really is point-like is summarized faithfully by one *tight* leaf, while a heavy leaf as wide as a
+typical one is a merged region, and whatever was inside it is gone. `tree_report()` cuts at 0.4 —
+between the two columns of both rows — and says "the structure inside it is unrecoverable" above,
+"this costs nothing unless you expect structure inside it" below.
+
+On MNIST (20 000×784, `n_clusters=10`, medians of seeds 0/1/2) the same two numbers track the quality
+cliff without ever seeing a label:
+
+| `max_leaves` | compression | ARI | heaviest leaf mass | width |
+|---|---|---|---|---|
+| 200 | ×100 | 0.1853 | **0.687** | 1.49 |
+| 500 | ×40 | 0.2348 | **0.287** | 1.48 |
+| 900 | ×22 | 0.2693 | 0.183 | 1.38 |
+| 2000 | ×10 | **0.2840** | 0.065 | 1.01 |
+| 5000 | ×4 | 0.2561 | 0.021 | 0.96 |
+| 20000 | ×1 | 0.2292 | 0.000 | 0.00 |
+
+The report's mass trigger is 25%, and it fires at exactly the two budgets whose ARI is materially
+below the peak (0.185 and 0.235 against 0.284) and stays quiet from ×22 down, where ARI is within 5%
+of the best cell. Note also that the median leaf holds **one point** at every budget including ×1 —
+in 784 dimensions that is what the data does, not a symptom, which is why the report does not treat
+it as one on its own.
+
+### The gap statistic needed a different selection rule than the paper's
+
+`estimate_threshold` (A-BIRCH, Lorbeer et al. 2018) picks `k` by the gap statistic and reports the
+median cluster RMS radius. Tibshirani, Walther & Hastie's original rule — the smallest `k` with
+`gap(k) ≥ gap(k+1) − s(k+1)` — returns the wrong answer on the easiest possible input. Four blobs
+40σ apart, `n_refs = 5`:
+
+```
+k=1  gap -0.404   k=2  gap -0.186   k=3  gap -0.274   k=4  gap +3.379   k=5  gap +3.059
+```
+
+The curve is not monotone, so the first-dip rule stops at `k = 2` — while the true `k = 4` sits at a
+gap eighteen standard errors above everything else. Restricting the same local rule to the `k` that
+are within one standard error of the *best* gap returns 4, and still returns 1 on a single Gaussian
+blob, where every gap ties. Uniform noise gets neither: its gap curve is flat at the noise level for
+all `k ≥ 2`, so the estimate declines to certify anything and reports the assumption failures instead
+("the closest pair is only 0.81 combined radii apart"), which is the honest reading of structureless
+data.
+
+The estimate stays advisory in every case — `max_leaves` is the knob that binds, and the threshold is
+what the rebuild derives from it. What `estimate_threshold` adds is the comparison: a tree that
+settled above twice the sampled estimate is absorbing points from more than one cluster, and
+`tree_report(X)` says so.
+
 ## DynMSC: a second automatic `k`, and the shape that decides which one to use (task #52)
 
 The crate already chooses `k` on its own — Calinski–Harabasz over the Ward cuts, behind

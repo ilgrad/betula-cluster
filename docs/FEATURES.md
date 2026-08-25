@@ -229,6 +229,16 @@ A capability-by-capability reference. For runnable code see [`USAGE.md`](USAGE.m
   by default (random search); an optional Optuna backend (TPE / NSGA-II) via
   `pip install 'betula-cluster[tune]'`. Because betula fits are cheap, a few hundred trials run in
   seconds — the search is over the compression, so cost is bounded by the microcluster count, not `N`.
+- **Tree diagnostics** (`tree_report()`, `estimate_threshold`) — answers "why is my tree collapsing?"
+  from the leaf summary: how much of the leaf budget was spent, how much of the *mass* one leaf ended
+  up holding, and — the number that decides whether that cost anything — how **wide** that leaf is
+  against a typical one. Mass concentration alone cannot tell a real loss from a faithful summary:
+  the `structured` and `flat` fixtures of `bench/size_imbalance.py` both put 80% of the mass in one
+  leaf, and only the first has anything inside it to lose. The width separates them 3× (0.53/0.75
+  against 0.17/0.27), so the report distinguishes "the structure inside it is unrecoverable" from
+  "the dense part is genuinely point-like". Pass `X` for an **advisory** A-BIRCH gap-statistic
+  threshold estimate (Lorbeer et al. 2018) beside the threshold in use, which names each of the
+  paper's assumptions — comparable cluster sizes, well-separated clusters — that the data breaks.
 - **Consensus & stability** (`consensus` → `ConsensusResult`) — clusters `X` under several random
   insertion-order permutations and votes, converting the CF-tree's insertion-order sensitivity into a
   measurable signal: a consensus labelling plus a **per-point stability score** in `[0, 1]` (low on
