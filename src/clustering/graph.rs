@@ -23,7 +23,28 @@ const LOCAL_SCALE_NN: usize = 7;
 /// of each node's nearest neighbours, so `adj[i]` may list `j` because `i` kept `j` or `j` kept `i`;
 /// weights are symmetric (`w_ij = w_ji`).
 pub fn knn_affinity<R: Real>(centers: &[Vec<R>]) -> Vec<Vec<(usize, R)>> {
-    knn_affinity_impl(centers, None, None)
+    knn_affinity_impl(centers, None, None, None)
+}
+
+/// [`knn_affinity`] with the neighbour count forced, for measuring what [`knn_degree`] is worth.
+pub(crate) fn knn_affinity_with_degree<R: Real>(
+    centers: &[Vec<R>],
+    degree: usize,
+) -> Vec<Vec<(usize, R)>> {
+    knn_affinity_impl(centers, None, None, Some(degree))
+}
+
+/// Neighbours kept per node at `n` nodes.
+///
+/// The floor is not decoration. García Trillos & Slepčev (*A variational approach to the consistency
+/// of spectral clustering*, ACHA 45(2), 2018) show the graph Laplacian Γ-converges to the continuum
+/// Dirichlet energy only above a connectivity threshold — for a k-NN graph, `k_n / log n → ∞` — below
+/// which the graph fragments and the spectrum stops describing the manifold. The spectral head caps
+/// its node count at `SPECTRAL_MAX_NODES = 256`, where `log n ≈ 5.5`, so the shipped `KNN = 10` sits
+/// at `1.8 log n` and the asymptotic requirement has no room to bite. That is why a fixed cap is
+/// defensible *here* and would not be on an uncapped graph.
+pub(crate) fn knn_degree(n: usize) -> usize {
+    (n / 10).clamp(MIN_KNN, KNN).min(n.saturating_sub(1))
 }
 
 /// Geometry-aware [`knn_affinity`] (GeoBETULA): the pairwise distance gains an optional log-Euclidean
@@ -37,7 +58,7 @@ pub fn knn_affinity_geo<R: Real>(
     cov: Option<(&[Vec<Vec<R>>], R)>,
     tangent: Option<(&[Vec<Vec<R>>], R)>,
 ) -> Vec<Vec<(usize, R)>> {
-    knn_affinity_impl(centers, cov, tangent)
+    knn_affinity_impl(centers, cov, tangent, None)
 }
 
 /// Squared projection (chordal) Grassmann distance between two `d×r` column-orthonormal bases:
@@ -115,6 +136,7 @@ fn knn_affinity_impl<R: Real>(
     centers: &[Vec<R>],
     cov: Option<(&[Vec<Vec<R>>], R)>,
     tangent: Option<(&[Vec<Vec<R>>], R)>,
+    degree: Option<usize>,
 ) -> Vec<Vec<(usize, R)>> {
     let n = centers.len();
     let tiny = R::from_f64(1e-12).unwrap();
@@ -139,7 +161,7 @@ fn knn_affinity_impl<R: Real>(
     // the `LOCAL_SCALE_NN`-th neighbour) and the `knn` nearest for the graph. `scale_rank` ≥ 1 since
     // n ≥ 2; `knn` scales with the node count so the graph stays local on small trees.
     let scale_rank = LOCAL_SCALE_NN.min(n - 1);
-    let knn = (n / 10).clamp(MIN_KNN, KNN).min(n - 1);
+    let knn = degree.map_or_else(|| knn_degree(n), |d| d.clamp(1, n - 1));
     let mut sigma = vec![R::zero(); n];
     let mut adj = vec![vec![false; n]; n];
     for i in 0..n {

@@ -13,7 +13,7 @@
 //! leaf inherits its landmark's label. Spectral has no built-in cluster-count selection (the
 //! eigengap is unreliable on k-NN graphs), so `k == 0` (auto) falls back to [`SPECTRAL_DEFAULT_K`].
 
-use crate::clustering::graph::knn_affinity;
+use crate::clustering::graph::{knn_affinity, knn_affinity_with_degree};
 use crate::clustering::kmeans::kmeans;
 use crate::feature::{ClusterFeature, Spherical};
 use crate::linalg::jacobi_eigen;
@@ -75,7 +75,7 @@ pub fn spectral<R: Real, C: ClusterFeature<R>>(
 const DIFFUSION_ALPHA: f64 = 0.0;
 
 fn spectral_core<R: Real>(centers: &[Vec<R>], k: usize, max_iter: usize, seed: u64) -> Vec<usize> {
-    spectral_core_alpha(centers, k, max_iter, seed, DIFFUSION_ALPHA)
+    spectral_core_alpha(centers, k, max_iter, seed, DIFFUSION_ALPHA, None)
 }
 
 fn spectral_core_alpha<R: Real>(
@@ -84,6 +84,7 @@ fn spectral_core_alpha<R: Real>(
     max_iter: usize,
     seed: u64,
     alpha: f64,
+    degree: Option<usize>,
 ) -> Vec<usize> {
     let n = centers.len();
     if n == 1 {
@@ -99,7 +100,10 @@ fn spectral_core_alpha<R: Real>(
 
     // Symmetric self-tuning k-NN affinity graph, then its degrees and the normalized affinity
     // `P = D^{-1/2} A D^{-1/2}` (`A` is exactly symmetric by construction, so `P` is too).
-    let adj = knn_affinity(centers);
+    let adj = match degree {
+        Some(d) => knn_affinity_with_degree(centers, d),
+        None => knn_affinity(centers),
+    };
     let mut a = vec![vec![R::zero(); n]; n];
     for (i, row) in adj.iter().enumerate() {
         for &(j, w) in row {
@@ -240,7 +244,7 @@ mod tests {
         let centers: Vec<Vec<f64>> = micros.iter().map(|f| f.mean().to_vec()).collect();
         assert_eq!(
             spectral(&micros, 2, 100, 1).labels,
-            spectral_core_alpha(&centers, 2, 100, 1, DIFFUSION_ALPHA),
+            spectral_core_alpha(&centers, 2, 100, 1, DIFFUSION_ALPHA, None),
             "the head and the constant have drifted apart"
         );
     }
@@ -254,10 +258,57 @@ mod tests {
         let (micros, _) = grid_micros(&pts, 0.1);
         let centers: Vec<Vec<f64>> = micros.iter().map(|f| f.mean().to_vec()).collect();
         assert_ne!(
-            spectral_core_alpha(&centers, 2, 100, 1, 0.0),
-            spectral_core_alpha(&centers, 2, 100, 1, 1.0),
+            spectral_core_alpha(&centers, 2, 100, 1, 0.0, None),
+            spectral_core_alpha(&centers, 2, 100, 1, 1.0, None),
             "alpha = 1 produced the same labelling as alpha = 0"
         );
+    }
+
+    /// Is the shipped neighbour count load-bearing, and does the Γ-convergence floor bite? Median
+    /// ARI of seeds 0/1/2 per (fixture, degree). `knn_degree` returns 10 at every node count the
+    /// spectral head can reach, so the comparison is against fixed alternatives around it.
+    ///
+    /// `cargo test --lib clustering::spectral::tests::measure_graph_degree -- --ignored --nocapture`
+    #[test]
+    #[ignore = "measurement harness, not a check"]
+    fn measure_graph_degree() {
+        type Fixture = fn(&mut SplitMix64, usize, f64) -> (Vec<Vec<f64>>, Vec<usize>);
+        let cases: [(&str, Fixture, usize, f64, f64, usize); 4] = [
+            ("two-moons", two_moons, 400, 0.06, 0.10, 2),
+            ("lopsided-moons", lopsided_moons, 400, 0.06, 0.10, 2),
+            ("circles", circles, 400, 0.08, 0.16, 2),
+            ("aniso", |r, per, _| aniso(r, per), 400, 0.0, 0.30, 3),
+        ];
+        let degrees = [3usize, 5, 7, 10, 16, 24];
+        print!("\n{:>16} {:>7}", "fixture", "nodes");
+        for d in degrees {
+            print!("{:>9}", format!("k={d}"));
+        }
+        println!("   (shipped k = 10)");
+        for (name, build, per, noise, cell, k) in cases {
+            let mut row = Vec::new();
+            let mut nodes = 0usize;
+            for degree in degrees {
+                let mut scores = Vec::new();
+                for seed in 0u64..3 {
+                    let mut rng = SplitMix64::new(seed);
+                    let (pts, truth) = build(&mut rng, per, noise);
+                    let (micros, assign) = grid_micros(&pts, cell);
+                    let centers: Vec<Vec<f64>> = micros.iter().map(|f| f.mean().to_vec()).collect();
+                    nodes = centers.len().min(SPECTRAL_MAX_NODES);
+                    let lab = spectral_core_alpha(&centers, k, 100, seed, 0.0, Some(degree));
+                    let per_point: Vec<usize> = assign.iter().map(|&m| lab[m]).collect();
+                    scores.push(ari(&per_point, &truth));
+                }
+                scores.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                row.push(scores[1]);
+            }
+            print!("{name:>16} {nodes:>7}");
+            for v in &row {
+                print!("{v:>9.4}");
+            }
+            println!();
+        }
     }
 
     /// Does dividing the sampling density out of the affinity help this crate's mass-weighted
@@ -289,7 +340,7 @@ mod tests {
                     let (micros, assign) = grid_micros(&pts, cell);
                     leaves = micros.len();
                     let centers: Vec<Vec<f64>> = micros.iter().map(|f| f.mean().to_vec()).collect();
-                    let lab = spectral_core_alpha(&centers, k, 100, seed, alpha);
+                    let lab = spectral_core_alpha(&centers, k, 100, seed, alpha, None);
                     let per_point: Vec<usize> = assign.iter().map(|&m| lab[m]).collect();
                     scores.push(ari(&per_point, &truth));
                 }
@@ -318,7 +369,7 @@ mod tests {
                         let (micros, assign) = grid_micros(&pts, 0.10);
                         let centers: Vec<Vec<f64>> =
                             micros.iter().map(|f| f.mean().to_vec()).collect();
-                        let lab = spectral_core_alpha(&centers, 2, 100, seed, alpha);
+                        let lab = spectral_core_alpha(&centers, 2, 100, seed, alpha, None);
                         let per_point: Vec<usize> = assign.iter().map(|&m| lab[m]).collect();
                         scores.push(ari(&per_point, &truth));
                     }

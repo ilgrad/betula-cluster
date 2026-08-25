@@ -1471,6 +1471,43 @@ live again and this row has to be re-measured, not inherited.
 
 Harness: `cargo test --lib clustering::spectral::tests::measure_alpha -- --ignored --nocapture`.
 
+### The neighbour count *is* load-bearing, and the shipped one is defensible but not optimal
+
+The other half of the same question: the graph keeps `knn_degree(n) = (n/10)` clamped to `[4, 10]`
+neighbours per node, a constant nothing had ever measured. Same fixtures, same three seeds, degree
+forced:
+
+| fixture | nodes | k = 3 | k = 5 | k = 7 | **k = 10** | k = 16 | k = 24 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| two-moons | 193 | 1.0000 | 1.0000 | 1.0000 | **1.0000** | 1.0000 | 1.0000 |
+| lopsided-moons | 157 | 1.0000 | 1.0000 | 1.0000 | **1.0000** | 0.9817 | 0.7320 |
+| circles | 256 | 1.0000 | 1.0000 | 1.0000 | **1.0000** | 1.0000 | 1.0000 |
+| aniso | 256 | 0.8041 | **0.9464** | 0.9300 | **0.8892** | 0.8259 | 0.7447 |
+
+Two things follow. Going *up* is unambiguously bad — at `k = 24` two of four fixtures collapse, which
+is the graph bridging the gap it was built to respect. Going down helps on the one fixture that
+discriminates: `k = 5` scores 0.9464 and `k = 7` scores 0.9300 against the shipped 0.8892, and both
+tie at 1.0000 everywhere else.
+
+Which of those is a *defensible* default is where the citation earns its place. García Trillos &
+Slepčev (*A variational approach to the consistency of spectral clustering*, ACHA 45(2), 2018) show
+the graph Laplacian Γ-converges to the continuum Dirichlet energy only above a connectivity
+threshold — for a k-NN graph, `k_n / log n → ∞` — below which the graph fragments and its spectrum
+stops describing the manifold. The spectral head caps its node count at `SPECTRAL_MAX_NODES = 256`,
+so `log n ≈ 5.5`: the shipped `k = 10` sits at `1.8 log n`, `k = 7` at `1.3 log n`, and `k = 5` is
+*below* the threshold. So `k = 5`'s extra 0.016 on one fixture is exactly the kind of win the theory
+says not to bank, and `k = 7` is the candidate.
+
+**The default stays at 10 anyway, and the reason is scope rather than doubt.** `knn_affinity` is
+shared with the community (Leiden) head, so the constant is label-changing for two heads at once, and
+four synthetic fixtures at three seeds is not the evidence base for that — the real-dataset quality
+tables (`digits`, `covtype`, `mnist`, and the `20news` sparse rows) would have to move too, and those
+run through the Python benchmark harness rather than here. What the measurement *does* settle is that
+the constant is not free: it is worth 0.04 ARI on anisotropic shapes, it degrades sharply above 16,
+and it now has a floor with a citation instead of a round number.
+
+Harness: `cargo test --lib clustering::spectral::tests::measure_graph_degree -- --ignored --nocapture`.
+
 ## DynMSC: a second automatic `k`, and the shape that decides which one to use (task #52)
 
 The crate already chooses `k` on its own — Calinski–Harabasz over the Ward cuts, behind

@@ -48,7 +48,16 @@ All notable changes to this project are documented here. The format follows
   0.7516 → 0.6903. The reason is that the correction is already applied — the affinity is self-tuning
   (Zelnik-Manor & Perona local scaling), its `σ_i` *is* a local density estimate, and α is derived for
   a fixed-bandwidth kernel, so stacking them divides the same bias out twice and over-corrects.
-  `DIFFUSION_ALPHA` stays `0.0` and now records that as a measurement. Tables in
+  `DIFFUSION_ALPHA` stays `0.0` and now records that as a measurement.
+
+  The affinity's neighbour count was measured on the same fixtures and turns out to be load-bearing:
+  `k = 24` collapses two of four, and `k = 7` beats the shipped `k = 10` on anisotropic shapes
+  (0.9300 against 0.8892) while tying elsewhere. `knn_degree` now carries the Γ-convergence floor
+  that makes a choice defensible — García Trillos & Slepčev require `k_n / log n → ∞`, and at the
+  head's `SPECTRAL_MAX_NODES = 256` cap the shipped 10 is `1.8 log n` while `k = 5` (the best cell
+  measured) is *below* the threshold. The default is unchanged at 10 because `knn_affinity` is shared
+  with the Leiden head and four synthetic fixtures are not the evidence base for a constant that
+  relabels two heads at once. Tables in
   [`bench/RESULTS.md`](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md).
 - **`fidelity::summary_mmd`: a label-free, head-independent fidelity number for the leaf summary.**
   Every other quality number the crate reports needs something the summary cannot supply — ground
