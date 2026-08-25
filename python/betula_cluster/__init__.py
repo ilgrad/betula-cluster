@@ -24,6 +24,7 @@ from ._core import DenStream as _CoreDenStream  # type: ignore
 from ._core import KPrototypes as _CoreKPrototypes  # type: ignore
 from ._core import WindowStream as _CoreWindowStream  # type: ignore
 from ._core import fit_predict_sparse as _core_fit_predict_sparse  # type: ignore
+from ._core import mixture_w2 as _core_mixture_w2  # type: ignore
 from .tuning import TuneResult, tune
 
 try:
@@ -48,6 +49,7 @@ __all__ = [
     "consensus",
     "fit_predict",
     "fit_predict_sparse",
+    "mixture_w2",
     "tune",
 ]
 
@@ -268,6 +270,56 @@ def consensus(
         counts[idx, row] += 1
     return ConsensusResult(
         labels=counts.argmax(axis=1), confidence=counts.max(axis=1) / n_runs, n_runs=n_runs
+    )
+
+
+def _isotropic_variances(est) -> np.ndarray:
+    """Leaf RMS radii as the per-coordinate variances of an isotropic Gaussian: ``R² / d``."""
+    centers = np.asarray(est.microcluster_centers_, dtype=np.float64)
+    radii = np.asarray(est.microcluster_radii_, dtype=np.float64)
+    dim = centers.shape[1]
+    return np.repeat((radii**2 / dim)[:, None], dim, axis=1)
+
+
+def mixture_w2(
+    weights_a,
+    means_a,
+    covariances_a,
+    weights_b,
+    means_b,
+    covariances_b,
+) -> float:
+    """Mixture-Wasserstein ``MW2`` between two fitted Gaussian mixtures. Lower is closer.
+
+    Delon & Desolneux (SIAM J. Imaging Sci. 13(2), 2020) restrict the transport plan to be itself a
+    Gaussian mixture, which turns the distance into a closed-form ``W2`` per component pair (the
+    Bures metric) plus a small exact transport over the ``k_a × k_b`` grid. It needs no labels, no
+    shared sample and no common ``k``: two fits of different sizes, on different data, are directly
+    comparable.
+
+    ``covariances`` may be ``(k, dim)`` per-coordinate variances or ``(k, dim, dim)`` full matrices,
+    the two shapes :class:`sklearn.mixture.GaussianMixture` uses for ``covariance_type="diag"`` and
+    ``"full"``. The parameters are passed rather than an estimator so that a mixture fitted
+    elsewhere — sklearn, ELKI, the same model an hour earlier — can be compared without conversion.
+
+    Two uses: as a **drift** metric between the same model at two times (see
+    :meth:`Betula.summary_w2`), and as a **cross-implementation** agreement number, which is sharper
+    than an ARI between two labellings because it separates a parameter difference from a tie broken
+    the other way at a boundary.
+
+    The value is an upper bound on the true ``W2`` between the two densities, not that ``W2``
+    itself; the two coincide when the optimal unrestricted coupling happens to be a Gaussian
+    mixture, as it is for a pure translation.
+    """
+    return float(
+        _core_mixture_w2(
+            np.ascontiguousarray(weights_a, dtype=np.float64),
+            np.ascontiguousarray(means_a, dtype=np.float64),
+            np.ascontiguousarray(covariances_a, dtype=np.float64),
+            np.ascontiguousarray(weights_b, dtype=np.float64),
+            np.ascontiguousarray(means_b, dtype=np.float64),
+            np.ascontiguousarray(covariances_b, dtype=np.float64),
+        )
     )
 
 
@@ -875,6 +927,29 @@ class Betula:
         """
         arr = np.ascontiguousarray(X, dtype=np.float64)
         return float(self._require_fit().summary_mmd_(arr, bandwidth))
+
+    def summary_w2(self, other) -> float:
+        """Mixture-Wasserstein distance between this model's leaf summary and ``other``'s.
+
+        The drift metric: fit at ``t1``, fit at ``t2``, and read how far the summary moved. It needs
+        no labels, no shared points and not even the same number of leaves, which is what an
+        ARI-over-time cannot do. Both leaf summaries are read through the same isotropic surrogate
+        :meth:`summary_mmd` uses — leaf ``i`` is ``N(μ_i, (R_i²/d)·I)`` with mass ``n_i`` — so the
+        two diagnostics agree on what a leaf is.
+
+        Zero means the two summaries describe the same density; the value is in the units of the
+        data, so it is comparable across runs on the same feature scale and meaningless across
+        different ones.
+        """
+        mine, theirs = self._require_fit(), other._require_fit()
+        return mixture_w2(
+            mine.microcluster_weights_,
+            mine.microcluster_centers_,
+            _isotropic_variances(mine),
+            theirs.microcluster_weights_,
+            theirs.microcluster_centers_,
+            _isotropic_variances(theirs),
+        )
 
     def find_outliers(self, X, top_k=100):
         """Row indices of the ``top_k`` most outlying points (highest score first)."""

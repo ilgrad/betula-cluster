@@ -40,6 +40,17 @@ All notable changes to this project are documented here. The format follows
   [`bench/RESULTS.md`](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md).
 
 ### Added
+
+- `mixture_w2` and `Betula.summary_w2`, the mixture-Wasserstein distance `MW₂` between two fitted
+  Gaussian mixtures (Delon & Desolneux, SIAM J. Imaging Sci. 13(2), 2020). The pair cost is the
+  closed-form Bures `W₂`; the transport over the component grid is solved exactly by a transportation
+  simplex, so a mixture scores exactly zero against itself rather than nearly zero. `summary_w2`
+  applies it to two models' leaf summaries and is a drift metric that needs no labels, no shared
+  points and not even a common leaf count — on a four-blob drift sweep the label ARI stays at 1.0000
+  in twelve of thirteen scenarios while `MW₂` tracks every one of them, matching `√(w·δ² + null²)`
+  to within 2.5%. `mixture_w2` takes parameters rather than an estimator, so an sklearn or ELKI fit
+  can be compared without conversion. Table in
+  [bench/RESULTS.md](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md).
 - **Diffusion-maps α-normalization on the spectral head — measured and refuted, default unchanged.**
   The head's Laplacian sits over *mass-weighted* leaves, so sampling density enters it twice, and
   Coifman & Lafon's `A_ij / (q_i^α q_j^α)` is the standard correction. Over four fixtures and a

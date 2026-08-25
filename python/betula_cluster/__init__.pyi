@@ -27,6 +27,7 @@ __all__ = [
     "consensus",
     "fit_predict",
     "fit_predict_sparse",
+    "mixture_w2",
     "tune",
 ]
 
@@ -171,6 +172,16 @@ def fit_predict_sparse(
 ) -> NDArray[np.int64]:
     """One-shot O(nnz) clustering of a scipy.sparse matrix; one int64 label per row."""
 
+def mixture_w2(
+    weights_a: _FloatArray,
+    means_a: _FloatArray,
+    covariances_a: _FloatArray,
+    weights_b: _FloatArray,
+    means_b: _FloatArray,
+    covariances_b: _FloatArray,
+) -> float:
+    """Mixture-Wasserstein MW2 between two fitted Gaussian mixtures; lower is closer."""
+
 class Betula:
     """Streaming, scikit-learn-style BETULA estimator."""
 
@@ -254,6 +265,7 @@ class Betula:
     def summary(self) -> dict[str, float]: ...
     def validity(self) -> dict[str, float]: ...
     def summary_mmd(self, X: _FloatArray, *, bandwidth: float | None = ...) -> float: ...
+    def summary_w2(self, other: Betula) -> float: ...
     def find_outliers(self, X: _FloatArray, top_k: int = ...) -> NDArray[np.int64]: ...
     def sample_representatives(
         self, X: _FloatArray, k: int = ...

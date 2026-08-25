@@ -10,7 +10,10 @@
 //! head (`hdbscan`, where `-1` marks noise).
 
 use numpy::ndarray::Array2;
-use numpy::{Element, IntoPyArray, PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2};
+use numpy::{
+    Element, IntoPyArray, PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2,
+    PyReadonlyArrayDyn, PyUntypedArrayMethods,
+};
 use pyo3::exceptions::{PyUserWarning, PyValueError};
 use pyo3::prelude::*;
 use std::ffi::CString;
@@ -42,6 +45,7 @@ use crate::stream::{DbStream, DenStream};
 use crate::topology::{Lens, MapperGraph, MapperParams, mapper};
 use crate::tree::CFTree;
 use crate::types::Real;
+use crate::wasserstein::{GaussianMixture, Spread, mixture_w2};
 use crate::window::WindowStream;
 
 #[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
@@ -4456,10 +4460,114 @@ fn fit_predict_sparse<'py>(
     Ok(labels.into_pyarray(py))
 }
 
+/// Rows of `means`, checked against the declared component count and dimension.
+fn mixture_means(
+    means: &PyReadonlyArray2<'_, f64>,
+    k: usize,
+    dim: usize,
+) -> PyResult<Vec<Vec<f64>>> {
+    let shape = means.shape();
+    if shape[0] != k || shape[1] != dim {
+        return Err(PyValueError::new_err(format!(
+            "means must be ({k}, {dim}), got ({}, {})",
+            shape[0], shape[1]
+        )));
+    }
+    let flat = means.as_slice()?;
+    Ok(flat.chunks_exact(dim).map(<[f64]>::to_vec).collect())
+}
+
+/// Covariances as either `(k, dim)` per-coordinate variances or `(k, dim, dim)` dense matrices.
+///
+/// Returned as owned matrices plus the diagonal form, because [`Spread`] borrows and the caller
+/// needs somewhere for the data to live; only the branch that is actually used is populated.
+type Covariances = (Vec<Vec<f64>>, Vec<Vec<Vec<f64>>>);
+
+fn mixture_covs(covs: &PyReadonlyArrayDyn<'_, f64>, k: usize, dim: usize) -> PyResult<Covariances> {
+    let shape = covs.shape();
+    let flat = covs.as_slice()?;
+    match *shape {
+        [rows, cols] if rows == k && cols == dim => Ok((
+            flat.chunks_exact(dim).map(<[f64]>::to_vec).collect(),
+            Vec::new(),
+        )),
+        [rows, r, c] if rows == k && r == dim && c == dim => Ok((
+            Vec::new(),
+            flat.chunks_exact(dim * dim)
+                .map(|m| m.chunks_exact(dim).map(<[f64]>::to_vec).collect())
+                .collect(),
+        )),
+        _ => Err(PyValueError::new_err(format!(
+            "covariances must be ({k}, {dim}) diagonal or ({k}, {dim}, {dim}) full, got {shape:?}"
+        ))),
+    }
+}
+
+fn spreads<'a>(diag: &'a [Vec<f64>], full: &'a [Vec<Vec<f64>>]) -> Vec<Spread<'a, f64>> {
+    if full.is_empty() {
+        diag.iter()
+            .map(|v| Spread::Diagonal(v.as_slice()))
+            .collect()
+    } else {
+        full.iter().map(|m| Spread::Full(m.as_slice())).collect()
+    }
+}
+
+/// Mixture-Wasserstein `MW2` between two fitted Gaussian mixtures.
+///
+/// Takes the parameters rather than an estimator so that a mixture fitted *elsewhere* — sklearn's
+/// `GaussianMixture`, an ELKI run, the same model at an earlier timestamp — can be compared without
+/// either side being converted into the other's object.
+#[pyfunction]
+#[pyo3(name = "mixture_w2")]
+fn mixture_w2_py(
+    weights_a: PyReadonlyArray1<'_, f64>,
+    means_a: PyReadonlyArray2<'_, f64>,
+    covariances_a: PyReadonlyArrayDyn<'_, f64>,
+    weights_b: PyReadonlyArray1<'_, f64>,
+    means_b: PyReadonlyArray2<'_, f64>,
+    covariances_b: PyReadonlyArrayDyn<'_, f64>,
+) -> PyResult<f64> {
+    let wa = weights_a.as_slice()?;
+    let wb = weights_b.as_slice()?;
+    if wa.is_empty() || wb.is_empty() {
+        return Err(PyValueError::new_err(
+            "a mixture needs at least one component",
+        ));
+    }
+    let dim = means_a.shape()[1];
+    if means_b.shape()[1] != dim {
+        return Err(PyValueError::new_err(format!(
+            "the two mixtures live in different dimensions: {dim} and {}",
+            means_b.shape()[1]
+        )));
+    }
+    let ma = mixture_means(&means_a, wa.len(), dim)?;
+    let mb = mixture_means(&means_b, wb.len(), dim)?;
+    let (da, fa) = mixture_covs(&covariances_a, wa.len(), dim)?;
+    let (db, fb) = mixture_covs(&covariances_b, wb.len(), dim)?;
+    let sa = spreads(&da, &fa);
+    let sb = spreads(&db, &fb);
+    mixture_w2(
+        GaussianMixture {
+            weights: wa,
+            means: &ma,
+            covs: &sa,
+        },
+        GaussianMixture {
+            weights: wb,
+            means: &mb,
+            covs: &sb,
+        },
+    )
+    .ok_or_else(|| PyValueError::new_err("neither mixture may carry only non-positive weights"))
+}
+
 #[pymodule]
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(fit_predict, m)?)?;
     m.add_function(wrap_pyfunction!(fit_predict_sparse, m)?)?;
+    m.add_function(wrap_pyfunction!(mixture_w2_py, m)?)?;
     m.add_class::<Betula>()?;
     m.add_class::<PyBregmanBetula>()?;
     m.add_class::<PyDenStream>()?;

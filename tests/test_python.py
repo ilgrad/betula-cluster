@@ -3387,3 +3387,91 @@ def test_bregman_betula_is_a_scikit_learn_style_estimator(simplex_blobs):
     est.set_params(n_clusters=2)
     with pytest.raises(AttributeError, match="not fitted"):
         _ = est.labels_
+
+
+def _gm(weights, means, covs):
+    return (
+        np.array(weights, dtype=np.float64),
+        np.array(means, dtype=np.float64),
+        np.array(covs, dtype=np.float64),
+    )
+
+
+def test_mixture_w2_is_zero_between_a_mixture_and_itself():
+    a = _gm([0.4, 0.6], [[0.0, 0.0], [5.0, 1.0]], [[1.0, 2.0], [0.5, 0.5]])
+    assert betula_cluster.mixture_w2(*a, *a) < 1e-9
+
+
+def test_mixture_w2_ignores_the_order_the_components_are_listed_in():
+    a = _gm([0.4, 0.6], [[0.0, 0.0], [5.0, 1.0]], [[1.0, 2.0], [0.5, 0.5]])
+    b = _gm([0.6, 0.4], [[5.0, 1.0], [0.0, 0.0]], [[0.5, 0.5], [1.0, 2.0]])
+    assert betula_cluster.mixture_w2(*a, *b) < 1e-9
+
+
+def test_mixture_w2_of_a_common_translation_is_the_translation_length():
+    means = np.array([[0.0, 0.0], [5.0, 1.0]])
+    shift = np.array([3.0, 4.0])
+    a = _gm([0.4, 0.6], means, [[1.0, 2.0], [0.5, 0.5]])
+    b = _gm([0.4, 0.6], means + shift, [[1.0, 2.0], [0.5, 0.5]])
+    assert betula_cluster.mixture_w2(*a, *b) == pytest.approx(5.0, abs=1e-9)
+
+
+def test_mixture_w2_accepts_full_covariance_matrices():
+    # A 90-degree rotation of an elongated Gaussian: invisible to a diagonal reading of the same
+    # pair, so this also proves the (k, dim, dim) shape is not silently taking the diagonal.
+    flat = np.array([[[9.0, 0.0], [0.0, 1.0]]])
+    tall = np.array([[[1.0, 0.0], [0.0, 9.0]]])
+    means = np.zeros((1, 2))
+    rotated = betula_cluster.mixture_w2([1.0], means, flat, [1.0], means, tall)
+    assert rotated > 1.0
+    assert betula_cluster.mixture_w2([1.0], means, flat, [1.0], means, flat) < 1e-9
+
+
+def test_mixture_w2_rejects_shapes_that_do_not_describe_a_mixture():
+    a = _gm([0.5, 0.5], [[0.0], [1.0]], [[1.0], [1.0]])
+    with pytest.raises(ValueError, match="different dimensions"):
+        betula_cluster.mixture_w2(*a, [1.0], [[0.0, 0.0]], [[1.0, 1.0]])
+    with pytest.raises(ValueError, match="means must be"):
+        betula_cluster.mixture_w2([1.0, 1.0, 1.0], a[1], a[2], *a)
+    with pytest.raises(ValueError, match="covariances must be"):
+        betula_cluster.mixture_w2(a[0], a[1], np.ones((2, 1, 1, 1)), *a)
+    with pytest.raises(ValueError, match="at least one component"):
+        betula_cluster.mixture_w2(np.empty(0), np.empty((0, 1)), np.empty((0, 1)), *a)
+    with pytest.raises(ValueError, match="non-positive weights"):
+        betula_cluster.mixture_w2([0.0, 0.0], a[1], a[2], *a)
+
+
+def test_summary_w2_is_zero_between_a_model_and_itself(blobs):
+    est, _, _ = _fitted(blobs)
+    assert est.summary_w2(est) < 1e-9
+
+
+def test_summary_w2_reads_a_shift_of_the_data_as_the_distance_it_is(blobs):
+    # The drift use: same generator, translated. The leaf summaries need not line up leaf-for-leaf,
+    # so the transport is doing real work — but the density moved by exactly ‖shift‖.
+    x, _ = blobs
+    shift = np.array([4.0, -3.0])
+    first = betula_cluster.Betula(n_clusters=4, threshold=0.5, max_leaves=200, seed=3).fit(x)
+    moved = betula_cluster.Betula(n_clusters=4, threshold=0.5, max_leaves=200, seed=3).fit(
+        x + shift
+    )
+    assert first.summary_w2(moved) == pytest.approx(5.0, rel=0.05)
+
+
+def test_summary_w2_grows_with_the_drift_it_measures(blobs):
+    x, _ = blobs
+    base = betula_cluster.Betula(n_clusters=4, threshold=0.5, max_leaves=200, seed=3).fit(x)
+    previous = 0.0
+    for step in (1.0, 3.0, 9.0):
+        drifted = betula_cluster.Betula(n_clusters=4, threshold=0.5, max_leaves=200, seed=3).fit(
+            x + np.array([step, 0.0])
+        )
+        d = base.summary_w2(drifted)
+        assert d > previous
+        previous = d
+
+
+def test_summary_w2_requires_both_models_to_be_fitted(blobs):
+    est, _, _ = _fitted(blobs)
+    with pytest.raises(AttributeError, match="not fitted yet"):
+        est.summary_w2(betula_cluster.Betula())

@@ -1508,6 +1508,59 @@ and it now has a floor with a citation instead of a round number.
 
 Harness: `cargo test --lib clustering::spectral::tests::measure_graph_degree -- --ignored --nocapture`.
 
+## A drift number that reads the drift, where the labels read nothing at all (task #56)
+
+`summary_w2` is the mixture-Wasserstein distance `MW₂` (Delon & Desolneux, SIAM J. Imaging Sci.
+13(2), 2020) between two models' leaf summaries: every leaf is the same isotropic Gaussian
+`summary_mmd` reads, the pair cost is the closed-form Bures `W₂`, and the transport over the
+`k_a × k_b` grid is solved exactly. No labels, no shared points, no common `k`.
+
+The question a drift metric has to answer is not "did the number move" but "did it move further than
+it moves when nothing happened", so every cell is measured against a null — the same law, resampled
+and refitted. 6000 points, four blobs of spread 0.6, `max_leaves=200`, median of seeds 0/1/2. The
+comparison column is the ARI between the two models' labellings of one shared probe sample, which is
+what a drift check without this metric would have to use.
+
+| scenario | MW₂ | × null | closed form | label ARI |
+|---|---:|---:|---:|---:|
+| null: resample, same law | 0.3392 | 1.00 | — | 1.0000 |
+| all four blobs shift by 0.1 | 0.3543 | 1.04 | 0.3537 | 1.0000 |
+| all four blobs shift by 0.25 | 0.4245 | 1.25 | 0.4214 | 1.0000 |
+| all four blobs shift by 0.5 | 0.6094 | 1.80 | 0.6042 | 1.0000 |
+| all four blobs shift by 1.0 | 1.0623 | 3.13 | 1.0560 | 1.0000 |
+| all four blobs shift by 3.0 | 3.0241 | 8.91 | 3.0191 | 0.9933 |
+| one blob shifts by 0.5 | 0.4320 | 1.27 | 0.4214 | 1.0000 |
+| one blob shifts by 1.0 | 0.6190 | 1.82 | 0.6042 | 1.0000 |
+| one blob shifts by 3.0 | 1.5554 | 4.59 | 1.5379 | 1.0000 |
+| same means, spread 0.75 | 0.4313 | 1.27 | — | 1.0000 |
+| same means, spread 1.2 | 0.9648 | 2.84 | — | 1.0000 |
+| same means, spread 2.0 | 2.0140 | 5.94 | — | 1.0000 |
+| one blob loses 80% of its mass | 3.8670 | 11.40 | — | 1.0000 |
+
+**The label column is 1.0000 in twelve of thirteen rows.** That is not a defect of ARI; it is what
+ARI is for. The partition never changes — four blobs stay four blobs however far they slide — so a
+label-based drift check is blind to every scenario here except the one that starts to blur two
+blobs together. `MW₂` reads all of them, including the two that no partition metric can express at
+all: a distribution that spreads without moving, and a component that loses mass without moving.
+
+**The floor and the signal add in quadrature, and the closed form says by how much.** The `closed
+form` column is `√(w·δ² + null²)` — the mass moved times the square of how far it moved, plus the
+null as a variance. Every row it applies to lands within 0.6–2.5% of it, including the one-blob rows
+where only a quarter of the mass travels. Two consequences worth stating plainly:
+
+- The null is not noise in the estimator, it is the **quantization floor of the leaf summary**: 200
+  leaves over 6000 points cannot place mass more finely than that, and refitting on a fresh sample
+  reshuffles the placement. Raising `max_leaves` lowers the floor; it does not lower the signal.
+- Because the two add in quadrature rather than linearly, the resolution of the diagnostic is
+  exactly the null level. A drift of 0.1 against a floor of 0.34 shows up as a 4% change and is not
+  detectable; a drift of 0.34 is a factor of √2. Measure the null for your own budget and data
+  before reading any single value as drift.
+
+Harness: `local/scratch/mw2_drift.py` (untracked). Cross-checked against an independent solver:
+`local/scratch/mw2_crosscheck.py` re-solves twelve random instances with scipy's HiGHS linear
+programme and `scipy.linalg.sqrtm`, sharing no code with the crate — worst relative difference
+3.8e-16.
+
 ## DynMSC: a second automatic `k`, and the shape that decides which one to use (task #52)
 
 The crate already chooses `k` on its own — Calinski–Harabasz over the Ward cuts, behind
