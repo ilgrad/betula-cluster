@@ -971,10 +971,13 @@ test, medians of seeds 0/1/2 on `digits`:
 | leaf budget | `spherical` | `fd` | `full` |
 |---|---|---|---|
 | 1797 (×1.0) | 0.4613 | 0.4613 | 0.4613 |
-| 1200 | **0.0439** | 0.4843 | 0.4427 |
-| 900 | **0.0088** | 0.3840 | 0.4403 |
-| 500 | **0.0104** | 0.4562 | 0.5083 |
-| 300 | 0.4650 | 0.4928 | 0.3943 |
+| 1200 | **0.0439** | 0.4427 | 0.4427 |
+| 900 | **0.0088** | 0.4386 | 0.4403 |
+| 500 | **0.0104** | 0.4959 | 0.5083 |
+| 300 | 0.4650 | 0.4601 | 0.3943 |
+
+(The `fd` column was re-measured after task #75 restored the sketch's discarded scatter; the other
+two columns are unchanged to the digit, which is the control — neither feature touches `FdSketch`.)
 
 The ×1.0 row is the control: with no scatter to add, all three agree to the digit. `gmm-full` on the
 spherical feature collapses the same way (0.0096 at 1200 leaves, 0.0115 at 500) and never does on
@@ -1044,6 +1047,44 @@ Three things the table settles:
   (D4 is a pure centroid measure), and `kmeans` moves only within its own seed spread. The leaf
   counts are identical in every cell, so the tree itself — absorption and routing — is unchanged by
   the exact trace at these budgets.
+
+## LS++ local search: better seeds, and Lloyd erases them (task #85, refuted)
+
+Lattanzi & Sohler (ICML 2019) prove that k-means++ followed by `O(k log log k)` local-search swaps
+gives an expected `O(1)`-approximation where plain k-means++ is `Θ(log k)`. The leaf summary makes
+that affordable — a swap costs `O(m·d + m·k)` on `m ≤ 8000` leaves rather than `O(N·d)` on points —
+so the guarantee was implemented against the exact CF potential the seeding already samples from,
+`S_i + n_i·D²_i`, and measured before being kept.
+
+It was not kept. Point-level SSE (the objective k-means minimises, not a proxy), median of seeds
+0/1/2, `n_init = 4` on both sides, identical k-means++ draws on both sides:
+
+| dataset | budget | 1 Lloyd pass: off → LS++ | 100 passes: off → LS++ |
+|---|---:|---|---|
+| digits | 900 | 7.2151e4 → **6.9966e4** (−3.03 %) | 7.0113e4 → 6.9807e4 (−0.44 %) |
+| digits | 225 | 7.1273e4 → 7.1139e4 (−0.19 %) | 7.0939e4 → 7.1128e4 (+0.27 %) |
+| covtype-20k | 4000 | 8.6861e5 → **8.6217e5** (−0.74 %) | 8.6450e5 → 8.6076e5 (−0.43 %) |
+| covtype-20k | 250 | 8.6498e5 → 8.6198e5 (−0.35 %) | 8.6505e5 → 8.6195e5 (−0.36 %) |
+| mnist-10k | 2000 | 6.5650e6 → **6.4901e6** (−1.14 %) | 6.4857e6 → 6.4894e6 (+0.06 %) |
+| mnist-10k | 250 | 6.6480e6 → 6.6507e6 (+0.04 %) | 6.6283e6 → 6.6503e6 (+0.33 %) |
+| blobs (k=40) | 4000 / 400 | identical | identical |
+
+**The swaps work, and they do not survive.** At one Lloyd pass — the column that is essentially the
+seeding — LS++ is ahead in five of six cells, by up to 3 %. At a hundred passes the spread collapses
+to ±0.4 % with the sign split three-three. The restarts are not what erases it: both columns run the
+same four, so the eraser is Lloyd itself.
+
+Two conditions make the guarantee non-binding here, and both are properties of the leaf instance
+rather than of the implementation. The head already runs **greedy** k-means++ with `2 + ⌊ln k⌋`
+candidates per centre — the trials scheme a 2025 beyond-worst-case analysis justifies precisely on
+well-separated instances — and a CF-tree leaf set *is* a well-separated instance by construction, since
+the tree spent its whole budget making it one. The `k = 40` synthetic makes the point at the limit:
+both arms return bit-identical SSE at every budget, because there is nothing to swap.
+
+The implementation is therefore not shipped: an off-by-default knob whose documentation would have
+to read "no measured effect" is API debt, and on-by-default would change every label for a coin flip.
+What is kept is the measurement — and the note that a swap costs `O(m·d + m·k)`, so if a future leaf
+model produces a genuinely adversarial instance, the guarantee is one function away.
 
 ## Insertion-order sensitivity — the property the whole BIRCH family inherits
 
