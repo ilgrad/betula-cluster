@@ -193,16 +193,21 @@ A capability-by-capability reference. For runnable code see [`USAGE.md`](USAGE.m
   `near_duplicate_pairs(X, threshold)` (scored cosine pairs, exact within each leaf-block — the
   scalable counterpart to an $O(N^2)$ all-pairs scan), `sample_representatives`, and
   `assign_microclusters` — for embedding dataset cleaning, deduplication, and outlier discovery,
-  reusing the CF-tree already built (no extra passes).
+  reusing the CF-tree already built (no extra passes). `outlier_scores` / `find_outliers` take a
+  `metric` — `"radius"` (scalar, `O(d)` per row) or `"mahalanobis"` (whitened by the cluster's pooled
+  covariance).
     Measured on the axes Sanchez Vinces, Schubert, Zimek and Cordeiro set out in
     *Clustering-based outlier detection* (DAMI 2025) — detection quality, resilience to parameter
     variation, and auto-filtering by an internal index. `outlier_scores` is a **local** score, and it
     wins where that matters: on clusters of unequal density it reaches ROC-AUC 1.000 / average
     precision 0.998 against IsolationForest's 0.887 / **0.175**, at the smallest parameter spread of
-    the three detectors (0.001 over a 12-cell sweep). It is *not* the choice for anisotropic clusters
-    — the score divides by a single scalar RMS radius, so a sheared cluster's short axis is judged by
-    the length of its long one (ROC-AUC 0.596, unchanged between `feature="diagonal"` and
-    `feature="full"`, because the covariance is not consulted). And the parameter cell can be chosen
+    the three detectors (0.001 over a 12-cell sweep). Its default `metric="radius"` divides by a
+    single scalar RMS radius, so a sheared cluster's short axis is judged by the length of its long
+    one (ROC-AUC 0.596, and identical at `feature="diagonal"` and `feature="full"` because that
+    radius is the covariance's *trace*); `metric="mahalanobis"` whitens by the cluster's pooled
+    covariance instead and lifts the same case to 0.748, at `O(k·d³)` once plus `O(d²)` per row. The
+    two are calibrated — on an isotropic cluster they return the same number — so the refinement
+    moves a score only where the cluster has a shape. And the parameter cell can be chosen
     without labels: taking the largest `validity()["calinski_harabasz"]` over the sweep lands within
     0.033 ROC-AUC of the best cell in it. Tables in
     [`bench/RESULTS.md`](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md).

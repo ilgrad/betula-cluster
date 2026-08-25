@@ -5,6 +5,7 @@ and the streaming `Betula` estimator, plus the error contract.
 """
 
 import collections
+import itertools
 import math
 import warnings
 from math import comb
@@ -1059,6 +1060,55 @@ def test_outlier_scores_flag_injected_point(blobs):
     scores = est.outlier_scores(xo)
     assert scores.shape == (len(xo),)
     assert scores[-1] > np.percentile(scores[:-1], 99)
+
+
+def _sheared_ribbon(seed=0, n=4000):
+    """One cluster elongated along a direction that is *not* a coordinate axis."""
+    rng = np.random.default_rng(seed)
+    pts = rng.normal(0.0, 1.0, (n, 2)) * np.array([6.0, 0.25])
+    angle = np.deg2rad(37.0)
+    rot = np.array([[np.cos(angle), -np.sin(angle)], [np.sin(angle), np.cos(angle)]])
+    return pts @ rot.T, rot
+
+
+def test_outlier_scores_mahalanobis_equals_radius_on_an_isotropic_cluster():
+    # The 2^d hypercube corners have per-dimension variance exactly 1 and no cross-covariance, so
+    # the pooled covariance is exactly (R^2/d)*I and the two metrics are the same number. This pins
+    # the calibration: the whitened score is a refinement of the scalar one, not a second scale.
+    cube = np.array(list(itertools.product([-1.0, 1.0], repeat=5)))
+    est = betula_cluster.Betula(n_clusters=1, feature="full", threshold=0.9, seed=0).fit(cube)
+    scalar = np.asarray(est.outlier_scores(cube, "radius"))
+    whitened = np.asarray(est.outlier_scores(cube, "mahalanobis"))
+    assert np.allclose(scalar, whitened, rtol=1e-5)  # the variance ridge is relative, at 1e-6
+
+
+def test_outlier_scores_mahalanobis_separates_the_axes_the_radius_conflates():
+    # Two probes the same Euclidean distance from the centroid: one along the cluster's long axis
+    # (an ordinary member), one along its short axis (far outside it). A scalar RMS radius is the
+    # trace of the covariance, so it cannot tell them apart; whitening by the covariance must.
+    rows, rot = _sheared_ribbon()
+    probes = np.array([[7.0, 0.0], [0.0, 7.0]]) @ rot.T
+    est = betula_cluster.Betula(n_clusters=1, feature="full", threshold=0.5, seed=0).fit(rows)
+    scalar = np.asarray(est.outlier_scores(probes, "radius"))
+    whitened = np.asarray(est.outlier_scores(probes, "mahalanobis"))
+    # The fitted centroid is not exactly the origin, so the two probes are equidistant only to
+    # within the sampling error of the centre — 0.15% here, against a 24x separation when whitened.
+    assert scalar[1] == pytest.approx(scalar[0], rel=1e-2)
+    assert whitened[1] > 10.0 * whitened[0]
+
+
+def test_outlier_scores_rejects_an_unknown_metric(blobs):
+    est, x, _ = _fitted(blobs)
+    with pytest.raises(ValueError, match="metric must be 'radius' or 'mahalanobis'"):
+        est.outlier_scores(x, "euclidean")
+
+
+def test_find_outliers_passes_the_metric_through():
+    rows, rot = _sheared_ribbon()
+    off_axis = np.array([[0.0, 7.0]]) @ rot.T
+    xo = np.vstack([rows, off_axis])
+    est = betula_cluster.Betula(n_clusters=1, feature="full", threshold=0.5, seed=0).fit(rows)
+    assert est.find_outliers(xo, top_k=5, metric="mahalanobis")[0] == len(rows)
 
 
 def test_summary_reports_structure(blobs):

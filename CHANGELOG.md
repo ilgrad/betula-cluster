@@ -95,6 +95,20 @@ All notable changes to this project are documented here. The format follows
   with the Leiden head and four synthetic fixtures are not the evidence base for a constant that
   relabels two heads at once. Tables in
   [`bench/RESULTS.md`](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md).
+- **`outlier_scores(X, metric="mahalanobis")`: whiten by the cluster's covariance, not its trace.**
+  The default `metric="radius"` divides the centroid deviation by one scalar RMS radius, which *is*
+  the trace of the cluster's pooled covariance — so an elongated cluster's short axis is judged by the
+  length of its long one. The new metric pools the leaves by the parallel-axis theorem
+  (`Σ = Σ_l w_l (Σ_l + δ_l δ_lᵀ) / W`, ridged at the GMM head's `VAR_FLOOR_REL`) and whitens against
+  a Cholesky factor of that. The two are calibrated rather than merely both being z-scores: on an
+  isotropic cluster they return the same number (checked on the `2⁵` hypercube corners and in 1-D, to
+  floating point), so the refinement moves a score only where the cluster has a shape. On the DAMI
+  fixtures, medians of seeds 0/1/2: sheared clusters **0.596 → 0.748** ROC-AUC (average precision
+  0.059 → 0.181), `blobs+uniform` 0.991 → 0.995, unequal-density unchanged at 1.000 — nothing
+  regresses. The **off-diagonal terms are the whole gain**: a per-dimension variance, which is what
+  "reuse the second moments the CF carries" first suggests, reaches only 0.642, because a 37°-rotated
+  ribbon's coordinate variances differ by under 2×. Costs `O(k d³)` once plus `O(d²)` per row against
+  the scalar path's `O(d)`, so the default is unchanged. `find_outliers` passes `metric` through.
 - **`outlier_scores` measured on the DAMI 2025 axes: where it wins, and the shape it cannot see.**
   Sanchez Vinces, Schubert, Zimek & Cordeiro's *Clustering-based outlier detection* names the axes —
   detection quality, resilience to parameter variation, scalability, and auto-filtering by an internal

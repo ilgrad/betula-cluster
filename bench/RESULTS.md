@@ -1726,10 +1726,48 @@ single scalar RMS radius, so the per-dimension covariance the tree already carri
 and a sheared cluster's short axis is judged by the length of its long one. Replacing the scalar with
 a Mahalanobis radius on the *same* partition (oracle, computed outside the crate) lifts it to 0.762:
 worth having, and still short of IsolationForest's 0.980, so anisotropy is a real limit of the
-centroid-and-radius model rather than a bug in one divisor. Filed as its own task.
+centroid-and-radius model rather than a bug in one divisor. Shipped as `metric="mahalanobis"`; the
+next section is what it actually recovers.
 
 The scalability axis is timing and is not published here — it belongs on an idle box, and the
 harness (`local/scratch/outlier_dami.py`, untracked) keeps it in a separate function for that reason.
+
+## `metric="mahalanobis"`: the off-diagonals are the whole gain (task #95)
+
+`outlier_scores(X, metric="mahalanobis")` whitens the centroid deviation by the cluster's pooled
+covariance instead of dividing by its scalar RMS radius. The pooling is the parallel-axis theorem over
+the leaves — `Σ = Σ_l w_l (Σ_l + δ_l δ_lᵀ) / W` — whose *trace* is that RMS radius squared, so the two
+metrics are calibrated: on an exactly isotropic cluster they return the same number (verified on the
+`2⁵` hypercube corners, and in 1-D, to floating point).
+
+Same three fixtures, same protocol as the section above:
+
+| fixture | `metric="radius"` | `metric="mahalanobis"` |
+|---|---|---|
+| blobs + uniform noise | 0.991 / 0.940 | **0.995 / 0.960** |
+| clusters of unequal density | 1.000 / 0.998 | 1.000 / 0.998 |
+| elongated / sheared clusters | 0.596 / 0.059 | **0.748 / 0.181** |
+
+ROC-AUC / average precision, medians of seeds 0/1/2. Nothing regresses, and the anisotropic case
+recovers almost all of the oracle's 0.762. Over the same 12-cell `n_clusters × max_leaves` sweep the
+median cell moves 0.779 → 0.966 on `blobs+uniform` and 0.630 → 0.761 on `elongated`, with the best
+cell going 0.892 → 0.976 there; the spread is essentially unchanged (0.442 → 0.448, 0.368 → 0.404),
+so this buys accuracy rather than parameter-robustness.
+
+The measurement worth recording is the one that nearly went unrecorded: a **diagonal** pooled
+covariance — one variance per coordinate, which is what "use the second moments the CF already
+carries" first suggests — reaches only 0.642 on `elongated`. The fixture shears its clusters with a
+random matrix, so the long axis is not a coordinate axis, and the per-dimension variances of a
+37°-rotated ribbon differ by less than 2×. On the unit test that separates a probe on the long axis
+from one on the short axis at equal Euclidean distance, the full covariance scores them 24.3× apart
+and the diagonal one 1.08× apart — i.e. the diagonal version is barely distinguishable from the
+scalar radius it was meant to replace. The off-diagonal terms are the feature, not an optimisation of
+it, which is why the score pays `O(k d³)` for a Cholesky per cluster and `O(d²)` per row.
+
+Note that only `feature="full"` carries within-leaf cross-covariances — but the *between*-leaf outer
+product `δ_l δ_lᵀ` is full-rank for every leaf model, so a cluster whose shape is larger than one leaf
+is anisotropic here whatever the feature. `feature="spherical"` still cannot see a shear confined
+inside a single leaf.
 
 ## DynMSC: a second automatic `k`, and the shape that decides which one to use (task #52)
 

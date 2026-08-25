@@ -37,6 +37,7 @@ use crate::distance::{
     MahalanobisChi2, Radius, SubspaceChi2, VarianceIncrease,
 };
 use crate::feature::{ClusterFeature, Diagonal, FdSketch, Full, Spherical};
+use crate::linalg::{cholesky_lower, mahalanobis_sq_from_chol};
 use crate::mixture::Mixture;
 use crate::model::{Method, Model, Rule, assignment_rule, fit_head, refine_centers};
 use crate::sparse::{SparseCentroids, summarize_sparse};
@@ -752,6 +753,89 @@ fn compute_cluster_stats<R: Real, C: ClusterFeature<R>>(
         };
     }
     (centers, radii, weights, dim)
+}
+
+/// What an outlier score divides the centroid deviation by.
+///
+/// The two are calibrated against each other rather than merely both being "a z-score": with an
+/// isotropic pooled covariance `Σ = (R²/d)·I`, `Whitened` returns exactly what `Radius` does, so the
+/// refinement changes an answer only where the cluster is actually anisotropic.
+enum OutlierScale<'a> {
+    /// One RMS radius per cluster — the trace of the pooled covariance, so a cluster's short axis is
+    /// judged by the length of its long one.
+    Radius(&'a [f64]),
+    /// Lower Cholesky factor of each cluster's pooled covariance; `None` where it has no spread to
+    /// factor (a cluster of one point).
+    Whitened(&'a [Option<Vec<Vec<f64>>>]),
+}
+
+/// Relative ridge on a pooled covariance, shared with the GMM head's `VAR_FLOOR_REL`: no axis is
+/// treated as more than `1e6` times tighter than the cluster's mean axis. Without it a cluster whose
+/// points are constant along some direction is singular, the Cholesky fails, and — worse, if it does
+/// not fail — the score of every row is dominated by a direction carrying no information.
+const OUTLIER_VAR_FLOOR_REL: f64 = 1e-6;
+
+/// Cholesky factor of each cluster's pooled covariance, given the leaf `centers` that
+/// [`compute_cluster_stats`] produced.
+///
+/// Parallel-axis theorem over the leaves: `Σ = Σ_l w_l (Σ_l + δ_l δ_lᵀ) / W`, with `δ_l = μ_l − c`.
+/// The trace of that is the scalar `cluster_radii_` squared, exactly — so the whitened score is a
+/// strict refinement of the scalar one, not a second differently-calibrated number.
+///
+/// The off-diagonal terms are what make it worth the `O(k d³)`: a cluster can be elongated along a
+/// direction that is not a coordinate axis, and a per-dimension variance cannot see that. Only
+/// `feature="full"` carries within-leaf cross-covariances, but the between-leaf outer product is
+/// full-rank for every feature, so a sheared cluster is anisotropic here whatever the leaf model.
+fn compute_cluster_chol<R: Real, C: ClusterFeature<R>>(
+    feats: &[C],
+    labels: &[i64],
+    k: usize,
+    centers: &[f64],
+) -> Vec<Option<Vec<Vec<f64>>>> {
+    let dim = feats.first().map_or(0, |c| c.dim());
+    let mut cov = vec![vec![vec![0.0f64; dim]; dim]; k];
+    let mut weights = vec![0.0f64; k];
+    let mut delta = vec![0.0f64; dim];
+    for (li, c) in feats.iter().enumerate() {
+        let lab = labels[li];
+        if lab < 0 {
+            continue;
+        }
+        let cl = lab as usize;
+        let w = c.weight().to_f64().unwrap();
+        weights[cl] += w;
+        for (j, &m) in c.mean().iter().enumerate() {
+            delta[j] = m.to_f64().unwrap() - centers[cl * dim + j];
+        }
+        let leaf = c.cov_dense();
+        let target = &mut cov[cl];
+        for i in 0..dim {
+            for j in 0..dim {
+                target[i][j] += w * (leaf[i][j].to_f64().unwrap() + delta[i] * delta[j]);
+            }
+        }
+    }
+    cov.into_iter()
+        .zip(weights)
+        .map(|(mut m, w)| {
+            if w <= 0.0 || dim == 0 {
+                return None;
+            }
+            for row in m.iter_mut() {
+                for v in row.iter_mut() {
+                    *v /= w;
+                }
+            }
+            let ridge = OUTLIER_VAR_FLOOR_REL * (0..dim).map(|i| m[i][i]).sum::<f64>() / dim as f64;
+            if ridge <= 0.0 {
+                return None;
+            }
+            for (i, row) in m.iter_mut().enumerate() {
+                row[i] += ridge;
+            }
+            cholesky_lower(&m)
+        })
+        .collect()
 }
 
 /// The three internal validity indices over the labelled leaves, as
@@ -1566,6 +1650,21 @@ impl<R: Real> TreeState<R> {
         }
     }
 
+    /// Cholesky factor of each cluster's pooled covariance.
+    fn cluster_chol(
+        &self,
+        labels: &[i64],
+        k: usize,
+        centers: &[f64],
+    ) -> Vec<Option<Vec<Vec<f64>>>> {
+        match self {
+            TreeState::Spherical(t) => compute_cluster_chol(t.leaf_features(), labels, k, centers),
+            TreeState::Diagonal(t) => compute_cluster_chol(t.leaf_features(), labels, k, centers),
+            TreeState::Full(t) => compute_cluster_chol(t.leaf_features(), labels, k, centers),
+            TreeState::Fd(t) => compute_cluster_chol(t.leaf_features(), labels, k, centers),
+        }
+    }
+
     /// Point dimension of the leaf summary, or `0` before anything has been inserted.
     fn leaf_dim(&self) -> usize {
         fn go<R: Real, C: ClusterFeature<R>>(f: &[C]) -> usize {
@@ -1667,13 +1766,13 @@ impl<R: Real> TreeState<R> {
         }
     }
 
-    /// For each row: distance to its assigned cluster centroid divided by the cluster's RMS radius
-    /// (a Mahalanobis-like z-score). Points routed to a noise microcluster score `+inf`.
+    /// For each row: the deviation from its assigned cluster centroid, normalized by `scale`. Points
+    /// routed to a noise microcluster score `+inf`.
     fn outlier_scores(
         &self,
         labels: &[i64],
         centers: &[f64],
-        radii: &[f64],
+        scale: OutlierScale<'_>,
         flat: &[R],
         n: usize,
         dim: usize,
@@ -1685,14 +1784,32 @@ impl<R: Real> TreeState<R> {
                 return f64::INFINITY;
             }
             let cl = lab as usize;
-            let mut d2 = 0.0;
-            for (j, &xj) in x.iter().enumerate() {
-                let diff = xj.to_f64().unwrap() - centers[cl * dim + j];
-                d2 += diff * diff;
+            match scale {
+                OutlierScale::Radius(radii) => {
+                    let mut d2 = 0.0;
+                    for (j, &xj) in x.iter().enumerate() {
+                        let diff = xj.to_f64().unwrap() - centers[cl * dim + j];
+                        d2 += diff * diff;
+                    }
+                    let d = d2.sqrt();
+                    let r = radii[cl];
+                    if r > 0.0 { d / r } else { d }
+                }
+                OutlierScale::Whitened(chols) => {
+                    let delta: Vec<f64> = x
+                        .iter()
+                        .enumerate()
+                        .map(|(j, &xj)| xj.to_f64().unwrap() - centers[cl * dim + j])
+                        .collect();
+                    // A cluster of one point has nothing to whiten against, and the ridge cannot
+                    // rescue it (it is relative to a trace of zero). Fall back to the raw distance,
+                    // the same answer the scalar path gives for a zero radius.
+                    match &chols[cl] {
+                        None => delta.iter().map(|v| v * v).sum::<f64>().sqrt(),
+                        Some(l) => (mahalanobis_sq_from_chol(l, &delta) / dim as f64).sqrt(),
+                    }
+                }
             }
-            let d = d2.sqrt();
-            let r = radii[cl];
-            if r > 0.0 { d / r } else { d }
         })
     }
 
@@ -2869,32 +2986,64 @@ impl Betula {
         ))
     }
 
-    /// Per-row outlier score: distance to the assigned cluster centroid divided by that cluster's
-    /// RMS radius (a Mahalanobis-like z-score). Rows routed to HDBSCAN noise score `+inf`.
+    /// Per-row outlier score: deviation from the assigned cluster centroid, normalized either by the
+    /// cluster's scalar RMS radius (`metric="radius"`) or by its pooled per-dimension variance
+    /// (`metric="mahalanobis"`). Rows routed to HDBSCAN noise score `+inf`.
+    #[pyo3(signature = (data, metric="radius"))]
     fn outlier_scores<'py>(
         &self,
         py: Python<'py>,
         data: &Bound<'py, PyAny>,
+        metric: &str,
     ) -> PyResult<Bound<'py, PyArray1<f64>>> {
         let labels = self.labels.as_ref().ok_or_else(|| {
             PyValueError::new_err(
                 "finalize first (fit / fit_predict / partial_fit with no args) before outlier_scores()",
             )
         })?;
+        let whiten = match metric {
+            "radius" => false,
+            "mahalanobis" => true,
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "metric must be 'radius' or 'mahalanobis', got '{other}'"
+                )));
+            }
+        };
         let k = cluster_count_for_centers(labels);
         if let Some(t) = &self.state64 {
             let (centers, radii, _w, _d) = t.cluster_stats(labels, k);
+            let chols = if whiten {
+                t.cluster_chol(labels, k, &centers)
+            } else {
+                Vec::new()
+            };
+            let scale = if whiten {
+                OutlierScale::Whitened(&chols)
+            } else {
+                OutlierScale::Radius(&radii)
+            };
             let (flat, n, dim) = flat_as::<f64>(data, self.normalize)?;
             self.check_dim(dim)?;
             Ok(py
-                .detach(|| t.outlier_scores(labels, &centers, &radii, &flat, n, dim))
+                .detach(|| t.outlier_scores(labels, &centers, scale, &flat, n, dim))
                 .into_pyarray(py))
         } else if let Some(t) = &self.state32 {
             let (centers, radii, _w, _d) = t.cluster_stats(labels, k);
+            let chols = if whiten {
+                t.cluster_chol(labels, k, &centers)
+            } else {
+                Vec::new()
+            };
+            let scale = if whiten {
+                OutlierScale::Whitened(&chols)
+            } else {
+                OutlierScale::Radius(&radii)
+            };
             let (flat, n, dim) = flat_as::<f32>(data, self.normalize)?;
             self.check_dim(dim)?;
             Ok(py
-                .detach(|| t.outlier_scores(labels, &centers, &radii, &flat, n, dim))
+                .detach(|| t.outlier_scores(labels, &centers, scale, &flat, n, dim))
                 .into_pyarray(py))
         } else {
             Err(PyValueError::new_err("call fit() before outlier_scores()"))
