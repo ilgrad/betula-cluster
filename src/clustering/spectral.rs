@@ -59,7 +59,32 @@ pub fn spectral<R: Real, C: ClusterFeature<R>>(
     }
 }
 
+/// Diffusion-maps density normalisation exponent `α` (Coifman & Lafon, *Diffusion maps*, ACHA 21(1),
+/// 2006, §3). Replacing `A_ij` by `A_ij / (q_i^α q_j^α)` with `q_i = Σ_j A_ij` before the usual
+/// symmetric normalisation interpolates between two different operators: `α = 0` is the
+/// density-biased normalized Laplacian, `α = 1` divides the sampling density out entirely and the
+/// limit operator is the Laplace–Beltrami of the underlying manifold, `α = 1/2` is the
+/// Fokker–Planck point between them.
+///
+/// It matters more here than on raw points, because a leaf is a *mass-weighted* microcluster: where
+/// the data is dense the tree puts more leaves **and** each leaf is tighter, so sampling density
+/// enters the affinity twice.
+///
+/// `0.0` is the shipped value, and it is a measurement rather than an inheritance — see the
+/// `measure_alpha_normalization` harness and `bench/RESULTS.md`.
+const DIFFUSION_ALPHA: f64 = 0.0;
+
 fn spectral_core<R: Real>(centers: &[Vec<R>], k: usize, max_iter: usize, seed: u64) -> Vec<usize> {
+    spectral_core_alpha(centers, k, max_iter, seed, DIFFUSION_ALPHA)
+}
+
+fn spectral_core_alpha<R: Real>(
+    centers: &[Vec<R>],
+    k: usize,
+    max_iter: usize,
+    seed: u64,
+    alpha: f64,
+) -> Vec<usize> {
     let n = centers.len();
     if n == 1 {
         return vec![0];
@@ -75,13 +100,30 @@ fn spectral_core<R: Real>(centers: &[Vec<R>], k: usize, max_iter: usize, seed: u
     // Symmetric self-tuning k-NN affinity graph, then its degrees and the normalized affinity
     // `P = D^{-1/2} A D^{-1/2}` (`A` is exactly symmetric by construction, so `P` is too).
     let adj = knn_affinity(centers);
-    let mut deg = vec![R::zero(); n];
     let mut a = vec![vec![R::zero(); n]; n];
     for (i, row) in adj.iter().enumerate() {
         for &(j, w) in row {
             a[i][j] = w;
-            deg[i] = deg[i] + w;
         }
+    }
+    if alpha != 0.0 {
+        // `q` is the kernel density estimate the affinity itself induces; dividing it out is what
+        // separates the geometry from the sampling. It must be taken *before* any of `a` is
+        // rewritten, or later rows would be normalised against already-normalised ones.
+        let exponent = R::from_f64(alpha).unwrap_or_else(R::zero);
+        let q: Vec<R> = a
+            .iter()
+            .map(|row| row.iter().copied().sum::<R>().max(tiny).powf(exponent))
+            .collect();
+        for (i, row) in a.iter_mut().enumerate() {
+            for (j, w) in row.iter_mut().enumerate() {
+                *w = *w / (q[i] * q[j]);
+            }
+        }
+    }
+    let mut deg = vec![R::zero(); n];
+    for (i, row) in a.iter().enumerate() {
+        deg[i] = row.iter().copied().sum::<R>();
     }
     let dinv: Vec<R> = deg.iter().map(|&d| R::one() / d.max(tiny).sqrt()).collect();
     let mut p = vec![vec![R::zero(); n]; n];
@@ -122,6 +164,176 @@ mod tests {
 
     fn n_distinct(labels: &[usize]) -> usize {
         labels.iter().copied().collect::<HashSet<_>>().len()
+    }
+
+    /// Two concentric rings — the canonical case where the graph, not the centroid, is the model.
+    fn circles(rng: &mut SplitMix64, per: usize, noise: f64) -> (Vec<Vec<f64>>, Vec<usize>) {
+        let mut pts = Vec::new();
+        let mut truth = Vec::new();
+        for (c, r) in [(0usize, 1.0f64), (1, 2.6)] {
+            for i in 0..per {
+                let t = std::f64::consts::TAU * (i as f64) / (per as f64);
+                pts.push(vec![
+                    r * t.cos() + noise * rng.gauss(),
+                    r * t.sin() + noise * rng.gauss(),
+                ]);
+                truth.push(c);
+            }
+        }
+        (pts, truth)
+    }
+
+    /// Blobs sheared into long thin ribbons: the Euclidean heads' worst shape, and a graph whose
+    /// local scales differ wildly along and across the ribbon.
+    fn aniso(rng: &mut SplitMix64, per: usize) -> (Vec<Vec<f64>>, Vec<usize>) {
+        let mut pts = Vec::new();
+        let mut truth = Vec::new();
+        for (c, ctr) in [(0usize, [0.0f64, 0.0]), (1, [3.0, 3.0]), (2, [-3.0, 4.0])] {
+            for _ in 0..per {
+                let (u, v) = (2.5 * rng.gauss(), 0.25 * rng.gauss());
+                pts.push(vec![ctr[0] + u + 0.6 * v, ctr[1] + 0.35 * u + v]);
+                truth.push(c);
+            }
+        }
+        (pts, truth)
+    }
+
+    /// Two moons sampled at different rates. This is the case `α` exists for: the affinity's own
+    /// density estimate differs by a factor of four between the two clusters, and `α = 1` is
+    /// supposed to divide exactly that out.
+    fn lopsided_moons(rng: &mut SplitMix64, per: usize, noise: f64) -> (Vec<Vec<f64>>, Vec<usize>) {
+        thinned_moons(rng, per, noise, 4)
+    }
+
+    fn thinned_moons(
+        rng: &mut SplitMix64,
+        per: usize,
+        noise: f64,
+        thin: usize,
+    ) -> (Vec<Vec<f64>>, Vec<usize>) {
+        let (pts, truth) = two_moons(rng, per, noise);
+        let mut kept_pts = Vec::new();
+        let mut kept_truth = Vec::new();
+        // Count within the class, not over the interleaved list: `two_moons` alternates the two
+        // moons, so thinning on the global index would drop one class entirely.
+        let mut seen = 0usize;
+        for (p, &t) in pts.iter().zip(&truth) {
+            let keep = if t == 0 {
+                true
+            } else {
+                seen += 1;
+                seen % thin == 0
+            };
+            if keep {
+                kept_pts.push(p.clone());
+                kept_truth.push(t);
+            }
+        }
+        (kept_pts, kept_truth)
+    }
+
+    #[test]
+    fn the_shipped_head_is_the_alpha_the_constant_names() {
+        let mut rng = SplitMix64::new(3);
+        let (pts, _) = circles(&mut rng, 220, 0.08);
+        let (micros, _) = grid_micros(&pts, 0.16);
+        let centers: Vec<Vec<f64>> = micros.iter().map(|f| f.mean().to_vec()).collect();
+        assert_eq!(
+            spectral(&micros, 2, 100, 1).labels,
+            spectral_core_alpha(&centers, 2, 100, 1, DIFFUSION_ALPHA),
+            "the head and the constant have drifted apart"
+        );
+    }
+
+    #[test]
+    fn alpha_normalisation_changes_the_operator_it_is_supposed_to_change() {
+        // Without this the `alpha != 0.0` branch could be dead and every measurement below would be
+        // measuring the same operator three times.
+        let mut rng = SplitMix64::new(5);
+        let (pts, _) = lopsided_moons(&mut rng, 400, 0.06);
+        let (micros, _) = grid_micros(&pts, 0.1);
+        let centers: Vec<Vec<f64>> = micros.iter().map(|f| f.mean().to_vec()).collect();
+        assert_ne!(
+            spectral_core_alpha(&centers, 2, 100, 1, 0.0),
+            spectral_core_alpha(&centers, 2, 100, 1, 1.0),
+            "alpha = 1 produced the same labelling as alpha = 0"
+        );
+    }
+
+    /// Does dividing the sampling density out of the affinity help this crate's mass-weighted
+    /// leaves? Median ARI of seeds 0/1/2 per (fixture, alpha).
+    ///
+    /// `cargo test --lib clustering::spectral::tests::measure_alpha -- --ignored --nocapture`
+    #[test]
+    #[ignore = "measurement harness, not a check"]
+    fn measure_alpha_normalization() {
+        type Fixture = fn(&mut SplitMix64, usize, f64) -> (Vec<Vec<f64>>, Vec<usize>);
+        let cases: [(&str, Fixture, usize, f64, f64, usize); 4] = [
+            ("two-moons", two_moons, 400, 0.06, 0.10, 2),
+            ("lopsided-moons", lopsided_moons, 400, 0.06, 0.10, 2),
+            ("circles", circles, 400, 0.08, 0.16, 2),
+            ("aniso", |r, per, _| aniso(r, per), 400, 0.0, 0.30, 3),
+        ];
+        println!(
+            "\n{:>16} {:>8} {:>10} {:>10} {:>10}",
+            "fixture", "leaves", "a=0", "a=0.5", "a=1"
+        );
+        for (name, build, per, noise, cell, k) in cases {
+            let mut row = Vec::new();
+            let mut leaves = 0usize;
+            for alpha in [0.0f64, 0.5, 1.0] {
+                let mut scores = Vec::new();
+                for seed in 0u64..3 {
+                    let mut rng = SplitMix64::new(seed);
+                    let (pts, truth) = build(&mut rng, per, noise);
+                    let (micros, assign) = grid_micros(&pts, cell);
+                    leaves = micros.len();
+                    let centers: Vec<Vec<f64>> = micros.iter().map(|f| f.mean().to_vec()).collect();
+                    let lab = spectral_core_alpha(&centers, k, 100, seed, alpha);
+                    let per_point: Vec<usize> = assign.iter().map(|&m| lab[m]).collect();
+                    scores.push(ari(&per_point, &truth));
+                }
+                scores.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                row.push(scores[1]);
+            }
+            println!(
+                "{name:>16} {leaves:>8} {:>10.4} {:>10.4} {:>10.4}",
+                row[0], row[1], row[2]
+            );
+        }
+
+        // The regime `α` exists for: one moon sampled `thin` times more sparsely than the other.
+        println!(
+            "\n{:>16} {:>8} {:>10} {:>10} {:>10}",
+            "moons 1:thin", "noise", "a=0", "a=0.5", "a=1"
+        );
+        for thin in [4usize, 10, 25] {
+            for noise in [0.06f64, 0.10, 0.14] {
+                let mut row = Vec::new();
+                for alpha in [0.0f64, 0.5, 1.0] {
+                    let mut scores = Vec::new();
+                    for seed in 0u64..3 {
+                        let mut rng = SplitMix64::new(seed);
+                        let (pts, truth) = thinned_moons(&mut rng, 400, noise, thin);
+                        let (micros, assign) = grid_micros(&pts, 0.10);
+                        let centers: Vec<Vec<f64>> =
+                            micros.iter().map(|f| f.mean().to_vec()).collect();
+                        let lab = spectral_core_alpha(&centers, 2, 100, seed, alpha);
+                        let per_point: Vec<usize> = assign.iter().map(|&m| lab[m]).collect();
+                        scores.push(ari(&per_point, &truth));
+                    }
+                    scores.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                    row.push(scores[1]);
+                }
+                println!(
+                    "{:>16} {noise:>8.2} {:>10.4} {:>10.4} {:>10.4}",
+                    format!("1:{thin}"),
+                    row[0],
+                    row[1],
+                    row[2]
+                );
+            }
+        }
     }
 
     #[test]

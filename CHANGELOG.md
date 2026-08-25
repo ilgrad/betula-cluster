@@ -40,6 +40,16 @@ All notable changes to this project are documented here. The format follows
   [`bench/RESULTS.md`](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md).
 
 ### Added
+- **Diffusion-maps α-normalization on the spectral head — measured and refuted, default unchanged.**
+  The head's Laplacian sits over *mass-weighted* leaves, so sampling density enters it twice, and
+  Coifman & Lafon's `A_ij / (q_i^α q_j^α)` is the standard correction. Over four fixtures and a
+  density-imbalance sweep up to 1:25, medians of three seeds, **α never wins a cell**: wherever the
+  columns differ at all, `α = 0 ≥ α = 0.5 ≥ α = 1`, and on three sheared ribbons ARI falls 0.8892 →
+  0.7516 → 0.6903. The reason is that the correction is already applied — the affinity is self-tuning
+  (Zelnik-Manor & Perona local scaling), its `σ_i` *is* a local density estimate, and α is derived for
+  a fixed-bandwidth kernel, so stacking them divides the same bias out twice and over-corrects.
+  `DIFFUSION_ALPHA` stays `0.0` and now records that as a measurement. Tables in
+  [`bench/RESULTS.md`](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md).
 - **`fidelity::summary_mmd`: a label-free, head-independent fidelity number for the leaf summary.**
   Every other quality number the crate reports needs something the summary cannot supply — ground
   truth labels, a head, or a value of `k` — and `mean_sq_radius`, the one that needs none of them, is

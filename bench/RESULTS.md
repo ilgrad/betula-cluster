@@ -1416,6 +1416,61 @@ few budgets rather than anything to put inside a fit.
 
 Harness: `cargo test --lib fidelity::measure -- --ignored --nocapture`.
 
+## Diffusion-maps α-normalization on the spectral head: measured and refuted (task #53)
+
+The spectral head builds its Laplacian over **mass-weighted** leaves, so sampling density enters
+twice: where the data is dense the tree puts more leaves *and* each leaf is tighter. Coifman & Lafon
+(*Diffusion maps*, ACHA 21(1), 2006, §3) is the standard answer — replace `A_ij` by
+`A_ij / (q_i^α q_j^α)` with `q_i = Σ_j A_ij` before the symmetric normalization, so that `α = 1`
+divides the sampling density out entirely and the limit operator is the Laplace–Beltrami of the
+manifold, `α = 0` is the density-biased normalized Laplacian the head already had, and `α = 1/2` is
+the Fokker–Planck point between them.
+
+Median ARI of seeds 0/1/2, leaves from a grid summary of the raw points:
+
+| fixture | leaves | α = 0 | α = 0.5 | α = 1 |
+|---|---:|---:|---:|---:|
+| two-moons | 193 | 1.0000 | 1.0000 | 1.0000 |
+| lopsided-moons (1:4) | 157 | 1.0000 | 1.0000 | 1.0000 |
+| circles | 307 | 1.0000 | 1.0000 | 1.0000 |
+| aniso (3 sheared ribbons) | 334 | **0.8892** | 0.7516 | 0.6903 |
+
+The three easy fixtures do not discriminate, so the sweep was pushed into the regime α exists for —
+two moons with one sampled `thin` times more sparsely than the other:
+
+| imbalance | noise | α = 0 | α = 0.5 | α = 1 |
+|---|---:|---:|---:|---:|
+| 1:4 | 0.06 | 1.0000 | 1.0000 | 1.0000 |
+| 1:4 | 0.10 | 0.0964 | 0.0964 | 0.0964 |
+| 1:4 | 0.14 | 0.1136 | 0.1136 | 0.1136 |
+| 1:10 | 0.06 | **0.0871** | 0.0514 | 0.0425 |
+| 1:10 | 0.10 | **−0.0008** | −0.0048 | −0.0061 |
+| 1:10 | 0.14 | −0.0035 | −0.0035 | −0.0035 |
+| 1:25 | 0.06 | **0.0034** | 0.0012 | 0.0012 |
+| 1:25 | 0.10 | −0.0097 | −0.0097 | −0.0097 |
+| 1:25 | 0.14 | −0.0041 | −0.0041 | −0.0041 |
+
+**α never wins a cell.** In every row where the three columns differ at all, `α = 0 ≥ α = 0.5 ≥
+α = 1` — including at 1:25, the most density-imbalanced case measured, which is precisely what
+α-normalization is for.
+
+The mechanism is that the correction is already applied. The affinity is **self-tuning** (local
+scaling of Zelnik-Manor & Perona, NIPS 2004): the kernel is
+`exp(−d²_ij / (σ_i σ_j))` with `σ_i` the distance to the leaf's 7th nearest neighbour, and that σ *is*
+a local density estimate. Coifman–Lafon's α is derived for a **fixed**-bandwidth kernel, where the
+density bias is still in the affinity. Stacking the two divides the same bias out twice, and the
+over-correction inflates edges in the sparse region until leaves link across the gap the head was
+supposed to find — which is exactly what the sheared-ribbon row shows, ARI 0.8892 falling to 0.6903.
+
+The default is unchanged at `α = 0`, and the constant now records that as a measurement rather than
+an inheritance. **What was not run**: the `covtype` spectral cell (ARI 0.037, the head's weakest real
+one), because reaching it needs the α path through the Python benchmark harness, and the mechanism
+above is a property of the kernel rather than of any dataset. If a fixed-bandwidth affinity is ever
+adopted — the Γ-convergence scaling of García Trillos & Slepčev is the citable candidate — α becomes
+live again and this row has to be re-measured, not inherited.
+
+Harness: `cargo test --lib clustering::spectral::tests::measure_alpha -- --ignored --nocapture`.
+
 ## DynMSC: a second automatic `k`, and the shape that decides which one to use (task #52)
 
 The crate already chooses `k` on its own — Calinski–Harabasz over the Ward cuts, behind
