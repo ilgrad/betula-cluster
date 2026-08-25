@@ -1,6 +1,7 @@
 # ADR 003 — the distance kernels get a hand-written AVX2 path, and the crate's first `unsafe`
 
-**Status:** Accepted, on measurement, in **0.7.0**. Scope: `src/kernels.rs` only.
+**Status:** Accepted, on measurement, in **0.7.0**. Scope: `src/kernels.rs` only. Amended after the
+first version shipped a 1.55× regression at `d = 2` — see *The length gate* below.
 
 ## Context
 
@@ -45,6 +46,8 @@ Shape of the implementation, and why each part is the way it is:
 
 - **Two packed accumulators, then a scalar tail in the original order.** A vector shorter than the
   step is byte-for-byte the old code.
+- **A length gate: the packed path is taken only at `d ≥ 16`.** See below; this was not in the first
+  version and its absence was a regression, not a missed optimisation.
 - **`n = a.len().min(b.len())`, passed explicitly into every kernel.** This is the soundness guard.
   `zip` truncates to the shorter operand and `CFTree::insert` documents that it accepts a point
   longer than the tree's dimension, so an intrinsic loop bounded by `a.len()` would be an
@@ -89,6 +92,67 @@ commit that made `min_samples` and `min_cluster_size` count points rather than l
 message says "on a summary the labels change". The other 75 rows reproduce cell for cell. Re-running
 the benchmark and diffing against the record is what turned a scary-looking diff into two separate,
 correctly-attributed facts.
+
+## The length gate, and the regression that forced it
+
+The first version dispatched on feature detection alone. That was wrong, and the measurement that
+found it was the one that should have been taken before committing: sweep `d`, not just the two
+profiled shapes.
+
+A `#[target_feature]` function cannot be inlined into a caller that does not carry the same features.
+So taking the AVX2 path replaces an inlined loop with a real call plus a horizontal sum — a fixed
+cost of maybe twenty instructions. At `d = 20` that is noise against 20 fused multiply-adds. At
+`d = 2` the scalar body *is* two multiply-adds, and the fixed cost is the entire function.
+
+Measured end-to-end, `kmeans`, `RAYON_NUM_THREADS=1`, best of three, ungated against the pre-AVX2
+build: **0.65× at `d = 2`** (500 000 rows, 0.136 s → 0.210 s) and **0.89× at `d = 8`**. Two-dimensional
+input is not a corner case — the crate's own published scaling table is measured on `d = 2` blobs, and
+geospatial input is a documented use — so this would have shipped a 1.55× slowdown on the shape the
+benchmark advertises.
+
+The fix is a constant, `AVX2_MIN = 16`, plus `#[inline(never)]` on the dispatch helper so the public
+wrapper stays small enough to inline and the scalar fold keeps the codegen it had before this module
+grew. Both halves were needed: with the gate but the dispatch inlined, `d = 8` measured 1.26× *slower*
+than the ungated version it was meant to fix, because the bulk made LLVM decline to inline the wrapper
+at all.
+
+Where the constant comes from: at `d = 12` the packed path measured 0.95× and at `d = 16` it measured
+1.08×, so 16 is the first width that pays. `f32` crosses over at the same element count despite its
+packed step being twice as wide.
+
+**A residual remains and is not explained.** With the gate in place, `d ≤ 8` still measures ≈0.92× —
+about 8% — even though those inputs execute the same scalar fold plus one compare against a constant.
+It is real and not build noise: three rebuilds of the unmodified base from identical source measured
+0.135 / 0.137 / 0.138 s, a ±1% spread. Gating on the loop-invariant operand so LLVM could hoist the
+compare, and `#[inline(always)]` on the wrappers, each moved it by under 2%. The likely cause is
+second-order codegen in the inlined callers rather than the branch itself. It is recorded rather than
+argued away.
+
+Final position, against the pre-AVX2 build:
+
+| shape | before | after | |
+|---|---|---|---|
+| 500 000 × 2, `kmeans` | 0.136 s | 0.146 s | **0.93×** |
+| 300 000 × 8, `kmeans` | 0.230 s | 0.251 s | **0.92×** |
+| 300 000 × 16, `kmeans` | 0.342 s | 0.318 s | **1.08×** |
+| 300 000 × 20, `kmeans` | 0.397 s | 0.321 s | **1.24×** |
+| 300 000 × 16, `kmeans`, `float32` | 0.303 s | 0.256 s | **1.18×** |
+| 300 000 × 24, `kmeans`, `float32` | 0.374 s | 0.237 s | **1.58×** |
+| 20 000 × 784, `gmm` | 2.12 s | 1.35 s | **1.57×** |
+
+That is the trade being accepted: about 8% below `d = 16`, 1.1–1.6× above it. The library's own real
+datasets sit at `d` = 54, 64, 100 and 784.
+
+## `float32` relabels, and why that is not a behaviour change
+
+On `float32` input the SHA-256 label digest **does** differ between the two builds at `d = 24` and
+`d = 32` — 87% and 25% of rows carry a different integer. The **ARI between the two label vectors is
+exactly 1.000000**: the partition is identical and only the cluster numbering is permuted, because
+k-means++ draws its seeds in a different order when a sampling weight moves by an `f32` ulp. `f64`
+digests are identical everywhere measured.
+
+Reported because a digest comparison alone would have called this a behaviour change, and an ARI
+alone would have hidden that the ids move. Both are true and they mean different things.
 
 ## Consequences
 

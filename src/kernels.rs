@@ -201,71 +201,120 @@ mod avx2 {
     );
 }
 
-/// Expand to the AVX2 kernel for `R` when `R` is `f64` or `f32` and the CPU has AVX2 + FMA,
-/// otherwise fall through to the scalar body that follows the macro.
+/// Smallest `d` at which the packed kernel is worth calling, per scalar type.
+///
+/// A `#[target_feature]` function cannot be inlined into a caller that does not carry the same
+/// features, so taking the AVX2 path replaces an inlined loop with an out-of-line call plus a
+/// horizontal sum. Below these widths that fixed cost exceeds everything the packing saves, and the
+/// loss is not small: measured end-to-end on `kmeans`, `RAYON_NUM_THREADS=1`, an ungated dispatch
+/// runs **1.55× slower** on 500 000 × 2 and 1.15× slower on 300 000 × 8, while winning 1.08× at
+/// `d = 12`, 1.20× at 16 and 1.36× at 20. `f32` crosses over later in elements — its packed step is
+/// twice as wide, so it needs twice the work to amortise the same fixed cost: 1.12× slower at
+/// `d = 8`, 1.36× faster at 16.
+///
+/// Two-dimensional data is not a corner case here — the published scaling table is measured on
+/// `d = 2` blobs, and geospatial input is a documented use.
+#[cfg(target_arch = "x86_64")]
+const AVX2_MIN: usize = 16;
+
+/// The out-of-line half of the dispatch: feature detection, the `TypeId` narrowing and the packed
+/// call, for one operation.
+///
+/// **`#[inline(never)]` is the point of this function, not an afterthought.** Inlined, its bulk made
+/// LLVM decline to inline the tiny public wrapper at all, and every distance call in the CF-tree
+/// became a real call — measured 1.26× *slower* at `d = 8` than the ungated version it was supposed
+/// to fix. Out of line, the wrapper stays small enough to inline, the scalar fold keeps the codegen
+/// it had before this module grew, and the branch is one predictable compare.
 ///
 /// `TypeId` equality is what makes the reinterpretation sound: `TypeId` is injective over `'static`
 /// types, so a match proves `R` *is* that type and `&[R]` and `&[f64]` are the same layout. The
 /// result comes back through `FromPrimitive`, which is exact and needs no `unsafe` at all.
 #[cfg(target_arch = "x86_64")]
-macro_rules! dispatch {
-    ($a:expr, $b:expr, $k64:path, $k32:path) => {
-        let n = $a.len().min($b.len());
-        if std::arch::is_x86_feature_detected!("avx2") && std::arch::is_x86_feature_detected!("fma")
-        {
+macro_rules! simd_path {
+    ($name:ident, $k64:path, $k32:path) => {
+        #[inline(never)]
+        fn $name<R: Real>(a: &[R], b: &[R]) -> Option<R> {
+            let n = a.len().min(b.len());
+            if n < AVX2_MIN
+                || !(std::arch::is_x86_feature_detected!("avx2")
+                    && std::arch::is_x86_feature_detected!("fma"))
+            {
+                return None;
+            }
             if std::any::TypeId::of::<R>() == std::any::TypeId::of::<f64>() {
-                // SAFETY: `TypeId` proved `R == f64`, so the slices are `&[f64]` of the same length;
-                // `n` bounds both; AVX2 and FMA were just detected.
+                // SAFETY: `TypeId` proved `R == f64`, so the slices are `&[f64]`; `n` bounds both;
+                // AVX2 and FMA were just detected.
                 let v = unsafe {
                     $k64(
-                        std::slice::from_raw_parts($a.as_ptr().cast::<f64>(), $a.len()),
-                        std::slice::from_raw_parts($b.as_ptr().cast::<f64>(), $b.len()),
+                        std::slice::from_raw_parts(a.as_ptr().cast::<f64>(), a.len()),
+                        std::slice::from_raw_parts(b.as_ptr().cast::<f64>(), b.len()),
                         n,
                     )
                 };
-                return R::from_f64(v).unwrap();
+                return R::from_f64(v);
             }
             if std::any::TypeId::of::<R>() == std::any::TypeId::of::<f32>() {
                 // SAFETY: as above, with `R == f32`.
                 let v = unsafe {
                     $k32(
-                        std::slice::from_raw_parts($a.as_ptr().cast::<f32>(), $a.len()),
-                        std::slice::from_raw_parts($b.as_ptr().cast::<f32>(), $b.len()),
+                        std::slice::from_raw_parts(a.as_ptr().cast::<f32>(), a.len()),
+                        std::slice::from_raw_parts(b.as_ptr().cast::<f32>(), b.len()),
                         n,
                     )
                 };
-                return R::from_f32(v).unwrap();
+                return R::from_f32(v);
+            }
+            None
+        }
+    };
+}
+
+#[cfg(target_arch = "x86_64")]
+simd_path!(
+    simd_sq_euclidean,
+    avx2::sq_euclidean_f64,
+    avx2::sq_euclidean_f32
+);
+#[cfg(target_arch = "x86_64")]
+simd_path!(simd_dot, avx2::dot_f64, avx2::dot_f32);
+#[cfg(target_arch = "x86_64")]
+simd_path!(simd_manhattan, avx2::manhattan_f64, avx2::manhattan_f32);
+
+/// Take the packed path only when the vector is long enough to pay for the out-of-line call.
+macro_rules! dispatch {
+    ($a:expr, $b:expr, $simd:ident) => {
+        #[cfg(target_arch = "x86_64")]
+        // One compare against a constant, and nothing else, on the path a short vector takes: at
+        // `d = 2` the scalar body is two multiply-adds, so even computing `min` here was measurable.
+        if $b.len() >= AVX2_MIN {
+            if let Some(v) = $simd($a, $b) {
+                return v;
             }
         }
     };
 }
 
-#[cfg(not(target_arch = "x86_64"))]
-macro_rules! dispatch {
-    ($a:expr, $b:expr, $k64:path, $k32:path) => {};
-}
-
 /// Squared Euclidean distance `Σ (a_i − b_i)²`.
-#[inline]
+#[inline(always)]
 pub fn sq_euclidean<R: Real>(a: &[R], b: &[R]) -> R {
     debug_assert_eq!(a.len(), b.len());
-    dispatch!(a, b, avx2::sq_euclidean_f64, avx2::sq_euclidean_f32);
+    dispatch!(a, b, simd_sq_euclidean);
     a.iter().zip(b).map(|(&x, &y)| (x - y) * (x - y)).sum()
 }
 
 /// Dot product `Σ a_i b_i`.
-#[inline]
+#[inline(always)]
 pub fn dot<R: Real>(a: &[R], b: &[R]) -> R {
     debug_assert_eq!(a.len(), b.len());
-    dispatch!(a, b, avx2::dot_f64, avx2::dot_f32);
+    dispatch!(a, b, simd_dot);
     a.iter().zip(b).map(|(&x, &y)| x * y).sum()
 }
 
 /// Manhattan (L1) distance `Σ |a_i − b_i|`.
-#[inline]
+#[inline(always)]
 pub fn manhattan<R: Real>(a: &[R], b: &[R]) -> R {
     debug_assert_eq!(a.len(), b.len());
-    dispatch!(a, b, avx2::manhattan_f64, avx2::manhattan_f32);
+    dispatch!(a, b, simd_manhattan);
     a.iter().zip(b).map(|(&x, &y)| (x - y).abs()).sum()
 }
 
@@ -328,6 +377,29 @@ mod tests {
             );
             assert!((d32 - dt).abs() < 1e-4 * (1.0 + dt.abs()), "dot f32 d={d}");
             assert!((m32 - mh).abs() < 1e-4 * (1.0 + mh.abs()), "l1 f32 d={d}");
+        }
+    }
+
+    /// The length gate is a performance switch, so it must be invisible in the answer. Below
+    /// `AVX2_MIN_F64` the public function takes the scalar fold, which the sweep above already
+    /// checks; what needs its own test is that the packed kernel the gate *skips* would have agreed
+    /// anyway — otherwise a future change to the constant would silently move results.
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn the_kernel_the_length_gate_skips_would_have_agreed_with_the_scalar_fold() {
+        if !(std::arch::is_x86_feature_detected!("avx2")
+            && std::arch::is_x86_feature_detected!("fma"))
+        {
+            return;
+        }
+        for d in 0..AVX2_MIN {
+            let a: Vec<f64> = (0..d).map(|i| (i as f64 * 0.41).sin() * 2.0).collect();
+            let b: Vec<f64> = (0..d).map(|i| (i as f64 * 0.83).cos() * 2.0).collect();
+            let want: f64 = a.iter().zip(&b).map(|(x, y)| (x - y) * (x - y)).sum();
+            // SAFETY: features detected above; `n = d` bounds both slices.
+            let got = unsafe { avx2::sq_euclidean_f64(&a, &b, d) };
+            assert!(close(got, want), "d={d}: packed {got}, scalar {want}");
+            assert!(close(sq_euclidean(&a, &b), want), "d={d} through the gate");
         }
     }
 

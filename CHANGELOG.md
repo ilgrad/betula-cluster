@@ -569,9 +569,29 @@ All notable changes to this project are documented here. The format follows
   intrinsics and detect the feature at run time.
 
   So `sq_euclidean`, `dot` and `manhattan` now dispatch to hand-written AVX2 kernels for `f64` and
-  `f32` when the CPU reports `avx2` and `fma`, and fall back to the identical scalar fold otherwise.
-  Non-`x86_64` targets and pre-AVX2 `x86_64` are unaffected -- the fallback is the old code, and the
-  choice is made at run time, so one wheel still serves every machine.
+  `f32` when the CPU reports `avx2` and `fma`, **the vector is at least 16 wide**, and fall back to
+  the identical scalar fold otherwise. Non-`x86_64` targets and pre-AVX2 `x86_64` are unaffected --
+  the fallback is the old code, and the choice is made at run time, so one wheel still serves every
+  machine.
+
+  The width gate is the part worth reading, because without it this was a **regression**. A
+  `#[target_feature]` function cannot be inlined into a caller without the same features, so taking
+  the packed path swaps an inlined loop for a real call plus a horizontal sum. At `d = 20` that is
+  noise; at `d = 2` the scalar body *is* two multiply-adds and the fixed cost is the whole function.
+  Ungated, `kmeans` on 500 000 x 2 measured **0.65x** -- 1.55 times slower -- and 0.89x at `d = 8`.
+  Two-dimensional input is not hypothetical: the crate's own published scaling table is measured on
+  `d = 2` blobs. The gate plus `#[inline(never)]` on the dispatch helper (both were needed; with the
+  helper inlined, `d = 8` came out 1.26x slower than the ungated version it was meant to fix) leaves:
+  0.93x at `d = 2`, 0.92x at 8, 1.08x at 16, 1.24x at 20, 1.57x on 20 000 x 784 `gmm`, and 1.18x /
+  1.58x on `float32` at `d = 16` / 24. An unexplained ~8% residual below `d = 16` is recorded in
+  ADR 003 rather than argued away; a three-build control puts build-to-build noise at +/-1%.
+
+  On `float32` the label **digest** does change at `d >= 24` -- but the **ARI between the two label
+  vectors is exactly 1.000000**. The partition is identical; only the cluster numbering permutes,
+  because k-means++ draws its seeds in a different order when a sampling weight moves by an `f32`
+  ulp. `f64` digests are identical on every shape measured. A digest comparison alone would have
+  called this a behaviour change and an ARI alone would have hidden that the ids move; both numbers
+  are reported because they mean different things.
 
   This is the crate's **first `unsafe`**, about 130 lines in one leaf module, and it is a decision
   rather than a detail: ADR 003 records the alternatives, including the safe four-accumulator version
