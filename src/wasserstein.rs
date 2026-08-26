@@ -329,41 +329,40 @@ fn duals(
     na: usize,
     nb: usize,
 ) -> Option<(Vec<f64>, Vec<f64>)> {
-    let mut u = vec![f64::NAN; na];
-    let mut v = vec![f64::NAN; nb];
-    u[0] = 0.0;
+    let mut u = vec![0.0; na];
+    let mut v = vec![0.0; nb];
+    // Explicit flags rather than a `NaN` sentinel for "not yet settled". A `NaN` anywhere in `cost`
+    // makes `is_nan()` stay true for a potential that *has* been written, so its node is pushed on
+    // every later visit and the stack grows without bound. With a flag a node is pushed exactly
+    // when its flag flips, which bounds the traversal at `na + nb` pushes by construction and puts
+    // the arithmetic in `cost` outside the control flow entirely.
+    let mut u_set = vec![false; na];
+    let mut v_set = vec![false; nb];
+    u_set[0] = true;
     let mut stack = vec![0usize]; // row indices; columns are pushed as `na + j`
-    let mut settled = 1;
     while let Some(node) = stack.pop() {
-        // A spanning tree settles each of the `na + nb` potentials exactly once, so passing that
-        // count means the traversal is revisiting -- which happens if a potential comes out `NaN`,
-        // since `is_nan()` then stays true and the node is pushed again forever. Returning `None`
-        // is the contract this function already advertises for a basis that is not a tree; without
-        // the bound the loop grows `stack` without limit instead of reporting.
-        if settled > na + nb {
-            return None;
-        }
         if node < na {
             let r = node;
             for c in 0..nb {
-                if basic[r][c] && v[c].is_nan() {
+                if basic[r][c] && !v_set[c] {
                     v[c] = cost[r][c] - u[r];
-                    settled += 1;
+                    v_set[c] = true;
                     stack.push(na + c);
                 }
             }
         } else {
             let c = node - na;
-            for (r, urow) in u.iter_mut().enumerate() {
-                if basic[r][c] && urow.is_nan() {
+            for (r, (urow, uset)) in u.iter_mut().zip(u_set.iter_mut()).enumerate() {
+                if basic[r][c] && !*uset {
                     *urow = cost[r][c] - v[c];
-                    settled += 1;
+                    *uset = true;
                     stack.push(r);
                 }
             }
         }
     }
-    (settled == na + nb).then_some((u, v))
+    // The advertised contract, stated directly: a spanning tree settles every potential.
+    (u_set.iter().all(|&s| s) && v_set.iter().all(|&s| s)).then_some((u, v))
 }
 
 /// The unique cycle that adding `(er, ec)` creates in the basis tree, starting at the entering cell.
