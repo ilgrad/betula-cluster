@@ -407,6 +407,16 @@ four-blob controls come back at 2 and 4 on every seed.
 | `calinski_harabasz` | you want a cheap `k` and already believe `k > 1` | say `k = 1`; it is undefined there |
 | `gap_statistic` | you need `k = 1` on the table but not a distributional assumption | be decisive on pure noise — expect the near-tie |
 
+Hartigan's dip test is the obvious fourth row, and it is deliberately absent. The statistic was
+reproduced exactly here — the definition solved as a linear program agrees with the reference
+implementation to `5.5e-12` over 648 samples spanning seven shapes, ties included — but that form
+costs one linear program per candidate mode (`7.97 s` at `n = 200`), which cannot back the
+Monte-Carlo null a p-value needs. The cheap closed form, one convex hull each side of the mode, is
+exact on tied data and under-estimates continuous data by up to `9.97e-3` on a statistic of order
+`0.06`; an under-estimated dip calls multimodal data unimodal, which is the one error the test
+exists to prevent. Closing that gap needs the published iterative algorithm, whose available sources
+are GPL-2 or non-commercial and so cannot enter an MIT crate.
+
 `method="ward"` with `n_clusters=0` now cuts the dendrogram at the best Calinski–Harabasz score
 rather than at the largest relative jump in merge height. The old rule was the elbow criterion in a
 dendrogram's clothing, and it fails exactly where the paper says it does: on two far groups of two
