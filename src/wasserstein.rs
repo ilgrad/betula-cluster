@@ -377,33 +377,51 @@ fn tree_path(
     er: usize,
     ec: usize,
 ) -> Option<Vec<(usize, usize)>> {
-    // Depth-first search from the entering column back to the entering row, over basic cells only.
+    // Depth-first search from the entering column back to the entering row, over basic cells only,
+    // on a stack of **fixed capacity**.
+    //
+    // The capacity is the point, not an optimisation. Marking at push keeps the live set inside
+    // `na + nb` on a real basis, but that is a property of the marking, and a single mutation of
+    // `&& !seen[..]` defeats it — after which a growable stack does not merely do extra work, it
+    // runs the process out of memory. That took this crate's mutation runs out at 10 GB twice in
+    // one evening. With the capacity fixed at allocation, surplus pushes are dropped, the stack
+    // drains, and the walk terminates whatever the conditions have been mutated into.
     let mut parent = vec![usize::MAX; na + nb];
     let mut seen = vec![false; na + nb];
     let start = na + ec;
     seen[start] = true;
-    let mut stack = vec![start];
+    let mut stack = vec![0usize; na + nb];
+    stack[0] = start;
+    let mut top = 1usize;
     let mut found = false;
-    while let Some(node) = stack.pop() {
+    let push = |stack: &mut Vec<usize>, top: &mut usize, node: usize| {
+        if *top < stack.len() {
+            stack[*top] = node;
+            *top += 1;
+        }
+    };
+    while top > 0 {
+        top -= 1;
+        let node = stack[top];
         if node == er {
             found = true;
             break;
         }
         if node < na {
-            for c in 0..nb {
-                if basic[node][c] && !seen[na + c] {
+            for (c, &is_basic) in basic[node].iter().enumerate() {
+                if is_basic && !seen[na + c] {
                     seen[na + c] = true;
                     parent[na + c] = node;
-                    stack.push(na + c);
+                    push(&mut stack, &mut top, na + c);
                 }
             }
         } else {
             let c = node - na;
-            for r in 0..na {
-                if basic[r][c] && !seen[r] {
+            for (r, row) in basic.iter().enumerate() {
+                if row[c] && !seen[r] {
                     seen[r] = true;
                     parent[r] = c + na;
-                    stack.push(r);
+                    push(&mut stack, &mut top, r);
                 }
             }
         }
@@ -412,11 +430,22 @@ fn tree_path(
         return None;
     }
     // Walk back from the entering row to the entering column, turning node pairs into cells.
-    let mut nodes = vec![er];
+    //
+    // Bounded for the same reason as the sweep above, not by trusting `parent` to be acyclic: each
+    // node's parent is written once, when it is first seen, so the chain cannot cycle — but that is
+    // an invariant a single mutation can break, and `while node != start` would then push forever.
+    let mut nodes = Vec::with_capacity(na + nb);
+    nodes.push(er);
     let mut node = er;
-    while node != start {
+    for _ in 0..na + nb {
+        if node == start {
+            break;
+        }
         node = parent[node];
         nodes.push(node);
+    }
+    if node != start {
+        return None;
     }
     let mut cells = vec![(er, ec)];
     for pair in nodes.windows(2) {
@@ -845,9 +874,9 @@ mod tests {
     fn a_non_finite_cost_terminates_rather_than_growing_a_stack() {
         // `mixture_w2` scrubs non-finite pair costs before they reach the solver, so this states an
         // invariant rather than a reachable input. It is worth stating because the dual traversal
-        // keys off `is_nan`: a potential that comes out `NaN` never stops being unset, so the node
-        // is pushed again on every visit and the stack grows without limit. Completing at all is
-        // the assertion; the pivot count is the part that can be written down.
+        // used to key "not yet settled" off `is_nan`, and a potential that comes out `NaN` never
+        // stops being unset, so its node was pushed again on every visit and the stack grew without
+        // limit. Completing at all is the assertion; the pivot count is what can be written down.
         let half = vec![0.5, 0.5];
         for cost in [
             vec![vec![f64::NAN, 1.0], vec![1.0, 0.0]],
@@ -860,6 +889,29 @@ mod tests {
                 "a non-finite cost ran the solver to its backstop after {pivots} pivots"
             );
         }
+    }
+
+    #[test]
+    fn a_basis_settled_on_one_side_only_is_still_refused() {
+        // `duals` returns `Some` only for a spanning tree, and it decides that by asking whether
+        // *both* sides came out fully settled. One side alone is not enough, and it is a reachable
+        // shape rather than a contrived one: a single basic cell in a one-row grid settles every
+        // `u` and only the first `v`. Nothing else in the suite separates "all rows settled" from
+        // "all rows and all columns settled".
+        let one_cell = vec![vec![true, false]];
+        let cost = vec![vec![1.0, 2.0]];
+        assert!(
+            duals(&one_cell, &cost, 1, 2).is_none(),
+            "a basis reaching every row but not every column is not a spanning tree"
+        );
+
+        // The same grid with both columns basic is a tree, and must be accepted -- otherwise the
+        // test above would pass against a function that refuses everything.
+        let spanning = vec![vec![true, true]];
+        let (u, v) =
+            duals(&spanning, &cost, 1, 2).expect("a spanning basis must produce potentials");
+        assert_eq!(u[0], 0.0);
+        assert_eq!(v, vec![1.0, 2.0]);
     }
 
     #[test]
