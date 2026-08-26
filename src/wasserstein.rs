@@ -207,7 +207,7 @@ pub fn mixture_w2<R: Real>(a: GaussianMixture<'_, R>, b: GaussianMixture<'_, R>)
             *cell = pair.to_f64().unwrap_or(f64::MAX).max(0.0);
         }
     }
-    let total = transport_cost(&wa, &wb, &cost);
+    let (total, _) = transport(&wa, &wb, &cost);
     R::from_f64(total.max(0.0).sqrt())
 }
 
@@ -228,16 +228,23 @@ fn normalized<R: Real>(w: &[R]) -> Option<Vec<f64>> {
 /// Anything below this is a rounding artefact of the dual update rather than a real improvement.
 const SIMPLEX_TOL: f64 = 1e-12;
 
-/// The optimal value of the transportation problem `min Σ π_ij c_ij` over couplings of `a` and `b`.
+/// The pivot budget. A backstop for a broken invariant, not a convergence parameter: Bland's rule
+/// visits no basis twice and the number of bases is finite, so a solve that reaches this has a bug
+/// rather than a hard instance — which is why the tests assert the pivot count stays under it.
+fn iteration_cap(na: usize, nb: usize) -> usize {
+    64 * (na * nb + na + nb)
+}
+
+/// The optimal value of the transportation problem `min Σ π_ij c_ij` over couplings of `a` and `b`,
+/// and the number of pivots it took.
 ///
 /// The transportation simplex with **Bland's rule** on both the entering and the leaving cell, which
 /// is what makes it terminate on a degenerate basis instead of cycling between two bases of the same
 /// cost — and degeneracy is the common case here, not the exotic one: two components of equal
-/// mixing weight produce it immediately. The iteration cap is a backstop for a broken invariant, not
-/// a convergence parameter; Bland's rule visits no basis twice, and the number of bases is finite.
+/// mixing weight produce it immediately.
 ///
 /// Both marginals must be non-negative and sum to one.
-fn transport_cost(a: &[f64], b: &[f64], cost: &[Vec<f64>]) -> f64 {
+fn transport(a: &[f64], b: &[f64], cost: &[Vec<f64>]) -> (f64, usize) {
     let (na, nb) = (a.len(), b.len());
     let mut flow = vec![vec![0.0f64; nb]; na];
     let mut basic = vec![vec![false; nb]; na];
@@ -262,8 +269,8 @@ fn transport_cost(a: &[f64], b: &[f64], cost: &[Vec<f64>]) -> f64 {
         }
     }
 
-    let cap = 64 * (na * nb + na + nb);
-    for _ in 0..cap {
+    let mut pivots = 0usize;
+    for _ in 0..iteration_cap(na, nb) {
         let Some((u, v)) = duals(&basic, cost, na, nb) else {
             break;
         };
@@ -302,12 +309,14 @@ fn transport_cost(a: &[f64], b: &[f64], cost: &[Vec<f64>]) -> f64 {
         basic[er][ec] = true;
         basic[lr][lc] = false;
         flow[lr][lc] = 0.0;
+        pivots += 1;
     }
 
-    (0..na)
+    let total = (0..na)
         .flat_map(|r| (0..nb).map(move |c| (r, c)))
         .map(|(r, c)| flow[r][c] * cost[r][c])
-        .sum()
+        .sum();
+    (total, pivots)
 }
 
 /// Potentials `u`, `v` with `u_i + v_j = c_ij` on every basic cell, fixing `u₀ = 0`.
@@ -408,6 +417,22 @@ fn tree_path(
         cells.push(if x < na { (x, y - na) } else { (y, x - na) });
     }
     Some(cells)
+}
+
+/// A reproducible stream without a dependency, shared by the randomized tests and the cross-check
+/// dump so that both can be replayed from the seed alone.
+#[cfg(test)]
+struct Lcg(u64);
+
+#[cfg(test)]
+impl Lcg {
+    fn next(&mut self) -> f64 {
+        self.0 = self
+            .0
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1);
+        ((self.0 >> 11) as f64) / ((1u64 << 53) as f64)
+    }
 }
 
 #[cfg(test)]
@@ -666,6 +691,259 @@ mod tests {
             "a pair of different widths"
         );
     }
+
+    #[test]
+    fn one_wide_argument_is_enough_to_refuse() {
+        // Three one-at-a-time mismatches. The test above disagrees on the mean *and* the covariance
+        // at once, which any one of the three guards alone would still reject.
+        let two = vec![0.0f64, 0.0];
+        let three = vec![0.0f64, 0.0, 0.0];
+        let v2 = vec![1.0f64, 1.0];
+        let v3 = vec![1.0f64, 1.0, 1.0];
+        for (label, mean_b, cov_a, cov_b) in [
+            ("only the second mean", &three, &v2, &v2),
+            ("only the first covariance", &two, &v3, &v2),
+            ("only the second covariance", &two, &v2, &v3),
+        ] {
+            assert!(
+                gaussian_w2_sq(
+                    &two,
+                    Spread::Diagonal(cov_a),
+                    mean_b,
+                    Spread::Diagonal(cov_b)
+                )
+                .is_none(),
+                "{label} is wide, and that alone must refuse"
+            );
+        }
+    }
+
+    #[test]
+    fn checked_dim_rejects_what_nothing_downstream_can_see() {
+        let m = vec![vec![0.0, 0.0], vec![1.0, 1.0]];
+        let v = vec![vec![1.0, 1.0], vec![1.0, 1.0]];
+        let s = spreads(&v);
+        let w = vec![0.5, 0.5];
+        assert_eq!(diag_mixture(&w, &m, &s).checked_dim(), Some(2));
+
+        // Two weights against one mean, with the covariance count *agreeing* with the weights: the
+        // one malformed shape that reaches the cost loop, where it would index past `means`.
+        let one_m = vec![vec![0.0, 0.0]];
+        assert_eq!(
+            diag_mixture(&w, &one_m, &s).checked_dim(),
+            None,
+            "the weights outnumber the means"
+        );
+
+        let one_s = spreads(&v[..1]);
+        assert_eq!(
+            diag_mixture(&w, &m, &one_s).checked_dim(),
+            None,
+            "the weights outnumber the covariances"
+        );
+
+        // A per-component disagreement: the means agree with each other, one covariance does not.
+        // `gaussian_w2_sq` would also refuse this, so only a direct call can tell the two apart.
+        let wide_v = vec![vec![1.0, 1.0], vec![1.0, 1.0, 1.0]];
+        let wide_s = spreads(&wide_v);
+        assert_eq!(
+            diag_mixture(&w, &m, &wide_s).checked_dim(),
+            None,
+            "one covariance of another width"
+        );
+
+        let ragged_m = vec![vec![0.0, 0.0], vec![1.0]];
+        assert_eq!(
+            diag_mixture(&w, &ragged_m, &s).checked_dim(),
+            None,
+            "one mean of another width"
+        );
+
+        let empty_w: Vec<f64> = vec![];
+        let empty_m: Vec<Vec<f64>> = vec![];
+        let empty_s: Vec<Spread<'_, f64>> = vec![];
+        let empty = GaussianMixture {
+            weights: &empty_w,
+            means: &empty_m,
+            covs: &empty_s,
+        };
+        assert_eq!(empty.checked_dim(), None, "no components at all");
+    }
+
+    #[test]
+    fn a_diagonal_against_a_dense_scores_the_same_as_two_dense_ones() {
+        // `Spread::trace` is reached on a `Diagonal` only through this mixed arm: two diagonals take
+        // the closed form and never call it, two dense ones take the `Full` branch of it. The
+        // variances are distinct and none is one, so a trace that combined them wrongly cannot
+        // land on the same number by accident.
+        let mean_a = vec![0.0f64, 1.0, -2.0];
+        let mean_b = vec![2.0f64, -1.0, 0.5];
+        let va = vec![3.0f64, 0.5, 2.0];
+        let dense_a = vec![
+            vec![3.0, 0.0, 0.0],
+            vec![0.0, 0.5, 0.0],
+            vec![0.0, 0.0, 2.0],
+        ];
+        let dense_b = vec![
+            vec![1.0, 0.2, 0.0],
+            vec![0.2, 2.0, 0.0],
+            vec![0.0, 0.0, 0.75],
+        ];
+        let mixed = gaussian_w2_sq(
+            &mean_a,
+            Spread::Diagonal(&va),
+            &mean_b,
+            Spread::Full(&dense_b),
+        )
+        .expect("a diagonal and a dense covariance of the same width");
+        let both_dense = gaussian_w2_sq(
+            &mean_a,
+            Spread::Full(&dense_a),
+            &mean_b,
+            Spread::Full(&dense_b),
+        )
+        .expect("two dense covariances");
+        assert!(
+            (mixed - both_dense).abs() < 1e-9,
+            "mixed path {mixed} vs dense path {both_dense}"
+        );
+    }
+
+    #[test]
+    fn the_weights_need_not_sum_to_one() {
+        // The documented contract of `GaussianMixture::weights`, and the only test that exercises
+        // the division in `normalized`: every other fixture already sums to one, where dividing by
+        // the total and multiplying by it agree.
+        let (w, m, v) = base();
+        let s = spreads(&v);
+        let shift = [1.5, -2.0];
+        let mt: Vec<Vec<f64>> = m
+            .iter()
+            .map(|r| r.iter().zip(shift).map(|(&x, t)| x + t).collect())
+            .collect();
+        let scaled: Vec<f64> = w.iter().map(|x| x * 7.0).collect();
+        let plain = mixture_w2(diag_mixture(&w, &m, &s), diag_mixture(&w, &mt, &s)).unwrap();
+        let heavy = mixture_w2(
+            diag_mixture(&scaled, &m, &s),
+            diag_mixture(&scaled, &mt, &s),
+        )
+        .unwrap();
+        assert!(
+            (plain - heavy).abs() < 1e-9,
+            "scaling both weight vectors by 7 moved the distance: {plain} vs {heavy}"
+        );
+    }
+
+    #[test]
+    fn the_iteration_cap_is_the_documented_multiple_of_the_grid() {
+        // The cap is a backstop no solve reaches, so its arithmetic is unobservable through
+        // `transport` and is asserted directly instead of through a behaviour no instance produces.
+        assert_eq!(iteration_cap(1, 1), 64 * 3);
+        assert_eq!(iteration_cap(3, 4), 64 * (12 + 7));
+        assert_eq!(iteration_cap(64, 64), 64 * (4096 + 128));
+    }
+
+    /// A random composition of `q` unit atoms into `n` parts.
+    ///
+    /// `allow_empty` decides whether a part may end up with no mass. Both cases are real: a fitted
+    /// mixture can carry a zero-weight component, and `normalized` passes it through rather than
+    /// dropping it, so the north-west corner has to walk past an exhausted marginal with columns
+    /// still to come. That is the only state in which its guards differ from each other.
+    fn composition(rng: &mut Lcg, n: usize, q: usize, allow_empty: bool) -> Vec<usize> {
+        let seed = usize::from(!allow_empty);
+        let mut parts = vec![seed; n];
+        for _ in 0..q - seed * n {
+            let i = ((rng.next() * n as f64) as usize).min(n - 1);
+            parts[i] += 1;
+        }
+        parts
+    }
+
+    /// The lexicographically next permutation, or `false` at the last one.
+    fn next_permutation(p: &mut [usize]) -> bool {
+        let n = p.len();
+        let Some(i) = (0..n.saturating_sub(1)).rev().find(|&i| p[i] < p[i + 1]) else {
+            return false;
+        };
+        let j = (i + 1..n)
+            .rev()
+            .find(|&j| p[j] > p[i])
+            .expect("p[i] < p[i + 1] guarantees a larger element to the right");
+        p.swap(i, j);
+        p[i + 1..].reverse();
+        true
+    }
+
+    /// The transportation optimum computed a second way, sharing no code with the simplex.
+    ///
+    /// With every marginal a multiple of `1/q`, the problem is an assignment problem over `q` unit
+    /// atoms per side, so its optimum is the cheapest of the `q!` matchings. Exponential, and that
+    /// is the point: a different algorithm rather than a rearrangement of the one under test.
+    fn assignment_optimum(a: &[usize], b: &[usize], cost: &[Vec<f64>], q: usize) -> f64 {
+        let atoms = |counts: &[usize]| -> Vec<usize> {
+            counts
+                .iter()
+                .enumerate()
+                .flat_map(|(i, &n)| std::iter::repeat_n(i, n))
+                .collect()
+        };
+        let (rows, cols) = (atoms(a), atoms(b));
+        let mut perm: Vec<usize> = (0..q).collect();
+        let mut best = f64::INFINITY;
+        loop {
+            let total: f64 = (0..q).map(|t| cost[rows[t]][cols[perm[t]]]).sum();
+            best = best.min(total);
+            if !next_permutation(&mut perm) {
+                break;
+            }
+        }
+        best / q as f64
+    }
+
+    #[test]
+    fn the_simplex_matches_a_brute_force_optimum_and_stops_short_of_its_backstop() {
+        const Q: usize = 6;
+        let mut rng = Lcg(20_260_826);
+        let mut worked = 0usize;
+        for (na, nb) in [(2usize, 2usize), (2, 5), (5, 2), (3, 3), (3, 4), (4, 3)] {
+            for trial in 0..8 {
+                // Half the instances get integer costs. Ties there are the common case, so reduced
+                // costs of exactly zero and pivots of zero step size are too -- which is the state
+                // Bland's rule exists for and the one a cycling solver never leaves.
+                let ties = trial % 2 == 1;
+                let cost: Vec<Vec<f64>> = (0..na)
+                    .map(|_| {
+                        (0..nb)
+                            .map(|_| {
+                                let x = 10.0 * rng.next();
+                                if ties { x.round() } else { x }
+                            })
+                            .collect()
+                    })
+                    .collect();
+                let empty = trial >= 4; // a quarter of the marginals carry a zero-weight component
+                let ca = composition(&mut rng, na, Q, empty);
+                let cb = composition(&mut rng, nb, Q, empty);
+                let a: Vec<f64> = ca.iter().map(|&n| n as f64 / Q as f64).collect();
+                let b: Vec<f64> = cb.iter().map(|&n| n as f64 / Q as f64).collect();
+                let (got, pivots) = transport(&a, &b, &cost);
+                let want = assignment_optimum(&ca, &cb, &cost, Q);
+                assert!(
+                    (got - want).abs() < 1e-12,
+                    "{na}x{nb} trial {trial}: simplex {got}, brute force {want}"
+                );
+                assert!(
+                    pivots < iteration_cap(na, nb),
+                    "{na}x{nb} trial {trial}: ran to the backstop after {pivots} pivots"
+                );
+                worked += pivots;
+            }
+        }
+        // Without this the pivot assertion above is satisfied by a solver that never pivots at all,
+        // which the north-west corner alone is not entitled to be: it produces a feasible basis, not
+        // an optimal one, and these instances are not optimal where it leaves them.
+        assert!(worked > 0, "no instance in the sweep needed a single pivot");
+    }
 }
 
 /// Emits random instances and this crate's answer for them, so an independent solver can be handed
@@ -674,17 +952,6 @@ mod tests {
 #[cfg(test)]
 mod measure {
     use super::*;
-
-    struct Lcg(u64);
-    impl Lcg {
-        fn next(&mut self) -> f64 {
-            self.0 = self
-                .0
-                .wrapping_mul(6_364_136_223_846_793_005)
-                .wrapping_add(1);
-            ((self.0 >> 11) as f64) / ((1u64 << 53) as f64)
-        }
-    }
 
     #[test]
     #[ignore = "prints instances for an external cross-check"]
