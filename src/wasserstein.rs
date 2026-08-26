@@ -915,6 +915,29 @@ mod tests {
     }
 
     #[test]
+    fn an_entering_row_in_another_component_reports_no_cycle() {
+        // On a real basis the entering row is always reachable, so the sweep always leaves through
+        // its `found` break and the "stack drained" exit is never taken. That exit is the only
+        // thing standing between a disconnected basis and an unbounded walk, and nothing else in
+        // the suite reaches it -- a disconnected basis has to be handed to `tree_path` directly.
+        //
+        // Two singleton components: (row 0, column 0) and (row 1, column 1). Entering at (0, 1)
+        // starts the search at column 1, which reaches row 1 and stops.
+        let split = vec![vec![true, false], vec![false, true]];
+        assert!(
+            tree_path(&split, 2, 2, 0, 1).is_none(),
+            "no cycle exists through a basis whose two cells share neither a row nor a column"
+        );
+
+        // The same grid with the two components joined does have a cycle, so the assertion above
+        // is about reachability rather than about a function that refuses everything.
+        let joined = vec![vec![true, true], vec![false, true]];
+        let cycle = tree_path(&joined, 2, 2, 1, 0).expect("a connected basis closes a cycle");
+        assert_eq!(cycle[0], (1, 0));
+        assert_eq!(cycle.len() % 2, 0, "a transport cycle alternates + and -");
+    }
+
+    #[test]
     fn the_iteration_cap_is_the_documented_multiple_of_the_grid() {
         // The cap is a backstop no solve reaches, so its arithmetic is unobservable through
         // `transport` and is asserted directly instead of through a behaviour no instance produces.
