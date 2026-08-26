@@ -1650,19 +1650,16 @@ leaves, but "adjacent" by centroid distance is not the same as "adjacent" by cos
 the scoring asks. Raising `neighbors` further keeps paying, at linear cost in the number of blocks.
 
 **The exhaustive scan is still the only complete answer.** A blocked all-pairs cosine over the same
-20 000 rows recovers 0.9900 — every planted pair that clears the threshold — and costs 3.76 s against
-0.08 s for the within-leaf scan. What it does not do is scale: `neighbors` multiplies the number of
-blocks, while the all-pairs cost is quadratic in `N` outright.
+20 000 rows recovers 0.9900 — every planted pair that clears the threshold — and costs 2.96 s against
+0.04 s for the within-leaf scan, a factor of 74 (median of three runs on an idle box; the recall
+columns came back identical in all three, as exact counts should). What it does not do is scale:
+`neighbors` multiplies the number of blocks, while the all-pairs cost is quadratic in `N` outright.
 
 One caveat about the asymptotics, because it is easy to state the complexity wrongly. At a **fixed**
 `max_leaves`, leaf size grows with `N`, so both the within-leaf and the cross-leaf scans are
 `Θ(N²/M)` — quadratic in `N`, beating all-pairs only by the constant `M`. The blocking is
 asymptotically better only if the leaf budget grows with the data, which is what a fractional
 `max_leaves` (task #68) expresses: `max_leaves=0.1` holds leaf size constant and the scan linear.
-
-The recall columns are exact counts and independent of the machine. The two wall-clock numbers were
-taken with a mutation run occupying a core, so read them as a ratio (~47x) rather than as absolute
-seconds; they are due a re-measurement on an idle box.
 
 Harness: `local/scratch/dup_recall.py` (untracked).
 
