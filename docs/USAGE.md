@@ -382,6 +382,32 @@ undefined at `k = 1`, which is the same limitation stated honestly. For the "is 
 at all" question, fit with `n_clusters=0` on a mixture head and let BIC answer — that path is
 unchanged and is the authority.
 
+**What "exact" and "of the summary" mean, precisely.** A cluster feature is a sum-decomposition in
+the sense of Deep Sets — $f(X)=\varphi(\sum_u \psi(x_u))$ with $\psi(x)=(1,x,xx^{\mathsf T})$ — so it
+carries exactly the permutation-invariant polynomials of degree $\le 2$ and nothing else. Everything
+built from $\sum w\lVert x-c\rVert^2$ therefore comes back exactly: WCSS, the Ward merge cost,
+Calinski–Harabasz, the RMS Davies–Bouldin, the Bregman $D4_\varphi$ and the GMM sufficient
+statistics. Anything built from a `min` or `max` over pairs does not. The two sets
+
+$$A=\{-3,-1,2,2\},\qquad B=\{-3,0,0,3\}$$
+
+have the same weight, mean and scatter *exactly*, so their spherical, diagonal, full and FD features
+are the same object — yet their single-linkage merge heights are $0,2,3$ against $0,3,3$, and DBSCAN
+at $\varepsilon=2$, `minPts` $=2$ gives two clusters and no noise on $A$ against one cluster and two
+noise points on $B$. A density or single-linkage head reading the summary is answering a question
+the summary does not contain, and the counterexample is four points rather than an asymptotic
+argument.
+
+For the exact indices the summary's error is not a bound but an identity: when every leaf lies
+inside one cluster,
+
+$$\mathrm{WCSS}_{\text{points}} = \mathrm{WCSS}_{\text{summary}} + \sum_i S_i,$$
+
+so the total leaf SSD — the quantity `threshold` and `max_leaves` control — *is* the cost of
+summarising, exactly. For any index Lipschitz in the Wasserstein-2 metric the same quantity bounds
+the error, since sending each point to its own leaf centroid is a feasible transport plan:
+$W_2(\text{data},\text{summary})^2 \le \sum_i S_i / W$.
+
 ### `k` with a `k = 1` answer available — `gap_statistic`
 
 ```python
