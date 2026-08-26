@@ -22,8 +22,9 @@
 # added), `src/clustering/kmeans.rs` (**2026-08-24 whole-file**, after the k-means++ sampling
 # weight gained the leaf variance term), and `src/clustering/hdbscan.rs` (**2026-08-24 whole-file**,
 # after the point-count and dendrogram-walk fixes -- see that section for why its count rose from 17
-# to 21 without a regression). `src/clustering/medoid.rs` (**2026-08-25 whole-file**) is a first
-# measurement rather than a replacement -- the module postdates the whole-crate sweep entirely. The entry-by-entry form is sound where the only change to the
+# to 21 without a regression). `src/clustering/medoid.rs` (**2026-08-25 whole-file**) and
+# `src/wasserstein.rs` (**2026-08-26 whole-file**) are first measurements rather than replacements --
+# both modules postdate the whole-crate sweep entirely. The entry-by-entry form is sound where the only change to the
 # file was *test* code: adding a test can kill a mutant but can never create one, so nothing outside
 # the recorded set needs re-measuring. It is not sound after a production edit -- re-measure the file
 # whole then, which also renumbers every `line:col` in that section.
@@ -643,6 +644,73 @@ src/topology.rs:215:88: replace > with < in MapperGraph::persistence_diagram
 src/topology.rs:215:88: replace > with == in MapperGraph::persistence_diagram
 src/topology.rs:215:88: replace > with >= in MapperGraph::persistence_diagram
 src/topology.rs:329:25: replace > with >= in lens_values
+
+# ── src/wasserstein.rs (7) ──
+# First measurement of this file; the module postdates the whole-crate sweep. 233 mutants,
+# 218 caught / 7 missed / 5 unviable / 3 timeouts, whole file at -j1 under an 8G cap:
+#   systemd-run --user --scope --unit=mut-wass-full -p MemoryMax=8G -p MemorySwapMax=0 \
+#     -- timeout 16200 cargo mutants -f src/wasserstein.rs -j1 --test-tool nextest \
+#          --output /tmp/mut-wass-full
+#
+# Three earlier local runs over this file are VOID and none of their numbers is used here. One of
+# them reported three mutants as missed whose logs showed the whole suite green; re-running those
+# exact sites on that exact commit returned 7 of 7 caught, and the code and the test that kills them
+# are byte-identical across the two commits, so the verdict could not legitimately have changed. What
+# the void runs share is that the source tree was edited while they were in flight. The mechanism is
+# not established and is not claimed here -- the irreproducibility is. Every one of the seven entries
+# below was re-applied by hand after this run and confirmed to leave `cargo test --lib` green.
+#
+# All three timeouts are detections, not survivors, and are not listed. `266:15` and `268:15`
+# (`+=` -> `*=` on the north-west corner's `i` and `j`) leave the index pinned, so the walk never
+# reaches `i + 1 == na && j + 1 == nb`; `404:13` (`-=` -> `/=`) leaves `top` pinned, so the basis
+# sweep never drains. Each is an infinite loop, which is what a mutation of a loop counter should be.
+#
+# Two are *provably* equivalent.
+# `120:23`: with `+` the accumulator sums `V diag(√λ) Vᵀ`; with `-` it starts at zero and subtracts,
+# so it yields exactly the negation, and `a_half` comes out as `-A^½`. Its only use is
+# `M = (A^½ B) A^½`, which is quadratic in it, and IEEE-754 sign flips are exact -- so `M`, its
+# eigenvalues and the returned trace are bit-identical.
+# `440:20`: the backward walk needs one iteration per edge of the parent chain, and a spanning tree
+# on `na + nb` nodes has a path of at most `na + nb - 1` edges. `na*nb >= na + nb - 1` for all
+# `na, nb >= 1`, since that rearranges to `(na - 1)(nb - 1) >= 0`. The mutated bound is therefore
+# never tighter than what the walk needs, and the walk leaves through its `node == start` break.
+#
+# `398:17` is equivalent for the reason the fixed-capacity stack exists: the guard is meant to be
+# dead. Every push is gated on a `seen[..]` flag flipping false to true, so at most `na + nb` pushes
+# happen in a call, the initial `stack[0]` among them, and every closure push is preceded in its own
+# iteration by a pop -- so `top <= na + nb - 1` whenever the closure runs. `<` and `<=` differ only at
+# `top == stack.len()`, which is unreachable, and where the mutation would index out of bounds rather
+# than misbehave quietly.
+#
+# `178:9` is an optimization, not a behaviour: deleting the diagonal-by-diagonal arm sends the pair
+# through the `_` arm, which densifies both spreads and takes the Bures route to the same value --
+# an existing test asserts that the two paths agree to 1e-9. It is observable in time and allocation
+# only. One earlier run detected it as a timeout; this one did not, so its detection is a property of
+# the machine's load rather than of the suite, and it is recorded as an equivalent instead.
+#
+# The last two are believed equivalent, and both are ties.
+# `265:48`: `j * 1 == nb` is never true inside the loop, so the mutation deletes the
+# `|| j + 1 == nb` disjunct. That disjunct is only ever *taken* when `ra[i] > rb[j]` at the last
+# column -- and there `rb[j]` is the whole remaining demand, which on balanced marginals equals the
+# whole remaining supply and so is at least `ra[i]`. The other reachable shape, `i + 1 == na` with
+# `j + 1 == nb`, has already left through the break above. Dead on any instance the solver is given.
+# `293:31`: `<` keeps the earliest cell of a tie on the exit, `<=` the latest. Both are feasible
+# leaving cells and the step size `theta` is the same either way, so the optimum does not move; what
+# changes is the pivot sequence. Strict `<` is Bland's anti-cycling half, and the iteration cap is
+# what actually backstops termination, so separating the two would need a degenerate instance that
+# cycles under last-of-tie -- which the 48-instance oracle sweep, half of it integer-cost and so
+# deliberately tie-rich, does not produce.
+#
+# `280:70` differs from `< -SIMPLEX_TOL` only when a reduced cost lands on `-SIMPLEX_TOL` to the ulp.
+# The tolerance exists to refuse numerically-zero reduced costs; hitting it exactly is not
+# constructible through any public path.
+src/wasserstein.rs:120:23: replace + with - in bures_cross
+src/wasserstein.rs:178:9: delete match arm (Spread::Diagonal(u), Spread::Diagonal(v)) in gaussian_w2_sq
+src/wasserstein.rs:265:48: replace + with * in transport
+src/wasserstein.rs:280:70: replace < with <= in transport
+src/wasserstein.rs:293:31: replace < with <= in transport
+src/wasserstein.rs:398:17: replace < with <= in tree_path
+src/wasserstein.rs:440:20: replace + with * in tree_path
 
 # ── src/clustering/community.rs (7) ──
 # Debt: remainder after the 2026-08-19 reference tests.
