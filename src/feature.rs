@@ -1335,6 +1335,164 @@ mod tests {
             assert!(close(x, y), "{x} vs {y}");
         }
     }
+
+    /// The boundary of what a cluster feature can express, pinned by an example rather than argued.
+    ///
+    /// A feature is a sum-decomposition `f(X) = φ(Σ ψ(x))` with `ψ(x) = (1, x, xxᵀ)`, so it carries
+    /// the permutation-invariant polynomials of degree ≤ 2 and nothing else. These two sets have the
+    /// same weight, mean and scatter **exactly** — integer coordinates on purpose, so nothing rests
+    /// on a tolerance — yet their pairwise distance sets differ, and with them any head built on a
+    /// `min` or `max` over pairs: single linkage joins at `2` in one and at `3` in the other, and
+    /// DBSCAN at `eps = 2`, `minPts = 2` calls one two clusters and the other one cluster with two
+    /// noise points.
+    ///
+    /// This test asserts an *impossibility*, which is why it is worth its own name: no richer
+    /// feature in the family rescues it, because the full model already fails.
+    #[test]
+    fn two_point_sets_can_share_a_feature_and_not_a_geometry() {
+        let a: [&[f64]; 4] = [&[-3.0, 0.0], &[-1.0, 0.0], &[2.0, 0.0], &[2.0, 0.0]];
+        let b: [&[f64]; 4] = [&[-3.0, 0.0], &[0.0, 0.0], &[0.0, 0.0], &[3.0, 0.0]];
+
+        let (sa, sb): (Spherical<f64>, Spherical<f64>) = (push_all(2, &a), push_all(2, &b));
+        let (da, db): (Diagonal<f64>, Diagonal<f64>) = (push_all(2, &a), push_all(2, &b));
+        let (fa, fb): (Full<f64>, Full<f64>) = (push_all(2, &a), push_all(2, &b));
+        for (name, wa, wb, ma, mb, ssa, ssb) in [
+            (
+                "spherical",
+                sa.weight(),
+                sb.weight(),
+                sa.mean().to_vec(),
+                sb.mean().to_vec(),
+                sa.ssd(),
+                sb.ssd(),
+            ),
+            (
+                "diagonal",
+                da.weight(),
+                db.weight(),
+                da.mean().to_vec(),
+                db.mean().to_vec(),
+                da.ssd(),
+                db.ssd(),
+            ),
+            (
+                "full",
+                fa.weight(),
+                fb.weight(),
+                fa.mean().to_vec(),
+                fb.mean().to_vec(),
+                fa.ssd(),
+                fb.ssd(),
+            ),
+        ] {
+            assert!(close(wa, wb), "{name}: weights differ");
+            assert!(
+                ma.iter().zip(&mb).all(|(&x, &y)| close(x, y)),
+                "{name}: means differ"
+            );
+            assert!(close(ssa, ssb), "{name}: scatter differs, {ssa} vs {ssb}");
+        }
+        let (ca, cb) = (fa.cov_dense(), fb.cov_dense());
+        for i in 0..2 {
+            for j in 0..2 {
+                assert!(
+                    close(ca[i][j], cb[i][j]),
+                    "full covariance differs at ({i}, {j})"
+                );
+            }
+        }
+
+        let spread = |pts: &[&[f64]]| -> Vec<f64> {
+            let mut d: Vec<f64> = (0..pts.len())
+                .flat_map(|i| (i + 1..pts.len()).map(move |j| (i, j)))
+                .map(|(i, j)| (pts[i][0] - pts[j][0]).abs())
+                .collect();
+            d.sort_by(|x, y| x.partial_cmp(y).expect("no NaN in a fixed fixture"));
+            d.dedup_by(|x, y| close(*x, *y));
+            d
+        };
+        assert_eq!(spread(&a), vec![0.0, 2.0, 3.0, 5.0]);
+        assert_eq!(spread(&b), vec![0.0, 3.0, 6.0]);
+    }
+
+    /// What summarising costs, as an identity rather than a bound.
+    ///
+    /// With every leaf inside one cluster, `WCSS_points = WCSS_summary + Σ_leaf ssd`, because
+    /// `Σ_{x ∈ leaf} ‖x − c‖² = ssd + w‖μ − c‖²` for any `c`. The total leaf scatter — the quantity
+    /// `threshold` and `max_leaves` control — is therefore exactly the error of reading `k`-means,
+    /// Ward and Calinski–Harabasz off the summary, which is what makes the leaf budget a budget.
+    #[test]
+    fn the_summary_costs_exactly_the_total_leaf_scatter() {
+        let pts: Vec<Vec<f64>> = (0..24)
+            .map(|i| {
+                let t = f64::from(i);
+                vec![(t * 0.7).sin() * 3.0, (t * 1.3).cos() * 2.0 + t * 0.1]
+            })
+            .collect();
+        let leaf_of = |i: usize| i % 4; // four leaves, two per cluster
+        let cluster_of_leaf = [0usize, 0, 1, 1];
+
+        let mut exact = 0.0;
+        for c in 0..2 {
+            let members: Vec<&Vec<f64>> = pts
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| cluster_of_leaf[leaf_of(*i)] == c)
+                .map(|(_, p)| p)
+                .collect();
+            let n = members.len() as f64;
+            let mean: Vec<f64> = (0..2)
+                .map(|d| members.iter().map(|p| p[d]).sum::<f64>() / n)
+                .collect();
+            exact += members
+                .iter()
+                .map(|p| (0..2).map(|d| (p[d] - mean[d]).powi(2)).sum::<f64>())
+                .sum::<f64>();
+        }
+
+        let leaves: Vec<Full<f64>> = (0..4)
+            .map(|l| {
+                let mut f = Full::new(2);
+                for (i, p) in pts.iter().enumerate() {
+                    if leaf_of(i) == l {
+                        f.push(p, 1.0);
+                    }
+                }
+                f
+            })
+            .collect();
+        let leaf_scatter: f64 = leaves.iter().map(ClusterFeature::ssd).sum();
+        let mut summary = 0.0;
+        for c in 0..2 {
+            let sel: Vec<&Full<f64>> = leaves
+                .iter()
+                .enumerate()
+                .filter(|(l, _)| cluster_of_leaf[*l] == c)
+                .map(|(_, f)| f)
+                .collect();
+            let w: f64 = sel.iter().map(|f| f.weight()).sum();
+            let centre: Vec<f64> = (0..2)
+                .map(|d| sel.iter().map(|f| f.weight() * f.mean()[d]).sum::<f64>() / w)
+                .collect();
+            summary += sel
+                .iter()
+                .map(|f| {
+                    f.weight()
+                        * (0..2)
+                            .map(|d| (f.mean()[d] - centre[d]).powi(2))
+                            .sum::<f64>()
+                })
+                .sum::<f64>();
+        }
+        assert!(
+            (exact - summary - leaf_scatter).abs() < 1e-9,
+            "exact {exact} != summary {summary} + leaf scatter {leaf_scatter}"
+        );
+        assert!(
+            leaf_scatter > 1.0,
+            "a fixture with no leaf spread proves nothing"
+        );
+    }
 }
 
 #[cfg(test)]
