@@ -335,6 +335,14 @@ fn duals(
     let mut stack = vec![0usize]; // row indices; columns are pushed as `na + j`
     let mut settled = 1;
     while let Some(node) = stack.pop() {
+        // A spanning tree settles each of the `na + nb` potentials exactly once, so passing that
+        // count means the traversal is revisiting -- which happens if a potential comes out `NaN`,
+        // since `is_nan()` then stays true and the node is pushed again forever. Returning `None`
+        // is the contract this function already advertises for a basis that is not a tree; without
+        // the bound the loop grows `stack` without limit instead of reporting.
+        if settled > na + nb {
+            return None;
+        }
         if node < na {
             let r = node;
             for c in 0..nb {
@@ -832,6 +840,27 @@ mod tests {
             (plain - heavy).abs() < 1e-9,
             "scaling both weight vectors by 7 moved the distance: {plain} vs {heavy}"
         );
+    }
+
+    #[test]
+    fn a_non_finite_cost_terminates_rather_than_growing_a_stack() {
+        // `mixture_w2` scrubs non-finite pair costs before they reach the solver, so this states an
+        // invariant rather than a reachable input. It is worth stating because the dual traversal
+        // keys off `is_nan`: a potential that comes out `NaN` never stops being unset, so the node
+        // is pushed again on every visit and the stack grows without limit. Completing at all is
+        // the assertion; the pivot count is the part that can be written down.
+        let half = vec![0.5, 0.5];
+        for cost in [
+            vec![vec![f64::NAN, 1.0], vec![1.0, 0.0]],
+            vec![vec![f64::INFINITY, 1.0], vec![1.0, 0.0]],
+            vec![vec![0.0, f64::NEG_INFINITY], vec![2.0, 1.0]],
+        ] {
+            let (_, pivots) = transport(&half, &half, &cost);
+            assert!(
+                pivots < iteration_cap(2, 2),
+                "a non-finite cost ran the solver to its backstop after {pivots} pivots"
+            );
+        }
     }
 
     #[test]
