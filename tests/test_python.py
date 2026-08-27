@@ -89,7 +89,13 @@ def test_fit_predict_recovers_blobs(blobs, feature, method):
 
 @pytest.mark.parametrize(
     "feature,method",
-    [("diagonal", "gmm"), ("full", "gmm-full"), ("fd", "mppca"), ("diagonal", "ward")],
+    [
+        ("spherical", "kmeans"),
+        ("diagonal", "gmm"),
+        ("full", "gmm-full"),
+        ("fd", "mppca"),
+        ("diagonal", "ward"),
+    ],
 )
 def test_auto_k_selects_true_count_when_n_clusters_zero(blobs, feature, method):
     x, y = blobs

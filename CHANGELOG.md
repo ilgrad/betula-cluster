@@ -1145,6 +1145,17 @@ All notable changes to this project are documented here. The format follows
   **Labels are unchanged on every metric route** (48/48 `(dataset × feature × head × distance ×
   seed)` label arrays hash identically across the fix), so nothing published moves.
 
+### Fixed
+
+- **The head table said `method="kmeans"` needs a `k`. It does not, and has not for some time.**
+  `n_clusters=0` runs an X-means BIC selection over the leaves, exactly as the table's own prose two
+  lines below it already claimed for "the parametric heads". Nothing caught the contradiction because
+  the wrapper's auto-`k` test enumerated `gmm` / `gmm-full` / `mppca` / `ward` and omitted `kmeans`;
+  it now covers `kmeans` too, and fails on a build with the auto arm removed. Behaviour is unchanged
+  — only the documentation was wrong. The `xmeans` doc comment claimed its BIC is minimised while the
+  code maximises it, which is the opposite of the convention the five other BIC sites in the crate
+  use; it now says so.
+
 ## [0.7.0] — 2026-08-23
 
 ### Changed

@@ -111,7 +111,7 @@ answer.
 
 | your data / goal | `method` | needs `k`? |
 |---|---|---|
-| compact/spherical groups, fastest | `kmeans` | yes |
+| compact/spherical groups, fastest | `kmeans` | yes (or `0` = BIC, X-means) |
 | elliptical / correlated / anisotropic, soft assignment | `gmm` (diag) or `gmm-full` | yes (or `0` = BIC) |
 | clusters on **low-dimensional subspaces**, `d` too large for `gmm-full` | `mppca` + `feature="fd"`, `rank` = the intrinsic dimension — read *`rank`, and where `mppca` loses* first | yes (or `0` = BIC) |
 | **L2-normalized embeddings** (CLIP / face / sentence / speaker), cosine geometry | `vmf` (soft) or `spherical-kmeans` (hard) | yes (or `0` = BIC, `vmf`) |

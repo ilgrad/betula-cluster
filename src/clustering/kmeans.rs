@@ -540,9 +540,9 @@ fn lloyd_hamerly<R: Real>(
     }
 }
 
-/// X-means: choose `k` automatically in `[k_min, k_max]` by repeatedly running k-means and keeping
-/// the model with the best BIC (lower is better). BIC over the leaf features treats each as a
-/// weighted point of a spherical Gaussian mixture; `p = k·(d+1)` free parameters.
+/// X-means: choose `k` automatically in `[k_min, k_max]` by running k-means at every `k` and keeping
+/// the best Pelleg-Moore BIC, which is **maximised** -- the opposite sign to [`super::gmm::bic`] and
+/// its callers. Leaves are weighted points of a spherical mixture; `p = k·(d+1)` free parameters.
 pub fn xmeans<R: Real, C: ClusterFeature<R>>(
     features: &[C],
     k_min: usize,
