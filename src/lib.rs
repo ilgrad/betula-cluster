@@ -5,6 +5,7 @@
 //! deviations) and updates/merges them without catastrophic cancellation; covariance is
 //! positive semi-definite by construction.
 
+pub mod adwin;
 pub mod bregman;
 pub mod clustering;
 pub mod coreset;

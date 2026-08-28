@@ -2003,6 +2003,69 @@ test far enough from the leaf count that nothing ever saw it. Fixed by passing t
 `Σ_l (S_l + n_l‖μ_l − c‖²)` — the CF identity, exact for any whole-leaf partition, and already what
 `KMeans::inertia` accumulates. **`method="kmeans"` labels change at `n_clusters=0`.**
 
+## Drift on a stream is a distance, not a novelty count (task #45)
+
+`DenStream` and `DbStream` fade old data at `2^(−λ·Δt)`. That is a *schedule*: it forgets at a fixed
+rate whether or not anything changed, and a wrong λ is silent in both directions. Both heads now
+carry an ADWIN detector (Bifet & Gavaldà, SDM 2007) answering the other question — *did the stream
+change* — at a stated false-positive ceiling δ = 0.002, exposed as `drift_`. It reports; it does not
+act. `bench/drift.py`, three seeds, 2000 warm-up + 2000 points, `λ = 0.001`, radius 1.0 on a 3-component
+2-D mixture separated by 8σ. `distance` is the mean routing distance over the adaptive window, in
+micro-cluster radii.
+
+| head | scenario | seeds fired | alarms | first alarm | distance before → peak → after |
+|---|---|---|---|---|---|
+| `DenStream` | stationary | 1/3 | 1 | 528 pts | 0.77 → 0.77 → 0.76 |
+| `DenStream` | jump | **3/3** | 4 | **33 pts** | 0.77 → 1.12 → 0.81 |
+| `DenStream` | spread | **3/3** | 20 | **33 pts** | 0.77 → 2.10 → 0.98 |
+| `DenStream` | split | **3/3** | 13 | **33 pts** | 0.77 → 1.34 → 0.80 |
+| `DenStream` | gradual | **3/3** | 23 | 66 pts | 0.77 → 1.20 → 0.80 |
+| `DbStream` | stationary | 3/3 | 5 | 297 pts | 0.41 → 0.41 → 0.37 |
+| `DbStream` | jump | **3/3** | 5 | **33 pts** | 0.41 → 0.84 → 0.41 |
+| `DbStream` | spread | **3/3** | 24 | **33 pts** | 0.41 → 1.49 → 0.64 |
+| `DbStream` | split | **3/3** | 17 | **33 pts** | 0.41 → 0.68 → 0.46 |
+| `DbStream` | gradual | **3/3** | 20 | 99 pts | 0.41 → 0.90 → 0.47 |
+
+All four changes are reported in every seed, three of them inside the first 32-point check clock.
+**The false-positive rate is 6 alarms in 12 000 settled stationary points, 0.00050, against the
+0.002 δ allows** — so "does not fire on a stationary stream" is a rate and not a promise, and the
+rate is the one the bound claims. Alarms during the first 2000 points are discounted and reported
+separately: while the model is still opening micro-clusters the mean routing distance genuinely
+falls, and reporting that is the statistic changing, not the detector being wrong.
+
+**The obvious statistic does not work, and it took the measurement to find out.** The first
+implementation watched a *novelty indicator* — 1 if the point opened a micro-cluster, 0 if one
+absorbed it. It is free, bounded in `[0, 1]` where the Hoeffding bound is tightest, and it is the
+choice the streaming-clustering literature suggests. On a 2-D stream jumping 50σ after 2000 points it
+raised **zero alarms in five of six `(λ, ε)` settings.** The reason is a mismatch of shape against
+the bound rather than a coding error: a translated cloud is covered by a handful of new
+micro-clusters, so the novelty impulse lasts ~5–10 points, while `ε_cut`'s additive term
+`(2/3)·m⁻¹·ln(2/δ')` does not drop below 1 — the largest gap a `[0,1]` statistic can show — until the
+newer sub-window holds ≳ 30 points at near-full swing. A short impulse in a bounded statistic is
+invisible to a windowed mean test. The routing distance is unbounded above, and that is exactly what
+buys it the magnitude: at `ε = 1` the jump drives the window mean to 1.12 against a stationary 0.77,
+and the peak inside the transient is far higher than the settled value the table's last column shows.
+
+**Dividing by the micro-cluster radius is load-bearing, not cosmetic.** `ε_cut`'s additive term is in
+absolute units, so a *raw* distance stops detecting anything on data scaled down far enough. In
+radii, the same stream at scale 1/1024 and 1024 produces byte-identical alarm counts and times
+(`dividing_by_the_micro_cluster_radius_is_what_makes_the_statistic_scale_free`).
+
+**One λ regime has no answer, and the detector says so.** At `λ = 0.25` with `ε = 0.5` micro-clusters
+are pruned about as fast as they form, the mean routing distance sits at 2.7ε before the move and
+stays there after it, and no alarm is raised in any seed. There is no baseline to depart from. That
+is the division of labour stated as a measurement: λ decides how fast the model follows, the detector
+reports whether it had to, and a λ chosen to follow everything leaves nothing to report.
+
+**Cost.** The detector runs on the per-point insert path, so it was measured there rather than
+assumed: `what_the_always_on_drift_detector_costs_the_insert_path` in `src/stream.rs` times 200 000
+`Adwin::update` calls against 200 000 `DenStream::insert` calls over ~200 micro-clusters. Unclocked
+it was **682 ns/update against 1952 ns/insert — 35%**, which is not a price to charge silently for a
+diagnostic. Testing for a cut on a 32-update clock, which is what Bifet & Gavaldà's own MOA
+implementation does (`mintClock`) and which can only make the union bound behind δ more conservative,
+brings it to **54 ns against 1174 ns, 4.6%**, at the cost of at most 32 points of detection latency —
+visible in the table as the 33-point first alarm.
+
 ## Conclusions
 
 - **Use betula** when data is large or streaming, memory is bounded, or you want one numerically

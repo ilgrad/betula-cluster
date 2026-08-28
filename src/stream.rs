@@ -17,6 +17,7 @@
 //!
 //! Working precision for the weight/decay arithmetic is `f64`; geometry stays in the tree's `R`.
 
+use crate::adwin::Adwin;
 use crate::feature::ClusterFeature;
 use crate::kernels::sq_euclidean;
 use crate::types::Real;
@@ -78,12 +79,105 @@ pub struct DenStream<R: Real, C: ClusterFeature<R>> {
     p: Vec<Micro<C>>,
     o: Vec<Micro<C>>,
     labels: Vec<i64>, // offline cluster label per p-micro-cluster (set by `cluster`)
+    drift: DriftMonitor,
     _r: PhantomData<R>,
 }
 
 /// Fading factor `2^(-λ·(t − last_t))` for a micro-cluster last updated at `last_t`.
 fn fade(lambda: f64, t: f64, last_t: f64) -> f64 {
     (-lambda * (t - last_t)).exp2()
+}
+
+/// Confidence of the drift detector: the ceiling on its false-positive rate per streamed point.
+/// Fixed rather than exposed, because it is the *only* knob the bound has and a caller who wants a
+/// different one is asking for a different question than "did the stream change"; MOA's ADWIN ships
+/// the same value.
+const DRIFT_DELTA: f64 = 0.002;
+
+/// What the drift detector currently holds.
+///
+/// The detector watches one number per streamed point: the distance from the point to the nearest
+/// micro-cluster centre, **in units of the micro-cluster radius** (`ε` for [`DenStream`], `r` for
+/// [`DbStream`]). Every term of it is already computed by the online step, so it is free. Stationary
+/// data sits near 1 by construction — that is what the radius means — and a distribution that moves
+/// into space the model does not cover sends it to the size of the move divided by `ε`, which is
+/// large. Dividing by the radius is what makes the statistic scale-free: the bound's additive term
+/// `(2/3)·m⁻¹·ln(2/δ')` is in absolute units, so a raw distance would silently stop detecting
+/// anything on data scaled down by 1000×.
+///
+/// **The obvious alternative was measured and refused.** A novelty *indicator* — `1` if the point
+/// opened a micro-cluster, `0` otherwise — is bounded in `[0, 1]` where the Hoeffding bound is
+/// tightest, and looks like the natural choice. It does not work: a translated cloud is covered by a
+/// handful of new micro-clusters, so the impulse lasts ~5–10 points, while the bound needs a sub-
+/// window of ≳ 30 at near-full swing before `(2/3)·m⁻¹·ln(2/δ')` drops below 1. Measured on a 2-D
+/// stream jumping 50σ after 2000 points, that detector raised **zero** alarms in five of six
+/// `(λ, ε)` settings. The distance statistic is unbounded above, which is exactly what buys the
+/// magnitude the test needs.
+///
+/// **Reported, never acted on.** An alarm does not prune, promote, reset λ or relabel anything; see
+/// [`crate::adwin`] for why a detector that silently rewrote the model would turn its own
+/// false-positive rate into a correctness problem.
+///
+/// λ and this answer different questions. λ forgets on a fixed schedule whether or not anything
+/// changed — it is a prior on the timescale, chosen in advance, and a wrong choice is silent in both
+/// directions. The detector tests whether the stream changed at all, from the data, with a stated
+/// false-positive ceiling. Use λ to set how fast the model follows; use this to find out when it had
+/// to.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DriftReport {
+    /// Alarms raised since construction.
+    pub alarms: u64,
+    /// Stream time (points seen) of the most recent alarm, `None` if there has been none. An early
+    /// alarm is the model warming up: until the first micro-clusters exist, points really are
+    /// landing far from everything, and the detector correctly says the statistic changed.
+    pub last_alarm: Option<f64>,
+    /// Mean distance-to-nearest-micro-cluster over the adaptive window, in micro-cluster radii.
+    pub distance: f64,
+    /// Points in the adaptive window. It collapses on a change and regrows while the stream is
+    /// stationary, so this is itself a read on how settled the model is.
+    pub window: usize,
+}
+
+/// An [`Adwin`] over a streaming clusterer's routing distance, plus the alarm bookkeeping
+/// [`DriftReport`] needs. Shared by both heads so the two report the same quantity.
+struct DriftMonitor {
+    adwin: Adwin,
+    /// The head's micro-cluster radius, which is the unit the observed distance is divided by.
+    radius: f64,
+    alarms: u64,
+    last_alarm: Option<f64>,
+}
+
+impl DriftMonitor {
+    fn new(radius: f64) -> Self {
+        Self {
+            adwin: Adwin::new(DRIFT_DELTA),
+            radius,
+            alarms: 0,
+            last_alarm: None,
+        }
+    }
+
+    /// Record the squared distance from the point at stream time `t` to the nearest micro-cluster.
+    /// `None` — no micro-cluster to be near — is skipped rather than coded as a number: it happens
+    /// once, on the very first point, and any stand-in for it would be an outlier in a window of
+    /// distances.
+    fn observe(&mut self, nearest_sq: Option<f64>, t: f64) {
+        let Some(d2) = nearest_sq else { return };
+        if self.adwin.update(d2.sqrt() / self.radius) {
+            self.alarms += 1;
+            self.last_alarm = Some(t);
+        }
+    }
+
+    fn report(&self) -> DriftReport {
+        DriftReport {
+            alarms: self.alarms,
+            last_alarm: self.last_alarm,
+            distance: self.adwin.mean(),
+            window: self.adwin.width(),
+        }
+    }
 }
 
 impl<R: Real, C: ClusterFeature<R>> DenStream<R, C> {
@@ -124,8 +218,15 @@ impl<R: Real, C: ClusterFeature<R>> DenStream<R, C> {
             p: Vec::new(),
             o: Vec::new(),
             labels: Vec::new(),
+            drift: DriftMonitor::new(eps),
             _r: PhantomData,
         })
+    }
+
+    /// Drift diagnostic over the routing distance — see [`DriftReport`], which also states why an
+    /// alarm is reported rather than acted on and how this divides labour with `lambda`.
+    pub fn drift(&self) -> DriftReport {
+        self.drift.report()
     }
 
     /// Point dimensionality fixed at construction.
@@ -152,7 +253,7 @@ impl<R: Real, C: ClusterFeature<R>> DenStream<R, C> {
     }
 
     /// Index of the nearest micro-cluster in `pool` to `x` by centroid distance (`None` if empty).
-    fn nearest(pool: &[Micro<C>], x: &[R]) -> Option<usize> {
+    fn nearest(pool: &[Micro<C>], x: &[R]) -> Option<(usize, R)> {
         let mut best: Option<(usize, R)> = None;
         for (i, m) in pool.iter().enumerate() {
             let d = sq_euclidean(m.cf.mean(), x);
@@ -160,7 +261,7 @@ impl<R: Real, C: ClusterFeature<R>> DenStream<R, C> {
                 best = Some((i, d));
             }
         }
-        best.map(|(i, _)| i)
+        best
     }
 
     /// Try to fold `x` into `pool[i]`: fade it to the current tick, add `x`, and accept only if the
@@ -186,20 +287,29 @@ impl<R: Real, C: ClusterFeature<R>> DenStream<R, C> {
         self.labels.clear(); // new data invalidates the offline clustering
         let (t, lambda, eps2) = (self.t, self.lambda, self.eps2);
 
-        if let Some(i) = Self::nearest(&self.p, x) {
+        // Squared distance to the nearest micro-cluster in either pool — the drift statistic, and
+        // every term of it is one the merge test already had to compute. The `o` pool is scanned
+        // only on the path that would have scanned it anyway.
+        let np = Self::nearest(&self.p, x);
+        if let Some((i, d2)) = np {
             if Self::try_merge(&mut self.p, i, x, t, lambda, eps2) {
-                self.tick();
+                self.tick(Some(d2));
                 return;
             }
         }
-        if let Some(i) = Self::nearest(&self.o, x) {
+        let no = Self::nearest(&self.o, x);
+        let near = match (np, no) {
+            (Some((_, a)), Some((_, b))) => Some(if a < b { a } else { b }),
+            (one, other) => one.or(other).map(|(_, d)| d),
+        };
+        if let Some((i, _)) = no {
             if Self::try_merge(&mut self.o, i, x, t, lambda, eps2) {
                 // The merged o-micro is current (faded to `t`); promote once it is dense enough.
                 if self.o[i].cf.weight().to_f64().unwrap() >= self.beta_mu {
                     let m = self.o.remove(i);
                     self.p.push(m);
                 }
-                self.tick();
+                self.tick(near);
                 return;
             }
         }
@@ -210,11 +320,15 @@ impl<R: Real, C: ClusterFeature<R>> DenStream<R, C> {
             last_t: t,
             t0: t,
         });
-        self.tick();
+        self.tick(near);
     }
 
-    /// Advance the clock and prune every `Tp` ticks.
-    fn tick(&mut self) {
+    /// Advance the clock and prune every `Tp` ticks. It takes the routing distance rather than
+    /// recomputing it so that no exit path of `insert` can advance the clock without telling the
+    /// detector where the point landed — the compiler asks for it.
+    fn tick(&mut self, nearest_sq: Option<R>) {
+        self.drift
+            .observe(nearest_sq.map(|d| d.to_f64().unwrap()), self.t);
         self.t += 1.0;
         let period = self.tp as u64;
         if period > 0 && (self.t as u64) % period == 0 {
@@ -284,11 +398,8 @@ impl<R: Real, C: ClusterFeature<R>> DenStream<R, C> {
             return -1;
         }
         match Self::nearest(&self.p, x) {
-            Some(i) => {
-                let d = sq_euclidean(self.p[i].cf.mean(), x).to_f64().unwrap();
-                if d <= self.eps2 { self.labels[i] } else { -1 }
-            }
-            None => -1,
+            Some((i, d2)) if d2.to_f64().unwrap() <= self.eps2 => self.labels[i],
+            _ => -1,
         }
     }
 
@@ -358,6 +469,7 @@ pub struct DbStream<R: Real, C: ClusterFeature<R>> {
     micros: Vec<DbMicro<C>>,
     shared: HashMap<(u64, u64), Shared>,
     labels: Vec<i64>,
+    drift: DriftMonitor,
     _r: PhantomData<R>,
 }
 
@@ -404,8 +516,15 @@ impl<R: Real, C: ClusterFeature<R>> DbStream<R, C> {
             micros: Vec::new(),
             shared: HashMap::new(),
             labels: Vec::new(),
+            drift: DriftMonitor::new(r),
             _r: PhantomData,
         })
+    }
+
+    /// Drift diagnostic over the routing distance — see [`DriftReport`], which also states why an
+    /// alarm is reported rather than acted on and how this divides labour with `lambda`.
+    pub fn drift(&self) -> DriftReport {
+        self.drift.report()
     }
 
     /// Point dimensionality fixed at construction.
@@ -443,9 +562,17 @@ impl<R: Real, C: ClusterFeature<R>> DbStream<R, C> {
         debug_assert!(x.len() >= self.dim);
         self.labels.clear();
         let (t, lambda, r2) = (self.t, self.lambda, self.radius2);
-        let neigh: Vec<usize> = (0..self.micros.len())
-            .filter(|&i| sq_euclidean(self.micros[i].cf.mean(), x).to_f64().unwrap() <= r2)
-            .collect();
+        // One pass gives both the fixed-radius neighbourhood the algorithm needs and the nearest
+        // distance the drift statistic needs.
+        let mut neigh: Vec<usize> = Vec::new();
+        let mut near: Option<f64> = None;
+        for i in 0..self.micros.len() {
+            let d2 = sq_euclidean(self.micros[i].cf.mean(), x).to_f64().unwrap();
+            near = Some(near.map_or(d2, |b: f64| b.min(d2)));
+            if d2 <= r2 {
+                neigh.push(i);
+            }
+        }
         if neigh.is_empty() {
             let mut cf = C::new(self.dim);
             cf.push(x, R::one());
@@ -474,10 +601,13 @@ impl<R: Real, C: ClusterFeature<R>> DbStream<R, C> {
                 }
             }
         }
-        self.tick();
+        self.tick(near);
     }
 
-    fn tick(&mut self) {
+    /// Advance the clock and clean every `t_gap` ticks. Takes the routing distance for the reason
+    /// [`DenStream::tick`] does.
+    fn tick(&mut self, nearest_sq: Option<f64>) {
+        self.drift.observe(nearest_sq, self.t);
         self.t += 1.0;
         let period = self.t_gap as u64;
         if period > 0 && (self.t as u64) % period == 0 {
@@ -1323,10 +1453,10 @@ mod tests {
         assert_eq!(d.o.len(), 2, "expected two outlier micro-clusters");
         assert_eq!(
             DenStream::nearest(&d.o, &[4.0]),
-            Some(0),
+            Some((0, 16.0)),
             "an exact tie must keep the first micro-cluster"
         );
-        assert_eq!(DenStream::nearest(&d.o, &[7.0]), Some(1));
+        assert_eq!(DenStream::nearest(&d.o, &[7.0]), Some((1, 1.0)));
         let empty: Vec<Micro<Spherical<f64>>> = Vec::new();
         assert_eq!(DenStream::nearest(&empty, &[0.0]), None);
     }
@@ -1478,6 +1608,211 @@ mod tests {
             light.labels().iter().all(|&l| l == -1),
             "a component below μ was labelled a cluster: {:?}",
             light.labels()
+        );
+    }
+}
+
+#[cfg(test)]
+mod drift_tests {
+    use super::*;
+    use crate::adwin::CHECK_EVERY;
+    use crate::clustering::rng::SplitMix64;
+    use crate::feature::Spherical;
+
+    /// λ small enough that the model keeps a stable picture of the stream — the regime in which
+    /// "did the stream change" is a question with an answer. See
+    /// [`the_detector_is_silent_when_lambda_is_too_fast_to_hold_a_baseline`] for the other one.
+    const SLOW_FADE: f64 = 0.001;
+
+    /// Stream `n` isotropic unit-variance 2-D points centred at `(c, c)`, scaled by `s`.
+    fn cloud(insert: &mut impl FnMut(&[f64]), rng: &mut SplitMix64, n: usize, c: f64, s: f64) {
+        for _ in 0..n {
+            insert(&[s * (c + rng.gauss()), s * (c + rng.gauss())]);
+        }
+    }
+
+    /// Alarms raised, and the stream time of the last one, after `before` stationary points at the
+    /// origin followed by `after` points 50σ away — all lengths in units of `s`.
+    fn jump_trace(lambda: f64, eps: f64, seed: u64, s: f64) -> (u64, u64, Option<f64>) {
+        let mut d: DenStream<f64, Spherical<f64>> =
+            DenStream::new(2, s * eps, lambda, 0.5, 4.0).unwrap();
+        let mut rng = SplitMix64::new(seed);
+        cloud(&mut |x| d.insert(x), &mut rng, 2000, 0.0, s);
+        let settled = d.drift().alarms;
+        cloud(&mut |x| d.insert(x), &mut rng, 500, 50.0, s);
+        let r = d.drift();
+        (settled, r.alarms, r.last_alarm)
+    }
+
+    #[test]
+    fn a_move_into_space_the_model_does_not_cover_is_reported_within_one_check_clock() {
+        for seed in 0..3u64 {
+            let (before, after, at) = jump_trace(SLOW_FADE, 1.0, seed, 1.0);
+            assert_eq!(before, 0, "seed {seed}: alarmed on the stationary prefix");
+            assert!(after > before, "seed {seed}: the 50σ move was not reported");
+            let at = at.unwrap();
+            // The change is at t = 2000 and the test runs on a clock, so the alarm cannot arrive
+            // before it and must not arrive more than one clock period after it.
+            assert!(
+                (2000.0..2000.0 + CHECK_EVERY as f64).contains(&at),
+                "seed {seed}: reported at t = {at}, not in the change window"
+            );
+        }
+    }
+
+    #[test]
+    fn dividing_by_the_micro_cluster_radius_is_what_makes_the_statistic_scale_free() {
+        // The bound's additive term `(2/3)·m⁻¹·ln(2/δ')` is in absolute units, so a *raw* distance
+        // detects nothing on data scaled down far enough. Powers of two so the scaling is exact in
+        // binary floating point and the two runs may be compared for equality, not closeness.
+        let reference = jump_trace(SLOW_FADE, 1.0, 0, 1.0);
+        for s in [1.0 / 1024.0, 1024.0] {
+            assert_eq!(
+                jump_trace(SLOW_FADE, 1.0, 0, s),
+                reference,
+                "the same stream at scale {s} was not reported identically"
+            );
+        }
+    }
+
+    #[test]
+    fn a_stationary_stream_stays_under_the_false_positive_rate_delta_promises() {
+        // δ is a ceiling on the rate, so what is measured is a rate and not a yes/no. It is taken
+        // after a warm-up because the mean routing distance genuinely falls while the model is
+        // still filling in, and a report of that is not a false positive — it is the statistic
+        // changing. Measured 2026-08-28: 1 alarm in 20 000 DenStream points and 0 in 20 000
+        // DbStream points, against the 40 the ceiling allows.
+        let (mut fires, mut points) = (0u64, 0usize);
+        for seed in 0..5u64 {
+            let mut den: DenStream<f64, Spherical<f64>> =
+                DenStream::new(2, 1.0, SLOW_FADE, 0.5, 4.0).unwrap();
+            let mut db: DbFixture = DbStream::new(2, 1.0, SLOW_FADE, 0.5, 2.0).unwrap();
+            let mut rng = SplitMix64::new(seed);
+            cloud(&mut |x| den.insert(x), &mut rng, 2000, 0.0, 1.0);
+            cloud(
+                &mut |x| db.insert(x),
+                &mut SplitMix64::new(seed),
+                2000,
+                0.0,
+                1.0,
+            );
+            let warm = (den.drift().alarms, db.drift().alarms);
+            cloud(&mut |x| den.insert(x), &mut rng, 4000, 0.0, 1.0);
+            cloud(
+                &mut |x| db.insert(x),
+                &mut SplitMix64::new(seed + 100),
+                4000,
+                0.0,
+                1.0,
+            );
+            fires += (den.drift().alarms - warm.0) + (db.drift().alarms - warm.1);
+            points += 8000;
+        }
+        let rate = fires as f64 / points as f64;
+        assert!(
+            rate <= DRIFT_DELTA,
+            "{fires} false positives in {points} settled stationary points ({rate:.5})"
+        );
+    }
+
+    #[test]
+    fn the_detector_is_silent_when_lambda_is_too_fast_to_hold_a_baseline() {
+        // λ = 0.25 halves a micro-cluster's weight every four points, so with a radius this small
+        // the model never holds a settled picture: the mean routing distance is already ~2.7ε
+        // before the move and stays there after it. There is no baseline to depart from, and the
+        // detector says nothing rather than saying something arbitrary. This is the division of
+        // labour: λ decides how fast the model follows, the detector reports whether it had to.
+        let (before, after, _) = jump_trace(0.25, 0.5, 0, 1.0);
+        assert_eq!(
+            (before, after),
+            (0, 0),
+            "a λ this fast has no baseline to lose"
+        );
+    }
+
+    #[test]
+    fn the_reported_distance_is_in_micro_cluster_radii_and_the_first_point_is_not_counted() {
+        // ε = 2, so a point 6 away from the only micro-cluster is at 3 radii. The first point has
+        // nothing to be near and contributes no value at all, which is why the window holds one.
+        let mut d: DenStream<f64, Spherical<f64>> =
+            DenStream::new(2, 2.0, SLOW_FADE, 0.5, 4.0).unwrap();
+        assert_eq!(
+            d.drift(),
+            DriftReport {
+                alarms: 0,
+                last_alarm: None,
+                distance: 0.0,
+                window: 0
+            },
+            "a detector that has seen nothing must report nothing"
+        );
+        d.insert(&[0.0, 0.0]);
+        assert_eq!(
+            d.drift().window,
+            0,
+            "the first point had no micro-cluster to be far from"
+        );
+        d.insert(&[6.0, 0.0]);
+        assert_eq!(
+            d.drift(),
+            DriftReport {
+                alarms: 0,
+                last_alarm: None,
+                distance: 3.0,
+                window: 1
+            },
+            "6 units from the nearest micro-cluster at ε = 2 is 3 radii"
+        );
+    }
+
+    #[test]
+    fn dbstream_reports_the_same_move_over_its_own_radius() {
+        let mut d: DbFixture = DbStream::new(2, 1.0, SLOW_FADE, 0.5, 2.0).unwrap();
+        let mut rng = SplitMix64::new(0);
+        cloud(&mut |x| d.insert(x), &mut rng, 2000, 0.0, 1.0);
+        let before = d.drift().alarms;
+        cloud(&mut |x| d.insert(x), &mut rng, 500, 50.0, 1.0);
+        let r = d.drift();
+        assert!(r.alarms > before, "the 50σ move was not reported");
+        let at = r.last_alarm.unwrap();
+        assert!(
+            (2000.0..2000.0 + CHECK_EVERY as f64).contains(&at),
+            "reported at t = {at}, not in the change window"
+        );
+    }
+
+    type DbFixture = DbStream<f64, Spherical<f64>>;
+
+    #[test]
+    #[ignore = "measurement, not an assertion"]
+    fn what_the_always_on_drift_detector_costs_the_insert_path() {
+        use std::time::Instant;
+        let n = 200_000usize;
+        let mut a = Adwin::new(DRIFT_DELTA);
+        let mut rng = SplitMix64::new(1);
+        let vals: Vec<f64> = (0..n).map(|_| rng.gauss().abs()).collect();
+        let t0 = Instant::now();
+        for &v in &vals {
+            a.update(v);
+        }
+        let adwin_ns = t0.elapsed().as_nanos() as f64 / n as f64;
+        let mut d: DenStream<f64, Spherical<f64>> =
+            DenStream::new(2, 1.0, SLOW_FADE, 0.5, 4.0).unwrap();
+        let mut rng = SplitMix64::new(2);
+        let pts: Vec<[f64; 2]> = (0..n)
+            .map(|_| [rng.gauss() * 8.0, rng.gauss() * 8.0])
+            .collect();
+        let t1 = Instant::now();
+        for p in &pts {
+            d.insert(p);
+        }
+        let insert_ns = t1.elapsed().as_nanos() as f64 / n as f64;
+        println!(
+            "adwin {adwin_ns:.0} ns/update (window {}), DenStream::insert {insert_ns:.0} ns/point \
+             over {} micro-clusters — the detector is {:.1}% of the insert path",
+            a.width(),
+            d.potential_count() + d.o.len(),
+            100.0 * adwin_ns / insert_ns
         );
     }
 }

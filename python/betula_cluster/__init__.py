@@ -1776,6 +1776,26 @@ class DenStream:
         return self._require_fit().n_microclusters_
 
     @property
+    def drift_(self):
+        """Drift diagnostic over the routing distance — ``{alarms, last_alarm, distance, window}``.
+
+        The detector (ADWIN; Bifet & Gavaldà, SDM 2007) watches one number per streamed point: how
+        far the point landed from the nearest micro-cluster, in units of ``eps``. Stationary
+        data sits near 1 by construction; a distribution moving into space the model does not cover
+        sends it far higher, and an *alarm* is raised when that shift is larger than chance explains
+        at δ = 0.002. ``distance`` is the mean over the adaptive window, ``window`` its size (it
+        collapses on a change and regrows while the stream is stationary), ``last_alarm`` the stream
+        time of the most recent report.
+
+        **It reports; it does not act.** An alarm prunes nothing, promotes nothing and relabels
+        nothing — what to do about a change is the caller's policy. ``decay`` and this answer
+        different questions: ``decay`` sets how fast the model forgets, on a fixed schedule, whether
+        or not anything changed; the detector says whether anything did. An early alarm is the model
+        warming up, not drift.
+        """
+        return self._require_fit().drift_
+
+    @property
     def microcluster_centers_(self):
         return self._require_fit().microcluster_centers_
 
@@ -1881,6 +1901,26 @@ class DbStream:
     @property
     def n_microclusters_(self):
         return self._require_fit().n_microclusters_
+
+    @property
+    def drift_(self):
+        """Drift diagnostic over the routing distance — ``{alarms, last_alarm, distance, window}``.
+
+        The detector (ADWIN; Bifet & Gavaldà, SDM 2007) watches one number per streamed point: how
+        far the point landed from the nearest micro-cluster, in units of ``r``. Stationary
+        data sits near 1 by construction; a distribution moving into space the model does not cover
+        sends it far higher, and an *alarm* is raised when that shift is larger than chance explains
+        at δ = 0.002. ``distance`` is the mean over the adaptive window, ``window`` its size (it
+        collapses on a change and regrows while the stream is stationary), ``last_alarm`` the stream
+        time of the most recent report.
+
+        **It reports; it does not act.** An alarm prunes nothing, promotes nothing and relabels
+        nothing — what to do about a change is the caller's policy. ``decay`` and this answer
+        different questions: ``decay`` sets how fast the model forgets, on a fixed schedule, whether
+        or not anything changed; the detector says whether anything did. An early alarm is the model
+        warming up, not drift.
+        """
+        return self._require_fit().drift_
 
     @property
     def microcluster_centers_(self):

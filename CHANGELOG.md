@@ -49,6 +49,23 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- **`DenStream.drift_` and `DbStream.drift_` — an ADWIN change detector on the streaming heads.**
+  `decay` is a schedule: it forgets at a fixed rate whether or not anything changed, and a wrong λ is
+  silent in both directions. The detector (Bifet & Gavaldà, SDM 2007) answers the other question —
+  *did the stream change* — with a stated false-positive ceiling δ = 0.002 rather than a tuned
+  threshold, and reports `{alarms, last_alarm, distance, window}`. **It reports; it does not act:** an
+  alarm prunes nothing, promotes nothing and relabels nothing, so no existing labels move. The
+  statistic is the distance from each incoming point to the nearest micro-cluster in units of the
+  micro-cluster radius, which is free (both online steps already compute it) and scale-free (a raw
+  distance stops detecting anything on data scaled down far enough, because `ε_cut`'s additive term is
+  in absolute units). Measured over jump / spread / split / gradual changes on both heads, three
+  seeds: reported in **10 of 10** cells, three quarters of them inside the first 32-point check clock,
+  at a false-positive rate of **0.00050** on stationary streams. The obvious alternative — a novelty
+  indicator, 1 if the point opened a micro-cluster — was implemented first and **measured to raise
+  zero alarms in five of six `(λ, ε)` settings** on a 50σ jump: the impulse lasts ~5–10 points and a
+  bounded statistic cannot show a gap that short. New `bench/drift.py`, tables in
+  [`bench/RESULTS.md`](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md).
+
 - **The automatic-`k` ceiling is no longer one number for every head, and `auto_k_max` overrides it.**
   `n_clusters=0` was bounded at 20 for all of them, so no `n_clusters=0` path in the library could
   return more than 20 clusters. The bound exists because a *sweep* refits the whole head at every

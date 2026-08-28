@@ -2270,6 +2270,34 @@ def test_denstream_clone_roundtrip():
     assert base.clone(ds).get_params() == ds.get_params()
 
 
+def test_drift_is_reported_when_the_stream_moves_to_unoccupied_space():
+    # The detector watches how far incoming points land from the micro-clusters the stream has
+    # built, in units of the radius. A 50sigma move is far, so it is reported within one check
+    # clock. The prefix is not asserted alarm-free: while the model is still filling in, the mean
+    # routing distance really is falling, and a report of that is warm-up rather than a false
+    # positive. The false-positive rate proper is measured in the Rust suite, against delta.
+    rng = np.random.default_rng(0)
+    ds = betula_cluster.DenStream(eps=1.0, decay=0.001, beta=0.5, mu=4.0)
+    ds.partial_fit(rng.normal(size=(2000, 2)))
+    settled = ds.drift_
+    assert settled["window"] > 1000
+    assert 0.0 < settled["distance"] < 2.0  # stationary data sits near one radius
+    ds.partial_fit(rng.normal(loc=50.0, size=(500, 2)))
+    moved = ds.drift_
+    assert moved["alarms"] > settled["alarms"]
+    assert 2000 <= moved["last_alarm"] < 2064  # within one check clock of the change
+
+
+def test_drift_before_fit_raises_and_dbstream_reports_the_same_fields():
+    with pytest.raises(AttributeError):
+        _ = betula_cluster.DenStream().drift_
+    rng = np.random.default_rng(0)
+    ds = betula_cluster.DbStream(r=1.0, decay=0.001, alpha=0.5, min_weight=2.0)
+    ds.partial_fit(rng.normal(size=(500, 2)))
+    assert set(ds.drift_) == {"alarms", "last_alarm", "distance", "window"}
+    assert ds.drift_["window"] > 0
+
+
 # ── DbStream streaming density clusterer (shared density) ─────────────────────────────────────────
 
 

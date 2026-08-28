@@ -705,6 +705,43 @@ for chunk in stream_of_arrays:
 labels = ds.predict(X_query)                  # -1 = noise; finalizes the shared-density graph once
 ```
 
+### Has the stream changed? — `drift_`
+
+`decay` is a *schedule*: it forgets at a fixed rate whether or not anything changed, and a wrong λ is
+silent in both directions — too small and the model never forgets, too large and it forgets structure
+that was never stale. Both streaming heads therefore also carry an **ADWIN** change detector (Bifet &
+Gavaldà, SDM 2007), which answers the other question — *did the stream change* — from the data:
+
+```python
+ds.partial_fit(chunk)
+ds.drift_        # {'alarms': 3, 'last_alarm': 2016.0, 'distance': 1.12, 'window': 650}
+```
+
+- `alarms` — change reports since construction, `last_alarm` the stream time (points seen) of the
+  most recent.
+- `distance` — the statistic being watched: the distance from an incoming point to the nearest
+  micro-cluster, **in units of the micro-cluster radius** (`eps` / `r`), averaged over the adaptive
+  window. Stationary data sits near 1 by construction; a distribution moving into space the model
+  does not cover sends it far higher. Reported in radii so the reading does not depend on the scale
+  of your features.
+- `window` — points the adaptive window holds. It collapses on a change and regrows while the stream
+  is stationary, so it is itself a read on how settled the model is.
+
+The false-positive rate is a stated δ = 0.002 per point, not a tuned threshold; measured at 0.00050
+on stationary streams ([`bench/drift.py`](https://github.com/ilgrad/betula-cluster/blob/main/bench/drift.py)).
+Two things to expect:
+
+- **Early alarms are the model warming up**, not drift. Until the first micro-clusters exist, points
+  really are landing far from everything, and the falling routing distance is a real change in the
+  statistic.
+- **A `decay` fast enough to prune micro-clusters as fast as they form has no baseline to depart
+  from**, and the detector then reports nothing at all rather than reporting noise. Use `decay` to
+  choose how fast the model follows; use `drift_` to find out when it had to.
+
+**It reports; it does not act.** An alarm prunes nothing, promotes nothing and relabels nothing —
+what to do about a change is your policy, and a detector that silently rebuilt the model would turn
+its own false-positive rate into a correctness problem.
+
 ## Windowed stream queries — `WindowStream`
 
 `DenStream` has only a present: decay makes the past fade, so it cannot answer "what did the data

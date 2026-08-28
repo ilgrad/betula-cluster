@@ -44,7 +44,7 @@ use crate::model::{
 };
 use crate::sparse::{SparseCentroids, summarize_sparse};
 use crate::stats::chi2_quantile;
-use crate::stream::{DbStream, DenStream};
+use crate::stream::{DbStream, DenStream, DriftReport};
 use crate::topology::{Lens, Link, MapperGraph, MapperParams, mapper};
 use crate::tree::CFTree;
 use crate::types::Real;
@@ -3564,6 +3564,19 @@ impl PyWindowStream {
     }
 }
 
+/// A [`DriftReport`] as a Python dict. Both streaming clusterers report the same four fields, so the
+/// mapping lives once: `alarms` (change reports since construction), `last_alarm` (stream time of the
+/// most recent, `None` if there has been none), `distance` (mean routing distance over the adaptive
+/// window, in micro-cluster radii) and `window` (points the window holds).
+fn drift_dict(py: Python<'_>, r: DriftReport) -> PyResult<Bound<'_, pyo3::types::PyDict>> {
+    let d = pyo3::types::PyDict::new(py);
+    d.set_item("alarms", r.alarms)?;
+    d.set_item("last_alarm", r.last_alarm)?;
+    d.set_item("distance", r.distance)?;
+    d.set_item("window", r.window)?;
+    Ok(d)
+}
+
 /// Streaming **DenStream** density clusterer over spherical fading micro-clusters (`f64`). Kept
 /// separate from `Betula` because it is a different model: a flat set of decaying micro-clusters,
 /// not a CF-tree. Built lazily on the first `partial_fit` (dimensionality fixed then).
@@ -3681,6 +3694,25 @@ impl PyDenStream {
     #[getter]
     fn n_microclusters_(&self) -> usize {
         self.inner.as_ref().map_or(0, |d| d.potential_count())
+    }
+
+    /// Drift diagnostic: how far incoming points are landing from the micro-clusters the stream has
+    /// built, and whether that has changed. Reported, never acted on. Zeros before the first
+    /// `partial_fit`.
+    #[getter]
+    fn drift_<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
+        drift_dict(
+            py,
+            self.inner.as_ref().map_or(
+                DriftReport {
+                    alarms: 0,
+                    last_alarm: None,
+                    distance: 0.0,
+                    window: 0,
+                },
+                |d| d.drift(),
+            ),
+        )
     }
 
     #[getter]
@@ -3831,6 +3863,25 @@ impl PyDbStream {
     #[getter]
     fn n_microclusters_(&self) -> usize {
         self.inner.as_ref().map_or(0, |d| d.micro_count())
+    }
+
+    /// Drift diagnostic: how far incoming points are landing from the micro-clusters the stream has
+    /// built, and whether that has changed. Reported, never acted on. Zeros before the first
+    /// `partial_fit`.
+    #[getter]
+    fn drift_<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
+        drift_dict(
+            py,
+            self.inner.as_ref().map_or(
+                DriftReport {
+                    alarms: 0,
+                    last_alarm: None,
+                    distance: 0.0,
+                    window: 0,
+                },
+                |d| d.drift(),
+            ),
+        )
     }
 
     #[getter]

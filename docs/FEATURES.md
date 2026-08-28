@@ -93,6 +93,10 @@ A capability-by-capability reference. For runnable code see [`USAGE.md`](USAGE.m
   proximity: it recovers arbitrarily-shaped clusters as chains of overlapping micro-clusters and —
   unlike a distance-only rule — keeps two close-but-disconnected dense regions apart (an empty gap
   carries zero shared density). Same fading-CF core as `DenStream`; `partial_fit` / `predict`.
+- **`drift_`** on both streaming heads — an **ADWIN** change detector (Bifet & Gavaldà, SDM 2007) over
+  the routing distance in micro-cluster radii, at a stated false-positive ceiling δ = 0.002 rather
+  than a tuned threshold. `decay` sets how fast the model forgets, on a fixed schedule; this says
+  whether it had to. It reports and does not act: an alarm changes no label.
 - **`WindowStream`** — windowed queries over a timestamped stream: "cluster what arrived between
   `t₀` and `t₁`". Summaries are kept **per frame** and a window is their *sum*, never a difference of
   two cumulative snapshots the way CluStream does it — an inverse merge loses `log₁₀(S_AB/S_B)`
@@ -258,8 +262,9 @@ A capability-by-capability reference. For runnable code see [`USAGE.md`](USAGE.m
 | `tree` | arena CF-tree + budget-targeting auto-rebuild |
 | `clustering` | `kmeans` / `kmeans_auto` / `cop_kmeans`, `xmeans` (recursive splitting), `gmm_diagonal`, `gmm_full`, `gmm_toeplitz{,_full,_gs}`, `ward_hac`, `agglomerative` (UPGMA/WPGMA/UPGMC/WPGMC), `spectral`, `leiden`, `spherical_kmeans`, `movmf`, `scale_space`, `hdbscan`, `kprototypes`, `nmf` (the `projection` reducer) |
 | `mixture` | fitted-mixture kernels (diagonal / full-Cholesky / stationary / vMF) that score a raw point — what `predict` / `predict_proba` label by |
-| `stream` | `DenStream` + `DbStream` fading-microcluster density heads |
+| `stream` | `DenStream` + `DbStream` fading-microcluster density heads, with the `adwin` drift detector on their routing distance |
 | `window` | frame-summed windowed summaries + `WindowStream`; the conditioned inverse merge |
+| `adwin` | ADWIN2 adaptive windowing — the change detector behind `drift_` |
 | `coreset` | sensitivity-sampled `(k, ε)`-coreset with its summarization bound |
 | `sparse` | `O(nnz)` sparse-native summarisation (`fit_predict_sparse`) |
 | `sketch` | KLL + DDSketch mergeable quantile sketches |
