@@ -10,7 +10,7 @@
 //!
 //! | head | translate | rotate | scale | swap axes |
 //! |---|---|---|---|---|
-//! | `kmeans`, `ward_hac`, `agglomerative`, `dyn_msc`, `hdbscan` | yes | yes | yes | yes |
+//! | `kmeans`, `xmeans`, `ward_hac`, `agglomerative`, `dyn_msc`, `hdbscan` | yes | yes | yes | yes |
 //! | `gmm_full`, `mppca` | yes | yes | yes | yes |
 //! | `gmm_diagonal` | yes | **no** | yes | yes |
 //! | `spectral`, `scale_space` | yes | yes | yes | yes |
@@ -45,6 +45,7 @@
 use betula_cluster::clustering::{
     Linkage, Selection, agglomerative, dyn_msc, gmm_diagonal, gmm_full, gmm_toeplitz,
     hdbscan_selected, kmeans, movmf, mppca, scale_space, spectral, spherical_kmeans, ward_hac,
+    xmeans,
 };
 use betula_cluster::feature::{ClusterFeature, Diagonal, Full, Spherical};
 
@@ -179,6 +180,7 @@ fn all_heads(pts: &[Vec<f64>]) -> Vec<(&'static str, Vec<i64>)> {
     let lv = leaves(pts);
     vec![
         ("kmeans", as_i64(&kmeans(&lv, K, 100, 4, SEED).labels)),
+        ("xmeans", as_i64(&xmeans(&lv, 2, K, 100, SEED).labels)),
         ("ward_hac", as_i64(&ward_hac(&lv, K).labels)),
         (
             "agglomerative-average",

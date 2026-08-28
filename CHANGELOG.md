@@ -62,14 +62,17 @@ All notable changes to this project are documented here. The format follows
   `n·ln 2` of mixture-weight likelihood and buys `½·n·d·ln(S₁/S₂)`, so it is accepted only when the
   cut captures more than `1 − 2^(−2/d)` of the region's sum of squares — **half of it at `d = 2`**,
   0.13 at `d = 10`, 0.022 at `d = 64`. A cut through a cloud that is round at every scale captures
-  about `0.64/d`, always less than the `1.39/d` required, so on low-dimensional evenly-spread data
-  the head answers `k = 1`: a 3×3 grid of nine equal 2-D blobs does exactly that. That is the
-  published algorithm, not a defect, and `method="kmeans"` with `n_clusters=0` is the head to use
-  there — a sweep compares `k = 1` against `k = 9` directly and never passes through the refused
-  `k = 2`. Measured on random blob layouts (4 leaves per blob, median of seeds 0/1/2), `|Δk|` against
-  the true count with the sweep at its cap of 20: `d = 10, k* = 30` → sweep 10.0 (capped) in 4.9 ms,
-  x-means **0.0** in 0.7 ms; `d = 64, k* = 30` → sweep 10.0 in 8.9 ms, x-means **0.0** in 1.3 ms;
-  `d = 2, k* = 10` → sweep **0.3**, x-means 6.3. Table in
+  about `0.64/d`, always less than the `1.39/d` required. **The recursion therefore starts at
+  `k = 2`**: a greedy splitter has no way back from a refused split, and at `k = 1` the whole answer
+  rides on the one comparison that rule answers worst, since a layout of many well-separated groups
+  is itself close to round. From `k = 1` the head collapses to a single cluster in five of twenty
+  `(k*, seed)` cells, in every seed at `k* = 60`, and on a 3×3 grid of nine equal 2-D blobs; from
+  `k = 2` every one of those returns the true count. Pelleg & Moore, ELKI and pyclustering all start
+  at 2. Measured on random blob layouts (4 leaves per blob, median of seeds 0/1/2), `|Δk|` against
+  the true count with the sweep at its cap of 20: `d = 10, k* = 30` → sweep 10.0 (capped) in 4.8 ms,
+  x-means **0.0** in 0.8 ms; `d = 64, k* = 30` → sweep 10.0 in 9.0 ms, x-means **0.0** in 1.4 ms.
+  What survives is `d = 2` at a large count, where one cut must capture half the scatter:
+  `d = 2, k* = 30` → sweep 10.0 (capped), x-means 6.7. Table in
   [docs/USAGE.md](https://github.com/ilgrad/betula-cluster/blob/main/docs/USAGE.md).
 
 - `Betula.near_duplicate_pairs(..., neighbors=k)`: a cross-leaf recall pass. The within-leaf scan

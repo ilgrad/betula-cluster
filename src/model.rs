@@ -418,8 +418,8 @@ pub(crate) fn fit_head<R: Real, C: ClusterFeature<R>>(
         // `AUTO_K_MAX` bounds the *sweep*, whose cost is quadratic in the cap. X-means stops when no
         // centre wants to split, so at `k == 0` the only bound it needs is the leaf count -- taking
         // the sweep's cost guard here would silently truncate the answer this head exists to give.
-        Method::XMeans if k == 0 => HeadFit::hard(xmeans(features, nlv, max_iter, seed).labels),
-        Method::XMeans => HeadFit::hard(xmeans(features, kk, max_iter, seed).labels),
+        Method::XMeans if k == 0 => HeadFit::hard(xmeans(features, 2, nlv, max_iter, seed).labels),
+        Method::XMeans => HeadFit::hard(xmeans(features, 2.min(kk), kk, max_iter, seed).labels),
         Method::Gmm if k == 0 => {
             HeadFit::soft(gmm_diagonal_auto(features, 1, auto_hi, max_iter, seed))
         }
@@ -655,7 +655,7 @@ mod tests {
         assert_eq!(n, 24, "the fixture is four leaves per blob");
         let selected: [(&str, usize); 7] = [
             ("kmeans", kmeans_auto(&feats, 1, n, 100, 1).centers.len()),
-            ("xmeans", xmeans(&feats, n, 100, 1).centers.len()),
+            ("xmeans", xmeans(&feats, 2, n, 100, 1).centers.len()),
             ("gmm", gmm_diagonal_auto(&feats, 1, n, 100, 1).means.len()),
             ("gmm-full", gmm_full_auto(&feats, 1, n, 100, 1).means.len()),
             ("mppca", mppca_auto(&feats, 1, n, 1, 100, 1).means.len()),

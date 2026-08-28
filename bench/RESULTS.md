@@ -1958,26 +1958,39 @@ does at `n_clusters=0`.
 
 | `d` | true `k` | sweep \|Δk\| | sweep | x-means \|Δk\| | x-means |
 |---|---|---|---|---|---|
-| 2 | 10 | **0.3** | 1.1 ms | 6.3 | 0.1 ms |
-| 2 | 30 | 10.0 *(capped)* | 3.0 ms | 29.0 | 0.0 ms |
+| 2 | 10 | **0.3** | 1.2 ms | 0.7 | 0.1 ms |
+| 2 | 30 | 10.0 *(capped)* | 3.0 ms | 6.7 | 0.5 ms |
 | 5 | 10 | **0.0** | 1.2 ms | **0.0** | 0.1 ms |
-| 5 | 30 | 10.0 *(capped)* | 3.4 ms | 29.0 | 0.1 ms |
-| 10 | 10 | **0.0** | 1.6 ms | **0.0** | 0.2 ms |
-| 10 | 30 | 10.0 *(capped)* | 4.9 ms | **0.0** | 0.7 ms |
-| 32 | 30 | 10.0 *(capped)* | 6.6 ms | **0.0** | 1.1 ms |
-| 64 | 30 | 10.0 *(capped)* | 8.9 ms | **0.0** | 1.3 ms |
+| 5 | 30 | 10.0 *(capped)* | 3.4 ms | **0.0** | 0.5 ms |
+| 10 | 10 | **0.0** | 1.6 ms | **0.0** | 0.1 ms |
+| 10 | 30 | 10.0 *(capped)* | 4.8 ms | **0.0** | 0.8 ms |
+| 32 | 10 | **0.0** | 2.1 ms | **0.0** | 0.2 ms |
+| 32 | 30 | 10.0 *(capped)* | 6.7 ms | **0.0** | 1.0 ms |
+| 64 | 10 | **0.0** | 3.0 ms | **0.0** | 0.3 ms |
+| 64 | 30 | 10.0 *(capped)* | 9.0 ms | **0.0** | 1.4 ms |
 
-Two readings, and they point in opposite directions:
+Two readings:
 
-- **At `d ≥ 10` x-means lands on the true count where the sweep is stuck at 20, for 4–7× less time.**
-  That is the whole case for the head: the sweep costs `O(k_max²)` full k-means over every leaf, which
-  is why the cap exists, and a split test has nothing to cap.
-- **At `d ≤ 5` with many clusters x-means under-splits, badly.** A balanced binary split costs `n·ln 2`
-  of mixture-weight likelihood and buys `½·n·d·ln(S₁/S₂)`, so it is accepted only when the cut captures
-  more than `1 − 2^(−2/d)` of the region's scatter — **half of it at `d = 2`**. A cut through a cloud
-  that is round at every scale captures about `0.64/d`, always below the `1.39/d` required, so a
-  regular grid of equal 2-D blobs is refused at the first split and the head answers `k = 1`. Use
-  `method="kmeans"` there; a sweep compares `k = 1` against `k = 9` directly.
+- **At every `d ≥ 5` x-means lands on the true count where the sweep is stuck at 20, for 6–16× less
+  time.** That is the whole case for the head: the sweep costs `O(k_max²)` full k-means over every
+  leaf, which is why the cap exists, and a split test has nothing to cap.
+- **At `d = 2` with many clusters it still under-splits** — 6.7 short of 30. A balanced binary split
+  costs `n·ln 2` of mixture-weight likelihood and buys `½·n·d·ln(S₁/S₂)`, so it is accepted only when
+  the cut captures more than `1 − 2^(−2/d)` of the region's scatter — **half of it at `d = 2`**, and a
+  cut through a cloud that is round at every scale captures about `0.64/d`. Use `method="kmeans"`
+  there; a sweep compares `k = 1` against `k = 30` directly.
+
+**Where the recursion starts is worth more than the threshold.** An earlier build of this table read
+6.3 at `d = 2, k* = 10` and 29.0 at `d = 5, k* = 30`, and the conclusion drawn from it — that the head
+under-splits below `d = 10` — was an artefact of starting the recursion at `k = 1`. A greedy splitter
+has no way back from a refused split, so at `k = 1` the entire answer rides on one comparison over
+the whole leaf set, and a layout of many well-separated groups is itself close to round: exactly the
+case the threshold refuses. Measured from `k = 1`, the head is exact at `k* ∈ {10, 20, 30}` and then
+collapses to a single cluster in five of twenty `(k*, seed)` cells, in all four seeds at `k* = 60`,
+and on a 3×3 grid of nine equal 2-D blobs. From `k = 2` — which is what Pelleg & Moore, ELKI and
+pyclustering all do — every one of those returns the true count, including the grid. The failure was
+all-or-nothing in both directions: whenever the first split was accepted, the recursion ran to the
+truth.
 
 **The same run found a bug in the shipped score.** Before the fix every row above was wrong in a
 different way: the sweep saturated its cap on *all* eight rows and x-means ran to exactly the leaf

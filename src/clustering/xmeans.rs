@@ -110,9 +110,19 @@ fn model_bic<R: Real, C: ClusterFeature<R>>(features: &[C], km: &KMeans<R>, dim:
 /// target: the result is the best-BIC model among those visited, and a run that stops early stopped
 /// because no centre wanted to split.
 ///
+/// `k_min` is where the recursion starts, and it is not cosmetic. A greedy splitter has no way back
+/// from a refused split, so at `k_min = 1` the whole answer rides on one BIC comparison over the
+/// entire leaf set — the comparison the accept threshold makes hardest, since a cloud of many
+/// well-separated groups is itself close to isotropic and a 2-way cut of an isotropic cloud captures
+/// only `0.6366/d` of its scatter against the `2·ln2/d` a split has to buy. Refuse there and the head
+/// answers 1 on data with any number of groups. Starting at 2 puts the first *decision* one level
+/// down, where each half is already a truncated cloud; from there the recursion has been measured to
+/// run to the true `k`. Pelleg & Moore, ELKI and pyclustering all default to 2 for this reason.
+///
 /// Panics on an empty feature set, as [`kmeans`] does.
 pub fn xmeans<R: Real, C: ClusterFeature<R>>(
     features: &[C],
+    k_min: usize,
     k_max: usize,
     max_iter: usize,
     seed: u64,
@@ -121,9 +131,11 @@ pub fn xmeans<R: Real, C: ClusterFeature<R>>(
     assert!(m > 0, "need at least one feature");
     let dim = features[0].dim();
     let cap = k_max.min(m).max(1);
+    let start = k_min.max(1).min(cap);
 
     // `k = 1` needs no restarts: the single centre is the weight-mean whatever the seeding does.
-    let mut current = kmeans(features, 1, max_iter, 1, seed);
+    let n_init = if start == 1 { 1 } else { SPLIT_N_INIT };
+    let mut current = kmeans(features, start, max_iter, n_init, seed);
     let mut best_bic = model_bic(features, &current, dim);
     let (mut best_labels, mut best_centers, mut best_inertia) = (
         current.labels.clone(),
@@ -290,7 +302,7 @@ mod tests {
         assert_eq!(swept.centers.len(), 6, "the sweep ran away toward {n}");
         assert!(ari(&swept.labels, &truth) > 0.99);
 
-        let split = xmeans(&micros, n, 100, 0);
+        let split = xmeans(&micros, 2, n, 100, 0);
         assert_eq!(split.centers.len(), 6, "x-means ran away toward {n}");
         assert!(ari(&split.labels, &truth) > 0.99);
     }
@@ -300,7 +312,7 @@ mod tests {
         for (n_true, d) in [(10usize, 5usize), (10, 10), (30, 10), (30, 32), (30, 64)] {
             for seed in [0u64, 1, 2] {
                 let (micros, truth) = blob_leaves(n_true, d, 40, seed);
-                let km = xmeans(&micros, micros.len(), 100, seed);
+                let km = xmeans(&micros, 2, micros.len(), 100, seed);
                 assert_eq!(
                     km.centers.len(),
                     n_true,
@@ -315,24 +327,45 @@ mod tests {
     }
 
     #[test]
+    fn the_first_split_is_where_a_greedy_head_can_lose_everything() {
+        // Sixty well-separated blobs. Their *centres* are themselves a draw from one isotropic
+        // Gaussian, so at `k = 1` the head is asked the question its accept threshold answers worst:
+        // a 2-way cut of a round cloud captures `0.6366/d` against the `2·ln2/d` it must buy. Refuse
+        // and the recursion is over — there is no way back from a refused split, so the head answers
+        // 1 on data with sixty groups. Measured at `k_min = 1`: correct at 10, 20 and 30 blobs, then
+        // collapsing to 1 in five of twenty (n_true, seed) cells and in all four seeds at 60.
+        //
+        // Starting at 2 moves the first *decision* one level down, where each half is a truncated
+        // cloud rather than a round one, and the recursion runs to the true `k` in all of them.
+        for seed in [0u64, 1, 2] {
+            let (micros, truth) = blob_leaves(60, 10, 40, seed);
+            let km = xmeans(&micros, 2, micros.len(), 100, seed);
+            assert_eq!(km.centers.len(), 60, "seed {seed}");
+            assert!(ari(&km.labels, &truth) > 0.99, "seed {seed}");
+        }
+    }
+
+    #[test]
     fn an_isotropic_layout_is_the_case_greedy_splitting_refuses() {
-        // The head's structural limit, pinned rather than hidden. A balanced binary split costs
-        // `n·ln 2` in mixture weight and buys `½·n·d·ln(S_1/S_2)`, so it is accepted only when it
-        // captures `B/S_1 > 1 − 2^(−2/d)` of the region's scatter — **half of it** at `d = 2`. A cut
-        // through a cloud that is round at every scale captures about `0.6366/d`, always less than
-        // the `1.386/d` the rule asks for, so a square grid of equal blobs is refused at the first
-        // split and the head answers 1. That is the published algorithm, not a defect here, and it
-        // is why `method="kmeans"` with `n_clusters=0` stays the head for low-dimensional data: a
-        // sweep compares `k = 1` against `k = 9` directly and never passes through the refused 2.
+        // The accept threshold, pinned from the side where it bites hardest, and the exact price of
+        // where the recursion starts. A balanced binary split costs `n·ln 2` in mixture weight and
+        // buys `½·n·d·ln(S_1/S_2)`, so it is accepted only when it captures `B/S_1 > 1 − 2^(−2/d)`
+        // of the region's scatter — **half of it** at `d = 2`. A cut through a cloud that is round
+        // at every scale captures about `0.6366/d`, always less than the `1.386/d` the rule asks
+        // for, so a square grid of nine equal blobs is refused at the very first split.
         let centers: Vec<[f64; 2]> = (0..9)
             .map(|i| [8.0 * (i % 3) as f64, 8.0 * (i / 3) as f64])
             .collect();
         let mut rng = SplitMix64::new(3);
         let (pts, _truth) = blobs(&mut rng, 60, &centers, 0.3);
         let (micros, _) = grid_micros(&pts, 0.5);
-        assert_eq!(xmeans(&micros, 20, 100, 3).centers.len(), 1);
-        // The sweep, on the same leaves, is not fooled — so the fixture has nine groups in it and
-        // the refusal above is the split test's, not the data's.
+        assert_eq!(xmeans(&micros, 1, 20, 100, 3).centers.len(), 1);
+        // And what that refusal actually costs: *everything*, but only at `k_min = 1`. Start one
+        // level down and the same threshold on the same leaves accepts every split from there to
+        // the truth — so the failure above is the single top-level comparison, not the rule.
+        assert_eq!(xmeans(&micros, 2, 20, 100, 3).centers.len(), 9);
+        // The sweep, on the same leaves, is not fooled either — so the fixture does have nine
+        // groups in it and the refusal at `k_min = 1` is the split test's, not the data's.
         assert_eq!(kmeans_auto(&micros, 1, 20, 100, 3).centers.len(), 9);
     }
 
@@ -340,13 +373,13 @@ mod tests {
     fn k_max_is_a_cap_the_head_cannot_exceed() {
         let (micros, _truth) = blob_leaves(9, 10, 40, 3);
         for cap in 1..=9 {
-            let got = xmeans(&micros, cap, 100, 3).centers.len();
+            let got = xmeans(&micros, 2, cap, 100, 3).centers.len();
             assert!(got <= cap, "cap {cap}: the head returned {got}");
             assert!(got >= 1, "cap {cap}: the head returned nothing");
         }
         // The cap binds rather than decorates: nine real groups are cut to four when asked for four.
-        assert_eq!(xmeans(&micros, 4, 100, 3).centers.len(), 4);
-        assert_eq!(xmeans(&micros, 1, 100, 3).centers.len(), 1);
+        assert_eq!(xmeans(&micros, 2, 4, 100, 3).centers.len(), 4);
+        assert_eq!(xmeans(&micros, 2, 1, 100, 3).centers.len(), 1);
     }
 
     #[test]
@@ -356,7 +389,7 @@ mod tests {
         let mut rng = SplitMix64::new(19);
         let (pts, _truth) = blobs(&mut rng, 400, &[[0.0, 0.0]], 1.0);
         let (micros, _) = grid_micros(&pts, 0.4);
-        assert_eq!(xmeans(&micros, 10, 100, 19).centers.len(), 1);
+        assert_eq!(xmeans(&micros, 1, 10, 100, 19).centers.len(), 1);
     }
 
     #[test]
@@ -375,7 +408,7 @@ mod tests {
             swept.centers.len()
         );
 
-        let split = xmeans(&micros, micros.len(), 100, 11);
+        let split = xmeans(&micros, 2, micros.len(), 100, 11);
         assert_eq!(split.centers.len(), 30, "x-means did not reach the true k");
 
         let (a_split, a_swept) = (ari(&split.labels, &truth), ari(&swept.labels, &truth));
@@ -390,8 +423,9 @@ mod tests {
     fn the_head_reads_the_data_and_not_the_frame() {
         // x-means inherits k-means' symmetry group — translate, rotate, uniform scale, swap axes —
         // because the split test is built from a Euclidean sum of squares and a score whose only
-        // scale dependence is the `k`-independent shift pinned above. Enforced here rather than in
-        // `tests/equivariance.rs`, whose fixture is 2-D and therefore one the split test refuses.
+        // scale dependence is the `k`-independent shift pinned above. `tests/equivariance.rs` runs
+        // the head on the shared 2-D fixture at a fixed `k`; this covers the case that one cannot,
+        // the automatic `k` at a dimension where the recursion runs deep.
         let (base, _truth) = blob_leaves(8, 10, 40, 5);
         let d = 10;
         let map = |f: &dyn Fn(&[f64]) -> Vec<f64>| -> Vec<usize> {
@@ -405,7 +439,7 @@ mod tests {
                     out
                 })
                 .collect();
-            xmeans(&moved, moved.len(), 100, 5).labels
+            xmeans(&moved, 2, moved.len(), 100, 5).labels
         };
         let identity = map(&|x| x.to_vec());
         for (name, t) in [
@@ -458,7 +492,7 @@ mod tests {
                     ts += t0.elapsed().as_secs_f64();
 
                     let t1 = std::time::Instant::now();
-                    let kx = xmeans(&micros, micros.len(), 100, seed).centers.len();
+                    let kx = xmeans(&micros, 2, micros.len(), 100, seed).centers.len();
                     tx += t1.elapsed().as_secs_f64();
 
                     ds += (ks as i64 - n_true as i64).abs();

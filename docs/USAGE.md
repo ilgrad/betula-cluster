@@ -112,7 +112,7 @@ answer.
 | your data / goal | `method` | needs `k`? |
 |---|---|---|
 | compact/spherical groups, fastest | `kmeans` | yes (or `0` = BIC sweep, capped at 20) |
-| the same, but the count may exceed 20, or `d ≥ 10` and the sweep is too slow | `xmeans` | **no** — `n_clusters` is an upper bound; see *Where `xmeans` refuses to split* |
+| the same, but the count may exceed 20, or the sweep is too slow | `xmeans` | **no** — `n_clusters` is an upper bound; see *Where `xmeans` refuses to split* |
 | elliptical / correlated / anisotropic, soft assignment | `gmm` (diag) or `gmm-full` | yes (or `0` = BIC) |
 | clusters on **low-dimensional subspaces**, `d` too large for `gmm-full` | `mppca` + `feature="fd"`, `rank` = the intrinsic dimension — read *`rank`, and where `mppca` loses* first | yes (or `0` = BIC) |
 | **L2-normalized embeddings** (CLIP / face / sentence / speaker), cosine geometry | `vmf` (soft) or `spherical-kmeans` (hard) | yes (or `0` = BIC, `vmf`) |
@@ -132,11 +132,10 @@ For a robustness score per point, wrap any partitional head in `consensus` (see 
 ### Where `xmeans` refuses to split — `method="xmeans"`
 
 `kmeans` with `n_clusters=0` fits a full k-means at **every** `k` and keeps the best BIC. That costs
-`O(k_max²)` passes over the leaves, which is why the cap is 20 and why no auto-`k` head in the
-library can return more than 20 clusters. `xmeans` (Pelleg & Moore, ICML 2000) asks a different
-question: it tests each centre separately for a 2-way split and stops when none wants one, so the
-cost is `O(k)` two-centre problems on shrinking subsets and there is nothing to cap. `n_clusters` is
-an **upper bound** here, not a target; `0` bounds it only by the leaf count.
+`O(k_max²)` passes over the leaves, which is why its cap is 20. `xmeans` (Pelleg & Moore, ICML 2000)
+asks a different question: it tests each centre separately for a 2-way split and stops when none
+wants one, so the cost is `O(k)` two-centre problems on shrinking subsets and there is nothing to
+cap. `n_clusters` is an **upper bound** here, not a target; `0` bounds it only by the leaf count.
 
 **The split test has a threshold, and it is a function of `d`.** A balanced binary split costs
 `n·ln 2` of mixture-weight likelihood and buys `½·n·d·ln(S₁/S₂)`, so it is accepted only when the cut
@@ -147,26 +146,34 @@ captures more than `1 − 2^(−2/d)` of the region's sum of squares:
 | fraction of the scatter one cut must capture | **0.50** | 0.24 | 0.13 | 0.043 | 0.022 |
 
 A cut through a cloud that is round at every scale captures about `0.64/d`, always less than the
-`1.39/d` the rule asks for — so **on low-dimensional, evenly-spread data `xmeans` can answer `k = 1`**,
-and a 3×3 grid of nine equal blobs in 2-D does exactly that. That is the published algorithm, not a
-defect: use `kmeans` with `n_clusters=0` there, since a sweep compares `k = 1` against `k = 9`
-directly and never has to pass through the `k = 2` the split test refuses.
+`1.39/d` the rule asks for. **The recursion therefore starts at `k = 2`, not at `k = 1`** — a greedy
+splitter has no way back from a refused split, and at `k = 1` the entire answer rides on the one
+comparison the threshold answers worst, since a layout of many well-separated groups is itself
+close to round. Measured: from `k = 1` the head is exact at 10, 20 and 30 blobs and then collapses
+to `k = 1` in five of twenty `(k*, seed)` cells, in every seed at `k* = 60`, and on a 3×3 grid of
+nine equal 2-D blobs. From `k = 2` all of those return the true count. Pelleg & Moore, ELKI and
+pyclustering all start at 2 for this reason.
 
-Measured on random blob layouts, 4 leaves per blob, 40 points per blob, median of seeds 0/1/2, with
-`kmeans`/`n_clusters=0` at its shipped cap of 20 and `xmeans` bounded only by the leaf count:
+What survives the fix is the threshold itself, at `d = 2` and a large `k`. Measured on random blob
+layouts, 4 leaves per blob, 40 points per blob, median of seeds 0/1/2, with `kmeans`/`n_clusters=0`
+at its shipped cap of 20 and `xmeans` bounded only by the leaf count:
 
 | `d` | true `k` | `kmeans` \|Δk\| | `kmeans` s | `xmeans` \|Δk\| | `xmeans` s |
 |---|---|---|---|---|---|
-| 2 | 10 | **0.3** | 0.0011 | 6.3 | 0.0001 |
+| 2 | 10 | **0.3** | 0.0012 | 0.7 | 0.0001 |
+| 2 | 30 | 10.0 *(capped)* | 0.0030 | 6.7 | 0.0005 |
 | 5 | 10 | **0.0** | 0.0012 | **0.0** | 0.0001 |
-| 5 | 30 | 10.0 *(capped)* | 0.0034 | 29.0 | 0.0001 |
-| 10 | 30 | 10.0 *(capped)* | 0.0049 | **0.0** | 0.0007 |
-| 32 | 30 | 10.0 *(capped)* | 0.0066 | **0.0** | 0.0011 |
-| 64 | 30 | 10.0 *(capped)* | 0.0089 | **0.0** | 0.0013 |
+| 5 | 30 | 10.0 *(capped)* | 0.0034 | **0.0** | 0.0005 |
+| 10 | 10 | **0.0** | 0.0016 | **0.0** | 0.0001 |
+| 10 | 30 | 10.0 *(capped)* | 0.0048 | **0.0** | 0.0008 |
+| 32 | 30 | 10.0 *(capped)* | 0.0067 | **0.0** | 0.0010 |
+| 64 | 30 | 10.0 *(capped)* | 0.0090 | **0.0** | 0.0014 |
 
-Read the rule off the table: at `d ≥ 10` `xmeans` lands on the true count where the sweep is stuck at
-its cap, for 4–7× less time; at `d ≤ 5` with many clusters it under-splits and `kmeans` is the head to
-use.
+Read the rule off the table: at every `d ≥ 5` `xmeans` lands on the true count, including where the
+sweep is stuck at its cap, for 6–16× less time. At `d = 2` it still under-splits once the count is
+large — 6.7 short of 30 — because that is where one cut has to capture half the scatter; use
+`kmeans` with `n_clusters=0` there, since a sweep compares `k = 1` against `k = 30` directly and
+never has to pass through the cuts the split test refuses.
 
 ### `rank`, and where `mppca` loses — `method="mppca"`
 
