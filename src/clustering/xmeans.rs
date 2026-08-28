@@ -205,7 +205,7 @@ mod tests {
     use super::*;
     use crate::clustering::kmeans::kmeans_auto;
     use crate::clustering::rng::SplitMix64;
-    use crate::clustering::testutil::{ari, blobs, grid_micros};
+    use crate::clustering::testutil::{ari, blob_leaves, blobs, grid_micros};
     use crate::feature::Spherical;
 
     /// Re-derivation of the Pelleg-Moore score from the paper's own variable names, kept apart from
@@ -282,7 +282,7 @@ mod tests {
         // and `σ̂²` reaches its floor exactly when every leaf is its own cluster, so the BIC diverges
         // there and both heads answer `k = n_leaves` on any input whose cap lets them look that far.
         // `AUTO_K_MAX = 20` kept every shipped path and every earlier test short of it.
-        let (micros, truth) = blobs_nd(6, 10, 40, 0);
+        let (micros, truth) = blob_leaves(6, 10, 40, 0);
         let n = micros.len();
         assert_eq!(n, 24, "the fixture is four leaves per blob");
 
@@ -299,7 +299,7 @@ mod tests {
     fn the_split_test_recovers_the_cluster_count_it_was_not_told() {
         for (n_true, d) in [(10usize, 5usize), (10, 10), (30, 10), (30, 32), (30, 64)] {
             for seed in [0u64, 1, 2] {
-                let (micros, truth) = blobs_nd(n_true, d, 40, seed);
+                let (micros, truth) = blob_leaves(n_true, d, 40, seed);
                 let km = xmeans(&micros, micros.len(), 100, seed);
                 assert_eq!(
                     km.centers.len(),
@@ -338,7 +338,7 @@ mod tests {
 
     #[test]
     fn k_max_is_a_cap_the_head_cannot_exceed() {
-        let (micros, _truth) = blobs_nd(9, 10, 40, 3);
+        let (micros, _truth) = blob_leaves(9, 10, 40, 3);
         for cap in 1..=9 {
             let got = xmeans(&micros, cap, 100, 3).centers.len();
             assert!(got <= cap, "cap {cap}: the head returned {got}");
@@ -365,7 +365,7 @@ mod tests {
         // `O(k_max²)` full k-means over every leaf; x-means stops on its own, so at `n_clusters = 0`
         // `model.rs` bounds it only by the leaf count. Thirty separated groups is therefore a `k` the
         // sweep cannot reach through the shipped path however good its score is.
-        let (micros, truth) = blobs_nd(30, 10, 40, 11);
+        let (micros, truth) = blob_leaves(30, 10, 40, 11);
 
         let swept = kmeans_auto(&micros, 1, 20, 100, 11);
         assert!(
@@ -392,7 +392,7 @@ mod tests {
         // because the split test is built from a Euclidean sum of squares and a score whose only
         // scale dependence is the `k`-independent shift pinned above. Enforced here rather than in
         // `tests/equivariance.rs`, whose fixture is 2-D and therefore one the split test refuses.
-        let (base, _truth) = blobs_nd(8, 10, 40, 5);
+        let (base, _truth) = blob_leaves(8, 10, 40, 5);
         let d = 10;
         let map = |f: &dyn Fn(&[f64]) -> Vec<f64>| -> Vec<usize> {
             let moved: Vec<Spherical<f64>> = base
@@ -438,36 +438,6 @@ mod tests {
         }
     }
 
-    /// `n_true` isotropic Gaussian blobs in `d` dimensions on a random layout, one leaf per blob-sized
-    /// cell, returned already summarised. Separate from `testutil::blobs`, which is 2-D only, because
-    /// the split test's behaviour is a function of `d` and 2-D is its worst case.
-    fn blobs_nd(
-        n_true: usize,
-        d: usize,
-        per: usize,
-        seed: u64,
-    ) -> (Vec<Spherical<f64>>, Vec<usize>) {
-        let mut rng = SplitMix64::new(seed);
-        let centers: Vec<Vec<f64>> = (0..n_true)
-            .map(|_| (0..d).map(|_| 20.0 * rng.gauss()).collect())
-            .collect();
-        let (mut micros, mut truth) = (Vec::new(), Vec::new());
-        for (c, ctr) in centers.iter().enumerate() {
-            // One leaf per blob is the summary the tree would build at a threshold near the blob
-            // radius; four leaves per blob keeps the head reading a summary rather than centroids.
-            for _ in 0..4 {
-                let mut f = Spherical::new(d);
-                for _ in 0..per / 4 {
-                    let p: Vec<f64> = ctr.iter().map(|&m| m + rng.gauss()).collect();
-                    f.push(&p, 1.0);
-                }
-                micros.push(f);
-                truth.push(c);
-            }
-        }
-        (micros, truth)
-    }
-
     /// Head-to-head on the two axes that decide whether the head earns its place: how close the
     /// selected `k` lands, and what it costs to get there. Reported, not asserted — a measurement
     /// whose numbers belong in `bench/RESULTS.md`, run with
@@ -480,7 +450,7 @@ mod tests {
             for n_true in [10usize, 30] {
                 let (mut ds, mut dx, mut ts, mut tx, mut kx_last) = (0i64, 0i64, 0f64, 0f64, 0);
                 for seed in [0u64, 1, 2] {
-                    let (micros, _truth) = blobs_nd(n_true, d, 40, seed);
+                    let (micros, _truth) = blob_leaves(n_true, d, 40, seed);
                     let hi = 20.min(micros.len()); // AUTO_K_MAX, the sweep's shipped cap
 
                     let t0 = std::time::Instant::now();

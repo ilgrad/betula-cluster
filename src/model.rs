@@ -507,7 +507,7 @@ fn distinct_count(labels: &[usize]) -> usize {
 mod tests {
     use super::*;
     use crate::clustering::rng::SplitMix64;
-    use crate::clustering::testutil::{ari, blobs};
+    use crate::clustering::testutil::{ari, blob_leaves, blobs};
     use crate::distance::CentroidEuclidean;
     use crate::feature::{Diagonal, Spherical};
     use std::collections::HashMap;
@@ -630,6 +630,48 @@ mod tests {
             cfs[idx].push(p, 1.0);
         }
         cfs
+    }
+
+    #[test]
+    fn no_automatic_selector_is_maximised_by_one_cluster_per_leaf() {
+        // `kmeans_auto`'s Pelleg-Moore BIC scored the between-leaf sum of squares alone. `Σ_l S_l` is
+        // constant in `k`, but it sits inside `ln σ̂²`, so at `k = n_leaves` the estimate reached its
+        // floor and the score diverged: one cluster per leaf beat every real answer. `AUTO_K_MAX`
+        // hid it — no shipped path passes a `k_max` anywhere near the leaf count.
+        //
+        // Every other selector here reads the leaf scatter through a different route (`gmm`'s M-step
+        // adds `var[i][d]`, `mppca` reads `second_moment`, the Toeplitz ladder reads `variance(t)`,
+        // the two HAC drivers read `ssd`), so none should have the defect. That is an argument from
+        // reading the code, and this is the measurement: hand each selector a `k_max` equal to the
+        // leaf count — the regime the cap has always kept them out of — and require an answer nearer
+        // the real groups than the leaf count.
+        //
+        // Ten dimensions, not the 2-D fixture the rest of this module uses. A split has to buy
+        // `½·n·d·ln(S₁/S₂)` against a cost of `n·ln 2`, so at `d = 2` a greedy splitter refuses
+        // almost everything and passes this whatever its score does; the runaway only becomes
+        // reachable as `d` grows.
+        let (feats, _truth) = blob_leaves(6, 10, 40, 0);
+        let n = feats.len();
+        assert_eq!(n, 24, "the fixture is four leaves per blob");
+        let selected: [(&str, usize); 7] = [
+            ("kmeans", kmeans_auto(&feats, 1, n, 100, 1).centers.len()),
+            ("xmeans", xmeans(&feats, n, 100, 1).centers.len()),
+            ("gmm", gmm_diagonal_auto(&feats, 1, n, 100, 1).means.len()),
+            ("gmm-full", gmm_full_auto(&feats, 1, n, 100, 1).means.len()),
+            ("mppca", mppca_auto(&feats, 1, n, 1, 100, 1).means.len()),
+            ("ward", distinct_count(&ward_hac_auto(&feats, 2, n).labels)),
+            (
+                "average",
+                distinct_count(&agglomerative_auto(&feats, Linkage::Average, 2, n).labels),
+            ),
+        ];
+        for (name, k) in selected {
+            assert!(
+                k < n / 2,
+                "{name} chose {k} of {n} leaves — a selector that runs to the leaf count is \
+                 reporting the summary back, not clustering it"
+            );
+        }
     }
 
     #[test]

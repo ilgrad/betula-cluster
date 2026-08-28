@@ -97,6 +97,36 @@ pub(crate) mod testutil {
         (xs, ys)
     }
 
+    /// `n_true` isotropic Gaussian blobs in `d` dimensions on a random layout, returned already
+    /// summarised as four leaves per blob — the summary a tree would build at a threshold near the
+    /// blob radius, which keeps a head reading leaves rather than centroids. Separate from [`blobs`],
+    /// which is 2-D only, because a `k`-selector's behaviour is a function of `d` and 2-D is the
+    /// hardest case for anything that scores a split against a per-cluster penalty.
+    pub fn blob_leaves(
+        n_true: usize,
+        d: usize,
+        per: usize,
+        seed: u64,
+    ) -> (Vec<Spherical<f64>>, Vec<usize>) {
+        let mut rng = SplitMix64::new(seed);
+        let centers: Vec<Vec<f64>> = (0..n_true)
+            .map(|_| (0..d).map(|_| 20.0 * rng.gauss()).collect())
+            .collect();
+        let (mut micros, mut truth) = (Vec::new(), Vec::new());
+        for (c, ctr) in centers.iter().enumerate() {
+            for _ in 0..4 {
+                let mut f = Spherical::new(d);
+                for _ in 0..per / 4 {
+                    let p: Vec<f64> = ctr.iter().map(|&m| m + rng.gauss()).collect();
+                    f.push(&p, 1.0);
+                }
+                micros.push(f);
+                truth.push(c);
+            }
+        }
+        (micros, truth)
+    }
+
     /// Two interleaving half-moons; returns (points, true labels). k-means cannot separate them.
     pub fn two_moons(rng: &mut SplitMix64, per: usize, noise: f64) -> (Vec<Vec<f64>>, Vec<usize>) {
         let mut xs = Vec::new();
