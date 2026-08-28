@@ -110,9 +110,9 @@ def test_xmeans_reads_n_clusters_as_a_cap(blobs):
     """`method="xmeans"` bounds `k` rather than fixing it, so it is not in the parametrise above.
 
     Its split test needs a cut capturing `1 - 2**(-2/d)` of a region's scatter — half of it at
-    `d = 2` — and the `blobs` fixture is a 2x2 square, which is exactly the isotropic layout the
-    test refuses. Asking for 4 there is allowed to answer fewer; what must hold is that the bound
-    binds and that the head runs. See *Where `xmeans` refuses to split* in `docs/USAGE.md`.
+    `d = 2`, which is the `blobs` fixture. Asking for 4 there is allowed to answer fewer; what must
+    hold is that the bound binds and that the head runs. See *Where `xmeans` refuses to split* in
+    `docs/USAGE.md`.
     """
     x, _y = blobs
     for cap in (1, 2, 4):
@@ -3844,3 +3844,65 @@ def test_near_duplicate_pairs_neighbors_needs_more_than_one_populated_leaf():
     est = betula_cluster.Betula(n_clusters=1, threshold=10.0, max_leaves=200, seed=0).fit(rows)
     assert est.n_leaves_ == 1
     assert len(est.near_duplicate_pairs(rows, threshold=0.9, neighbors=4)) == 28
+
+
+@pytest.fixture(scope="module")
+def forty_blobs():
+    """Forty well-separated 10-D Gaussian blobs — more groups than the default auto-`k` ceiling."""
+    rng = np.random.default_rng(7)
+    centers = rng.normal(0, 20, (40, 10))
+    xs = [rng.normal(ctr, 1.0, (40, 10)) for ctr in centers]
+    return np.vstack(xs).astype(np.float64), np.repeat(np.arange(40), 40)
+
+
+@pytest.mark.parametrize("method", ["ward", "average", "xmeans"])
+def test_auto_k_is_not_capped_for_a_head_that_does_not_pay_for_the_search(forty_blobs, method):
+    """A ceiling exists to bound cost. These heads do not have the cost, so they do not have it.
+
+    ``ward`` and ``average`` build one dendrogram and score its cuts; ``xmeans`` stops on its own
+    split test. Only the sweeps — which refit at every candidate ``k`` — are ``O(k_max**2)``.
+    """
+    x, y = forty_blobs
+    est = betula_cluster.Betula(n_clusters=0, method=method, threshold=0.05, max_leaves=300, seed=1)
+    labels = est.fit_predict(x)
+    assert est.n_clusters_ == 40
+    assert ari(labels, y) > 0.95
+
+
+def test_auto_k_max_raises_the_ceiling_the_sweeps_search_under(forty_blobs):
+    """The sweeps stop at 20 by default and reach the true 40 when the ceiling is lifted."""
+    x, y = forty_blobs
+    default = betula_cluster.Betula(
+        n_clusters=0, method="gmm", threshold=0.05, max_leaves=300, seed=1
+    )
+    with pytest.warns(UserWarning, match="ceiling"):
+        default.fit(x)
+    assert default.n_clusters_ == 20
+
+    raised = betula_cluster.Betula(
+        n_clusters=0, method="gmm", threshold=0.05, max_leaves=300, seed=1, auto_k_max=60
+    )
+    labels = raised.fit_predict(x)
+    assert raised.n_clusters_ == 40
+    assert ari(labels, y) > 0.95
+
+
+def test_an_auto_k_that_lands_on_its_ceiling_says_so(forty_blobs):
+    """A truncated search is not evidence about the data, so it must not be silent."""
+    x, _y = forty_blobs
+    with pytest.warns(UserWarning, match="ceiling"):
+        betula_cluster.Betula(
+            n_clusters=0, method="gmm", threshold=0.05, max_leaves=300, seed=1
+        ).fit(x)
+    # Lifted past the true count, the search turns over on its own and there is nothing to warn.
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", UserWarning)
+        betula_cluster.Betula(
+            n_clusters=0, method="gmm", threshold=0.05, max_leaves=300, seed=1, auto_k_max=60
+        ).fit(x)
+
+
+def test_auto_k_max_survives_a_params_round_trip():
+    est = betula_cluster.Betula(auto_k_max=45)
+    assert est.get_params()["auto_k_max"] == 45
+    assert betula_cluster.Betula().set_params(auto_k_max=45).get_params()["auto_k_max"] == 45

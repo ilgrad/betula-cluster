@@ -212,7 +212,7 @@ fn run<C: ClusterFeature<f64>>(rows: &[Vec<f64>], cfg: &Cfg) -> Vec<usize> {
     for r in rows {
         tree.insert(r);
     }
-    let model = Model::fit(tree, cfg.clusters, cfg.method, cfg.max_iter, cfg.seed);
+    let model = Model::fit(tree, cfg.clusters, cfg.method, cfg.max_iter, cfg.seed, 0);
     rows.iter().map(|r| model.predict(r)).collect()
 }
 

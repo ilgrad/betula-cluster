@@ -14,7 +14,13 @@ use crate::mixture::Mixture;
 use crate::tree::CFTree;
 use crate::types::Real;
 
-/// Upper bound on `k` swept by the BIC auto-selection (`n_clusters = 0`).
+/// Default ceiling on `k` for the automatic selectors that **sweep** — those that refit the whole
+/// head at every candidate `k` and keep the best score. Their work is `Σ_{k≤K} k = O(K²)`, so the
+/// ceiling is the only thing bounding them: measured on 480 leaves in 64 dimensions, raising it from
+/// 20 to 120 takes `kmeans` from 46 ms to 1.4 s and `gmm` from 0.5 s to 4.1 s. It binds hard on data
+/// with more groups than that — the same fixture holds 120 — so it is an override, not a law; see
+/// `fit_head`'s `auto_k_max`. The selectors that only *cut* an already-built dendrogram do not pay
+/// this and are not bounded by it.
 const AUTO_K_MAX: usize = 20;
 
 /// Global-clustering method applied to the CF-tree leaves.
@@ -179,7 +185,8 @@ pub struct Model<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistan
 impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> Model<R, C, D, A> {
     /// Cluster the leaves of a tree that already contains the data. `k` is clamped to the number of
     /// available leaf micro-clusters; `k == 0` requests automatic BIC selection of the component
-    /// count (GMM heads only — k-means falls back to a single cluster). The realised cluster count
+    /// count (GMM heads only — k-means falls back to a single cluster). `auto_k_max` overrides the
+    /// ceiling that selection searches under, and `0` takes the default. The realised cluster count
     /// is available via [`Model::n_clusters`].
     pub fn fit(
         tree: CFTree<R, C, D, A>,
@@ -187,8 +194,9 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> Mo
         method: Method,
         max_iter: usize,
         seed: u64,
+        auto_k_max: usize,
     ) -> Self {
-        let fit = fit_head(tree.leaf_features(), k, method, max_iter, seed);
+        let fit = fit_head(tree.leaf_features(), k, method, max_iter, seed, auto_k_max);
         let n_clusters = distinct_count(&fit.labels);
         let assign = match (assignment_rule(method), fit.mixture) {
             (Rule::Centroid { unit }, _) => Assignment::Centers {
@@ -396,46 +404,77 @@ impl<R: Real> HeadFit<R> {
     }
 }
 
+/// The ceiling an automatic arm (`k == 0`) searches under, and the one thing that decides it: how
+/// the selector pays for a wider search.
+///
+/// A **sweep** refits the whole head at every candidate `k` and keeps the best score, so its work is
+/// `Σ_{k≤K} k = O(K²)` and the ceiling is the only thing bounding it — measured on 480 leaves in 64
+/// dimensions, raising it from 20 to 120 takes `kmeans` from 46 ms to 1.4 s and `gmm` from 0.5 s to
+/// 4.1 s. A **cut** selector builds one dendrogram and scores its cuts, or stops on its own test, so
+/// a wider ceiling costs it a linear pass and nothing more: `ward` over the same leaves spends
+/// 5.7 ms at 20 and 23.8 ms at the leaf count. The first keeps [`AUTO_K_MAX`]; the second has no
+/// reason to and takes the leaf count, which on that fixture is the difference between ARI 0.009 and
+/// 1.000 because the true count is 120.
+///
+/// `auto_k_max` overrides both; `0` takes the default. The result is always at least 1 and never
+/// exceeds the leaf count, so a caller cannot ask a head for more clusters than it has leaves.
+pub(crate) fn auto_k_ceiling(method: Method, n_leaves: usize, auto_k_max: usize) -> usize {
+    let sweeps = !matches!(
+        method,
+        Method::Ward | Method::Agglomerative { .. } | Method::XMeans
+    );
+    let default = if sweeps {
+        n_leaves.min(AUTO_K_MAX)
+    } else {
+        n_leaves
+    };
+    if auto_k_max == 0 {
+        default
+    } else {
+        n_leaves.min(auto_k_max)
+    }
+    .max(1)
+}
+
 /// Label leaf features with a parametric head. `k == 0` requests BIC auto-selection of the
 /// component count for the GMM heads; k-means clamps to `[1, n_features]`. Shared by [`Model::fit`]
 /// and the streaming Python estimator so both honour the same `k`/auto semantics — and so both get
 /// the same point-level model out of it.
+///
+/// `auto_k_max` overrides the ceiling the automatic arms search under; `0` takes the default.
 pub(crate) fn fit_head<R: Real, C: ClusterFeature<R>>(
     features: &[C],
     k: usize,
     method: Method,
     max_iter: usize,
     seed: u64,
+    auto_k_max: usize,
 ) -> HeadFit<R> {
     let nlv = features.len();
-    let auto_hi = nlv.min(AUTO_K_MAX);
+    let hi = auto_k_ceiling(method, nlv, auto_k_max);
     let kk = k.min(nlv).max(1);
     match method {
         Method::KMeans if k == 0 => {
-            HeadFit::hard(kmeans_auto(features, 1, auto_hi, max_iter, seed).labels)
+            HeadFit::hard(kmeans_auto(features, 1, hi, max_iter, seed).labels)
         }
         Method::KMeans => HeadFit::hard(kmeans(features, kk, max_iter, 4, seed).labels),
         // `AUTO_K_MAX` bounds the *sweep*, whose cost is quadratic in the cap. X-means stops when no
         // centre wants to split, so at `k == 0` the only bound it needs is the leaf count -- taking
         // the sweep's cost guard here would silently truncate the answer this head exists to give.
-        Method::XMeans if k == 0 => HeadFit::hard(xmeans(features, 2, nlv, max_iter, seed).labels),
+        Method::XMeans if k == 0 => HeadFit::hard(xmeans(features, 2, hi, max_iter, seed).labels),
         Method::XMeans => HeadFit::hard(xmeans(features, 2.min(kk), kk, max_iter, seed).labels),
-        Method::Gmm if k == 0 => {
-            HeadFit::soft(gmm_diagonal_auto(features, 1, auto_hi, max_iter, seed))
-        }
+        Method::Gmm if k == 0 => HeadFit::soft(gmm_diagonal_auto(features, 1, hi, max_iter, seed)),
         Method::Gmm => HeadFit::soft(gmm_diagonal(features, kk, max_iter, seed)),
-        Method::GmmFull if k == 0 => {
-            HeadFit::soft(gmm_full_auto(features, 1, auto_hi, max_iter, seed))
-        }
+        Method::GmmFull if k == 0 => HeadFit::soft(gmm_full_auto(features, 1, hi, max_iter, seed)),
         Method::GmmFull => HeadFit::soft(gmm_full(features, kk, max_iter, seed)),
         Method::Mppca { rank } if k == 0 => {
-            HeadFit::soft(mppca_auto(features, 1, auto_hi, rank, max_iter, seed))
+            HeadFit::soft(mppca_auto(features, 1, hi, rank, max_iter, seed))
         }
         Method::Mppca { rank } => HeadFit::soft(mppca(features, kk, rank, max_iter, seed)),
-        Method::Ward if k == 0 => HeadFit::hard(ward_hac_auto(features, 2, auto_hi).labels),
+        Method::Ward if k == 0 => HeadFit::hard(ward_hac_auto(features, 2, hi).labels),
         Method::Ward => HeadFit::hard(ward_hac(features, kk).labels),
         Method::Agglomerative { linkage } if k == 0 => {
-            HeadFit::hard(agglomerative_auto(features, linkage, 2, auto_hi).labels)
+            HeadFit::hard(agglomerative_auto(features, linkage, 2, hi).labels)
         }
         Method::Agglomerative { linkage } => {
             HeadFit::hard(agglomerative(features, linkage, kk).labels)
@@ -470,7 +509,7 @@ pub(crate) fn fit_head<R: Real, C: ClusterFeature<R>>(
         }
         // Spherical k-means needs a `k`; `k == 0` selects it by BIC via the vMF mixture.
         Method::SphericalKMeans if k == 0 => {
-            let auto = movmf_auto(features, 1, auto_hi, max_iter, seed).means.len();
+            let auto = movmf_auto(features, 1, hi, max_iter, seed).means.len();
             HeadFit::hard(
                 spherical_kmeans(features, auto.min(nlv).max(1), max_iter, 4, seed).labels,
             )
@@ -478,18 +517,18 @@ pub(crate) fn fit_head<R: Real, C: ClusterFeature<R>>(
         Method::SphericalKMeans => {
             HeadFit::hard(spherical_kmeans(features, kk, max_iter, 4, seed).labels)
         }
-        Method::Movmf if k == 0 => HeadFit::soft(movmf_auto(features, 1, auto_hi, max_iter, seed)),
+        Method::Movmf if k == 0 => HeadFit::soft(movmf_auto(features, 1, hi, max_iter, seed)),
         Method::Movmf => HeadFit::soft(movmf(features, kk, max_iter, seed)),
         Method::GmmToeplitz if k == 0 => {
-            HeadFit::soft(gmm_toeplitz_auto(features, 1, auto_hi, max_iter, seed))
+            HeadFit::soft(gmm_toeplitz_auto(features, 1, hi, max_iter, seed))
         }
         Method::GmmToeplitz => HeadFit::soft(gmm_toeplitz(features, kk, max_iter, seed)),
         Method::GmmToeplitzFull if k == 0 => {
-            HeadFit::soft(gmm_toeplitz_full_auto(features, 1, auto_hi, max_iter, seed))
+            HeadFit::soft(gmm_toeplitz_full_auto(features, 1, hi, max_iter, seed))
         }
         Method::GmmToeplitzFull => HeadFit::soft(gmm_toeplitz_full(features, kk, max_iter, seed)),
         Method::GmmToeplitzGs if k == 0 => {
-            HeadFit::soft(gmm_toeplitz_gs_auto(features, 1, auto_hi, max_iter, seed))
+            HeadFit::soft(gmm_toeplitz_gs_auto(features, 1, hi, max_iter, seed))
         }
         Method::GmmToeplitzGs => HeadFit::soft(gmm_toeplitz_gs(features, kk, max_iter, seed)),
     }
@@ -522,7 +561,7 @@ mod tests {
         for p in &pts {
             tree.insert(p);
         }
-        let model = Model::fit(tree, 4, Method::KMeans, 100, 7);
+        let model = Model::fit(tree, 4, Method::KMeans, 100, 7, 0);
         let labels: Vec<usize> = pts.iter().map(|p| model.predict(p)).collect();
         let score = ari(&labels, &truth);
         assert!(score > 0.95, "ARI = {score}");
@@ -538,7 +577,7 @@ mod tests {
         for p in &pts {
             tree.insert(p);
         }
-        let model = Model::fit(tree, 3, Method::Gmm, 200, 3);
+        let model = Model::fit(tree, 3, Method::Gmm, 200, 3, 0);
         let labels: Vec<usize> = pts.iter().map(|p| model.predict(p)).collect();
         let score = ari(&labels, &truth);
         assert!(score > 0.95, "ARI = {score}");
@@ -554,7 +593,7 @@ mod tests {
         for p in &pts {
             tree.insert(p);
         }
-        let model = Model::fit(tree, 2, Method::KMeans, 100, 1);
+        let model = Model::fit(tree, 2, Method::KMeans, 100, 1, 0);
         assert_eq!(model.n_clusters(), 2);
         assert!(model.tree().num_leaves() > 0);
     }
@@ -606,7 +645,7 @@ mod tests {
             Method::Movmf,
         ] {
             for k in [3usize, 0usize] {
-                let labels = fit_head(&feats, k, method, 100, 1).labels;
+                let labels = fit_head(&feats, k, method, 100, 1, 0).labels;
                 assert_eq!(labels.len(), feats.len());
             }
         }
@@ -701,9 +740,9 @@ mod tests {
             ("gmm-toeplitz-gs", Method::GmmToeplitzGs),
             ("mppca", Method::Mppca { rank: 2 }),
         ] {
-            let auto = distinct_count(&fit_head(&feats, 0, method, 100, 1).labels);
-            let one = distinct_count(&fit_head(&feats, 1, method, 100, 1).labels);
-            let two = distinct_count(&fit_head(&feats, 2, method, 100, 1).labels);
+            let auto = distinct_count(&fit_head(&feats, 0, method, 100, 1, 0).labels);
+            let one = distinct_count(&fit_head(&feats, 1, method, 100, 1, 0).labels);
+            let two = distinct_count(&fit_head(&feats, 2, method, 100, 1, 0).labels);
             assert!(auto > 1, "{name}: the automatic arm collapsed to {auto}");
             assert_eq!(one, 1, "{name}: k = 1 did not take the fixed arm");
             assert_eq!(two, 2, "{name}: k = 2 did not take the fixed arm");
@@ -718,19 +757,125 @@ mod tests {
         // not silently inherit the sweep's `AUTO_K_MAX`, and that the head still finds structure.
         let feats = dispatch_leaves();
         for k in 1..=4 {
-            let got = distinct_count(&fit_head(&feats, k, Method::XMeans, 100, 1).labels);
+            let got = distinct_count(&fit_head(&feats, k, Method::XMeans, 100, 1, 0).labels);
             assert!(got <= k, "k = {k} is a cap, but the head returned {got}");
         }
         assert_eq!(
-            distinct_count(&fit_head(&feats, 1, Method::XMeans, 100, 1).labels),
+            distinct_count(&fit_head(&feats, 1, Method::XMeans, 100, 1, 0).labels),
             1,
             "a cap of 1 leaves nothing to split"
         );
-        let auto = distinct_count(&fit_head(&feats, 0, Method::XMeans, 100, 1).labels);
+        let auto = distinct_count(&fit_head(&feats, 0, Method::XMeans, 100, 1, 0).labels);
         assert!(auto > 1, "the automatic arm collapsed to {auto}");
         assert!(
             auto <= feats.len(),
             "the automatic arm is bounded by the leaf count, not by AUTO_K_MAX"
+        );
+    }
+
+    /// What the automatic-`k` ceiling costs and what it hides — the table in `docs/USAGE.md`.
+    ///
+    /// A sweep refits at every candidate `k`, so its work is `Σ_{k≤K} k = O(K²)`; the two HAC
+    /// drivers build one dendrogram and re-cut it, and x-means stops on its own split test, so for
+    /// those the ceiling buys nothing and costs the answer. Reported, not asserted — run with
+    /// `cargo test --release --all-features --lib -- --ignored --nocapture the_cost_of_the_auto_k`.
+    #[test]
+    #[ignore = "measurement, not an assertion"]
+    fn the_cost_of_the_auto_k_ceiling() {
+        use std::time::Instant;
+        let (feats, truth) = blob_leaves(120, 64, 64, 4);
+        let n = feats.len();
+        println!("{n} leaves, d = 64, 120 true groups; AUTO_K_MAX = {AUTO_K_MAX}");
+        let row = |name: &str, cap: usize, t: Instant, labels: &[usize], k: usize| {
+            println!(
+                "{name:<8} cap={cap:>5} {:>9.1} ms  k={k:>4}  ARI={:.3}",
+                t.elapsed().as_secs_f64() * 1e3,
+                ari(labels, &truth)
+            );
+        };
+        for &cap in &[AUTO_K_MAX, 120, n] {
+            let t = Instant::now();
+            let w = ward_hac_auto(&feats, 2, cap);
+            row("ward", cap, t, &w.labels, distinct_count(&w.labels));
+        }
+        // The two sweeps are quadratic in the cap, so the leaf-count column is left unmeasured
+        // rather than run for minutes to restate what 120 already shows.
+        for &cap in &[AUTO_K_MAX, 120] {
+            let t = Instant::now();
+            let km = kmeans_auto(&feats, 1, cap, 100, 0);
+            row("kmeans", cap, t, &km.labels, km.centers.len());
+            let t = Instant::now();
+            let g = gmm_diagonal_auto(&feats, 1, cap, 100, 0);
+            row("gmm", cap, t, &g.labels, g.means.len());
+        }
+        let t = Instant::now();
+        let x = xmeans(&feats, 2, n, 100, 0);
+        row("xmeans", n, t, &x.labels, x.centers.len());
+    }
+
+    #[test]
+    fn only_the_selectors_that_pay_for_a_wider_search_are_bounded_by_the_default() {
+        // Forty groups, more than double the shipped ceiling. A sweep refits at every candidate `k`
+        // so its ceiling is a cost guard and it stops at 20; a driver that cuts one dendrogram, and
+        // a splitter that stops on its own test, pay a linear pass for the same reach and have no
+        // reason to be bounded below the leaf count.
+        let (feats, truth) = blob_leaves(40, 10, 40, 7);
+        for (name, method) in [
+            ("kmeans", Method::KMeans),
+            ("gmm", Method::Gmm),
+            ("gmm-full", Method::GmmFull),
+            ("mppca", Method::Mppca { rank: 2 }),
+        ] {
+            let got = distinct_count(&fit_head(&feats, 0, method, 100, 1, 0).labels);
+            assert_eq!(
+                got, AUTO_K_MAX,
+                "{name} is a sweep and must stop at the ceiling"
+            );
+        }
+        for (name, method) in [
+            ("ward", Method::Ward),
+            (
+                "average",
+                Method::Agglomerative {
+                    linkage: Linkage::Average,
+                },
+            ),
+            ("xmeans", Method::XMeans),
+        ] {
+            let fit = fit_head(&feats, 0, method, 100, 1, 0);
+            assert_eq!(
+                distinct_count(&fit.labels),
+                40,
+                "{name} did not reach the true count"
+            );
+            assert!(ari(&fit.labels, &truth) > 0.99, "{name}");
+        }
+    }
+
+    #[test]
+    fn auto_k_max_is_the_override_that_lets_a_sweep_reach_the_same_count() {
+        // The ceiling is a cost guard, not a statement about the data, so it has to be liftable —
+        // and lifting it is what a sweep needs to answer 40 rather than 20. Raised to 60 rather
+        // than to the leaf count because the sweeps are `O(K²)` and this is a unit test;
+        // `the_cost_of_the_auto_k_cap` is where the whole curve is measured. `gmm-full` is left out
+        // deliberately: with the ceiling lifted it answers 38 on this fixture at ARI 0.936, which is
+        // its own score's choice and not the ceiling's doing.
+        let (feats, truth) = blob_leaves(40, 10, 40, 7);
+        for (name, method) in [("kmeans", Method::KMeans), ("gmm", Method::Gmm)] {
+            let fit = fit_head(&feats, 0, method, 100, 1, 60);
+            assert_eq!(
+                distinct_count(&fit.labels),
+                40,
+                "{name} with the ceiling lifted"
+            );
+            assert!(ari(&fit.labels, &truth) > 0.99, "{name}");
+        }
+        // And it binds downward too, on a head the default does not bound at all: `ward` answers
+        // 40 here when left alone. A ceiling is not a target, so what must hold is `<=`.
+        let held = distinct_count(&fit_head(&feats, 0, Method::Ward, 100, 1, 6).labels);
+        assert!(
+            (2..=6).contains(&held),
+            "auto_k_max must cap as well as raise, but ward answered {held}"
         );
     }
 
@@ -811,7 +956,7 @@ mod tests {
             for p in &pts {
                 tree.insert(p);
             }
-            let model = Model::fit(tree, 3, method, 100, 1);
+            let model = Model::fit(tree, 3, method, 100, 1, 0);
             let ok = matches!(
                 (assignment_rule(method), &model.assign),
                 (Rule::Centroid { .. }, Assignment::Centers { .. })
@@ -836,7 +981,7 @@ mod tests {
         for p in core.iter().chain(&satellite).chain(&far) {
             tree.insert(p);
         }
-        let model = Model::fit(tree, 2, Method::KMeans, 100, 1);
+        let model = Model::fit(tree, 2, Method::KMeans, 100, 1, 0);
         let probe = [7.0, 0.0];
         let micro = model.entry_labels[model.tree.nearest_entry(&probe)];
         assert_eq!(
@@ -916,7 +1061,7 @@ mod tests {
         for p in &pts {
             tree.insert(p);
         }
-        let mut model = Model::fit(tree, 4, Method::KMeans, 100, 3);
+        let mut model = Model::fit(tree, 4, Method::KMeans, 100, 3, 0);
         let wcss = |m: &Model<f64, Diagonal<f64>, _, _>| -> f64 {
             let Assignment::Centers { centers, .. } = &m.assign else {
                 unreachable!("k-means is a centroid head")
@@ -951,7 +1096,7 @@ mod tests {
             for p in &pts {
                 tree.insert(p);
             }
-            let mut model = Model::fit(tree, 3, method, 100, 2);
+            let mut model = Model::fit(tree, 3, method, 100, 2, 0);
             let before: Vec<usize> = pts.iter().map(|p| model.predict(p)).collect();
             assert_eq!(model.refine(&flat, pts.len(), 2, 10), 0, "{method:?}");
             let after: Vec<usize> = pts.iter().map(|p| model.predict(p)).collect();

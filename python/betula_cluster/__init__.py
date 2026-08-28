@@ -436,6 +436,7 @@ def fit_predict_sparse(
     projection="none",
     projection_dim=64,
     projection_max_iter=100,
+    auto_k_max=0,
 ):
     """One-shot ``O(nnz)`` clustering of a ``scipy.sparse`` matrix.
 
@@ -451,7 +452,7 @@ def fit_predict_sparse(
     leaf summary is reduced to ``projection_dim`` CF-weighted principal directions, the head
     clusters the codes, and each row is labelled by its own code (encoded from its non-zeros).
     Clustering the raw high-dimensional geometry directly is the thing to avoid here — see
-    ``docs/USAGE.md``.
+    ``docs/USAGE.md``. ``auto_k_max`` bounds the ``n_clusters=0`` search; ``0`` keeps the default.
     """
     csr = _to_csr(X)
     if csr is None:
@@ -469,6 +470,7 @@ def fit_predict_sparse(
         projection=projection,
         projection_dim=projection_dim,
         projection_max_iter=projection_max_iter,
+        auto_k_max=auto_k_max,
     )
 
 
@@ -503,6 +505,7 @@ _DEFAULTS = {
     "refine": 0,
     "rank": 2,
     "graph_degree": 0,
+    "auto_k_max": 0,
     "memory_budget_mb": None,
 }
 _PARAM_NAMES = tuple(_DEFAULTS)
@@ -561,6 +564,7 @@ class Betula:
         refine=0,
         rank=2,
         graph_degree=0,
+        auto_k_max=0,
         memory_budget_mb=None,
     ):
         self.n_clusters = n_clusters
@@ -622,6 +626,13 @@ class Betula:
         # max_leaves unaffordable there. Any positive value is a floor: the head raises it to
         # whatever degree min_samples needs in leaves. Ignored by every other head.
         self.graph_degree = graph_degree
+        # Ceiling the n_clusters=0 search is bounded by; 0 keeps the per-head default. The sweeps
+        # refit at every candidate k, so their cost is quadratic in it and the default stays at 20;
+        # ward/average/weighted/centroid/median cut one dendrogram and xmeans stops on its own test,
+        # so those are already bounded only by the leaf count. Raising it warns nothing and costs
+        # time; leaving it too low is silent, which is why a selection that lands on the ceiling
+        # raises a UserWarning.
+        self.auto_k_max = auto_k_max
         # When set, max_leaves is derived from this budget (+ dim + feature) at fit time: a target
         # for the CF-tree resident size (MiB), not total RSS. Most useful for streaming.
         self.memory_budget_mb = memory_budget_mb

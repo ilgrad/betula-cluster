@@ -166,6 +166,7 @@ def fit_predict(
     rank: int = ...,
     graph_degree: int = ...,
     balance: float | None = ...,
+    auto_k_max: int = ...,
 ) -> NDArray[np.int64]:
     """Cluster ``data`` in one shot and return per-point integer labels (``-1`` = noise)."""
 
@@ -180,6 +181,7 @@ def fit_predict_sparse(
     projection: _Projection = ...,
     projection_dim: int = ...,
     projection_max_iter: int = ...,
+    auto_k_max: int = ...,
 ) -> NDArray[np.int64]:
     """One-shot O(nnz) clustering of a scipy.sparse matrix; one int64 label per row."""
 
@@ -227,6 +229,7 @@ class Betula:
         refine: int = ...,
         rank: int = ...,
         graph_degree: int = ...,
+        auto_k_max: int = ...,
         memory_budget_mb: float | None = ...,
     ) -> None: ...
     def get_params(self, deep: bool = ...) -> dict[str, Any]: ...

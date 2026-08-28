@@ -129,6 +129,39 @@ answer.
 (`leiden` reads the count off the graph — tune granularity with `resolution` γ, higher ⇒ more).
 For a robustness score per point, wrap any partitional head in `consensus` (see below).
 
+### `auto_k_max` — the ceiling `n_clusters=0` searches under
+
+Two families of selector sit behind `n_clusters=0`, and they pay for a wide search differently.
+
+A **sweep** — `kmeans`, `gmm`, `gmm-full`, `mppca`, `vmf` and the three `gmm-toeplitz` rungs — refits
+the whole head at every candidate `k` and keeps the best BIC. Its work is `Σ_{k≤K} k = O(K²)`, so the
+ceiling is the only thing bounding it, and it defaults to **20**. A **cut** selector — `ward`,
+`average`, `weighted`, `centroid`, `median` — builds one dendrogram and scores its cuts, and `xmeans`
+stops on its own split test; a wider ceiling costs those a linear pass and nothing more, so they are
+bounded only by the leaf count.
+
+Measured on 480 leaves in 64 dimensions holding **120** true groups:
+
+| head | ceiling 20 | ceiling 120 | ceiling = leaf count (480) |
+|---|---|---|---|
+| `ward` | 5.7 ms, `k` = 2, ARI 0.009 | 7.8 ms, `k` = 120, **ARI 1.000** | 23.8 ms, `k` = 120, **1.000** |
+| `kmeans` | 45.5 ms, `k` = 20, ARI 0.109 | 1449 ms, `k` = 120, **1.000** | — |
+| `gmm` | 502 ms, `k` = 20, ARI 0.109 | 4100 ms, `k` = 120, **1.000** | — |
+| `xmeans` | — | — | 12.1 ms, `k` = 120, **1.000** |
+
+(`the_cost_of_the_auto_k_ceiling` in `src/model.rs`, `cargo test --release --all-features --lib --
+--ignored --nocapture the_cost_of_the_auto_k`. The leaf-count column is left unmeasured for the two
+sweeps rather than run for minutes to restate what the 120 column already shows.)
+
+Read three things off it. The ceiling is not a mild preference — at 20 the answer is wrong, not
+merely coarse. Lifting it for a sweep costs 8–32×, which is why the default stays at 20 and
+`auto_k_max` is an explicit opt-in (`0` = the default). And on k-means-shaped data `xmeans` gets the
+same partition as the fully-swept `kmeans` **120× faster**, which is the head to reach for before
+`auto_k_max`.
+
+A selection that lands exactly on its ceiling raises a `UserWarning`: an argmax on the last candidate
+is evidence the search stopped early, not evidence about the data.
+
 ### Where `xmeans` refuses to split — `method="xmeans"`
 
 `kmeans` with `n_clusters=0` fits a full k-means at **every** `k` and keeps the best BIC. That costs

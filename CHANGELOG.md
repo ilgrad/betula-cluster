@@ -49,6 +49,25 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- **The automatic-`k` ceiling is no longer one number for every head, and `auto_k_max` overrides it.**
+  `n_clusters=0` was bounded at 20 for all of them, so no `n_clusters=0` path in the library could
+  return more than 20 clusters. The bound exists because a *sweep* refits the whole head at every
+  candidate `k` — `Σ_{k≤K} k = O(K²)` — but `ward`, `average`, `weighted`, `centroid` and `median`
+  build one dendrogram and score its cuts, and `xmeans` stops on its own split test, so they were
+  paying a cost guard for a cost they do not have. Those six are now bounded only by the leaf count.
+  Measured on 480 leaves in 64 dimensions holding 120 true groups, `ward` goes from 5.7 ms at
+  `k` = 2 and ARI 0.009 to 23.8 ms at `k` = 120 and **ARI 1.000**. **`method="ward"` /
+  `"average"` / `"weighted"` / `"centroid"` / `"median"` labels change at `n_clusters=0` whenever
+  the data has more than 20 groups.**
+
+  The sweeps keep the ceiling, because lifting it there costs 8–32× — `kmeans` 46 ms → 1.4 s,
+  `gmm` 0.5 s → 4.1 s on the same fixture — and take **`auto_k_max`** (`0` = the default) as an
+  explicit opt-in. A selection that lands exactly on its ceiling now raises a `UserWarning`: an
+  argmax on the last candidate is evidence the search stopped early, not evidence about the data.
+  On k-means-shaped data `method="xmeans"` reaches the same partition as the fully-swept `kmeans`
+  120× faster (12.1 ms against 1449 ms) and is the thing to reach for before `auto_k_max`. Table in
+  [docs/USAGE.md](https://github.com/ilgrad/betula-cluster/blob/main/docs/USAGE.md).
+
 - **`method="xmeans"` — x-means proper (Pelleg & Moore, ICML 2000), the first auto-`k` head that can
   return more than 20 clusters.** It alternates k-means with a per-centre split test — each centre is
   asked separately whether the leaves it owns are better described by two centres than by one, scored

@@ -39,7 +39,9 @@ use crate::distance::{
 use crate::feature::{ClusterFeature, Diagonal, FdSketch, Full, Spherical};
 use crate::linalg::{cholesky_lower, mahalanobis_sq_from_chol};
 use crate::mixture::Mixture;
-use crate::model::{Method, Model, Rule, assignment_rule, fit_head, refine_centers};
+use crate::model::{
+    Method, Model, Rule, assignment_rule, auto_k_ceiling, fit_head, refine_centers,
+};
 use crate::sparse::{SparseCentroids, summarize_sparse};
 use crate::stats::chi2_quantile;
 use crate::stream::{DbStream, DenStream};
@@ -107,6 +109,44 @@ fn warn_leaf_budget(py: Python<'_>, leaves: usize, k: usize, max_leaves: usize) 
          that many clusters and the partition degrades. Raise max_leaves (currently {max_leaves}), \
          lower threshold, or lower n_clusters.",
         leaves as f64 / k as f64,
+    ))
+    .expect("the formatted warning contains no interior NUL");
+    PyErr::warn(py, &py.get_type::<PyUserWarning>(), &msg, 1)
+}
+
+/// Warn when an automatic `k` lands exactly on its own ceiling.
+///
+/// The sweep-based selectors refit the whole head at every candidate `k`, so their cost is quadratic
+/// in the ceiling and it cannot simply be removed. What it can stop being is silent. An argmax that
+/// sits on the last candidate is not evidence that the data has that many groups — it is evidence
+/// that the search stopped before the score turned over. Measured on 480 leaves in 64 dimensions
+/// holding 120 true groups, `method="gmm"` with `n_clusters=0` returns 20 at the default ceiling and
+/// scores ARI 0.109; at `auto_k_max=120` it returns 120 and scores 1.000.
+///
+/// Only for the automatic arm of a head that reads the ceiling: `spectral` resolves `k` from the
+/// eigengap and `leiden` from the graph, so neither is bounded by it.
+fn warn_auto_k_saturated(
+    py: Python<'_>,
+    kind: Kind,
+    n_clusters: usize,
+    chosen: usize,
+    leaves: usize,
+    auto_k_max: usize,
+) -> PyResult<()> {
+    let Kind::Parametric(method) = kind else {
+        return Ok(());
+    };
+    if n_clusters != 0
+        || matches!(method, Method::Spectral | Method::Leiden { .. })
+        || chosen < auto_k_ceiling(method, leaves, auto_k_max)
+    {
+        return Ok(());
+    }
+    let msg = CString::new(format!(
+        "n_clusters=0 selected k={chosen}, which is the ceiling the search was bounded by, so the \
+         true count may be higher — the score never turned over. Raise auto_k_max (currently \
+         {auto_k_max}, 0 = the default), set n_clusters explicitly, or use method='xmeans', whose \
+         stopping rule is a split test rather than a cost guard."
     ))
     .expect("the formatted warning contains no interior NUL");
     PyErr::warn(py, &py.get_type::<PyUserWarning>(), &msg, 1)
@@ -320,10 +360,11 @@ fn dispatch_kind<R: Real, C: ClusterFeature<R>>(
     k: usize,
     max_iter: usize,
     seed: u64,
+    auto_k_max: usize,
 ) -> (Vec<i64>, Option<(Vec<f64>, usize)>, Option<Mixture>) {
     match kind {
         Kind::Parametric(method) => {
-            let fit = fit_head(feats, k, method, max_iter, seed);
+            let fit = fit_head(feats, k, method, max_iter, seed, auto_k_max);
             let proba = fit.resp.map(|r| {
                 let kk = r.first().map_or(0, |row| row.len());
                 let flat = r
@@ -383,6 +424,7 @@ fn label_features_proba<R: Real, C: ClusterFeature<R>>(
     k: usize,
     max_iter: usize,
     seed: u64,
+    auto_k_max: usize,
     nmf_dim: Option<ProjectionSpec>,
 ) -> Labelling {
     match nmf_dim {
@@ -391,7 +433,8 @@ fn label_features_proba<R: Real, C: ClusterFeature<R>>(
             // The head clustered *codes*, so its density lives in code space. A linear projection can
             // carry a raw row there and keep the head's own point rule; an NMF cannot, and falls back
             // to the microcluster route.
-            let (labels, proba, mixture) = dispatch_kind(&p.coded, kind, k, max_iter, seed);
+            let (labels, proba, mixture) =
+                dispatch_kind(&p.coded, kind, k, max_iter, seed, auto_k_max);
             let rule = projected_rule(&p, &labels, kind, mixture);
             let parts = p
                 .components
@@ -411,7 +454,8 @@ fn label_features_proba<R: Real, C: ClusterFeature<R>>(
             }
         }
         None => {
-            let (labels, proba, mixture) = dispatch_kind(feats, kind, k, max_iter, seed);
+            let (labels, proba, mixture) =
+                dispatch_kind(feats, kind, k, max_iter, seed, auto_k_max);
             Labelling {
                 labels,
                 proba,
@@ -1093,6 +1137,7 @@ fn cluster<R: Real, C: ClusterFeature<R>>(
     max_leaves: usize,
     max_iter: usize,
     seed: u64,
+    auto_k_max: usize,
     n_jobs: usize,
     nmf_dim: Option<ProjectionSpec>,
     refine: usize,
@@ -1108,8 +1153,15 @@ fn cluster<R: Real, C: ClusterFeature<R>>(
                 // Reduce leaf centroids to codes and cluster those. A linear projection (`svd`) hands
                 // back a point rule, so each row is labelled by its own code; an NMF cannot, and the
                 // row inherits its leaf's label.
-                let out =
-                    label_features_proba(tree.leaf_features(), kind, k, max_iter, seed, nmf_dim);
+                let out = label_features_proba(
+                    tree.leaf_features(),
+                    kind,
+                    k,
+                    max_iter,
+                    seed,
+                    auto_k_max,
+                    nmf_dim,
+                );
                 match out.rule {
                     Some(rule) => rule.label_rows(flat, n, dim),
                     None => map_rows(n, |i| {
@@ -1118,7 +1170,7 @@ fn cluster<R: Real, C: ClusterFeature<R>>(
                 }
             }
             None => {
-                let mut model = Model::fit(tree, k, method, max_iter, seed);
+                let mut model = Model::fit(tree, k, method, max_iter, seed, auto_k_max);
                 model.refine(flat, n, dim, refine);
                 map_rows(n, |i| model.predict(&flat[i * dim..(i + 1) * dim]) as i64)
             }
@@ -1173,6 +1225,7 @@ fn run_oneshot<R: Real + Element>(
     nmf_dim: Option<ProjectionSpec>,
     refine: usize,
     balance: Option<f64>,
+    auto_k_max: usize,
 ) -> PyResult<(Vec<i64>, usize)> {
     let (mut flat, n, dim) = to_flat(&data)?;
     if matches!(nmf_dim.map(|s| s.kind), Some(ProjectionKind::Nmf { .. })) {
@@ -1195,19 +1248,19 @@ fn run_oneshot<R: Real + Element>(
         match feature {
             "spherical" => Ok(cluster::<R, Spherical<R>>(
                 &flat, n, dim, n_clusters, kind, route, gate, thr, branching, leaf_cap, max_leaves,
-                max_iter, seed, n_jobs, nmf_dim, refine, balance,
+                max_iter, seed, auto_k_max, n_jobs, nmf_dim, refine, balance,
             )),
             "diagonal" => Ok(cluster::<R, Diagonal<R>>(
                 &flat, n, dim, n_clusters, kind, route, gate, thr, branching, leaf_cap, max_leaves,
-                max_iter, seed, n_jobs, nmf_dim, refine, balance,
+                max_iter, seed, auto_k_max, n_jobs, nmf_dim, refine, balance,
             )),
             "full" => Ok(cluster::<R, Full<R>>(
                 &flat, n, dim, n_clusters, kind, route, gate, thr, branching, leaf_cap, max_leaves,
-                max_iter, seed, n_jobs, nmf_dim, refine, balance,
+                max_iter, seed, auto_k_max, n_jobs, nmf_dim, refine, balance,
             )),
             "fd" => Ok(cluster::<R, FdSketch<R>>(
                 &flat, n, dim, n_clusters, kind, route, gate, thr, branching, leaf_cap, max_leaves,
-                max_iter, seed, n_jobs, nmf_dim, refine, balance,
+                max_iter, seed, auto_k_max, n_jobs, nmf_dim, refine, balance,
             )),
             _ => Err("feature must be 'spherical', 'diagonal', 'full' or 'fd'"),
         }
@@ -1241,7 +1294,7 @@ fn run_oneshot<R: Real + Element>(
     absorb = "euclidean", chi2_p = 0.95, chi2_scale = 0.0, n_jobs = 1, normalize = false,
     resolution = 1.0, covariance_weight = 0.0, tangent_weight = 0.0, tangent_rank = 2,
     projection = "none", projection_dim = 64, projection_max_iter = 100, refine = 0, rank = 2,
-    graph_degree = 0, balance = None
+    graph_degree = 0, balance = None, auto_k_max = 0
 ))]
 #[allow(clippy::too_many_arguments)]
 fn fit_predict<'py>(
@@ -1275,6 +1328,7 @@ fn fit_predict<'py>(
     rank: usize,
     graph_degree: usize,
     balance: Option<f64>,
+    auto_k_max: usize,
 ) -> PyResult<Bound<'py, PyArray1<i64>>> {
     let kind = parse_method(
         method,
@@ -1292,13 +1346,13 @@ fn fit_predict<'py>(
         run_oneshot::<f64>(
             py, a, n_clusters, feature, kind, distance, absorb, chi2_p, chi2_scale, threshold,
             branching, leaf_cap, max_leaves, max_iter, seed, n_jobs, normalize, nmf_dim, refine,
-            balance,
+            balance, auto_k_max,
         )?
     } else if let Ok(a) = data.extract::<PyReadonlyArray2<'py, f32>>() {
         run_oneshot::<f32>(
             py, a, n_clusters, feature, kind, distance, absorb, chi2_p, chi2_scale, threshold,
             branching, leaf_cap, max_leaves, max_iter, seed, n_jobs, normalize, nmf_dim, refine,
-            balance,
+            balance, auto_k_max,
         )?
     } else {
         return Err(PyValueError::new_err(
@@ -1464,21 +1518,46 @@ impl<R: Real> TreeState<R> {
         k: usize,
         max_iter: usize,
         seed: u64,
+        auto_k_max: usize,
         nmf_dim: Option<ProjectionSpec>,
     ) -> Labelling {
         match self {
-            TreeState::Spherical(t) => {
-                label_features_proba(t.leaf_features(), kind, k, max_iter, seed, nmf_dim)
-            }
-            TreeState::Diagonal(t) => {
-                label_features_proba(t.leaf_features(), kind, k, max_iter, seed, nmf_dim)
-            }
-            TreeState::Full(t) => {
-                label_features_proba(t.leaf_features(), kind, k, max_iter, seed, nmf_dim)
-            }
-            TreeState::Fd(t) => {
-                label_features_proba(t.leaf_features(), kind, k, max_iter, seed, nmf_dim)
-            }
+            TreeState::Spherical(t) => label_features_proba(
+                t.leaf_features(),
+                kind,
+                k,
+                max_iter,
+                seed,
+                auto_k_max,
+                nmf_dim,
+            ),
+            TreeState::Diagonal(t) => label_features_proba(
+                t.leaf_features(),
+                kind,
+                k,
+                max_iter,
+                seed,
+                auto_k_max,
+                nmf_dim,
+            ),
+            TreeState::Full(t) => label_features_proba(
+                t.leaf_features(),
+                kind,
+                k,
+                max_iter,
+                seed,
+                auto_k_max,
+                nmf_dim,
+            ),
+            TreeState::Fd(t) => label_features_proba(
+                t.leaf_features(),
+                kind,
+                k,
+                max_iter,
+                seed,
+                auto_k_max,
+                nmf_dim,
+            ),
         }
     }
 
@@ -1980,6 +2059,10 @@ struct Betula {
     /// Out-degree of the `method="hdbscan"` proximity graph; `0` = exact complete graph.
     #[serde(default)]
     graph_degree: usize,
+    /// Ceiling the automatic selectors search under at `n_clusters=0`; `0` takes the crate default.
+    /// `#[serde(default)]` is what lets a model persisted before this field existed load as `0`.
+    #[serde(default)]
+    auto_k_max: usize,
     /// Phase-3 CF-weighted NMF reduction dim (`projection="weighted-nmf"`); `None` = no projection.
     #[serde(default)]
     nmf_dim: Option<usize>,
@@ -2271,19 +2354,20 @@ impl Betula {
     /// entry point (`fit`, `fit_predict`, `partial_fit(None)`, and both CSR paths) funnels through,
     /// so the rule lives here rather than being repeated at each of them.
     fn finalize(&mut self, py: Python<'_>) -> PyResult<()> {
-        let (kind, k, mi, seed, nmf) = (
+        let (kind, k, mi, seed, akm, nmf) = (
             self.kind,
             self.n_clusters,
             self.max_iter,
             self.seed,
+            self.auto_k_max,
             self.projection_spec(),
         );
         let result = if let Some(t) = &self.state64 {
-            Some(t.label_proba(kind, k, mi, seed, nmf))
+            Some(t.label_proba(kind, k, mi, seed, akm, nmf))
         } else {
             self.state32
                 .as_ref()
-                .map(|t| t.label_proba(kind, k, mi, seed, nmf))
+                .map(|t| t.label_proba(kind, k, mi, seed, akm, nmf))
         };
         match result {
             Some(out) => {
@@ -2304,6 +2388,12 @@ impl Betula {
         }
         if kind.consumes_k() {
             warn_leaf_budget(py, self.n_leaves_(), k, self.max_leaves)?;
+        }
+        if let Some(labels) = &self.labels {
+            let mut seen: Vec<i64> = labels.iter().copied().filter(|&l| l >= 0).collect();
+            seen.sort_unstable();
+            seen.dedup();
+            warn_auto_k_saturated(py, kind, k, seen.len(), self.n_leaves_(), akm)?;
         }
         // The estimator does not carry a point count, but the leaf weights sum to one — and for the
         // unweighted `fit(X)` path that sum *is* `n`, which is what the compression test needs.
@@ -2501,7 +2591,8 @@ impl Betula {
         distance = "euclidean", absorb = "euclidean", chi2_p = 0.95, chi2_scale = 0.0, decay = 1.0,
         normalize = false, huber_k = None, resolution = 1.0, covariance_weight = 0.0,
         tangent_weight = 0.0, tangent_rank = 2, projection = "none", projection_dim = 64,
-        projection_max_iter = 100, refine = 0, rank = 2, graph_degree = 0, balance = None
+        projection_max_iter = 100, refine = 0, rank = 2, graph_degree = 0, balance = None,
+        auto_k_max = 0
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -2534,6 +2625,7 @@ impl Betula {
         rank: usize,
         graph_degree: usize,
         balance: Option<f64>,
+        auto_k_max: usize,
     ) -> PyResult<Self> {
         let kind = parse_method(
             method,
@@ -2597,6 +2689,7 @@ impl Betula {
             leaf_cap,
             max_leaves,
             max_iter,
+            auto_k_max,
             seed,
             absorb: absorb.to_string(),
             chi2_p,
@@ -3253,6 +3346,7 @@ impl Betula {
         d.set_item("tangent_rank", self.tangent_rank)?;
         d.set_item("rank", self.rank)?;
         d.set_item("graph_degree", self.graph_degree)?;
+        d.set_item("auto_k_max", self.auto_k_max)?;
         d.set_item("refine", self.refine)?;
         Ok(d)
     }
@@ -4556,7 +4650,7 @@ fn parse_parametric(method: &str) -> PyResult<Method> {
 #[pyo3(signature = (
     data, indices, indptr, n_features, n_clusters = 8, method = "kmeans",
     threshold = 0.0, max_leaves = 2048, max_iter = 100, seed = 0,
-    projection = "none", projection_dim = 64, projection_max_iter = 100
+    projection = "none", projection_dim = 64, projection_max_iter = 100, auto_k_max = 0
 ))]
 #[allow(clippy::too_many_arguments)]
 fn fit_predict_sparse<'py>(
@@ -4574,6 +4668,7 @@ fn fit_predict_sparse<'py>(
     projection: &str,
     projection_dim: usize,
     projection_max_iter: usize,
+    auto_k_max: usize,
 ) -> PyResult<Bound<'py, PyArray1<i64>>> {
     let m = parse_parametric(method)?;
     let spec = parse_projection(projection, projection_dim, projection_max_iter)?;
@@ -4598,7 +4693,7 @@ fn fit_predict_sparse<'py>(
         );
         let leaves = micros.len();
         let kind = Kind::Parametric(m);
-        let out = label_features_proba(&micros, kind, n_clusters, max_iter, seed, spec);
+        let out = label_features_proba(&micros, kind, n_clusters, max_iter, seed, auto_k_max, spec);
         // A linear projection labels each row from its own code, touching only the non-zeros; every
         // other configuration routes the row to its nearest micro-cluster and reads that label.
         let labels = match &out.rule {

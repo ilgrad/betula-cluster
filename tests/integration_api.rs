@@ -67,7 +67,7 @@ fn model_fit_predict_kmeans_and_gmm() {
         for p in &pts {
             tree.insert(p);
         }
-        let model = Model::fit(tree, 4, method, 100, 1);
+        let model = Model::fit(tree, 4, method, 100, 1, 0);
         assert_eq!(model.n_clusters(), 4);
         let labels: Vec<usize> = pts.iter().map(|p| model.predict(p)).collect();
         assert_recovered(&labels, &truth, 4);
