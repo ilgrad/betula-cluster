@@ -1945,6 +1945,51 @@ The practical consequence is a caveat, not a fix — a single pass over an order
 algorithm is for. Shuffle before fitting when the input has structure in its row order, and read any
 single-permutation ARI at high compression as a draw from a distribution roughly 0.15 wide.
 
+## X-means against the BIC sweep, and the BIC bug the cap was hiding (task #96)
+
+Unlike every other table on this page, this one does not come from `bench/`: the two heads are Rust
+functions with no Python wrapper difference worth benchmarking through, so the measurement is the
+`#[ignore]`d `recursive_versus_sweep_on_the_same_leaves` in `src/clustering/xmeans.rs`, run with
+`cargo test --release --all-features --lib clustering::xmeans -- --ignored --nocapture`. Fixture:
+`n_true` isotropic Gaussian blobs on a random layout in `d` dimensions, 40 points per blob summarised
+into 4 leaves each, median of seeds 0/1/2. `method="kmeans"` with `n_clusters=0` runs at its shipped
+cap `AUTO_K_MAX = 20`; `method="xmeans"` is bounded only by the leaf count, which is what `model.rs`
+does at `n_clusters=0`.
+
+| `d` | true `k` | sweep \|Δk\| | sweep | x-means \|Δk\| | x-means |
+|---|---|---|---|---|---|
+| 2 | 10 | **0.3** | 1.1 ms | 6.3 | 0.1 ms |
+| 2 | 30 | 10.0 *(capped)* | 3.0 ms | 29.0 | 0.0 ms |
+| 5 | 10 | **0.0** | 1.2 ms | **0.0** | 0.1 ms |
+| 5 | 30 | 10.0 *(capped)* | 3.4 ms | 29.0 | 0.1 ms |
+| 10 | 10 | **0.0** | 1.6 ms | **0.0** | 0.2 ms |
+| 10 | 30 | 10.0 *(capped)* | 4.9 ms | **0.0** | 0.7 ms |
+| 32 | 30 | 10.0 *(capped)* | 6.6 ms | **0.0** | 1.1 ms |
+| 64 | 30 | 10.0 *(capped)* | 8.9 ms | **0.0** | 1.3 ms |
+
+Two readings, and they point in opposite directions:
+
+- **At `d ≥ 10` x-means lands on the true count where the sweep is stuck at 20, for 4–7× less time.**
+  That is the whole case for the head: the sweep costs `O(k_max²)` full k-means over every leaf, which
+  is why the cap exists, and a split test has nothing to cap.
+- **At `d ≤ 5` with many clusters x-means under-splits, badly.** A balanced binary split costs `n·ln 2`
+  of mixture-weight likelihood and buys `½·n·d·ln(S₁/S₂)`, so it is accepted only when the cut captures
+  more than `1 − 2^(−2/d)` of the region's scatter — **half of it at `d = 2`**. A cut through a cloud
+  that is round at every scale captures about `0.64/d`, always below the `1.39/d` required, so a
+  regular grid of equal 2-D blobs is refused at the first split and the head answers `k = 1`. Use
+  `method="kmeans"` there; a sweep compares `k = 1` against `k = 9` directly.
+
+**The same run found a bug in the shipped score.** Before the fix every row above was wrong in a
+different way: the sweep saturated its cap on *all* eight rows and x-means ran to exactly the leaf
+count (40 and 120) wherever it split at all. The Pelleg–Moore BIC was summing only the between-leaf
+part of the within-cluster SSE, on the reasoning that the within-leaf scatter `Σ_l S_l` is constant in
+`k`. It is constant, but it sits inside `ln σ̂²`, so it does not cancel — and as `k` reaches the leaf
+count the between-leaf part goes to zero, `σ̂²` hits its `1e-12` floor and the score diverges to `+∞`.
+One cluster per leaf beat every real answer. `AUTO_K_MAX = 20` had kept every shipped path and every
+test far enough from the leaf count that nothing ever saw it. Fixed by passing the full
+`Σ_l (S_l + n_l‖μ_l − c‖²)` — the CF identity, exact for any whole-leaf partition, and already what
+`KMeans::inertia` accumulates. **`method="kmeans"` labels change at `n_clusters=0`.**
+
 ## Conclusions
 
 - **Use betula** when data is large or streaming, memory is bounded, or you want one numerically
