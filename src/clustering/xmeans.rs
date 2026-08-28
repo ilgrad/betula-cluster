@@ -509,4 +509,32 @@ mod tests {
             }
         }
     }
+
+    /// Two tight pairs a hundred radii apart. The first split is the obvious one and the second is
+    /// a pair into singletons, which the variance floor scores far above holding it together — so
+    /// the recursion has to reach `k = 4` and every step of the way is forced, not seed-dependent.
+    fn two_tight_pairs() -> Vec<Spherical<f64>> {
+        [[0.0, 0.0], [1.0, 0.0], [100.0, 0.0], [101.0, 0.0]]
+            .iter()
+            .map(|p| {
+                let mut f = Spherical::new(2);
+                f.push(p, 1.0);
+                f
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_guard_above_the_split_test_refuses_only_what_it_has_to() {
+        // The first round separates the pairs, so every later split is a two-leaf one: a guard that
+        // skipped those would stop at `k = 2` on data whose score says four. The cap arithmetic is
+        // exercised at the same time, `k_max` being the answer — the term it subtracts is the count
+        // of clusters after `j` still to be re-emitted, and getting its sign wrong over-counts the
+        // eventual centres and refuses the last split that fits.
+        let km = xmeans(&two_tight_pairs(), 1, 4, 100, 5);
+        assert_eq!(km.centers.len(), 4, "labels = {:?}", km.labels);
+        let mut labels = km.labels.clone();
+        labels.sort_unstable();
+        assert_eq!(labels, [0, 1, 2, 3], "two leaves shared a centre");
+    }
 }

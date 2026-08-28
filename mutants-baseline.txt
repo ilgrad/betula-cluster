@@ -20,11 +20,14 @@
 # after the `log_iv` asymptotic branch), `src/clustering/nmf.rs` + `src/clustering/pca.rs`
 # together (**2026-08-24 whole-file**, after `NmfSpec` became `ProjectionSpec` and `project_pca` was
 # added), `src/clustering/kmeans.rs` (**2026-08-24 whole-file**, after the k-means++ sampling
-# weight gained the leaf variance term), and `src/clustering/hdbscan.rs` (**2026-08-24 whole-file**,
+# weight gained the leaf variance term), `src/clustering/hdbscan.rs` (**2026-08-24 whole-file**,
 # after the point-count and dendrogram-walk fixes -- see that section for why its count rose from 17
-# to 21 without a regression). `src/clustering/medoid.rs` (**2026-08-25 whole-file**) and
-# `src/wasserstein.rs` (**2026-08-26 whole-file**) are first measurements rather than replacements --
-# both modules postdate the whole-crate sweep entirely. The entry-by-entry form is sound where the only change to the
+# to 21 without a regression), and `src/clustering/kmeans.rs` again (**2026-08-27 whole-file**, in
+# one run with `src/clustering/xmeans.rs` and `src/model.rs`, after #96 moved the BIC out of this
+# file and #101 lifted the auto-`k` ceiling). `src/clustering/medoid.rs` (**2026-08-25 whole-file**),
+# `src/wasserstein.rs` (**2026-08-26 whole-file**) and `src/clustering/xmeans.rs` + `src/model.rs`
+# (**2026-08-27**) are first measurements rather than replacements -- those modules postdate the
+# whole-crate sweep entirely. The entry-by-entry form is sound where the only change to the
 # file was *test* code: adding a test can kill a mutant but can never create one, so nothing outside
 # the recorded set needs re-measuring. It is not sound after a production edit -- re-measure the file
 # whole then, which also renumbers every `line:col` in that section.
@@ -296,54 +299,98 @@ src/clustering/scalespace.rs:93:19: replace < with <= in bandwidth_range
 src/clustering/scalespace.rs:96:19: replace < with <= in bandwidth_range
 src/clustering/scalespace.rs:99:19: replace > with >= in bandwidth_range
 
-# ── src/clustering/kmeans.rs (25) ──
-# STALE as of the x-means change: `xmeans` was renamed `kmeans_auto`, its inline BIC block was
-# replaced by a call to `clustering::xmeans::pelleg_moore_bic`, and `lloyd_from` was added, so every
-# `line:col` below has moved and the six `in xmeans` entries name a function that no longer exists.
-# The file needs re-measuring whole -- an entry-by-entry patch is not sound after a production edit.
-# Same for the new `src/clustering/xmeans.rs`, which has never been measured at all.
+# ── src/clustering/kmeans.rs (5) ──
+# Re-measured 2026-08-27 together with `xmeans.rs` and `model.rs`: 417 mutants in 2h03 at -j2 under
+# `systemd-run --user --scope --unit=betula-mut-cap -p MemoryMax=10G -p MemorySwapMax=0`, frozen at
+# a0b1a3e in a throwaway worktree. 349 caught / 25 missed / 40 unviable / 3 timeouts, of which this
+# file contributed 158 mutants and 11 survivors. Six of those eleven are now closed by tests added
+# on 2026-08-27, each verified by hand-applying its own mutant to the clean tree and confirming the
+# named test fails (`local/scratch/hand_mutants.py`, gitignored):
+#   137:22 cop_kmeans          a_weightless_feature_contributes_nothing_and_poisons_nothing
+#   332:17 weighted_pick (x2)  weighted_pick_stays_in_range_when_the_scan_runs_off_the_end
+#   437:16 update_centers      every_cluster_being_stranded_at_once_is_still_a_reseed
+#   450:31 update_centers      every_cluster_being_stranded_at_once_is_still_a_reseed
+#   454:38 update_centers      the_stranded_cluster_restarts_on_the_leaf_that_costs_the_most_inertia
 #
-# Re-measured 2026-08-24, whole file: 205 mutants in 70 min at -j4, 162 caught / 25 missed /
-# 16 unviable / 2 timeouts. A production edit landed here (the k-means++ sampling weight gained the
-# leaf's `S_i` term, and the chunklet scatter came out of `cop_kmeans` into its own function), so
-# every `line:col` below is renumbered and an entry-by-entry patch would have been unsound.
-#
-# One entry from the previous list is gone because it is now caught: `replace * with + in
-# kmeans_plus_plus` on the sampling weight, closed by
-# `a_leaf_is_sampled_for_its_own_scatter_and_not_only_for_its_distance`. Six mutants the new
-# `chunklet_scatter` introduced were measured as survivors in this run's predecessor and are absent
-# here because `a_chunklet_carries_the_scatter_of_the_points_underneath_its_members` kills all six --
-# each verified by hand-applying the mutant, not by assuming the fixture sees it.
+# The fourteen `in xmeans` entries of the previous list are gone outright: #96 moved that arithmetic
+# into `clustering::xmeans::pelleg_moore_bic`, which this run mutated 47 times and missed **none**.
+# That is the whole reason the section fell from 25 to 5, and it is the strongest evidence in this
+# file that an independent re-derivation is worth more than a fixture: the same expression scored
+# 14 survivors inline and zero once a second, separately written formula had to agree with it.
 #
 # The two `uf_find` mutants (`replace != with ==`) are timeouts, not survivors: they turn the
 # union-find path walk into an infinite loop, which the suite detects by hanging.
 #
-# Debt: Lloyd assignment, the k-means++ draw and the whole x-means BIC.
-src/clustering/kmeans.rs:136:22: replace > with >= in cop_kmeans
-src/clustering/kmeans.rs:227:31: replace + with - in cop_kmeans
-src/clustering/kmeans.rs:303:20: replace < with <= in kmeans_plus_plus
-src/clustering/kmeans.rs:310:19: replace < with <= in kmeans_plus_plus
-src/clustering/kmeans.rs:331:17: replace - with + in weighted_pick
-src/clustering/kmeans.rs:331:17: replace - with / in weighted_pick
-src/clustering/kmeans.rs:410:21: replace < with <= in nearest_two
-src/clustering/kmeans.rs:436:16: replace > with >= in update_centers
-src/clustering/kmeans.rs:449:31: replace <= with > in update_centers
-src/clustering/kmeans.rs:453:38: replace * with + in update_centers
-src/clustering/kmeans.rs:580:24: replace / with * in xmeans
-src/clustering/kmeans.rs:580:30: replace - with + in xmeans
-src/clustering/kmeans.rs:580:73: replace / with * in xmeans
-src/clustering/kmeans.rs:584:20: replace > with >= in xmeans
-src/clustering/kmeans.rs:586:21: replace - with + in xmeans
-src/clustering/kmeans.rs:586:27: replace * with / in xmeans
-src/clustering/kmeans.rs:588:21: replace - with + in xmeans
-src/clustering/kmeans.rs:588:28: replace * with + in xmeans
-src/clustering/kmeans.rs:588:28: replace * with / in xmeans
-src/clustering/kmeans.rs:588:35: replace - with + in xmeans
-src/clustering/kmeans.rs:588:35: replace - with / in xmeans
-src/clustering/kmeans.rs:588:47: replace * with + in xmeans
-src/clustering/kmeans.rs:588:47: replace * with / in xmeans
-src/clustering/kmeans.rs:591:43: replace + with * in xmeans
-src/clustering/kmeans.rs:593:16: replace > with >= in xmeans
+# Believed equivalent, with the argument:
+#   228:31  `inertia = inertia + f.ssd() + ...` -> `- f.ssd()`. `Σ_i f.ssd()` does not depend on the
+#           assignment, so negating it shifts *every* restart's score by the same constant and the
+#           `inertia >= *bi` comparison that picks the best restart is unchanged. The value itself
+#           never leaves `cop_kmeans` -- only `assign` is returned.
+#   311:19  `if nd < *di { *di = nd }` -> `<=`. The two differ only at `nd == *di`, where the
+#           assignment is a no-op. `sq_euclidean` sums squares, so neither side can be `-0.0`.
+#   411:21  `else if d < d2 { d2 = d }` -> `<=`. The same no-op, in `nearest_two`.
+#
+# Debt: the greedy k-means++ trial draw and the sweep's argmax.
+#   304:20  `if pot < best_pot` -> `<=`: on two candidates of *exactly* equal potential the later
+#           one wins instead of the earlier. Both are optimal by the algorithm's own criterion, so
+#           any test would pin an arbitrary choice through the RNG's draw order.
+#   589:16  `if bic > best_bic` -> `>=` in `kmeans_auto`: a tie between two different `k` on a score
+#           built from a float variance. Not reachable by construction, and `best_bic` starts at
+#           `-inf`, which `pelleg_moore_bic` cannot return (the variance is floored at 1e-12).
+src/clustering/kmeans.rs:228:31: replace + with - in cop_kmeans
+src/clustering/kmeans.rs:304:20: replace < with <= in kmeans_plus_plus
+src/clustering/kmeans.rs:311:19: replace < with <= in kmeans_plus_plus
+src/clustering/kmeans.rs:411:21: replace < with <= in nearest_two
+src/clustering/kmeans.rs:589:16: replace > with >= in kmeans_auto
+
+# ── src/clustering/xmeans.rs (8) ──
+# First measurement -- the module postdates every earlier sweep. Same 2026-08-27 run as the section
+# above: 102 mutants, 83 caught / 10 missed / 9 unviable. Two of the ten are closed by
+# `the_guard_above_the_split_test_refuses_only_what_it_has_to`, added the same day and verified
+# against both mutants by hand: `163:26` (`sub.len() < 2` -> `<=`, which would refuse to split any
+# two-leaf cluster and stop the recursion at k=2 on a fixture whose score says four) and `163:61`
+# (the sign of the term counting the clusters after `j` that have not been re-emitted, which
+# over-counts the eventual centre budget and refuses the last split that fits under `k_max`).
+#
+# Believed equivalent, with the argument:
+#   175:22, 175:40, 175:47  the five mutants of `seed ^ ((round as u64) << 32) ^ j as u64`. This is
+#           a decorrelation device, not a value: `|`, `&` and `>>` all still hand `kmeans` *a* seed,
+#           and the contract the head has to meet is that it recovers the split from any of them --
+#           which is what the recovery tests assert. Pinning one would assert an arbitrary integer.
+#   137:27  `if start == 1 { 1 } else { SPLIT_N_INIT }` -> `!=`. On the shipped path `k_min` is 1,
+#           where the single centre is the weight-mean whatever the seeding does, so the restart
+#           count cannot change the output -- only the work. The mutant is observable only through
+#           `xmeans(.., k_min > 1, ..)`, and then only on a fixture built so that one k-means++
+#           restart falls into a local optimum that four escape: a seed-pinned change detector.
+#
+# Debt: the two strict comparisons on the score. Both are ties between BIC values computed from
+# different partitions, so they need exact float equality between two independent sums.
+#   186:50  `BIC(2) > BIC(1)` -> `>=` in Improve-Structure: a tie accepts the split.
+#   200:16  `bic > best_bic` -> `>=` across rounds: a tie replaces the retained model with the newer
+#           one. Every round that reaches this line added at least one centre, so the two models
+#           differ in `k` and their parameter penalties differ by `0.5·(dim+1)·ln nr`.
+src/clustering/xmeans.rs:137:27: replace == with != in xmeans
+src/clustering/xmeans.rs:175:22: replace ^ with & in xmeans
+src/clustering/xmeans.rs:175:22: replace ^ with | in xmeans
+src/clustering/xmeans.rs:175:40: replace << with >> in xmeans
+src/clustering/xmeans.rs:175:47: replace ^ with & in xmeans
+src/clustering/xmeans.rs:175:47: replace ^ with | in xmeans
+src/clustering/xmeans.rs:186:50: replace > with >= in xmeans
+src/clustering/xmeans.rs:200:16: replace > with >= in xmeans
+
+# ── src/model.rs (0) ──
+# Deliberately empty, and kept as a heading so the next reader does not read the absence as "never
+# measured". The same 2026-08-27 run covered it for the first time: 157 mutants, 141 caught / 4
+# missed / 11 unviable / 1 timeout. All four survivors were in `refine_centers` (the Phase-4 Lloyd
+# sweep over raw points) and all four are closed, each verified against its own mutant:
+#   300:15, 300:25  each_degenerate_argument_declines_the_sweep_on_its_own
+#   316:22          a_point_equidistant_from_two_centres_goes_to_the_earlier_one
+#   339:25          a_centre_whose_points_cancel_survives_the_unit_projection
+#
+# The timeout is `422:18 delete ! in auto_k_ceiling`, and it is a detection rather than an unmeasured
+# mutant: dropping the negation hands `AUTO_K_MAX` to the *cut* selectors and the leaf count to the
+# sweeps, so `kmeans` and `gmm` auto-`k` fit every `k` up to the leaf count. That is the quadratic
+# blow-up the function's own doc comment quantifies, and the suite detects it by hanging.
 
 # ── src/clustering/gmm_toeplitz.rs (23) ──
 # Debt. Also the largest timeout pool (17), so some of these are unmeasured rather

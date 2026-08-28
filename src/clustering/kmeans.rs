@@ -806,6 +806,33 @@ mod tests {
     }
 
     #[test]
+    fn the_stranded_cluster_restarts_on_the_leaf_that_costs_the_most_inertia() {
+        // "Worst served" is a *weighted* squared distance, not a distance: reseeding there is worth
+        // doing because it buys back the most inertia, and inertia is `Σ w‖μ − c‖²`. The two leaves
+        // here rank in opposite orders under mass and under distance — the light one is ten times
+        // further from the centroid, the heavy one carries ten times the weight — so a score that
+        // combines them any other way than by multiplying restarts on the wrong leaf.
+        let mut centers: Vec<Vec<f64>> = vec![vec![0.0, 0.0], vec![-99.0, 0.0]];
+        let means = vec![vec![0.0, 0.0], vec![3.0, 0.0]];
+        update_centers(&mut centers, &means, &[10.0, 1.0], &[0, 0], 2);
+        // centroid 3/11; served = [10·(3/11)², 1·(30/11)²] = [0.744, 7.438].
+        assert!((centers[0][0] - 3.0 / 11.0).abs() < 1e-12, "{centers:?}");
+        assert_eq!(centers[1], vec![3.0, 0.0], "restarted on the wrong leaf");
+    }
+
+    #[test]
+    fn every_cluster_being_stranded_at_once_is_still_a_reseed() {
+        // The block asks "does any cluster hold no weight", and the degenerate answer is "all of
+        // them" — a summary whose leaves all carry zero weight. Asking the complementary question
+        // instead reads the same on every mixed input, and skips exactly this case, leaving both
+        // centres parked where the seeding left them with nothing to move them again.
+        let mut centers: Vec<Vec<f64>> = vec![vec![-99.0, 0.0], vec![99.0, 0.0]];
+        let means = vec![vec![0.0, 0.0], vec![5.0, 0.0]];
+        update_centers(&mut centers, &means, &[0.0, 0.0], &[0, 0], 2);
+        assert_eq!(centers, means, "{centers:?}");
+    }
+
+    #[test]
     fn weighted_pick_is_proportional_and_never_leaves_the_slice() {
         let mut rng = SplitMix64::new(5);
         let mut hits = [0usize; 3];
@@ -1214,5 +1241,40 @@ mod tests {
             "the sweep never crosses a boundary: {want:?}"
         );
         assert_eq!(got, want, "the split boundary moved");
+    }
+
+    #[test]
+    fn weighted_pick_stays_in_range_when_the_scan_runs_off_the_end() {
+        // Its sibling above covers the two exits that return from inside the function; this is the
+        // third, where the loop simply ends. `total` is one rounded sum and the running subtraction
+        // is a different one, so the scan is not guaranteed to cross zero — and a non-finite weight
+        // makes every `r <= 0` test false outright, which reaches that exit every time. What follows
+        // the loop is the only thing between it and an index the caller reads back as `means[i]`.
+        let mut rng = SplitMix64::new(3);
+        for probs in [vec![1.0, f64::NAN], vec![f64::NAN, 1.0, 2.0]] {
+            for _ in 0..8 {
+                let i = weighted_pick(&probs, &mut rng);
+                assert!(i < probs.len(), "{probs:?} -> {i}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_weightless_feature_contributes_nothing_and_poisons_nothing() {
+        // `Spherical::new` before any `push` is a legal feature carrying zero weight, and it arrives
+        // as a chunklet of its own whose centroid is `0/0`. Guarding that division is what keeps the
+        // NaN out of the seeding, where a distance comparing false against everything selects no
+        // centre at all. The pairing, not the label values, is what has to survive the extra input.
+        let f = feats(&[[0.0, 0.0], [0.2, 0.0], [9.0, 0.0], [9.2, 0.0]]);
+        let want = cop_kmeans(&f, 2, &[], &[], 100, 4, 1).expect("feasible");
+        let mut with_empty = f.clone();
+        with_empty.push(Spherical::new(2));
+        let got = cop_kmeans(&with_empty, 2, &[], &[], 100, 4, 1).expect("feasible");
+        assert!(got.iter().all(|&c| c < 2), "{got:?}");
+        assert_eq!(
+            (want[0] == want[1], want[2] == want[3], want[0] == want[2]),
+            (got[0] == got[1], got[2] == got[3], got[0] == got[2]),
+            "the weightless feature moved the others: {want:?} vs {got:?}"
+        );
     }
 }

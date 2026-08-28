@@ -1083,6 +1083,54 @@ mod tests {
     }
 
     #[test]
+    fn each_degenerate_argument_declines_the_sweep_on_its_own() {
+        // The guard is a disjunction, so every clause has to be lethal by itself. With no centre the
+        // per-cluster counter is empty and the first assignment indexes past its end; with no point
+        // nothing can move, which a sweep that ran anyway would mistake for a converged pass.
+        let mut empty: Vec<f64> = vec![];
+        assert_eq!(
+            refine_centers(&mut empty, &two_squares(), 8, 2, false, 10),
+            0
+        );
+        let mut centers = vec![0.0, 0.0, 10.0, 0.0];
+        assert_eq!(refine_centers(&mut centers, &[], 0, 2, false, 10), 0);
+        assert_eq!(
+            refine_centers(&mut centers, &two_squares(), 8, 2, false, 0),
+            0
+        );
+        assert_eq!(
+            centers,
+            [0.0, 0.0, 10.0, 0.0],
+            "a declined call still moved a centre"
+        );
+    }
+
+    #[test]
+    fn a_point_equidistant_from_two_centres_goes_to_the_earlier_one() {
+        // Ties are not measure-zero on a summary: leaf centroids land exactly between two centres
+        // often enough to matter, and which side takes them decides both means. A strict `<` keeps
+        // the earlier centre; `<=` hands the tie to the later one, leaving the earlier stranded.
+        let mut centers = vec![0.0, 0.0, 2.0, 0.0];
+        let sweeps = refine_centers(&mut centers, &[1.0, 0.0], 1, 2, false, 10);
+        assert_eq!(sweeps, 2, "the fixed point was not detected");
+        assert_eq!(
+            centers,
+            [1.0, 0.0, 2.0, 0.0],
+            "the tie went to the wrong centre"
+        );
+    }
+
+    #[test]
+    fn a_centre_whose_points_cancel_survives_the_unit_projection() {
+        // Antipodal points average to the origin, which has no direction to project onto. Dividing
+        // by that norm writes NaN into the model, and NaN loses every later `<` comparison silently
+        // rather than failing — so the guard is what keeps a degenerate centre merely useless.
+        let mut centers = vec![0.0, 1.0];
+        refine_centers(&mut centers, &[1.0, 0.0, -1.0, 0.0], 2, 2, true, 10);
+        assert_eq!(centers, [0.0, 0.0], "{centers:?}");
+    }
+
+    #[test]
     fn refinement_is_declined_by_every_head_without_a_centre_model() {
         // A mixture assigns by maximum posterior and Ward/Spectral/Leiden by microcluster; sweeping
         // centres over any of them would silently substitute the Voronoi partition they do not use.
