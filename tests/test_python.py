@@ -106,6 +106,26 @@ def test_auto_k_selects_true_count_when_n_clusters_zero(blobs, feature, method):
     assert ari(labels, y) > 0.95
 
 
+def test_xmeans_reads_n_clusters_as_a_cap(blobs):
+    """`method="xmeans"` bounds `k` rather than fixing it, so it is not in the parametrise above.
+
+    Its split test needs a cut capturing `1 - 2**(-2/d)` of a region's scatter — half of it at
+    `d = 2` — and the `blobs` fixture is a 2x2 square, which is exactly the isotropic layout the
+    test refuses. Asking for 4 there is allowed to answer fewer; what must hold is that the bound
+    binds and that the head runs. See *Where `xmeans` refuses to split* in `docs/USAGE.md`.
+    """
+    x, _y = blobs
+    for cap in (1, 2, 4):
+        labels = betula_cluster.fit_predict(
+            x, n_clusters=cap, method="xmeans", threshold=0.05, max_leaves=300, seed=1
+        )
+        assert 1 <= n_labels(labels) <= cap
+    auto = betula_cluster.fit_predict(
+        x, n_clusters=0, method="xmeans", threshold=0.05, max_leaves=300, seed=1
+    )
+    assert n_labels(auto) >= 1
+
+
 # ── directional heads (spherical-kmeans / vMF) ───────────────────────────────────────────────────
 
 

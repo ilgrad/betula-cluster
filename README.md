@@ -176,6 +176,11 @@ snapshots / active-learning batches, the Rust API, and the CLI — all in the
 - **Density & topology** — HDBSCAN-CF (density over microclusters), **scale-space** Morse-persistence
   density-mode clustering (`method="scale-space"` — no `k`, no bandwidth), and a Mapper topological
   skeleton (`mapper` / `mapper_stability`).
+- **X-means** (`method="xmeans"`, Pelleg & Moore 2000) — recursive splitting instead of a `k` sweep:
+  `n_clusters` is an upper bound rather than a target, and it is the only auto-`k` head that can
+  return more than 20 clusters. Its split test needs a cut capturing `1 − 2^(−2/d)` of a region's
+  scatter, so it earns its keep at `d ≥ 10` and under-splits below that — see
+  [*Where `xmeans` refuses to split*](https://github.com/ilgrad/betula-cluster/blob/main/docs/USAGE.md).
 - **Structured-covariance GMM** — a three-rung Toeplitz ladder: **`method="gmm-toeplitz"`** (banded AR),
   **`"gmm-toeplitz-full"`** (general positive-definite Toeplitz covariance), and **`"gmm-toeplitz-gs"`**
   (full-order Gohberg–Semencul **MLE** precision): covariance-*shape* clustering for **ordered, stationary

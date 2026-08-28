@@ -297,6 +297,12 @@ src/clustering/scalespace.rs:96:19: replace < with <= in bandwidth_range
 src/clustering/scalespace.rs:99:19: replace > with >= in bandwidth_range
 
 # ── src/clustering/kmeans.rs (25) ──
+# STALE as of the x-means change: `xmeans` was renamed `kmeans_auto`, its inline BIC block was
+# replaced by a call to `clustering::xmeans::pelleg_moore_bic`, and `lloyd_from` was added, so every
+# `line:col` below has moved and the six `in xmeans` entries name a function that no longer exists.
+# The file needs re-measuring whole -- an entry-by-entry patch is not sound after a production edit.
+# Same for the new `src/clustering/xmeans.rs`, which has never been measured at all.
+#
 # Re-measured 2026-08-24, whole file: 205 mutants in 70 min at -j4, 162 caught / 25 missed /
 # 16 unviable / 2 timeouts. A production edit landed here (the k-means++ sampling weight gained the
 # leaf's `S_i` term, and the chunklet scatter came out of `cop_kmeans` into its own function), so

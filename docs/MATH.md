@@ -391,11 +391,14 @@ A clustering head answers a question about the *data*, not about the coordinates
 Which change of frame it is allowed to ignore is a property of its model — and one that is easy to
 lose by accident, to a bandwidth in absolute data units, a covariance floor added before whitening,
 or an initialisation that reads coordinate 0. The groups the crate claims, and enforces in
-`tests/equivariance.rs`:
+`tests/equivariance.rs` — except `xmeans`, whose group is enforced in `src/clustering/xmeans.rs`
+because the shared 2-D fixture there is one its split test refuses (see *Where `xmeans` refuses to
+split* in `USAGE.md`):
 
 | head | translate | rotate | uniform scale | swap axes |
 |---|---|---|---|---|
 | `kmeans`, `ward_hac`, `agglomerative`, `dyn_msc`, `hdbscan` | yes | yes | yes | yes |
+| `xmeans` | yes | yes | yes | yes |
 | `gmm_full`, `mppca`, `spectral`, `scale_space` | yes | yes | yes | yes |
 | `gmm_diagonal` | yes | **no** | yes | yes |
 | `spherical_kmeans`, `movmf` | **no** | yes | yes | yes |

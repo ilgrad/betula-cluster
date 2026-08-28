@@ -1381,9 +1381,10 @@ class Betula:
 
         The **GMM**, **vMF**, and **Toeplitz** (``gmm-toeplitz`` / ``-full`` / ``-gs``) heads score
         the point under the fitted mixture, so ``predict_proba(X).argmax(1)`` is exactly
-        :meth:`predict`. **k-means / Ward / HDBSCAN** return a heuristic ``softmax(−d²/2τ²)`` over
-        the cluster centroids (``τ`` = mean cluster radius) — a confidence *proxy*, **not** a
-        calibrated posterior. Columns are component indices aligned with :meth:`predict`."""
+        :meth:`predict`. **k-means / x-means / Ward / HDBSCAN** return a heuristic
+        ``softmax(−d²/2τ²)`` over the cluster centroids (``τ`` = mean cluster radius) — a confidence
+        *proxy*, **not** a calibrated posterior. Columns are component indices aligned with
+        :meth:`predict`."""
         est = self._require_fit()
         if self.method in (
             "gmm",

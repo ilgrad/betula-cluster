@@ -256,7 +256,7 @@ A capability-by-capability reference. For runnable code see [`USAGE.md`](USAGE.m
 | `kernels` | distance kernels: scalar fold + hand-written AVX2/FMA path |
 | `distance` | D0–D4, radius, Mahalanobis (stable forms) |
 | `tree` | arena CF-tree + budget-targeting auto-rebuild |
-| `clustering` | `kmeans` / `cop_kmeans`, `gmm_diagonal`, `gmm_full`, `gmm_toeplitz{,_full,_gs}`, `ward_hac`, `agglomerative` (UPGMA/WPGMA/UPGMC/WPGMC), `spectral`, `leiden`, `spherical_kmeans`, `movmf`, `scale_space`, `hdbscan`, `kprototypes`, `nmf` (the `projection` reducer) |
+| `clustering` | `kmeans` / `kmeans_auto` / `cop_kmeans`, `xmeans` (recursive splitting), `gmm_diagonal`, `gmm_full`, `gmm_toeplitz{,_full,_gs}`, `ward_hac`, `agglomerative` (UPGMA/WPGMA/UPGMC/WPGMC), `spectral`, `leiden`, `spherical_kmeans`, `movmf`, `scale_space`, `hdbscan`, `kprototypes`, `nmf` (the `projection` reducer) |
 | `mixture` | fitted-mixture kernels (diagonal / full-Cholesky / stationary / vMF) that score a raw point — what `predict` / `predict_proba` label by |
 | `stream` | `DenStream` + `DbStream` fading-microcluster density heads |
 | `window` | frame-summed windowed summaries + `WindowStream`; the conditioned inverse merge |

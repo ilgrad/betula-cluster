@@ -46,6 +46,7 @@ _Feature = Literal["spherical", "diagonal", "full", "fd"]
 _Projection = Literal["none", "weighted-nmf", "weighted-nmf-kl", "svd"]
 _Method = Literal[
     "kmeans",
+    "xmeans",
     "gmm",
     "gmm-full",
     "mppca",

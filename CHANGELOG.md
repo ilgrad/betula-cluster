@@ -7,6 +7,14 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Changed
+- **`clustering::xmeans` is now `clustering::kmeans_auto`; the name `xmeans` belongs to the new
+  splitter.** Rust API only — the Python `method` strings are unaffected. The function was never
+  x-means: it fits a full k-means at every `k ∈ [k_min, k_max]` and keeps the best BIC, which is a
+  BIC-selected sweep. X-means is defined by its per-centre split test, and now that the crate ships
+  that too, two `pub` items could not both carry the name. `betula_cluster::clustering::xmeans` was
+  published in 0.6.0, so this is a breaking rename for Rust callers; `method="kmeans"` with
+  `n_clusters=0` still routes to the sweep and its labels are unchanged by the rename.
+
 - **`method="scale-space"` sweeps the bandwidth in two passes, and stops answering `k = 1`.** The head
   ranks flat runs of the mode-count-versus-`log h` curve, and the swept range runs to half the data
   diameter — far above the scale at which the last two clusters merge. Eleven of fifteen grid points
@@ -40,6 +48,29 @@ All notable changes to this project are documented here. The format follows
   [`bench/RESULTS.md`](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md).
 
 ### Added
+
+- **`method="xmeans"` — x-means proper (Pelleg & Moore, ICML 2000), the first auto-`k` head that can
+  return more than 20 clusters.** It alternates k-means with a per-centre split test — each centre is
+  asked separately whether the leaves it owns are better described by two centres than by one, scored
+  by BIC on that subset alone — and stops when no centre wants to split. `n_clusters` is an **upper
+  bound**, not a target; `0` bounds it only by the leaf count, because the split test rather than a
+  cost guard is what stops the recursion. The sweep behind `method="kmeans"` cannot do this: it costs
+  `O(k_max²)` full k-means over every leaf, which is why `AUTO_K_MAX = 20` exists and why no other
+  auto-`k` head in the library can exceed 20.
+
+  **The split test has a threshold and it is a function of `d`.** A balanced binary split costs
+  `n·ln 2` of mixture-weight likelihood and buys `½·n·d·ln(S₁/S₂)`, so it is accepted only when the
+  cut captures more than `1 − 2^(−2/d)` of the region's sum of squares — **half of it at `d = 2`**,
+  0.13 at `d = 10`, 0.022 at `d = 64`. A cut through a cloud that is round at every scale captures
+  about `0.64/d`, always less than the `1.39/d` required, so on low-dimensional evenly-spread data
+  the head answers `k = 1`: a 3×3 grid of nine equal 2-D blobs does exactly that. That is the
+  published algorithm, not a defect, and `method="kmeans"` with `n_clusters=0` is the head to use
+  there — a sweep compares `k = 1` against `k = 9` directly and never passes through the refused
+  `k = 2`. Measured on random blob layouts (4 leaves per blob, median of seeds 0/1/2), `|Δk|` against
+  the true count with the sweep at its cap of 20: `d = 10, k* = 30` → sweep 10.0 (capped) in 4.9 ms,
+  x-means **0.0** in 0.7 ms; `d = 64, k* = 30` → sweep 10.0 in 8.9 ms, x-means **0.0** in 1.3 ms;
+  `d = 2, k* = 10` → sweep **0.3**, x-means 6.3. Table in
+  [docs/USAGE.md](https://github.com/ilgrad/betula-cluster/blob/main/docs/USAGE.md).
 
 - `Betula.near_duplicate_pairs(..., neighbors=k)`: a cross-leaf recall pass. The within-leaf scan
   cannot see a duplicate pair whose two rows were absorbed into different leaves — at 20 000 rows
@@ -1155,6 +1186,20 @@ All notable changes to this project are documented here. The format follows
   — only the documentation was wrong. The `xmeans` doc comment claimed its BIC is minimised while the
   code maximises it, which is the opposite of the convention the five other BIC sites in the crate
   use; it now says so.
+
+- **The BIC behind `method="kmeans"` with `n_clusters=0` dropped the within-leaf scatter, and would
+  answer `k = n_leaves` on any input allowed to look that far. Labels change.** The score summed only
+  the between-leaf part, `Σ_l n_l‖μ_l − c‖²`, under the reasoning that the within-leaf scatter
+  `Σ_l S_l` is the same for every `k` and therefore cancels. It is constant, but it does not cancel:
+  it sits inside `ln σ̂²`, so the two scores differ by `−½·nr·d·ln((W_k − C)/W_k)`, which depends on
+  `k` through `W_k`. Worse, as `k` reaches the leaf count the between-leaf part goes to zero, `σ̂²`
+  hits its `1e-12` floor and the BIC diverges to `+∞` — one cluster per leaf beats every real answer.
+  The correct quantity is the full `Σ_l (S_l + n_l‖μ_l − c‖²)`, the CF identity, which is exact for
+  any whole-leaf partition and is already what `KMeans::inertia` accumulates. Nothing caught it
+  because `AUTO_K_MAX = 20` capped every shipped path far below the leaf count and the three tests
+  covering the sweep all ran at `k_max ≤ 8` against 100+ leaves; it surfaced only once a head whose
+  cap *is* the leaf count went looking. On a 24-leaf, 6-blob fixture in 10-D the sweep selected 24
+  before and 6 after, and the regression test fails on a build with the term removed.
 
 ## [0.7.0] — 2026-08-23
 

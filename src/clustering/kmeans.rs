@@ -4,7 +4,8 @@
 //! weighted k-means++; iterations are **Hamerly-accelerated exact Lloyd** (triangle-inequality
 //! bounds skip redundant distance computations without changing the output). The reported inertia
 //! is the true SSE of the underlying points, including within-feature spread:
-//! `Σ_i [S_i + n_i‖μ_i − c‖²]`. [`xmeans`] picks `k` automatically by BIC.
+//! `Σ_i [S_i + n_i‖μ_i − c‖²]`. [`kmeans_auto`] picks `k` automatically by BIC; the recursive
+//! splitter that shares its score lives in [`super::xmeans`].
 
 use crate::clustering::rng::SplitMix64;
 use crate::feature::ClusterFeature;
@@ -540,10 +541,29 @@ fn lloyd_hamerly<R: Real>(
     }
 }
 
-/// X-means: choose `k` automatically in `[k_min, k_max]` by running k-means at every `k` and keeping
-/// the best Pelleg-Moore BIC, which is **maximised** -- the opposite sign to [`super::gmm::bic`] and
-/// its callers. Leaves are weighted points of a spherical mixture; `p = k·(d+1)` free parameters.
-pub fn xmeans<R: Real, C: ClusterFeature<R>>(
+/// Refine `centers` in place of re-seeding: Lloyd from a caller-supplied initialisation, with no
+/// k-means++ draw and no restarts. [`super::xmeans`]'s Improve-Params step needs exactly this —
+/// restarting from a fresh draw would discard the centres the split test just produced.
+pub(crate) fn lloyd_from<R: Real, C: ClusterFeature<R>>(
+    features: &[C],
+    centers: Vec<Vec<R>>,
+    max_iter: usize,
+) -> KMeans<R> {
+    let dim = features[0].dim();
+    let means: Vec<Vec<R>> = features.iter().map(|f| f.mean().to_vec()).collect();
+    let weights: Vec<R> = features.iter().map(|f| f.weight()).collect();
+    let ssd: Vec<R> = features.iter().map(|f| f.ssd()).collect();
+    lloyd_hamerly(&means, &weights, &ssd, centers, max_iter, dim)
+}
+
+/// Choose `k` automatically in `[k_min, k_max]` by running a full k-means at every `k` and keeping
+/// the best [`super::xmeans::pelleg_moore_bic`], which is **maximised** -- the opposite sign to
+/// [`super::gmm::bic`] and its callers. Leaves are weighted points of a spherical mixture.
+///
+/// This is a BIC-selected sweep, not x-means: it costs `O(k_max²)` Lloyd passes over every leaf and
+/// cannot look past `k_max`. [`super::xmeans::xmeans`] is the split-test algorithm that shares the
+/// score.
+pub fn kmeans_auto<R: Real, C: ClusterFeature<R>>(
     features: &[C],
     k_min: usize,
     k_max: usize,
@@ -554,42 +574,18 @@ pub fn xmeans<R: Real, C: ClusterFeature<R>>(
     let d = features[0].dim();
     let hi = k_max.min(m).max(1);
     let lo = k_min.max(1).min(hi);
-    let nr = features
-        .iter()
-        .map(|f| f.weight())
-        .fold(R::zero(), |a, b| a + b);
-    let dr = R::from_usize(d).unwrap();
-    let half = R::from_f64(0.5).unwrap();
-    let two_pi = R::from_f64(std::f64::consts::TAU).unwrap();
-    let tiny = R::from_f64(1e-12).unwrap();
 
     let mut best: Option<KMeans<R>> = None;
     let mut best_bic = R::neg_infinity();
     for k in lo..=hi {
         let km = kmeans(features, k, max_iter, 4, seed);
-        // Cluster weights and pure between-feature SSE (the within-feature spread is fixed in k).
         let mut nk = vec![R::zero(); k];
-        let mut sse = R::zero();
         for (i, f) in features.iter().enumerate() {
-            let c = km.labels[i];
-            nk[c] = nk[c] + f.weight();
-            sse = sse + f.weight() * sq_euclidean(f.mean(), &km.centers[c]);
+            nk[km.labels[i]] = nk[km.labels[i]] + f.weight();
         }
-        // Pelleg–Moore X-means BIC (maximise): the `Σ n_k ln n_k` entropy term penalises splitting,
-        // which a plain inertia-based score lacks.
-        let var = (sse / (nr - R::from_usize(k).unwrap()).max(R::one()) / dr).max(tiny);
-        let log_2pi_var = (two_pi * var).ln();
-        let mut loglik = R::zero();
-        for &n_k in &nk {
-            if n_k > R::zero() {
-                loglik = loglik + n_k * n_k.ln()
-                    - n_k * nr.ln()
-                    - half * n_k * dr * log_2pi_var
-                    - half * (n_k - R::one()) * dr;
-            }
-        }
-        let params = R::from_usize(k * (d + 1)).unwrap();
-        let bic = loglik - half * params * nr.ln();
+        // `inertia` is already `Σ_i (S_i + n_i‖μ_i − c‖²)`, the within-cluster sum of squares of the
+        // underlying points, which is the quantity the score's variance estimate is defined on.
+        let bic = super::xmeans::pelleg_moore_bic(&nk, km.inertia, d);
         if bic > best_bic {
             best_bic = bic;
             best = Some(km);
@@ -638,12 +634,12 @@ mod tests {
     }
 
     #[test]
-    fn xmeans_recovers_cluster_count() {
+    fn kmeans_auto_recovers_cluster_count() {
         let mut rng = SplitMix64::new(31);
         let centers = [[0.0, 0.0], [9.0, 0.0], [0.0, 9.0], [9.0, 9.0]];
         let (pts, truth) = blobs(&mut rng, 400, &centers, 0.6);
         let (micros, point_to_micro) = grid_micros(&pts, 0.5);
-        let km = xmeans(&micros, 1, 8, 100, 7);
+        let km = kmeans_auto(&micros, 1, 8, 100, 7);
         assert_eq!(km.centers.len(), 4, "selected k = {}", km.centers.len());
         let labels: Vec<usize> = point_to_micro.iter().map(|&m| km.labels[m]).collect();
         assert!(ari(&labels, &truth) > 0.95);
@@ -721,10 +717,10 @@ mod tests {
         assert_eq!(lab.len(), 3);
     }
 
-    /// Independent re-derivation of the Pelleg–Moore BIC that [`xmeans`] maximises. The score itself
-    /// is never returned, so the only end-to-end test asserts the selected `k` on four separated
-    /// blobs — a target so easy that most of the score can be corrupted without moving it.
-    fn reference_xmeans_bic(features: &[Spherical<f64>], km: &KMeans<f64>, k: usize) -> f64 {
+    /// Independent re-derivation of the Pelleg–Moore BIC that [`kmeans_auto`] maximises. The score
+    /// itself is never returned, so the only end-to-end test asserts the selected `k` on four
+    /// separated blobs — a target so easy that most of the score can be corrupted without moving it.
+    fn reference_pelleg_moore_bic(features: &[Spherical<f64>], km: &KMeans<f64>, k: usize) -> f64 {
         let d = features[0].dim();
         let nr: f64 = features.iter().map(|f| f.weight()).sum();
         let mut nk = vec![0.0; k];
@@ -732,7 +728,9 @@ mod tests {
         for (i, f) in features.iter().enumerate() {
             let c = km.labels[i];
             nk[c] += f.weight();
-            sse += f.weight() * sq_euclidean(f.mean(), &km.centers[c]);
+            // Expanded here rather than read off `km.inertia`, so the reference recomputes the CF
+            // identity instead of trusting the head's own accumulator.
+            sse += f.ssd() + f.weight() * sq_euclidean(f.mean(), &km.centers[c]);
         }
         let var = (sse / (nr - k as f64).max(1.0) / d as f64).max(1e-12);
         let log_2pi_var = (std::f64::consts::TAU * var).ln();
@@ -750,7 +748,7 @@ mod tests {
     }
 
     #[test]
-    fn xmeans_selects_the_argmax_of_an_independently_scored_bic() {
+    fn kmeans_auto_selects_the_argmax_of_an_independently_scored_bic() {
         // Three fixtures with different true k, plus a single homogeneous cloud where the entropy
         // and parameter penalties are the only thing stopping the score from splitting for ever.
         let fixtures: [(&[[f64; 2]], f64); 4] = [
@@ -770,13 +768,13 @@ mod tests {
                 let mut best = f64::NEG_INFINITY;
                 for k in lo..=hi {
                     let km = kmeans(&micros, k, 100, 4, seed);
-                    let bic = reference_xmeans_bic(&micros, &km, k);
+                    let bic = reference_pelleg_moore_bic(&micros, &km, k);
                     if bic > best {
                         best = bic;
                         want = k;
                     }
                 }
-                let got = xmeans(&micros, lo, hi, 100, seed).centers.len();
+                let got = kmeans_auto(&micros, lo, hi, 100, seed).centers.len();
                 assert_eq!(got, want, "fixture {f}, seed {seed}");
             }
         }
@@ -1186,7 +1184,7 @@ mod tests {
     }
 
     #[test]
-    fn the_xmeans_score_puts_its_split_boundary_where_the_reference_does() {
+    fn the_kmeans_auto_score_puts_its_split_boundary_where_the_reference_does() {
         // A single argmax is a coarse probe: nearly every corruption of the Pelleg-Moore score
         // keeps it on a fixture whose answer is obvious. Walking the separation of two blobs across
         // the 1 -> 2 transition pins *where* the score changes its mind, and that boundary is one
@@ -1203,13 +1201,13 @@ mod tests {
             let mut best = (f64::NEG_INFINITY, lo);
             for k in lo..=hi {
                 let km = kmeans(&micros, k, 100, 4, 5);
-                let bic = reference_xmeans_bic(&micros, &km, k);
+                let bic = reference_pelleg_moore_bic(&micros, &km, k);
                 if bic > best.0 {
                     best = (bic, k);
                 }
             }
             want.push(best.1);
-            got.push(xmeans(&micros, lo, hi, 100, 5).centers.len());
+            got.push(kmeans_auto(&micros, lo, hi, 100, 5).centers.len());
         }
         assert!(
             want.windows(2).any(|w| w[0] != w[1]),

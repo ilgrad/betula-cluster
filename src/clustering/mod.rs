@@ -22,6 +22,7 @@ pub mod scalespace;
 pub mod spectral;
 pub mod vmf;
 pub mod ward;
+pub mod xmeans;
 
 pub use agglomerative::{
     Agglomerative, BoundedDendrogram, CertificateError, Linkage, agglomerative, agglomerative_auto,
@@ -35,7 +36,7 @@ pub use gmm_toeplitz::{
     gmm_toeplitz_gs, gmm_toeplitz_gs_auto,
 };
 pub use hdbscan::{Hdbscan, Selection, hdbscan, hdbscan_selected};
-pub use kmeans::{ConstraintError, KMeans, cop_kmeans, kmeans, xmeans};
+pub use kmeans::{ConstraintError, KMeans, cop_kmeans, kmeans, kmeans_auto};
 pub use kprototypes::{MixedCf, kprototypes, nearest_micro, summarize_mixed};
 pub use medoid::{MedoidClustering, dyn_msc};
 pub use mppca::{Mppca, mppca, mppca_auto};
@@ -43,6 +44,7 @@ pub use scalespace::{ScaleSpace, scale_space};
 pub use spectral::{Spectral, spectral};
 pub use vmf::{Movmf, SphericalKMeans, movmf, movmf_auto, spherical_kmeans};
 pub use ward::{WardHac, ward_hac, ward_hac_auto};
+pub use xmeans::xmeans;
 
 #[cfg(test)]
 pub(crate) mod testutil {

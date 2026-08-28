@@ -4,8 +4,8 @@ use crate::clustering::{
     Gmm, GmmFull, GmmToeplitz, Linkage, Movmf, Mppca, Objective, agglomerative, agglomerative_auto,
     gmm_diagonal, gmm_diagonal_auto, gmm_full, gmm_full_auto, gmm_toeplitz, gmm_toeplitz_auto,
     gmm_toeplitz_full, gmm_toeplitz_full_auto, gmm_toeplitz_gs, gmm_toeplitz_gs_auto, kmeans,
-    leiden, movmf, movmf_auto, mppca, mppca_auto, spectral, spherical_kmeans, ward_hac,
-    ward_hac_auto, xmeans,
+    kmeans_auto, leiden, movmf, movmf_auto, mppca, mppca_auto, spectral, spherical_kmeans,
+    ward_hac, ward_hac_auto, xmeans,
 };
 use crate::distance::CFDistance;
 use crate::feature::ClusterFeature;
@@ -21,8 +21,14 @@ const AUTO_K_MAX: usize = 20;
 #[derive(Clone, Copy, Debug)]
 #[cfg_attr(feature = "persistence", derive(serde::Serialize, serde::Deserialize))]
 pub enum Method {
-    /// Weighted k-means (k-means++ init, exact Lloyd).
+    /// Weighted k-means (k-means++ init, exact Lloyd). `k == 0` sweeps `k` and keeps the best
+    /// Pelleg-Moore BIC, which is bounded by `AUTO_K_MAX` because the sweep costs `O(k_max²)`.
     KMeans,
+    /// X-means (Pelleg & Moore 2000): recursive splitting, where each centre is tested separately
+    /// for a 2-way split by BIC and the algorithm stops when no centre wants one. `k` is an **upper
+    /// bound**, not a target; `k == 0` bounds it only by the leaf count, since the split test — not a
+    /// cost guard — is what stops the recursion.
+    XMeans,
     /// Diagonal GMM-EM with the expected-log E-step.
     Gmm,
     /// Full-covariance GMM-EM (captures rotated / correlated clusters).
@@ -86,7 +92,7 @@ pub(crate) enum Rule {
 
 pub(crate) fn assignment_rule(method: Method) -> Rule {
     match method {
-        Method::KMeans => Rule::Centroid { unit: false },
+        Method::KMeans | Method::XMeans => Rule::Centroid { unit: false },
         Method::SphericalKMeans => Rule::Centroid { unit: true },
         Method::Gmm
         | Method::GmmFull
@@ -406,9 +412,14 @@ pub(crate) fn fit_head<R: Real, C: ClusterFeature<R>>(
     let kk = k.min(nlv).max(1);
     match method {
         Method::KMeans if k == 0 => {
-            HeadFit::hard(xmeans(features, 1, auto_hi, max_iter, seed).labels)
+            HeadFit::hard(kmeans_auto(features, 1, auto_hi, max_iter, seed).labels)
         }
         Method::KMeans => HeadFit::hard(kmeans(features, kk, max_iter, 4, seed).labels),
+        // `AUTO_K_MAX` bounds the *sweep*, whose cost is quadratic in the cap. X-means stops when no
+        // centre wants to split, so at `k == 0` the only bound it needs is the leaf count -- taking
+        // the sweep's cost guard here would silently truncate the answer this head exists to give.
+        Method::XMeans if k == 0 => HeadFit::hard(xmeans(features, nlv, max_iter, seed).labels),
+        Method::XMeans => HeadFit::hard(xmeans(features, kk, max_iter, seed).labels),
         Method::Gmm if k == 0 => {
             HeadFit::soft(gmm_diagonal_auto(features, 1, auto_hi, max_iter, seed))
         }
@@ -658,6 +669,30 @@ mod tests {
     }
 
     #[test]
+    fn xmeans_reads_k_as_a_cap_rather_than_as_a_target() {
+        // The head deliberately sits outside `every_head_takes_its_automatic_arm_only_when_k_is_zero`:
+        // `n_clusters` bounds x-means rather than fixing it, so `k = 2` may legitimately answer 1 and
+        // there is no "fixed arm" to take. What must hold is that the bound binds, that `k = 0` does
+        // not silently inherit the sweep's `AUTO_K_MAX`, and that the head still finds structure.
+        let feats = dispatch_leaves();
+        for k in 1..=4 {
+            let got = distinct_count(&fit_head(&feats, k, Method::XMeans, 100, 1).labels);
+            assert!(got <= k, "k = {k} is a cap, but the head returned {got}");
+        }
+        assert_eq!(
+            distinct_count(&fit_head(&feats, 1, Method::XMeans, 100, 1).labels),
+            1,
+            "a cap of 1 leaves nothing to split"
+        );
+        let auto = distinct_count(&fit_head(&feats, 0, Method::XMeans, 100, 1).labels);
+        assert!(auto > 1, "the automatic arm collapsed to {auto}");
+        assert!(
+            auto <= feats.len(),
+            "the automatic arm is bounded by the leaf count, not by AUTO_K_MAX"
+        );
+    }
+
+    #[test]
     fn cluster_centroids_are_mass_weighted_and_normalized_only_when_asked() {
         let leaf = |p: [f64; 2], w: f64| {
             let mut f = <Diagonal<f64> as ClusterFeature<f64>>::new(2);
@@ -706,6 +741,7 @@ mod tests {
         let (pts, _truth) = blobs(&mut rng, 60, &centers, 0.5);
         for (name, method) in [
             ("kmeans", Method::KMeans),
+            ("xmeans", Method::XMeans),
             ("spherical-kmeans", Method::SphericalKMeans),
             ("gmm", Method::Gmm),
             ("movmf", Method::Movmf),

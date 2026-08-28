@@ -203,6 +203,7 @@ fn parse_method(
 ) -> PyResult<Kind> {
     match method {
         "kmeans" => Ok(Kind::Parametric(Method::KMeans)),
+        "xmeans" => Ok(Kind::Parametric(Method::XMeans)),
         "gmm" => Ok(Kind::Parametric(Method::Gmm)),
         "gmm-full" => Ok(Kind::Parametric(Method::GmmFull)),
         "ward" => Ok(Kind::Parametric(Method::Ward)),
@@ -246,9 +247,10 @@ fn parse_method(
         }),
         "scale-space" => Ok(Kind::ScaleSpace),
         _ => Err(PyValueError::new_err(
-            "method must be 'kmeans', 'gmm', 'gmm-full', 'mppca', 'ward', 'average', 'weighted', \
-             'centroid', 'median', 'spectral', 'leiden', 'leiden-cpm', 'spherical-kmeans', 'vmf', \
-             'gmm-toeplitz', 'gmm-toeplitz-full', 'gmm-toeplitz-gs', 'hdbscan' or 'scale-space'",
+            "method must be 'kmeans', 'xmeans', 'gmm', 'gmm-full', 'mppca', 'ward', 'average', \
+             'weighted', 'centroid', 'median', 'spectral', 'leiden', 'leiden-cpm', \
+             'spherical-kmeans', 'vmf', 'gmm-toeplitz', 'gmm-toeplitz-full', 'gmm-toeplitz-gs', \
+             'hdbscan' or 'scale-space'",
         )),
     }
 }
@@ -4514,6 +4516,7 @@ impl PyDdSketch {
 fn parse_parametric(method: &str) -> PyResult<Method> {
     match method {
         "kmeans" => Ok(Method::KMeans),
+        "xmeans" => Ok(Method::XMeans),
         "gmm" => Ok(Method::Gmm),
         "gmm-full" => Ok(Method::GmmFull),
         "ward" => Ok(Method::Ward),
@@ -4532,7 +4535,7 @@ fn parse_parametric(method: &str) -> PyResult<Method> {
         "spherical-kmeans" => Ok(Method::SphericalKMeans),
         "vmf" => Ok(Method::Movmf),
         _ => Err(PyValueError::new_err(
-            "method must be 'kmeans', 'gmm', 'gmm-full', 'ward', 'average', 'weighted', \
+            "method must be 'kmeans', 'xmeans', 'gmm', 'gmm-full', 'ward', 'average', 'weighted', \
              'centroid', 'median', 'spherical-kmeans' or 'vmf' for sparse input",
         )),
     }
