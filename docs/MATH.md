@@ -315,6 +315,14 @@ non-convex-aware, but still the weakest head on `covtype`, where every cell scor
 - **k-means on CFs** minimizes the true point objective, not the leaf-centroid proxy:
   $\text{SSE} = \sum_i \bigl[S_i + n_i\|\mu_i - c\|^2\bigr]$ folds each leaf's own scatter $S_i$ back in, so compressing to a
   CF-tree first does not change what is being optimized.
+- **The boundary of the summary.** A cluster feature is a sum-decomposition
+  $f(X) = \varphi\bigl(\sum_u \psi(x_u)\bigr)$ (Deep Sets, Zaheer et al. 2017), so it carries the
+  permutation-invariant polynomials of degree $\le 2$ and nothing else. WCSS, Ward, Calinski–Harabasz,
+  RMS Davies–Bouldin, $D_{4,\varphi}$ and both Gaussian E-steps are therefore *exact* on the summary;
+  the exact silhouette, a single-linkage dendrogram and a DBSCAN labelling provably are not — two
+  four-point sets with **bitwise-identical** features have different pairwise distance sets. The
+  counterexample, the exactness residuals and the leaf-budget error rate are in
+  `research/RESULTS-cf-boundary.md`.
 - **Full covariance** uses a matrix Welford (PSD) with on-demand Cholesky for `logdet` /
   `mahalanobis`; the packed upper-triangular index is the tested $(j-1)j/2$ form — a reference
   implementation shipped a $(j-1)\cdot\mathrm{dim}/2$ variant that silently corrupts $\mathrm{dim} \ge 4$.

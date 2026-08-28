@@ -197,6 +197,13 @@ pub fn davies_bouldin<R: Real, C: ClusterFeature<R>>(
 /// from that leaf's points to the medoid point, `‖μ_i − μ_m‖² + S_i/n_i`, which is exact. The
 /// leaf's own scatter therefore keeps a leaf off zero even when it *is* the medoid, which is the
 /// honest answer: its points are not at the medoid.
+///
+/// This is an approximation of the exact silhouette *by construction*, not by implementation
+/// choice, and no richer leaf model would close the gap: a cluster feature carries the
+/// permutation-invariant polynomials of degree ≤ 2 and the silhouette is not one of them. Two point
+/// sets with bitwise-identical features can have different pairwise distance sets — see
+/// `research/RESULTS-cf-boundary.md` and
+/// `feature::tests::two_point_sets_can_share_a_feature_and_not_a_geometry`.
 pub fn medoid_silhouette<R: Real, C: ClusterFeature<R>>(
     features: &[C],
     labels: &[usize],

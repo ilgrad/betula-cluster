@@ -1049,9 +1049,12 @@ class Betula:
 
         Caveats worth reading before using any of them to choose ``k``: Calinski–Harabasz is exact
         but undefined at ``k = 1``; Davies–Bouldin is the RMS-dispersion variant, not the classical
-        mean-distance one; the medoid silhouette is the index of the summary, not of the points.
-        None of the three can report "there is no structure here" — for that, fit with
-        ``n_clusters=0`` on a mixture head and let BIC answer.
+        mean-distance one; the medoid silhouette is the index of the summary, not of the points, and
+        no richer leaf model would change that — two point sets with identical cluster features can
+        have different pairwise distances, so the exact silhouette is not recoverable from any
+        summary in this family (``research/RESULTS-cf-boundary.md``). None of the three can report
+        "there is no structure here" — for that, fit with ``n_clusters=0`` on a mixture head and let
+        BIC answer.
         """
         ch, db, ms = self._require_fit().validity_()
         return {

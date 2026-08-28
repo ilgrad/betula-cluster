@@ -1353,45 +1353,38 @@ mod tests {
         let a: [&[f64]; 4] = [&[-3.0, 0.0], &[-1.0, 0.0], &[2.0, 0.0], &[2.0, 0.0]];
         let b: [&[f64]; 4] = [&[-3.0, 0.0], &[0.0, 0.0], &[0.0, 0.0], &[3.0, 0.0]];
 
-        let (sa, sb): (Spherical<f64>, Spherical<f64>) = (push_all(2, &a), push_all(2, &b));
-        let (da, db): (Diagonal<f64>, Diagonal<f64>) = (push_all(2, &a), push_all(2, &b));
-        let (fa, fb): (Full<f64>, Full<f64>) = (push_all(2, &a), push_all(2, &b));
-        for (name, wa, wb, ma, mb, ssa, ssb) in [
-            (
-                "spherical",
-                sa.weight(),
-                sb.weight(),
-                sa.mean().to_vec(),
-                sb.mean().to_vec(),
-                sa.ssd(),
-                sb.ssd(),
-            ),
-            (
-                "diagonal",
-                da.weight(),
-                db.weight(),
-                da.mean().to_vec(),
-                db.mean().to_vec(),
-                da.ssd(),
-                db.ssd(),
-            ),
-            (
-                "full",
-                fa.weight(),
-                fb.weight(),
-                fa.mean().to_vec(),
-                fb.mean().to_vec(),
-                fa.ssd(),
-                fb.ssd(),
-            ),
-        ] {
+        fn moments<C: ClusterFeature<f64>>(pts: &[&[f64]]) -> (f64, Vec<f64>, f64) {
+            let c: C = push_all(2, pts);
+            (c.weight(), c.mean().to_vec(), c.ssd())
+        }
+        let agree = |name: &str,
+                     (wa, ma, ssa): (f64, Vec<f64>, f64),
+                     (wb, mb, ssb): (f64, Vec<f64>, f64)| {
             assert!(close(wa, wb), "{name}: weights differ");
             assert!(
                 ma.iter().zip(&mb).all(|(&x, &y)| close(x, y)),
                 "{name}: means differ"
             );
             assert!(close(ssa, ssb), "{name}: scatter differs, {ssa} vs {ssb}");
-        }
+        };
+        agree(
+            "spherical",
+            moments::<Spherical<f64>>(&a),
+            moments::<Spherical<f64>>(&b),
+        );
+        agree(
+            "diagonal",
+            moments::<Diagonal<f64>>(&a),
+            moments::<Diagonal<f64>>(&b),
+        );
+        agree("full", moments::<Full<f64>>(&a), moments::<Full<f64>>(&b));
+        agree(
+            "fd sketch",
+            moments::<FdSketch<f64>>(&a),
+            moments::<FdSketch<f64>>(&b),
+        );
+
+        let (fa, fb): (Full<f64>, Full<f64>) = (push_all(2, &a), push_all(2, &b));
         let (ca, cb) = (fa.cov_dense(), fb.cov_dense());
         for i in 0..2 {
             for j in 0..2 {
