@@ -48,6 +48,23 @@ $$
 with NIW/MAP regularization $\Sigma_k = (\Psi + \dots)/(\nu + N_k + d + 1)$ so a 1-point leaf never yields a
 singular covariance.
 
+**Why this is the right bound, and not merely the winning one.** $\log\mathcal{N}(x \mid \mu_k, \Sigma_k)$
+is a quadratic form in $x$, so its expectation under any distribution supported on leaf $i$ depends on
+that distribution *only* through its first two moments — which are exactly what the cluster feature
+stores. $\mathbb{E}_{x \sim i}[\log \mathcal{N}]$ is therefore **exact** given $(n_i, \mu_i, \Sigma_i)$,
+with no error contributed by the unknown within-leaf shape. Running EM on that quantity is exact
+**variational EM** on the point-level likelihood under the constraint that all points in a leaf share
+one responsibility vector: a genuine ELBO whose only slack is the tying. The two alternatives are not
+bounds of that kind. The convolution form $\mathcal{N}(\mu_i \mid \mu_k, \Sigma_k + \Sigma_i)$ computes
+$\log \mathbb{E}[p] \ge \mathbb{E}[\log p]$ by Jensen — the wrong side, and a different functional —
+which is why it washes out components once the summary is coarse. The plug-in form is the zeroth-order
+truncation of the same expansion, dropping precisely the
+$-\tfrac{1}{2}\mathrm{tr}(\Sigma_k^{-1}\Sigma_i)$ term above, so it agrees wherever $\Sigma_i$ is
+negligible against $\Sigma_k$ — which is what the measurement shows (`research/RESULTS-estep.md`: 33/36
+cells against 32/36 for the plug-in and 22/36 for the convolution). The same theorem in its Bregman
+generalization — $\mathbb{E}_{x \in i}[d_\varphi(x, \mu_k)] = S_i/n_i + d_\varphi(\mu_i, \mu_k)$, exact
+for every $\varphi$ — is what the `BregmanBetula` head's monotone `elbo` reports.
+
 **High-dimensional floor.** With few effective leaves per component, $\Sigma_k$ can still go
 near-singular along a low-variance direction, which makes the $-\tfrac12\mathrm{tr}(\Sigma_k^{-1}\Sigma_i)$
 correction over-confident and *starves* the component — its responsibility collapses to zero and the

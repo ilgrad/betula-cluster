@@ -258,8 +258,15 @@ Honest scope — inherent to a CF-compression + streaming design, not bugs:
    quality degrades when clusters overlap at the compression scale. Mitigation: more leaves.
 4. **HDBSCAN-on-CF ≠ raw-point HDBSCAN** — mass-aware HDBSCAN over microclusters: fast and close, but
    an approximation (weaker on *overlapping* blobs; see the benchmarks).
-5. **The expected-log GMM optimizes a CF-level objective**, not pointwise EM (a deliberate, measured
-   choice for coarse CFs).
+5. **The expected-log GMM optimizes a CF-level objective**, not pointwise EM — a deliberate choice,
+   and the *exact* variational bound on the pointwise objective rather than an ad-hoc surrogate.
+   Because `log N(x | μ, Σ)` is quadratic in `x`, the leaf expectation is computed exactly from the
+   cluster feature `(n, μ, S)` with no error from the within-leaf shape; the E-step is therefore exact
+   variational EM in which the responsibilities are **tied** within each leaf, and that tying is the
+   whole of the approximation. The paper's convolution variant computes `log E[p] ≥ E[log p]`, a
+   different quantity and not the EM bound at all — which is why it degrades on coarse summaries where
+   this one does not
+   ([`docs/MATH.md`](https://github.com/ilgrad/betula-cluster/blob/main/docs/MATH.md)).
 6. **Frequent-Directions is an approximate low-rank covariance** (exact only up to its rank `ℓ`).
 7. **A diagonal Gaussian is a weak model for raw image pixels.** Since 0.6.0 the mixture heads label a
    point by its own posterior under the fitted mixture, which is the model's own rule — but on raw

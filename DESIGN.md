@@ -307,8 +307,11 @@ Honest scope — inherent to CF-compression + streaming, not bugs:
 3. **CF-level heads approximate raw-data clustering** — quality degrades when clusters overlap at the
    compression scale; mitigation is more leaves.
 4. **HDBSCAN-on-CF ≠ raw-point HDBSCAN** — mass-aware HDBSCAN over the microclusters (approximate).
-5. **Expected-log GMM optimizes a CF-level objective**, not pointwise EM (a measured, deliberate
-   objective choice).
+5. **Expected-log GMM optimizes a CF-level objective**, not pointwise EM — but it is the *exact*
+   variational bound on the pointwise one. $\log \mathcal{N}(x \mid \mu_k, \Sigma_k)$ is quadratic in
+   $x$, so $\mathbb{E}_{x \sim \text{leaf}}[\log \mathcal{N}]$ is exact from $(n, \mu, S)$: the E-step
+   is exact variational EM with the responsibilities *tied* within a leaf, and the tying is the only
+   approximation. Theorem-backed, not merely preferred.
 6. **FD is an approximate low-rank covariance** (exact only up to rank $\ell$).
 
 ## Non-goals: string indexing (lives in `lexindex`)
