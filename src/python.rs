@@ -38,11 +38,11 @@ use crate::distance::{
 };
 use crate::feature::{ClusterFeature, Diagonal, FdSketch, Full, Spherical};
 use crate::linalg::{cholesky_lower, mahalanobis_sq_from_chol};
-use crate::mixture::Mixture;
+use crate::mixture::{Mixture, SparseAssigner};
 use crate::model::{
     Method, Model, Rule, assignment_rule, auto_k_ceiling, fit_head, refine_centers,
 };
-use crate::sparse::{SparseCentroids, summarize_sparse};
+use crate::sparse::{SparseCentroids, normalize_csr_rows, summarize_sparse};
 use crate::stats::chi2_quantile;
 use crate::stream::{DbStream, DenStream, DriftReport};
 use crate::topology::{Lens, Link, MapperGraph, MapperParams, mapper};
@@ -4686,12 +4686,34 @@ fn parse_parametric(method: &str) -> PyResult<Method> {
     }
 }
 
+/// The `O(nnz)`-per-row labelling a head leaves behind for sparse input, when it has one.
+///
+/// The two arms are the two kinds of point model a Phase-3 head defines: a Voronoi partition around
+/// `k` centres, and a density. Neither is the microcluster route, which is what remains when the head
+/// has no point model at all.
+enum SparseRule<'a> {
+    /// Nearest pooled cluster centroid, with the cluster label each centroid stands for.
+    Centres(SparseCentroids, Vec<i64>),
+    /// Maximum-posterior component of the head's own fitted density.
+    Density(SparseAssigner<'a>),
+}
+
+impl SparseRule<'_> {
+    fn label_of(&self, idx: &[usize], val: &[f64], x_sq: f64) -> i64 {
+        match self {
+            SparseRule::Centres(centroids, ids) => ids[centroids.nearest(idx, val, x_sq)],
+            SparseRule::Density(density) => density.label_of(idx, val, x_sq) as i64,
+        }
+    }
+}
+
 /// One-shot `O(nnz)` clustering of a CSR matrix (`data` / `indices` / `indptr`, `n_features`). Rows
 /// are summarised into spherical micro-clusters touching only the non-zeros (flat leader pass, bounded
 /// by `max_leaves`), the micro-clusters are clustered by a parametric head, and each row is labelled by
-/// the head's own point rule — its nearest cluster centroid for the centre-based heads, and its nearest
-/// micro-cluster for the rest. See `sparse.rs` for the numerical trade-off of the sparse-native path
-/// and for why the microcluster route is a poor labelling of raw sparse rows.
+/// the head's own point rule — its nearest cluster centroid for the centre-based heads, its
+/// maximum-posterior component for the density heads whose kernel splits over the support of `x`, and
+/// otherwise the label of the micro-cluster the summarisation put it in. See `sparse.rs` for the
+/// numerical trade-off of the sparse-native path.
 ///
 /// `projection="svd"` makes this the one-call reduce-then-cluster pipeline for text: the leaf summary
 /// is reduced to `projection_dim` CF-weighted principal directions, the head clusters the codes, and
@@ -4735,8 +4757,15 @@ fn fit_predict_sparse<'py>(
     if indptr.len() < 2 {
         return Err(PyValueError::new_err("data must have at least one row"));
     }
+    // The directional heads cluster on the unit sphere, so they get L2-normalized rows here exactly
+    // as they do on the dense path — that rule lived only in the estimator, and this entry point is
+    // a module function that never passes through it. Left unnormalized, a leader's norm multiplies
+    // the fitted `κ_c` and the head's labels stop agreeing with its own mixture.
+    let normalized = matches!(m, Method::SphericalKMeans | Method::Movmf)
+        .then(|| normalize_csr_rows(data, indptr));
+    let data: &[f64] = normalized.as_deref().unwrap_or(data);
     let (labels, leaves) = py.detach(|| {
-        let micros = summarize_sparse(
+        let (micros, of_row) = summarize_sparse(
             data,
             indices,
             indptr,
@@ -4752,27 +4781,39 @@ fn fit_predict_sparse<'py>(
             Some(rule) => rule.label_csr(data, indices, indptr, n_features),
             None => {
                 let micro_labels = out.labels;
-                // Otherwise the row goes to its nearest *cluster* centroid, which is the partition a
-                // centre-based head defines and what the dense path has labelled with since 0.6.0.
-                // The microcluster route stays the fallback for the heads with no centre rule
-                // (agglomerative), for the posterior heads — whose density is `O(d)` or `O(d²)` per
-                // row, the cost this path exists to avoid — and behind an NMF projection, which
-                // moved the rows into a space the pooled raw-space centroids do not describe.
-                let pooled = match (spec, assignment_rule(m)) {
+                // Otherwise the head's own rule decides, in whichever `O(nnz)` form it has. A
+                // centre-based head owns a Voronoi partition, so the row goes to its nearest
+                // *cluster* centroid — what the dense path has labelled with since 0.6.0. A posterior
+                // head owns a density; the diagonal and von Mises-Fisher kernels split into a
+                // per-component constant plus an `O(nnz)` correction, and the rest do not.
+                let sparse_rule = match (spec, assignment_rule(m)) {
                     (None, Rule::Centroid { unit }) => {
                         SparseCentroids::pooled(&micros, &micro_labels, unit)
+                            .map(|(c, ids)| SparseRule::Centres(c, ids))
                     }
+                    (None, Rule::Posterior) => out
+                        .mixture
+                        .as_ref()
+                        .and_then(Mixture::sparse_assigner)
+                        .map(SparseRule::Density),
                     _ => None,
                 };
-                let (centroids, ids) = pooled
-                    .unwrap_or_else(|| (SparseCentroids::from_features(&micros), micro_labels));
-                map_rows(indptr.len() - 1, |r| {
-                    let (lo, hi) = (indptr[r] as usize, indptr[r + 1] as usize);
-                    let val = &data[lo..hi];
-                    let idx: Vec<usize> = indices[lo..hi].iter().map(|&c| c as usize).collect();
-                    let x_sq: f64 = val.iter().map(|v| v * v).sum();
-                    ids[centroids.nearest(&idx, val, x_sq)]
-                })
+                match sparse_rule {
+                    Some(rule) => map_rows(indptr.len() - 1, |r| {
+                        let (lo, hi) = (indptr[r] as usize, indptr[r + 1] as usize);
+                        let val = &data[lo..hi];
+                        let idx: Vec<usize> = indices[lo..hi].iter().map(|&c| c as usize).collect();
+                        let x_sq: f64 = val.iter().map(|v| v * v).sum();
+                        rule.label_of(&idx, val, x_sq)
+                    }),
+                    // No `O(nnz)` point rule: the row keeps the label of the micro-cluster it was
+                    // summarised into. That is the sparse counterpart of the dense path's
+                    // point-to-leaf route, it agrees with the summary by construction, and it costs
+                    // nothing — the alternative, re-deriving the nearest micro-cluster by centroid
+                    // distance, is `O(nnz·L)` and answers a different question badly (see
+                    // `SparseCentroids::pooled`).
+                    None => of_row.iter().map(|&i| micro_labels[i]).collect(),
+                }
             }
         };
         (labels, leaves)

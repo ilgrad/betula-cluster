@@ -191,7 +191,9 @@ const FORCED_MASS_SLACK: f64 = 32.0;
 /// Summarise CSR rows into spherical micro-clusters with a single `O(nnz)`-per-row leader pass: each
 /// row joins the nearest leader whose centroid is within `threshold` (squared distance), otherwise it
 /// seeds a new leader; once the leader budget is spent every further row joins the nearest leader
-/// still under its share of the mass (bounded memory). Returns dense [`Spherical`] micro-clusters.
+/// still under its share of the mass (bounded memory). Returns the dense [`Spherical`] micro-clusters
+/// and, per row, the index of the one it went into — the sparse counterpart of the dense tree's
+/// point-to-leaf route, and the only assignment consistent with the summary that was built from it.
 /// Caller has validated the CSR arrays.
 ///
 /// **Why the forced branch needs a mass cap.** Past the budget the proximity gate cannot refuse a row
@@ -212,7 +214,7 @@ pub fn summarize_sparse(
     n_features: usize,
     threshold: f64,
     max_leaders: usize,
-) -> Vec<Spherical<f64>> {
+) -> (Vec<Spherical<f64>>, Vec<usize>) {
     // A leader is seeded by a row, so there can never be more of them than rows; taking the tighter
     // of the two bounds keeps the transposed buffer from over-allocating on a short input.
     let n_rows = indptr.len() - 1;
@@ -220,6 +222,7 @@ pub fn summarize_sparse(
     // `hard_cap <= n_rows`, so the share is at least `FORCED_MASS_SLACK` points wide.
     let mass_share = FORCED_MASS_SLACK * n_rows as f64 / hard_cap as f64;
     let mut leaders = LeaderSet::new(n_features, hard_cap);
+    let mut of_row: Vec<usize> = Vec::with_capacity(n_rows);
     let mut idx_buf: Vec<usize> = Vec::new();
     let mut dots: Vec<f64> = Vec::new();
     for w in indptr.windows(2) {
@@ -240,7 +243,9 @@ pub fn summarize_sparse(
         }
         if best != usize::MAX && bd <= threshold {
             leaders.push_into(best, &idx_buf, val, x_sq, dots[best]);
+            of_row.push(best);
         } else if leaders.len < hard_cap {
+            of_row.push(leaders.len);
             leaders.push_new(&idx_buf, val, x_sq, hard_cap);
         } else {
             debug_assert!(
@@ -251,9 +256,10 @@ pub fn summarize_sparse(
                 .nearest_under(&dots, x_sq, mass_share)
                 .unwrap_or(best);
             leaders.push_into(target, &idx_buf, val, x_sq, dots[target]);
+            of_row.push(target);
         }
     }
-    leaders.into_features()
+    (leaders.into_features(), of_row)
 }
 
 /// The micro-cluster centroids, held **feature-major** for the row-labelling pass:
@@ -433,6 +439,27 @@ pub fn validate_csr(
     Ok(())
 }
 
+/// L2-normalise every CSR row, returning fresh values (a zero row is left alone).
+///
+/// Scaling the stored values is the whole operation — an implicit zero stays zero under any positive
+/// scale — so this is `O(nnz)` and needs no column indices at all. It is the sparse counterpart of
+/// the dense path's `normalize_rows`, and the directional heads need it for the reason
+/// [`crate::clustering::vmf::leaf_means`] states: a leaf mean carries a meaningful concentration
+/// only when the rows behind it are already directions.
+pub fn normalize_csr_rows(data: &[f64], indptr: &[i64]) -> Vec<f64> {
+    let mut out = data.to_vec();
+    for w in indptr.windows(2) {
+        let row = &mut out[w[0] as usize..w[1] as usize];
+        let norm = row.iter().map(|v| v * v).sum::<f64>().sqrt();
+        if norm > 0.0 {
+            for v in row.iter_mut() {
+                *v /= norm;
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -505,7 +532,7 @@ mod tests {
             rows.push(vec![(8usize, 1.0), (9, 1.0)]);
         }
         let (data, indices, indptr) = csr(&rows, 10);
-        let micros = summarize_sparse(&data, &indices, &indptr, 10, 0.0, 64);
+        let (micros, _) = summarize_sparse(&data, &indices, &indptr, 10, 0.0, 64);
         assert_eq!(micros.len(), 2);
         let total: f64 = micros.iter().map(|m| m.weight()).sum();
         assert_eq!(total as i64, 10);
@@ -516,7 +543,7 @@ mod tests {
         let rows: Vec<Vec<(usize, f64)>> =
             (0..200).map(|i| vec![(i % 50, 1.0 + i as f64)]).collect();
         let (data, indices, indptr) = csr(&rows, 50);
-        let micros = summarize_sparse(&data, &indices, &indptr, 50, 0.0, 16);
+        let (micros, _) = summarize_sparse(&data, &indices, &indptr, 50, 0.0, 16);
         assert!(micros.len() <= 16);
         let total: f64 = micros.iter().map(|m| m.weight()).sum();
         assert_eq!(total as i64, 200); // mass conserved despite the cap
@@ -611,7 +638,7 @@ mod tests {
             n_features in 0usize..64,
         ) {
             if validate_csr(&data, &indices, &indptr, n_features).is_ok() {
-                let micros = summarize_sparse(&data, &indices, &indptr, n_features, 0.5, 32);
+                let (micros, _) = summarize_sparse(&data, &indices, &indptr, n_features, 0.5, 32);
                 let mass: f64 = micros.iter().map(|m| m.weight()).sum();
                 prop_assert!(mass.is_finite());
                 prop_assert!(micros.iter().all(|m| m.mean().iter().all(|v| v.is_finite())));
@@ -726,7 +753,7 @@ mod tests {
         let indices: Vec<i64> = (0..n as i64).collect();
         let indptr: Vec<i64> = (0..=n as i64).collect();
 
-        let leaders = summarize_sparse(&data, &indices, &indptr, n, 0.0, n);
+        let (leaders, _) = summarize_sparse(&data, &indices, &indptr, n, 0.0, n);
         assert_eq!(leaders.len(), n, "distinct rows were merged at threshold 0");
         for (i, l) in leaders.iter().enumerate() {
             assert_eq!(l.weight(), 1.0);
@@ -744,11 +771,11 @@ mod tests {
         let data = [1.0, 1.0, 1.0];
         let indices = [0i64, 2, 1];
         let indptr = [0i64, 1, 2, 3];
-        let leaders = summarize_sparse(&data, &indices, &indptr, 3, 0.0, 8);
+        let (leaders, _) = summarize_sparse(&data, &indices, &indptr, 3, 0.0, 8);
         assert_eq!(leaders.len(), 3, "distinct rows were merged at threshold 0");
 
         // With the leader cap reached, the nearest leader absorbs regardless of the threshold.
-        let capped = summarize_sparse(&data, &indices, &indptr, 3, 0.0, 1);
+        let (capped, _) = summarize_sparse(&data, &indices, &indptr, 3, 0.0, 1);
         assert_eq!(capped.len(), 1, "max_leaders was not enforced");
         assert!((capped[0].weight() - 3.0).abs() < 1e-12);
     }
@@ -793,6 +820,57 @@ mod tests {
     }
 
     #[test]
+    fn normalizing_rows_puts_every_one_on_the_sphere_and_leaves_the_zero_row_alone() {
+        // Row 1 is empty — a CSR row with no stored entries — and row 3 stores an explicit zero.
+        // Both have norm 0, and dividing by it would be the only way this function can produce NaN.
+        let data = vec![3.0, 4.0, 1.0, 1.0, 1.0, 1.0, 0.0];
+        let indptr = vec![0i64, 2, 2, 6, 7];
+        let got = normalize_csr_rows(&data, &indptr);
+        for (w, want) in indptr.windows(2).zip([1.0, 0.0, 1.0, 0.0]) {
+            let row = &got[w[0] as usize..w[1] as usize];
+            let norm = row.iter().map(|v| v * v).sum::<f64>().sqrt();
+            assert!((norm - want).abs() < 1e-12, "row {row:?} has norm {norm}");
+        }
+        assert_eq!(&got[..2], &[0.6, 0.8], "the direction did not survive");
+        assert_eq!(&got[6..], &[0.0], "a zero row was scaled");
+    }
+
+    /// The precondition [`crate::clustering::vmf::leaf_means`] states, made testable: a vMF fit is a
+    /// density on the unit sphere, so a leaf mean carries a concentration only when the rows behind
+    /// it are already directions. Feed the head raw rows and `‖μ_i‖` becomes a per-leaf multiplier on
+    /// `κ_c` — harmless while `κ` is shared, decisive once it is fitted per component — and the
+    /// mixture the head hands back stops agreeing with the labels it returned. Measured on this
+    /// fixture at 6000 × 4000: `κ = [3558, 3514, 3552, 1402]`, labels `[502, 499, 503, 544]`, and
+    /// the mixture sending all 2048 leaders to the one broad component.
+    #[test]
+    fn the_vmf_head_agrees_with_its_own_mixture_once_the_rows_are_directions() {
+        let (n_docs, n_features, cap) = (1200usize, 2000usize, 300usize);
+        let (raw, indices, indptr) = topic_corpus(n_docs, n_features, 4);
+        let data = normalize_csr_rows(&raw, &indptr);
+        let (micros, _) = summarize_sparse(&data, &indices, &indptr, n_features, 0.5, cap);
+        let fit = crate::clustering::vmf::movmf::<f64, _>(&micros, 4, 100, 0);
+
+        let mut used = [false; 4];
+        for &l in &fit.labels {
+            used[l] = true;
+        }
+        assert!(
+            used.iter().all(|&u| u),
+            "the fixture left a component empty, so agreement is trivial"
+        );
+        let disagree = micros
+            .iter()
+            .zip(&fit.labels)
+            .filter(|(mc, l)| fit.mixture.assign(mc.mean()) != **l)
+            .count();
+        assert!(
+            disagree * 100 <= micros.len(),
+            "the mixture reassigns {disagree} of {} leaves it was fitted on",
+            micros.len()
+        );
+    }
+
+    #[test]
     fn no_leader_swallows_the_stream_once_the_budget_is_spent() {
         // Uncapped, this fixture's 6000-row form put 4001 rows in a single leader with 1999
         // singletons beside it: past the budget the gate cannot refuse a row, and a leader's centroid
@@ -800,7 +878,7 @@ mod tests {
         // to every row left. The mass share is what forbids that.
         let (n_docs, n_features, cap) = (1200usize, 2000usize, 300usize);
         let (data, indices, indptr) = topic_corpus(n_docs, n_features, 4);
-        let micros = summarize_sparse(&data, &indices, &indptr, n_features, 0.5, cap);
+        let (micros, of_row) = summarize_sparse(&data, &indices, &indptr, n_features, 0.5, cap);
         assert_eq!(
             micros.len(),
             cap,
@@ -817,6 +895,23 @@ mod tests {
         );
         let total: f64 = micros.iter().map(ClusterFeature::weight).sum();
         assert_eq!(total as usize, n_docs, "the cap lost or duplicated mass");
+
+        // The returned route is what the sparse heads label rows by, so it has to be the route the
+        // summary was actually built from: one leader per row, and the rows pointing at a leader
+        // have to be exactly the points its weight counts.
+        assert_eq!(of_row.len(), n_docs, "a row went unrouted");
+        let mut counts = vec![0usize; micros.len()];
+        for &i in &of_row {
+            counts[i] += 1;
+        }
+        for (i, (&count, micro)) in counts.iter().zip(&micros).enumerate() {
+            assert_eq!(
+                count as f64,
+                micro.weight(),
+                "leader {i} routes {count} rows but weighs {}",
+                micro.weight()
+            );
+        }
     }
 
     #[test]

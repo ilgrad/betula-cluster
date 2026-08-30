@@ -295,8 +295,16 @@ dense `Spherical` and clustered by the ordinary Phase-3 heads (`kmeans` default)
 leader pass has no proximity gate left to apply, so a leader may not take more than a bounded share of
 the mass — without that bound its centroid collapses toward the origin as it grows ($\|\mu\|^2 \approx \|x\|^2/n$ for
 near-orthogonal sparse rows) and it is nearest to *every* remaining row. Rows are labelled by the
-head's own point rule where it has one; the heads that do not (posterior, agglomerative) route to the
-nearest micro-cluster, which on raw sparse rows is a weak labelling and is documented as such.
+head's own point rule: nearest pooled cluster centroid for the centre-based heads, and maximum
+posterior for the density heads whose kernel splits over the support of $x$ — the diagonal Gaussian,
+whose quadratic form is $\sum_{j: x_j \neq 0}(x_j^2 - 2x_j\mu_{cj})/\sigma^2_{cj}$ plus one constant per
+component, and the von Mises-Fisher, which reads only the non-zeros already. A head with neither
+(agglomerative, and the full / Toeplitz / probabilistic-PCA kernels, whose densities read every
+coordinate) keeps the label of the micro-cluster the summarisation put the row in — the sparse
+counterpart of the dense path's point-to-leaf route. That last case is where the flat summary shows:
+on a 6 000 × 4 000 block-topic corpus at `max_leaves=2048` the leader pass spends its budget by row
+2048 and force-assigns the remaining 3 952 into 544 leaders, and `ward` reads 0.068 against the dense
+tree's 0.987 on the same compression ratio — the tree routes hierarchically, so its leaves stay pure.
 **Trade-off:** an
 $O(\mathrm{nnz})$ scatter update is only possible via this *expanded* squared-distance form, which is **not**
 cancellation-free (accurate when sparse rows sit far from the dense centroid; near-duplicate dense

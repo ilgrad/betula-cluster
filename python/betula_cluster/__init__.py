@@ -449,13 +449,19 @@ def fit_predict_sparse(
     library docs). Returns one ``int64`` label per row.
 
     The centre-based heads (``kmeans`` / ``xmeans`` / ``spherical-kmeans``) label each row by its
-    nearest cluster centroid, the rule the dense path uses. The posterior heads (``gmm`` /
-    ``gmm-full`` / ``vmf``) and the agglomerative ones (``ward`` / ``average`` / ``weighted`` /
-    ``centroid`` / ``median``) have no centroid rule to apply here — a posterior costs ``O(d)`` or
-    ``O(d²)`` a row, which is the cost this path exists to avoid — so they fall back to routing each
-    row to its nearest micro-cluster. That route is weak on raw sparse rows, where the argmin is
-    driven by the micro-cluster's own norm rather than by overlap: on a 6 000 × 4 000 block-topic
-    corpus at ``max_leaves=2048`` it scores ARI 0.02 where ``kmeans`` scores 0.98. Prefer a
+    nearest cluster centroid, the rule the dense path uses. ``gmm`` and ``vmf`` label by maximum
+    posterior: their kernels split over the support of a row, so the density costs ``O(nnz)`` rather
+    than the ``O(d)`` this path exists to avoid. The rest — the agglomerative heads (``ward`` /
+    ``average`` / ``weighted`` / ``centroid`` / ``median``) and ``gmm-full`` / ``gmm-toeplitz*`` /
+    ``mppca``, whose densities read every coordinate — keep the label of the micro-cluster the
+    summarisation put the row in.
+
+    That last group is where the flat summary shows. Once the leader budget is spent the pass has no
+    proximity gate left, so on a 6 000 × 4 000 block-topic corpus at ``max_leaves=2048`` it force-
+    assigns 3 952 of 6 000 rows into 544 leaders; a head that models each micro-cluster separately
+    inherits those mixed leaders, and ``ward`` reads ARI 0.068 against the dense tree's 0.987 at the
+    same compression. Raising ``threshold`` does not help (measured flat from 0.5 to 14, worse
+    above), because near-orthogonal sparse rows give the gate nothing to merge. Prefer a
     centre-based head on this path, or reduce first with ``projection="svd"``.
 
     ``projection="svd"`` turns this into the one-call reduce-then-cluster pipeline for text: the

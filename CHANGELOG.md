@@ -1133,6 +1133,51 @@ All notable changes to this project are documented here. The format follows
   changed identity at 1 M. `bench/RESULTS.md` names each one.
 
 ### Fixed
+- **`fit_predict_sparse(method="vmf")` returned a single cluster. Labels change on every sparse fit
+  with a directional head.** A von Mises-Fisher density lives on the unit sphere, and the estimator
+  knows it: `Betula._build` forces `normalize=True` for `vmf` / `spherical-kmeans`. But
+  `fit_predict_sparse` is a module function that never passes through `_build`, so it handed the head
+  raw TF-IDF rows. `leaf_means` states the precondition it needs — on L2-normalized data a leaf mean
+  is a resultant of length `R̄_i ≤ 1` — and violating it makes `‖μ_i‖` a per-leaf multiplier on `κ_c`.
+  That is a positive constant only while `κ` is shared, which is exactly why the same omission in
+  `spherical-kmeans` is invisible (its argmax is a single similarity, and the norm cancels); with a
+  fitted `κ` per component it reweights the components against each other, and the `Mixture` the head
+  hands back — which normalizes, as vMF requires — ends up describing a different model from the
+  labels the head returned. Measured on a 6 000 × 4 000 block-topic corpus at `max_leaves=2048`,
+  converged after two EM iterations: `κ = [3558, 3514, 3552, 1402]`, the head's own labels
+  `[502, 499, 503, 544]`, and the mixture reassigning **all 2048 leaders** to the one broad component
+  — **1504 of 2048 leaves disagreeing with the fit they came from**. Since 0.6.0 labels every mixture
+  head by maximum posterior, that surfaced as one cluster for the whole corpus: **ARI 0.000 against
+  the dense tree's 1.000**. The sparse entry point now L2-normalizes its rows for the directional
+  heads, in `O(nnz)` — scaling the stored values is the whole operation, an implicit zero stays zero.
+  The same fixture reads **0.995**; `spherical-kmeans` is unchanged at 1.000 on both sides, as the
+  cancellation argument predicts. Two regression tests, each failing on revert.
+
+- **The sparse path labelled the posterior and agglomerative heads by nearest micro-cluster, which
+  answers a different question. Labels change for `gmm`, `vmf`, `ward` and the other agglomerative
+  heads on sparse input.** Two rules replace it. `gmm` and `vmf` now label by **maximum posterior**,
+  the rule the dense path has used since 0.6.0: a diagonal Gaussian's quadratic form splits as
+  `Σ_j (x_j − μ_cj)²/σ²_cj = Σ_{j: x_j ≠ 0}(x_j² − 2x_jμ_cj)/σ²_cj + Σ_j μ²_cj/σ²_cj`, and the second
+  term is one number per component built once — so the density costs `O(nnz·k)`, not the `O(d)` this
+  path exists to avoid. A vMF density already reads only the non-zeros. The full-covariance, Toeplitz
+  and probabilistic-PCA kernels have no such split (a Cholesky solve and a Woodbury projection both
+  read every coordinate) and are refused rather than approximated. Everything else — the agglomerative
+  heads, which have no point model at all — now keeps the label of the micro-cluster the
+  **summarisation** put the row in, which `summarize_sparse` already computed and threw away: it
+  agrees with the summary by construction, it is the sparse counterpart of the dense path's
+  point-to-leaf route, and it is free where re-deriving the nearest micro-cluster cost `O(nnz·L)`.
+
+  On the 6 000 × 4 000 block-topic corpus at `max_leaves=2048`, median of seeds 0/1/2: `gmm`
+  0.026 → **0.110**, `ward` 0.022 → **0.068**. **Both are still bad, and the reason is the summary,
+  not the rule.** The leader pass spends its budget at row 2048 and force-assigns the remaining 3 952
+  into 544 leaders, so three quarters of the mass sits in mixed micro-clusters; a head that models
+  each one separately inherits that, while `kmeans` (0.976) and `spherical-kmeans` (1.000) survive
+  because pooling thousands of leaders into `k` centroids averages it away. The dense tree scores
+  `ward` **0.987** at the same compression ratio, because it routes hierarchically and its leaves stay
+  pure. Raising `threshold` does not help — flat from 0.5 to 14 and worse above, since near-orthogonal
+  sparse rows give the gate nothing to merge. Recorded rather than papered over; the sparse path
+  documents it and points at `projection="svd"`.
+
 - **`fit_predict_sparse` returned ARI ≈ 0 wherever `max_leaves` was smaller than the row count, and
   the dense path scored 1.000 on the same matrix. Labels change on every input that spends the leader
   budget.** Two faults, one geometry. **(a)** Past the budget the leader pass dropped the proximity
@@ -1154,9 +1199,7 @@ All notable changes to this project are documented here. The format follows
   with only (a); with both it is **0.976** against the dense tree's 1.000. On 20-newsgroups TF-IDF the
   raw sparse row goes
   0.004 → **0.038** and `projection="svd"` at `max_leaves=2048` goes 0.152 → **0.195**, the best that
-  table has carried. The heads with no centre rule — the posterior (`gmm` / `gmm-full` / `vmf`) and
-  agglomerative ones, whose density would cost `O(d)` or `O(d²)` a row — keep the microcluster route
-  and its weakness is now documented rather than shipped silently. Tables in
+  table has carried. The heads with no centre rule are dealt with in the entry above. Tables in
   [`bench/RESULTS.md`](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md).
 - Mapper dropped a microcluster outright when `lo + (hi − lo)` rounded below `hi`: the cover
   recomputed the last bin's upper edge from the step rather than from the observed range, so the

@@ -2529,6 +2529,22 @@ def test_fit_predict_sparse_recovers_topics_past_the_leader_budget():
     assert ari(labels, y) > 0.8
 
 
+def test_fit_predict_sparse_normalizes_rows_for_the_directional_heads():
+    # A vMF density lives on the unit sphere, so the estimator builds the engine with
+    # `normalize=True` for `vmf` / `spherical-kmeans` — but that rule lived in `Betula._build`, and
+    # this entry point is a module function that never goes through it. Fed raw rows, a leader's
+    # norm multiplies the fitted concentration, the head's labels stop agreeing with the mixture it
+    # hands back, and every row lands in the one broad component: ARI 0.000 against 0.95 here.
+    x, y = _sparse_topic_blocks()
+    for method in ("vmf", "spherical-kmeans"):
+        labels = np.asarray(
+            betula_cluster.fit_predict_sparse(
+                x, n_clusters=4, method=method, threshold=0.5, seed=0, max_leaves=300
+            )
+        )
+        assert ari(labels, y) > 0.9, method
+
+
 @pytest.mark.parametrize("method", ["gmm-full", "ward"])
 def test_fit_predict_sparse_other_heads(method):
     x, y = _sparse_topics()

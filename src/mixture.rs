@@ -396,6 +396,34 @@ impl Mixture {
         }
     }
 
+    /// A maximum-posterior assigner for **sparse** rows, or `None` when this kernel has no
+    /// `O(nnz)` form.
+    ///
+    /// A diagonal Gaussian's quadratic form splits over the support of `x`:
+    /// `Σ_j (x_j − μ_cj)²/σ²_cj = Σ_{j: x_j ≠ 0} (x_j² − 2 x_j μ_cj)/σ²_cj + Σ_j μ²_cj/σ²_cj`,
+    /// and the second term is one number per component, built once here. A von Mises-Fisher density
+    /// is `κ_c ⟨μ_c, x⟩/‖x‖`, which already touches only the non-zeros. The full-covariance and
+    /// probabilistic-PCA kernels have no such split — a Cholesky solve and a Woodbury projection
+    /// both read every coordinate of the mean deviation — and the stationary kernel is defined on a
+    /// dense ordered signal, where a "non-zero" is not a meaningful subset.
+    pub fn sparse_assigner(&self) -> Option<SparseAssigner<'_>> {
+        let zero_quad = match &self.kernel {
+            Kernel::Diagonal { means, inv_var } => means
+                .iter()
+                .zip(inv_var)
+                .map(|(mu, iv)| mu.iter().zip(iv).map(|(&m, &v)| m * m * v).sum())
+                .collect(),
+            Kernel::Vmf { .. } => Vec::new(),
+            Kernel::Full { .. } | Kernel::Stationary { .. } | Kernel::LowRank { .. } => {
+                return None;
+            }
+        };
+        Some(SparseAssigner {
+            mixture: self,
+            zero_quad,
+        })
+    }
+
     /// Maximum-posterior component for `x` — the head's own assignment rule. `scratch` is a
     /// reusable score buffer, so labelling a matrix allocates once rather than once per row.
     pub fn assign_into<R: Real>(&self, x: &[R], scratch: &mut Vec<f64>) -> usize {
@@ -442,6 +470,53 @@ impl Mixture {
         for v in out.iter_mut() {
             *v /= total;
         }
+    }
+}
+
+/// The head's density evaluated on a **sparse** row, in `O(nnz · k)`. Built by
+/// [`Mixture::sparse_assigner`], which is where the split that makes this possible is written down.
+///
+/// It is the same rule as [`Mixture::assign_into`] and returns the same component — the arithmetic is
+/// rearranged, not approximated — but the terms of the quadratic form are summed in a different
+/// order, so the two can disagree in the last bits when a row sits on a decision boundary.
+pub struct SparseAssigner<'a> {
+    mixture: &'a Mixture,
+    /// `Σ_j μ²_cj / σ²_cj` per component — the diagonal quadratic form at `x = 0`. Empty for the
+    /// von Mises-Fisher kernel, which needs no such constant.
+    zero_quad: Vec<f64>,
+}
+
+impl SparseAssigner<'_> {
+    /// Maximum-posterior component for the sparse row `(idx, val)` with `‖x‖² = x_sq`, given
+    /// **sorted, deduplicated** column indices — the CSR invariant the entry points validate.
+    pub fn label_of(&self, idx: &[usize], val: &[f64], x_sq: f64) -> usize {
+        let m = self.mixture;
+        let mut scores = Vec::with_capacity(m.logw.len());
+        match &m.kernel {
+            Kernel::Diagonal { means, inv_var } => {
+                for (((&lw, mu), iv), &zq) in
+                    m.logw.iter().zip(means).zip(inv_var).zip(&self.zero_quad)
+                {
+                    let mut quad = zq;
+                    for (&j, &x) in idx.iter().zip(val) {
+                        quad += (x - 2.0 * mu[j]) * x * iv[j];
+                    }
+                    scores.push(lw - 0.5 * quad);
+                }
+            }
+            Kernel::Vmf { means, kappas } => {
+                let scale = if x_sq > 0.0 { x_sq.sqrt().recip() } else { 0.0 };
+                for ((&lw, mu), &kap) in m.logw.iter().zip(means).zip(kappas) {
+                    let dot: f64 = idx.iter().zip(val).map(|(&j, &x)| x * mu[j]).sum();
+                    scores.push(lw + kap * dot * scale);
+                }
+            }
+            // `sparse_assigner` is the only constructor and it refuses these kernels.
+            Kernel::Full { .. } | Kernel::Stationary { .. } | Kernel::LowRank { .. } => {
+                unreachable!("a kernel with no O(nnz) form has no assigner")
+            }
+        }
+        m.best_of(&scores)
     }
 }
 
@@ -701,6 +776,127 @@ mod tests {
             (cov.innov() - 1.365).abs() < 1e-12,
             "innov = {}",
             cov.innov()
+        );
+    }
+
+    /// Sparse rows over `n_features` columns, as the CSR triples the entry points validate.
+    fn sparse_rows(n_features: usize) -> Vec<(Vec<usize>, Vec<f64>)> {
+        vec![
+            (vec![], vec![]),
+            (vec![0], vec![2.5]),
+            (vec![1, 4], vec![3.0, -1.5]),
+            (vec![0, 2, 5], vec![1.0, 4.0, 2.0]),
+            (vec![2, 3], vec![-2.0, 0.5]),
+            ((0..n_features).collect(), vec![0.75; n_features]),
+        ]
+    }
+
+    fn densify(idx: &[usize], val: &[f64], n_features: usize) -> Vec<f64> {
+        let mut x = vec![0.0; n_features];
+        for (&j, &v) in idx.iter().zip(val) {
+            x[j] = v;
+        }
+        x
+    }
+
+    /// The `O(nnz)` split is a rearrangement of the same quadratic form, so it must pick the same
+    /// component the dense scorer picks — including on the all-zero row, where the sparse form is
+    /// nothing but the `zero_quad` constant.
+    #[test]
+    fn the_sparse_assigner_agrees_with_the_dense_diagonal_scorer() {
+        let d = 6;
+        let means = vec![
+            vec![0.0_f64, 0.0, 0.0, 0.0, 0.0, 0.0],
+            vec![2.0, 3.0, 0.0, 0.0, -1.0, 0.0],
+            vec![0.0, 0.0, 4.0, 0.5, 0.0, 2.0],
+        ];
+        let vars = vec![
+            vec![1.0_f64; 6],
+            vec![0.5, 2.0, 1.0, 1.0, 0.25, 3.0],
+            vec![3.0, 1.0, 0.5, 2.0, 1.0, 0.75],
+        ];
+        let m = Mixture::diagonal(&[0.2_f64, 0.5, 0.3], &means, &vars);
+        let assigner = m.sparse_assigner().expect("a diagonal kernel splits");
+
+        let mut seen = vec![false; 3];
+        for (idx, val) in sparse_rows(d) {
+            let x = densify(&idx, &val, d);
+            let x_sq: f64 = val.iter().map(|v| v * v).sum();
+            let want = m.assign(&x);
+            let got = assigner.label_of(&idx, &val, x_sq);
+            assert_eq!(got, want, "row {idx:?} = {val:?}");
+            seen[want] = true;
+        }
+        assert!(
+            seen.iter().all(|&s| s),
+            "the fixture never separates: {seen:?}"
+        );
+    }
+
+    #[test]
+    fn the_sparse_assigner_agrees_with_the_dense_vmf_scorer() {
+        let d = 6;
+        let means = vec![
+            vec![1.0_f64, 0.0, 0.0, 0.0, 0.0, 0.0],
+            vec![0.0, 0.6, 0.0, 0.0, -0.8, 0.0],
+            vec![0.0, 0.0, 0.8, 0.1, 0.0, 0.59],
+        ];
+        let m = Mixture::vmf(
+            &[0.3_f64, 0.4, 0.3],
+            &means,
+            &[6.0_f64, 6.0, 6.0],
+            &[0.0, 0.0, 0.0],
+        );
+        let assigner = m.sparse_assigner().expect("a vMF kernel is already O(nnz)");
+
+        let mut seen = vec![false; 3];
+        for (idx, val) in sparse_rows(d) {
+            let x = densify(&idx, &val, d);
+            let x_sq: f64 = val.iter().map(|v| v * v).sum();
+            let want = m.assign(&x);
+            let got = assigner.label_of(&idx, &val, x_sq);
+            assert_eq!(got, want, "row {idx:?} = {val:?}");
+            seen[want] = true;
+        }
+        assert!(
+            seen.iter().all(|&s| s),
+            "the fixture never separates: {seen:?}"
+        );
+    }
+
+    /// The three kernels whose density reads every coordinate must refuse to build an assigner, so
+    /// the sparse path falls back rather than scoring a row it cannot score in `O(nnz)`.
+    #[test]
+    fn kernels_without_an_o_nnz_split_refuse_to_build_an_assigner() {
+        let means = vec![vec![0.0_f64, 1.0], vec![2.0, -1.0]];
+        let weights = [0.5_f64, 0.5];
+        let chol = vec![
+            vec![vec![1.0_f64, 0.0], vec![0.0, 1.0]],
+            vec![vec![1.0_f64, 0.0], vec![0.5, 1.0]],
+        ];
+        assert!(
+            Mixture::full(&weights, &means, &chol, &[0.0, 0.0])
+                .sparse_assigner()
+                .is_none()
+        );
+        assert!(
+            Mixture::low_rank(
+                &weights,
+                &means,
+                &[vec![vec![1.0_f64, 0.5]], Vec::new()],
+                &[1.0, 2.0]
+            )
+            .sparse_assigner()
+            .is_none()
+        );
+        let covs = vec![StationaryCov::Ar {
+            phi: vec![Vec::new()],
+            v: vec![1.0_f64],
+        }];
+        assert!(
+            Mixture::stationary(&[1.0_f64], &[0.0_f64], &covs)
+                .sparse_assigner()
+                .is_none()
         );
     }
 }
