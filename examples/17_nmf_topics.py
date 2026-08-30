@@ -115,14 +115,15 @@ scores
 # `O(N·d·r)` per iteration and holds an `N × r` code matrix; this holds `M × r` and stays
 # memory-bounded, so it keeps running where a dense NMF runs out of room.
 #
-# **That is a scaling property, not a wall-clock win, and the difference is worth being blunt about.**
-# Measured head-to-head (`bench/nmf_cf_weighted.py`) the CF-weighted path is *slower* than
-# `sklearn.decomposition.NMF → k-means` at every size tried — 0.2× / 0.7× / 0.9× at `N` = 8 k / 40 k /
-# 160 k. The gap closes as `N` grows but had not crossed by 160 k. What it buys instead is
-# **determinism**: ARI 1.000 ± 0.000 against scikit-learn's 0.812–0.991 with a ±0.37 seed spread,
-# because NMF is invariant to `(W D, D⁻¹H)` and betula returns a canonical factorization (unit-L2
-# parts, energy-ordered) where scikit-learn's does not. Reach for it for that, or for the memory
-# bound — not for throughput at these sizes.
+# **That is a scaling property first and a wall-clock one only past a crossover, and the difference is
+# worth being blunt about.** Measured head-to-head (`bench/nmf_cf_weighted.py`) the CF-weighted path is
+# *slower* than `sklearn.decomposition.NMF → k-means` at small `N` and faster once `N` passes roughly
+# 10⁵ — 0.2× / 0.7× / **1.3×** at `N` = 8 k / 40 k / 160 k — because its factorization cost is set by
+# the leaf count while scikit-learn's grows with `N`. Quote the crossover, not a single ratio. What it
+# buys at *every* size is **determinism**: ARI 1.000 ± 0.000 against scikit-learn's 0.812–0.991 with a
+# ±0.37 seed spread, because NMF is invariant to `(W D, D⁻¹H)` and betula returns a canonical
+# factorization (unit-L2 parts, energy-ordered) where scikit-learn's does not. Reach for it for that,
+# for the memory bound, or for throughput above the crossover.
 
 # %%
 sizes = [400, 800, 1600, 3200]

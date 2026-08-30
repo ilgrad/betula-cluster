@@ -149,9 +149,11 @@ microclusters ($O(M d r)$ per sweep, memory-bounded) and any head then clusters 
 $z_j$. The solver is a dependency-free weighted **HALS** (coordinate descent, reusing the Gram /
 cross-product matrices $HH^\top$, $\tilde X H^\top$, $W^\top W$, $W^\top \tilde X$ across sweeps); because
 $M$ is small the matrices are tiny, so **no BLAS is needed** — the compression is what removes the
-dependency and the memory growth, not a fast NMF kernel. It is **not** a wall-clock win at moderate $N$:
-measured against `sklearn.decomposition.NMF` → k-means the CF-weighted path is *slower* at every size
-tried (0.2× / 0.7× / 0.9× at $N$ = 8 k / 40 k / 160 k, `bench/RESULTS.md`). What it buys is a code
+dependency and the memory growth, not a fast NMF kernel. The wall-clock effect is a **crossover, not a
+uniform win**: measured against `sklearn.decomposition.NMF` → k-means the CF-weighted path is *slower*
+at small $N$ and faster once $N$ passes roughly $10^5$ (0.2× / 0.7× / 1.3× at $N$ = 8 k / 40 k / 160 k,
+`bench/RESULTS.md`), because its factorization cost is set by the leaf count while scikit-learn's grows
+with $N$. What it buys unconditionally is a code
 matrix that stops growing ($M \times r$, not $N \times r$) and a **canonical** factorization — unit-L2
 parts, energy-ordered — whose ARI spread across seeds is 0.000 where scikit-learn's is 0.37.
 Nonnegative input only; signed data is rejected rather than shifted (a shift would destroy

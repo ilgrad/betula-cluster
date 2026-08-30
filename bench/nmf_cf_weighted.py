@@ -6,14 +6,15 @@ the full `N×d` matrix (`O(N·d·r)` per iteration, holds an `N×r` code matrix)
 equal the full-data NMF up to the within-leaf scatter constant), so NMF runs at BETULA scale and bounded
 memory.
 
-What that buys is **determinism, not throughput**. At every `N` measured the CF-weighted path is
-*slower* — 0.2× / 0.7× / 0.9× at `N` = 8 k / 40 k / 160 k — and the gap closes with `N` without having
-crossed by 160 k. The column that separates the two is the seed spread: ARI 1.000 ±0.000 against
-scikit-learn's 0.812–0.991 ±0.37, because NMF is invariant to `(W D, D⁻¹H)` and betula returns a
+What that buys first is **determinism**. The speed column crosses over: 0.2× / 0.7× / **1.3×** at
+`N` = 8 k / 40 k / 160 k, so the CF-weighted path is slower below roughly 10⁵ and faster above it — the
+factorization cost is bounded by the leaf count while scikit-learn's grows with `N`. Quote the crossover,
+not a single ratio. The column that separates the two at every size is the seed spread: ARI 1.000 ±0.000
+against scikit-learn's 0.812–0.991 ±0.37, because NMF is invariant to `(W D, D⁻¹H)` and betula returns a
 canonical factorization where scikit-learn's does not. Reach for it for that, or for bounded memory
 beyond what a dense NMF can hold.
 
-Run: `.venv/bin/python bench/nmf_cf_weighted.py`
+Run: `uv run --no-sync --with scikit-learn python bench/nmf_cf_weighted.py`
 """
 
 import statistics as st
@@ -91,9 +92,9 @@ def main():
         "\nsklearn NMF factorizes all N points; the CF-weighted path factorizes the ≤4000 leaf centroids,"
     )
     print(
-        "so its factorization cost is bounded by the leaf count, not N — but the speed column above is"
+        "so its factorization cost is bounded by the leaf count, not N — which is why the speed column"
     )
-    print("a LOSS at every N measured. The column that matters is ARI, and its seed spread.")
+    print("crosses over: a LOSS at 8k and 40k, a win at 160k. Quote the crossover, not one ratio.")
     print(
         "The ± column is the seed spread. NMF is invariant to (W D, D^-1 H), so an unpinned split lets"
     )

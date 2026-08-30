@@ -498,7 +498,7 @@ signals — on generic embeddings (no coordinate order) the structure is meaning
 `gmm-full` there. Guidance: reach for `gmm-toeplitz` first (`O(d·w)`, fast); switch to
 `gmm-toeplitz-full` (`O(d³)`) when the structure lives beyond a low AR order.
 
-## CF-weighted NMF — quality that is stable, speed that is not a win
+## CF-weighted NMF — quality that is stable, speed that crosses over
 
 `projection="weighted-nmf"` factorizes the ≤ `max_leaves` leaf centroids with their masses as weights
 rather than all `N` points (`bench/nmf_cf_weighted.py`, nonnegative topic mixtures, d = 60, k = 4,
@@ -506,19 +506,31 @@ NMF rank 8 → k-means, median over 8 seeds):
 
 | N | sklearn NMF → k-means | CF-weighted NMF | speed |
 |---|---|---|---|
-| 8 000 | ARI 0.812 ± 0.372 · 0.05 s | **ARI 1.000 ± 0.000** · 0.22 s | 0.2× |
-| 40 000 | ARI 0.991 ± 0.372 · 0.26 s | **ARI 1.000 ± 0.000** · 0.36 s | 0.7× |
-| 160 000 | ARI 0.967 ± 0.378 · 0.92 s | **ARI 1.000 ± 0.000** · 1.00 s | 0.9× |
+| 8 000 | ARI 0.812 ± 0.372 · 0.05 s | **ARI 1.000 ± 0.000** · 0.27 s | 0.2× |
+| 40 000 | ARI 0.991 ± 0.372 · 0.27 s | **ARI 1.000 ± 0.000** · 0.41 s | 0.7× |
+| 160 000 | ARI 0.967 ± 0.378 · 1.06 s | **ARI 1.000 ± 0.000** · 0.81 s | **1.3×** |
 
 The quality result is the one that matters and it is about **determinism, not accuracy in the mean**:
 NMF is invariant to `(W D, D⁻¹ H)`, so an unpinned split lets one component's arbitrary scale dominate
 the Euclidean geometry the head then clusters — hence scikit-learn's ±0.37 seed spread against
 betula's ±0.00. betula returns a canonical factorization (unit-L2 parts, energy-ordered).
 
-**The speed column is a loss and is printed as one.** At every `N` measured, the CF-weighted path is
-*slower* (0.2× / 0.7× / 0.9×); the gap closes as `N` grows but has not crossed by 160 k. Reach for
-this for the reproducibility, or for bounded memory at `N` beyond what a dense NMF can hold — not for
-throughput at these sizes.
+**The speed column is a loss below the crossover and is printed as one.** The CF-weighted path is
+*slower* at 8 k and 40 k and faster at 160 k, so the crossover sits between 40 000 and 160 000 on this
+workload. Below it, reach for this for the reproducibility or for bounded memory at `N` beyond what a
+dense NMF can hold — not for throughput.
+
+**Second exception to the page banner, closed 2026-08-30.** The three timing cells above are a fresh
+measurement (median of three runs, `OMP_NUM_THREADS=RAYON_NUM_THREADS=1`, same 8 seeds); every other
+timing on this page is still the 2026-08-24 sweep. The previous edition of this row read 0.22 / 0.36 /
+1.00 s for the CF column and concluded "a loss at every `N` measured … has not crossed by 160 k". The
+scikit-learn column reproduces to within noise (0.92 → 1.06 s at 160 k is inside run-to-run spread; the
+ARI cells are identical to three decimals), so the movement is in *our* column, not the machine, and
+the direction is not uniform: 8 k and 40 k got slightly slower while 160 k got 19 % faster. That is the
+signature of added fixed cost plus a faster per-point kernel, and several perf commits landed after the
+2026-08-24 sweep (`2ecbb30` / `3cda564` AVX2-FMA distance kernels, `08ccc45` node-CF refold at
+rebuild). Attribution to a specific commit is **not** measured — that needs an A/B of two builds, which
+is filed rather than guessed.
 
 ## Sparse text — 20 newsgroups (TF-IDF)
 
