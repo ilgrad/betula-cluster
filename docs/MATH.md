@@ -131,8 +131,13 @@ with $\tilde X_j = \sqrt{n_j}\,\mu_j$, $\tilde Z_j = \sqrt{n_j}\,z_j$. The facto
 microclusters ($O(M d r)$ per sweep, memory-bounded) and any head then clusters the nonnegative codes
 $z_j$. The solver is a dependency-free weighted **HALS** (coordinate descent, reusing the Gram /
 cross-product matrices $HH^\top$, $\tilde X H^\top$, $W^\top W$, $W^\top \tilde X$ across sweeps); because
-$M$ is small the matrices are tiny, so no BLAS is needed — **the compression, not a fast NMF kernel, is the
-speed-up**. Nonnegative input only; signed data is rejected rather than shifted (a shift would destroy
+$M$ is small the matrices are tiny, so **no BLAS is needed** — the compression is what removes the
+dependency and the memory growth, not a fast NMF kernel. It is **not** a wall-clock win at moderate $N$:
+measured against `sklearn.decomposition.NMF` → k-means the CF-weighted path is *slower* at every size
+tried (0.2× / 0.7× / 0.9× at $N$ = 8 k / 40 k / 160 k, `bench/RESULTS.md`). What it buys is a code
+matrix that stops growing ($M \times r$, not $N \times r$) and a **canonical** factorization — unit-L2
+parts, energy-ordered — whose ARI spread across seeds is 0.000 where scikit-learn's is 0.37.
+Nonnegative input only; signed data is rejected rather than shifted (a shift would destroy
 angles). For signed embeddings use the directional heads or reduce with PCA / TruncatedSVD first.
 
 For **count** data (word counts, event tallies) the Frobenius objective assumes Gaussian noise, which is

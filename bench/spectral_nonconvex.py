@@ -1,8 +1,12 @@
 """Non-convex benchmark: betula spectral / leiden vs scikit-learn SpectralClustering.
 
 Reproduces the "spectral clustering that scales" table in RESULTS.md. betula's spectral head runs on
-the <= max_leaves CF microclusters, so it matches sklearn's quality on moons/circles at a fraction of
-the cost; leiden (community detection) is included as an honest negative — it over-splits manifolds.
+the <= max_leaves CF microclusters, so its cost is bounded by the microcluster count and the same call
+reaches N = 1M, where sklearn's graph + eigensolve are O(N)+ in memory and cap out near 30k. At 30k it
+is parity, not a multiple — 1.04x on moons and 1.54x on circles at equal quality (an earlier edition
+of this page claimed 3-5x; sklearn's own times fell threefold between versions). The durable claim is
+the scaling one. leiden (community detection) is included as an honest negative — it over-splits
+manifolds.
 
     python bench/spectral_nonconvex.py            # N = 30000
     python bench/spectral_nonconvex.py --n 100000

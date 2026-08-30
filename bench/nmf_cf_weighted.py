@@ -4,7 +4,14 @@ Both pipelines reduce to `r` nonnegative components and then k-means. The scikit
 the full `N×d` matrix (`O(N·d·r)` per iteration, holds an `N×r` code matrix); betula's
 `projection="weighted-nmf"` factorizes the `M ≪ N` leaf **centroids** instead (König-Huygens makes this
 equal the full-data NMF up to the within-leaf scatter constant), so NMF runs at BETULA scale and bounded
-memory. At matching cluster quality the CF-weighted path pulls ahead in time as `N` grows.
+memory.
+
+What that buys is **determinism, not throughput**. At every `N` measured the CF-weighted path is
+*slower* — 0.2× / 0.7× / 0.9× at `N` = 8 k / 40 k / 160 k — and the gap closes with `N` without having
+crossed by 160 k. The column that separates the two is the seed spread: ARI 1.000 ±0.000 against
+scikit-learn's 0.812–0.991 ±0.37, because NMF is invariant to `(W D, D⁻¹H)` and betula returns a
+canonical factorization where scikit-learn's does not. Reach for it for that, or for bounded memory
+beyond what a dense NMF can hold.
 
 Run: `.venv/bin/python bench/nmf_cf_weighted.py`
 """
@@ -83,7 +90,10 @@ def main():
     print(
         "\nsklearn NMF factorizes all N points; the CF-weighted path factorizes the ≤4000 leaf centroids,"
     )
-    print("so it stays fast + memory-bounded as N grows, at matching cluster quality.")
+    print(
+        "so its factorization cost is bounded by the leaf count, not N — but the speed column above is"
+    )
+    print("a LOSS at every N measured. The column that matters is ARI, and its seed spread.")
     print(
         "The ± column is the seed spread. NMF is invariant to (W D, D^-1 H), so an unpinned split lets"
     )

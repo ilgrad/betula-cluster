@@ -29,7 +29,8 @@ Measured against scikit-learn on `StandardScaler`-normalized data, each method i
 with peak RSS sampled from `/proc/self/statm`. Full methodology, every metric, and all tables (wins
 **and** losses) live in [**`bench/RESULTS.md`**](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md).
 
-> **Re-measured 2026-08-22.** Every quality figure is the **median of seeds 0, 1, 2** — clustering
+> **Re-measured 2026-08-24 against the working tree after 0.7.0.** Every quality figure is the
+> **median of seeds 0, 1, 2** — clustering
 > quality is seed-dependent and a single run is not a result. Ranges per cell are in
 > `bench/results_*_spread.csv`; on the synthetic sets every row moves by more than 0.05 ARI across the
 > three seeds, so a margin below that is a tie and is written as one here.
