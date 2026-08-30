@@ -9,6 +9,14 @@
 > build; every number on it has been replaced, several of them downwards. This page is re-measured as
 > a whole, not patched cell by cell.
 >
+> **One exception, closed 2026-08-30.** The two Toeplitz tables were a *single* run under this banner:
+> `bench/toeplitz_ar_mixture.py` pinned `seed=1` and shipped no sidecar, so they sat in the gap between
+> the banner's two categories. They are now the median of the same seeds 0/1/2 — driving the draw,
+> betula's initialization and scikit-learn's `random_state` together — with
+> `results_toeplitz.csv` / `results_toeplitz_spread.csv` beside them. The medians moved by up to 0.15,
+> and the ordering *among the three Toeplitz rungs* turned out not to survive the spread below
+> `d = 128`; see the section itself.
+>
 > This edition re-ran every table after the CF k-means++ sampling weight gained the leaf's own scatter
 > term (Lang Eq. 5.4, `S_i + n_i·D²_i`; see the changelog's `[Unreleased]`). Cell-by-cell against the
 > previous run, **only the seeded heads moved** — `kmeans`, `gmm`, `gmm-full` and `spectral`, plus the
@@ -449,29 +457,39 @@ them (GS-MLE precision at a capped order) — all positive-definite by construct
 
 The adversarial test (`bench/toeplitz_ar_mixture.py`): a 3-component mixture of AR processes that
 differ **only** in autocovariance (each window rescaled to unit marginal variance, so the signal is
-entirely in the covariance *structure*), 30 windows per component, ARI vs window length `d`:
+entirely in the covariance *structure*), 30 windows per component, ARI vs window length `d`, **median
+of seeds 0/1/2** with the per-cell min/median/max in `results_toeplitz_spread.csv`:
 
 | d (window) | N_k/d | **gmm-toeplitz** | **-toeplitz-full** | **-toeplitz-gs** | betula-diag | betula-full | sklearn-diag | sklearn-full |
 |---|---|---|---|---|---|---|---|---|
-| 32  | 0.94 | **0.521** | 0.487 | 0.511 |  0.013 | −0.001 |  0.075 | −0.009 |
-| 64  | 0.47 | 0.699 | **0.721** | 0.637 | −0.015 | −0.007 |  0.014 |  0.019 |
-| 128 | 0.23 | 0.966 | 0.966 | **1.000** | −0.008 | −0.005 | −0.001 |  0.028 |
-| 256 | 0.12 | **1.000** | **1.000** | **1.000** | −0.015 |  0.023 | −0.014 | −0.002 |
+| 32  | 0.94 | **0.531** | 0.501 | 0.530 |  0.058 | −0.001 |  0.077 | −0.009 |
+| 64  | 0.47 | **0.699** | 0.573 | 0.637 |  0.010 |  0.011 |  0.002 | −0.010 |
+| 128 | 0.23 | 0.934 | **0.966** | **0.966** |  0.010 | −0.005 | −0.012 | −0.011 |
+| 256 | 0.12 | **1.000** | **1.000** | **1.000** | −0.015 |  0.023 | −0.000 | −0.012 |
 
 All three Toeplitz rungs recover the components — **improving with `d`** to perfect separation,
 precisely the regime (`N_k ≪ d`) where diagonal is blind and full is singular; every non-Toeplitz head
 sits at chance.
 
+**Which of these differences survive the seed.** The ordering *among the three rungs* does not, below
+`d = 128`: the widest cell in the table is `-toeplitz-gs` at `d = 64` (0.583–0.764, range 0.180), and
+`-toeplitz-full` at `d = 64` spans 0.566–0.721 — so the 0.699 / 0.573 / 0.637 column ordering at that
+row is a single draw's worth of luck, not a ranking. What is seed-stable is the claim the table exists
+to make: every rung is far above every non-Toeplitz head at every `d`, and by `d = 256` all three sit
+at 1.000 with zero spread. Read the rungs as a group, not as a leaderboard.
+
 **Where the general head is *required*.** AR(w) has a *banded* precision, so it cannot represent an
 autocovariance whose support exceeds order `w`. A mixture whose components differ only by a **single
-echo at lag `K ∈ {16, 28, 40}`** (all beyond the cap `w_max = 10`) is invisible to AR:
+echo at lag `K ∈ {16, 28, 40}`** (all beyond the cap `w_max = 10`) is invisible to AR (same three
+seeds; every cell here is seed-stable — the widest range in this table is 0.118, and `-toeplitz-gs`
+holds its plateau to within 0.03):
 
 | d (window) | N_k/d | gmm-toeplitz (AR) | **-toeplitz-full** | -toeplitz-gs | betula-diag |
 |---|---|---|---|---|---|
 | 64  | 0.47 | −0.005 | **0.731** | 0.376 |  0.002 |
-| 96  | 0.31 | −0.015 | **0.934** | 0.487 | −0.014 |
-| 128 | 0.23 | −0.011 | **1.000** | 0.500 | −0.001 |
-| 192 | 0.16 | −0.006 | **1.000** | 0.523 | −0.007 |
+| 96  | 0.31 | −0.012 | **0.934** | 0.482 |  0.021 |
+| 128 | 0.23 | −0.010 | **1.000** | 0.500 | −0.010 |
+| 192 | 0.16 |  0.001 | **1.000** | 0.523 | −0.007 |
 
 The AR head is at chance (a lag-`K > w` spike is unreachable by any order-`w` model); the general head
 climbs to **1.00**; `-toeplitz-gs` captures only the lags inside its order cap (≤ 16), which is why it

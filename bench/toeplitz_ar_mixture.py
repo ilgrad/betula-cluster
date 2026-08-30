@@ -12,16 +12,26 @@ singular at `N_k < d`):
    spike, so only the general `gmm-toeplitz-full` head recovers the components — the case that motivates
    the non-AR rung of the Toeplitz ladder (`docs/adr/001-gmm-toeplitz.md`).
 
-Run: `.venv/bin/python bench/toeplitz_ar_mixture.py`
+Both tables are the **median of seeds 0, 1, 2** — the seed drives the data draw, betula's initialization
+and scikit-learn's `random_state` together, so a cell's range covers both sources of luck. The per-cell
+min/median/max ships in `results_toeplitz_spread.csv` next to the medians in `results_toeplitz.csv`.
+
+Run: `uv run --no-sync --with scikit-learn python bench/toeplitz_ar_mixture.py`
 """
+
+import csv
+from pathlib import Path
 
 import betula_cluster as bc
 import numpy as np
 from sklearn.metrics import adjusted_rand_score as ari
 from sklearn.mixture import GaussianMixture
 
+HERE = Path(__file__).resolve().parent
+
 SPECS = ([0.8], [1.1, -0.4], [])  # AR(1) a=0.8 · AR(2) [1.1,-0.4] · white-noise control
 ECHO_LAGS = (16, 28, 40)  # single-echo MA lags, all > w_max=10 (unreachable by AR(w))
+SEEDS = (0, 1, 2)
 
 
 def ar_windows(n, d, a, rng):
@@ -59,28 +69,91 @@ def make_mixture(gen, params, d, per, seed):
     return np.ascontiguousarray(np.vstack(xs), dtype=np.float64), y
 
 
-def fit(method, feature, x, k=3):
-    return np.asarray(bc.fit_predict(x, k, method=method, feature=feature, threshold=0.0, seed=1))
+def fit(method, feature, x, seed, k=3):
+    return np.asarray(
+        bc.fit_predict(x, k, method=method, feature=feature, threshold=0.0, seed=seed)
+    )
+
+
+def sweep(gen, params, d, per, methods):
+    """`{method: [ARI per seed]}` for one window length, over `SEEDS`.
+
+    The seed drives the draw and both libraries' initialization, so the spread it produces is the
+    honest one: a reader cannot tell a lucky draw from a lucky restart, and neither can we.
+    """
+    out = {name: [] for name in methods}
+    for seed in SEEDS:
+        x, y = make_mixture(gen, params, d, per, seed=seed)
+        for name, (method, feature) in methods.items():
+            if method == "sk-diag":
+                lab = GaussianMixture(
+                    3, covariance_type="diag", n_init=8, random_state=seed
+                ).fit_predict(x)
+            elif method == "sk-full":
+                lab = GaussianMixture(
+                    3, covariance_type="full", reg_covar=1e-3, n_init=8, random_state=seed
+                ).fit_predict(x)
+            else:
+                lab = fit(method, feature, x, seed)
+            out[name].append(ari(y, lab))
+    return out
+
+
+def emit(rows, spread_rows, scenario, d, per, sweeps):
+    for name, vals in sweeps.items():
+        lo, mid, hi = min(vals), float(np.median(vals)), max(vals)
+        rows.append(
+            {"scenario": scenario, "d": d, "N_k_over_d": per / d, "method": name, "ARI": mid}
+        )
+        spread_rows.append(
+            {
+                "scenario": scenario,
+                "d": d,
+                "method": name,
+                "min": lo,
+                "median": mid,
+                "max": hi,
+                "range": hi - lo,
+            }
+        )
+    return [float(np.median(v)) for v in sweeps.values()]
+
+
+def write_csv(path, rows, fields):
+    with path.open("w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=fields)
+        w.writeheader()
+        w.writerows(rows)
+
+
+AR_METHODS = {
+    "toe-AR": ("gmm-toeplitz", "spherical"),
+    "toe-full": ("gmm-toeplitz-full", "spherical"),
+    "toe-gs": ("gmm-toeplitz-gs", "spherical"),
+    "b-diag": ("gmm", "diagonal"),
+    "b-full": ("gmm-full", "full"),
+    "sk-diag": ("sk-diag", None),
+    "sk-full": ("sk-full", None),
+}
+
+ECHO_METHODS = {
+    "toeplitz-AR": ("gmm-toeplitz", "spherical"),
+    "toeplitz-full": ("gmm-toeplitz-full", "spherical"),
+    "toeplitz-gs": ("gmm-toeplitz-gs", "spherical"),
+    "betula-diag": ("gmm", "diagonal"),
+}
 
 
 def main():
     per = 30
-    print(f"AR-mixture: 3 components (AR(1) 0.8 · AR(2) [1.1,-0.4] · white), {per} windows each\n")
+    rows, spread_rows = [], []
+    print(f"AR-mixture: 3 components (AR(1) 0.8 · AR(2) [1.1,-0.4] · white), {per} windows each")
+    print(f"median of seeds {list(SEEDS)}; ranges in results_toeplitz_spread.csv\n")
     hdr = f"{'d':>5} {'N_k/d':>6} | {'toe-AR':>8} {'toe-full':>8} {'toe-gs':>8} {'b-diag':>8} {'b-full':>8} {'sk-diag':>8} {'sk-full':>8}"
     print(hdr)
     print("-" * len(hdr))
     for d in (32, 64, 128, 256):
-        x, y = make_mixture(ar_windows, SPECS, d, per, seed=1)
-        toe = fit("gmm-toeplitz", "spherical", x)
-        tof = fit("gmm-toeplitz-full", "spherical", x)
-        tgs = fit("gmm-toeplitz-gs", "spherical", x)
-        bdi = fit("gmm", "diagonal", x)
-        bfu = fit("gmm-full", "full", x)
-        skd = GaussianMixture(3, covariance_type="diag", n_init=8, random_state=0).fit_predict(x)
-        skf = GaussianMixture(
-            3, covariance_type="full", reg_covar=1e-3, n_init=8, random_state=0
-        ).fit_predict(x)
-        row = [ari(y, v) for v in (toe, tof, tgs, bdi, bfu, skd, skf)]
+        row = emit(rows, spread_rows, "ar", d, per, sweep(ar_windows, SPECS, d, per, AR_METHODS))
         print(
             f"{d:>5} {per / d:>6.2f} | {row[0]:>8.3f} {row[1]:>8.3f} {row[2]:>8.3f} {row[3]:>8.3f} {row[4]:>8.3f} {row[5]:>8.3f} {row[6]:>8.3f}"
         )
@@ -92,18 +165,21 @@ def main():
     )
 
     print(
-        f"Long-lag echo: 3 components, echo lag K ∈ {ECHO_LAGS} (all > w_max=10), {per} windows each\n"
+        f"Long-lag echo: 3 components, echo lag K ∈ {ECHO_LAGS} (all > w_max=10), {per} windows each"
     )
+    print(f"median of seeds {list(SEEDS)}\n")
     hdr2 = f"{'d':>5} {'N_k/d':>6} | {'toeplitz-AR':>11} {'toeplitz-full':>13} {'toeplitz-gs':>11} {'betula-diag':>11}"
     print(hdr2)
     print("-" * len(hdr2))
     for d in (64, 96, 128, 192):
-        x, y = make_mixture(echo_windows, ECHO_LAGS, d, per, seed=1)
-        toe = fit("gmm-toeplitz", "spherical", x)
-        tof = fit("gmm-toeplitz-full", "spherical", x)
-        tgs = fit("gmm-toeplitz-gs", "spherical", x)
-        bdi = fit("gmm", "diagonal", x)
-        row = [ari(y, v) for v in (toe, tof, tgs, bdi)]
+        row = emit(
+            rows,
+            spread_rows,
+            "echo",
+            d,
+            per,
+            sweep(echo_windows, ECHO_LAGS, d, per, ECHO_METHODS),
+        )
         print(
             f"{d:>5} {per / d:>6.2f} | {row[0]:>11.3f} {row[1]:>13.3f} {row[2]:>11.3f} {row[3]:>11.3f}"
         )
@@ -114,6 +190,19 @@ def main():
         "captures all lags; 'gs' (GS-MLE precision) captures lags within its order cap (≤16) — the two"
     )
     print("non-AR rungs of the Toeplitz ladder.")
+
+    write_csv(HERE / "results_toeplitz.csv", rows, ["scenario", "d", "N_k_over_d", "method", "ARI"])
+    write_csv(
+        HERE / "results_toeplitz_spread.csv",
+        spread_rows,
+        ["scenario", "d", "method", "min", "median", "max", "range"],
+    )
+    worst = max(spread_rows, key=lambda r: r["range"])
+    print(
+        f"\nWidest cell: {worst['scenario']} d={worst['d']} {worst['method']} "
+        f"{worst['min']:.3f}–{worst['max']:.3f} (range {worst['range']:.3f}). "
+        "Wrote results_toeplitz.csv + results_toeplitz_spread.csv."
+    )
 
 
 if __name__ == "__main__":
