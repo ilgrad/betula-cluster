@@ -539,18 +539,23 @@ isolated in its own subprocess (`bench/results_sparse.csv`):
 
 | reduction | clusterer | time | ARI |
 |---|---|---|---|
-| raw 2 000-D (none) | betula `fit_predict_sparse` (O(nnz)) | 1.94 s | 0.004 |
-| raw 2 000-D (none) | sklearn k-means | 0.61 s | 0.056 |
-| **betula CF-weighted PCA(50)** | **betula** spherical k-means | 3.31 s | **0.164** |
-| TruncatedSVD(50) | sklearn k-means | **0.41 s** | 0.130 |
-| NMF(20) | **betula** k-means | 2.14 s | 0.130 |
-| NMF(20) | sklearn k-means | 2.42 s | 0.124 |
+| raw 2 000-D (none) | betula `fit_predict_sparse` (O(nnz)) | 2.30 s | 0.038 |
+| raw 2 000-D (none) | sklearn k-means | 1.03 s | 0.056 |
+| **betula CF-weighted PCA(50)** | **betula** spherical k-means | 2.25 s | **0.200** |
+| TruncatedSVD(50) | sklearn k-means | **0.74 s** | 0.130 |
+| NMF(20) | **betula** k-means | 2.64 s | 0.130 |
+| NMF(20) | sklearn k-means | 3.32 s | 0.124 |
 
-The two betula times fell **3.4×** and **1.5×** against the previous edition of this table with the
-labels bit-identical at every budget — task #71, the transposed micro-cluster storage described
-below. Nothing about the partition changed; only the memory traffic it took to reach it.
+**Third exception to the page banner, 2026-08-30.** All six rows were re-measured in one pass after
+task #104 — the sparse leader pass now caps how much of the mass one micro-cluster may hold, and the
+centre-based heads label each row by its nearest cluster centroid rather than its nearest
+micro-cluster. Both betula ARIs moved: `betula-sparse` 0.004 → **0.038**, `betula-svd` 0.164 → **0.200**.
+The three scikit-learn rows and `betula-nmf` cannot be touched by that change and their ARIs are
+unmoved — but their times rose 1.4–1.7× against the 2026-08-24 edition, so the time column is
+comparable **within** this table and not with the previous one. `betula-svd`'s own time fell over the
+same interval (3.31 → 2.25 s), which is the smaller summary, not a faster machine.
 
-The `betula-svd` row changed meaning. It used to call scikit-learn's `TruncatedSVD` and then
+The `betula-svd` row changed meaning at 0.4.0. It used to call scikit-learn's `TruncatedSVD` and then
 cluster with betula, so it measured scikit-learn's reducer; it now runs betula's own
 `projection="svd"` — a CF-weighted PCA of the leaf summary — end to end in one call. The `betula-nmf`
 row still borrows scikit-learn's NMF, and says so.
@@ -558,38 +563,52 @@ row still borrows scikit-learn's NMF, and says so.
 Quality against the leaf budget, since the harness pins `max_leaves=2048` for every sparse row and
 that is the whole cost here. Unlike the table above — which `bench/comprehensive.py` runs at `seed=0`
 only, like every other sparse row — this sweep is the **median of seeds 0/1/2**, one BLAS thread, so
-its 2048 cell (0.152, spread [0.135, 0.164]) reads lower than the 0.164 above: seed 0 is the top of
-that spread, not a different measurement.
+its 2048 cell reads lower than the 0.200 above: seed 0 is the top of that spread, not a different
+measurement.
 
-| `max_leaves` | ARI | time, before #71 | time, after |
+| `max_leaves` | ARI, before #104 | after | time |
 |---|---|---|---|
-| 128 | 0.097 | 0.22 s | 0.20 s |
-| 256 | 0.130 | 0.43 s | 0.37 s |
-| 512 | 0.143 | 0.87 s | 0.74 s |
-| 1024 | 0.150 | 2.62 s | 1.53 s |
-| 2048 | 0.152 | 6.99 s | **3.44 s** |
+| 128 | 0.097 | 0.083 | 0.15 s |
+| 256 | 0.130 | 0.146 | 0.23 s |
+| 512 | 0.143 | 0.136 | 0.46 s |
+| 1024 | 0.150 | 0.178 | 0.86 s |
+| 2048 | 0.152 | **0.195** [0.170, 0.200] | 1.94 s |
 
-All fifteen label digests (five budgets × three seeds) are identical on both sides, so the ARI column
-is the *same* measurement re-timed. Two cells read 0.001 below the previous edition of this table
-(128 and 512); that predates this change — the earlier numbers were taken on an older build, which is
-also why its 2048 time (5.42 s) sits between the two columns above.
+The mass cap is the whole of that column: this sweep runs through `projection="svd"`, whose labelling
+`fit_predict_sparse` already did correctly, so the centre rule cannot reach it. Three budgets gain and
+two lose, and the mechanism is worth stating because it is counter-intuitive. Uncapped, the forced
+rows all pile into one leader, so the *other* 255 stay pure single documents — 255 real documents plus
+one junk cluster reduce better than 256 averages of noise. The cap spreads that damage instead, which
+is right when the forced assignment carries signal and wrong when it does not. It is set as loosely as
+it can be and still forbid the runaway (32× the balanced share, swept 1 → 256 in `sparse.rs`); at that
+setting no budget here is materially worse and the top of the sweep is the best number this table has
+carried.
+
+The time column is a fresh median-of-three on this build and is **not** comparable with the
+before/after pair the #71 section below quotes: that pair was two builds of the *same* partition, and
+#104 changed the partition.
 
 Read honestly:
 
-- **Raw high-dimensional TF-IDF is the wrong input for any compression / fast clusterer.** At
-  `d = 2 000` Euclidean distances concentrate, so the O(nnz) sparse-native path (0.004, ≈ random) and
-  even raw sklearn k-means (0.056) barely beat chance. The standard fix for sparse text is
-  **reduce-then-cluster**, and `projection="svd"` now does it inside the same call.
-- **On quality the leaf-summary PCA wins; on time it does not.** 0.164 against `sklearn-svd`'s 0.130
-  at this budget, but 3.31 s against 0.41 s. The basis is not the compromise — labelling raw rows in
-  it scores 0.159 against 0.143 for `TruncatedSVD`'s own basis on the same rows, since the within-leaf
+- **Raw high-dimensional TF-IDF is still the wrong input for any compression / fast clusterer.** At
+  `d = 2 000` Euclidean distances concentrate, so the O(nnz) sparse-native path (0.038) and even raw
+  sklearn k-means (0.056) barely beat chance — #104 lifted the betula row nine-fold and it is still a
+  bad way to cluster text. The standard fix is **reduce-then-cluster**, and `projection="svd"` does it
+  inside the same call.
+- **On quality the leaf-summary PCA wins; on time it does not.** 0.200 against `sklearn-svd`'s 0.130
+  at this budget, but 2.25 s against 0.74 s. The basis is not the compromise — labelling raw rows in it
+  scored 0.159 against 0.143 for `TruncatedSVD`'s own basis on the same rows (2026-08-24, **not**
+  re-measured after #104, which moved the summary that basis is computed from), since the within-leaf
   scatter the summary discards is isotropic under the spherical cluster feature and so moves no
-  direction. The time is the **leaf budget**: sweeping the rank from 1 to 100 moves the total by
-  1.2 s, while `max_leaves` 256 → 2048 moves it from 0.37 s to 3.4 s, because both sparse passes are
-  flat scans that score each row against every micro-cluster. At 256 leaves the same call is 0.130 ARI
-  in 0.37 s — scikit-learn's quality at close to its speed.
+  direction. The time is the **leaf budget**: `max_leaves` 256 → 2048 moves it from 0.23 s to 1.94 s,
+  because both sparse passes are flat scans that score each row against every micro-cluster. At 256
+  leaves the same call is 0.146 ARI in 0.23 s — above scikit-learn's quality at close to its speed.
 
 ### The 20news rows were memory-bound, not compute-bound (task #71)
+
+Historical, and read it that way: this is an A/B of two builds of the **same** partition, taken before
+#104 changed what that partition is. Its "every label digest is unchanged" is a statement about the
+#71 pair, not about the table above.
 
 The scan is linear in the leaf budget by construction, so the budget sweep is the cheap test of where
 the time goes: if the leader pass dominates, wall time is linear in `max_leaves`. It was worse than
@@ -621,8 +640,8 @@ summarisation pass alone the fit was only 1.5× faster, and the profile put **65
 in the row-labelling pass** and 6% in summarisation. The task named summarisation; the profile named
 labelling. Both have the same defect and both are fixed, and the 3.4× on the headline row is mostly
 the half the task did not ask for.
-- **Use a cosine head on the codes.** `method="kmeans"` on the same codes scores 0.014 against
-  `spherical-kmeans`'s 0.152: the leading principal direction of a TF-IDF corpus is document length,
+- **Use a cosine head on the codes.** `method="kmeans"` on the same codes scores 0.026 against
+  `spherical-kmeans`'s 0.195: the leading principal direction of a TF-IDF corpus is document length,
   and only an angular objective ignores it.
 - Net: `fit_predict_sparse` alone is a **scale / bounded-memory** tool, not a quality lever on high-`d`
   text. With `projection="svd"` it becomes the quality tool too, and the knob that matters is
@@ -2120,7 +2139,7 @@ visible in the table as the 33-point first alarm.
   buys nothing on the axis a CF-tree exists for.
 - **For sparse high-dimensional text**, reduce dimensionality first — raw TF-IDF concentrates and
   defeats every fast clusterer. `fit_predict_sparse(..., projection="svd", method="spherical-kmeans")`
-  does the reduction and the clustering in one call and tops the 20-newsgroups table (0.164); tune
+  does the reduction and the clustering in one call and tops the 20-newsgroups table (0.200); tune
   `max_leaves` for the time you are willing to spend.
 - **Tune `max_leaves`, and shuffle first.** The budget is the knob that matters and it is not
   monotone: on `digits` ×2 compression beats no compression on both ward and k-means, on `covtype`

@@ -124,6 +124,27 @@ impl LeaderSet {
         self.n[i] = w_new;
     }
 
+    /// The nearest leader still holding less than `mass_share`, or `None` when every one is full.
+    ///
+    /// Only the forced branch of [`summarize_sparse`] calls this, so the main scan stays exactly the
+    /// loop it was; the rescan is `O(len)` arithmetic over the dots that scan already computed, next
+    /// to the `O(len · nnz)` it spent computing them.
+    fn nearest_under(&self, dots: &[f64], x_sq: f64, mass_share: f64) -> Option<usize> {
+        let mut best = None;
+        let mut bd = f64::INFINITY;
+        for (i, &dot) in dots.iter().enumerate() {
+            if self.n[i] >= mass_share {
+                continue;
+            }
+            let d = self.dist2(i, dot, x_sq);
+            if d < bd {
+                bd = d;
+                best = Some(i);
+            }
+        }
+        best
+    }
+
     /// Materialise each leader into a dense spherical feature `(n, μ = ΣX/n, S)`.
     fn into_features(self) -> Vec<Spherical<f64>> {
         (0..self.len)
@@ -143,10 +164,47 @@ fn norm_sq(val: &[f64]) -> f64 {
     val.iter().map(|&v| v * v).sum()
 }
 
+/// Slack on the mass share a leader may hold once the budget is spent, as a multiple of the balanced
+/// ideal `rows / max_leaders`. At 1.0 the shares exactly exhaust the rows and the last arrivals have
+/// no choice left; the cap is meant to forbid the runaway, not to balance the summary, so it wants to
+/// be as loose as it can be and still do that.
+///
+/// Swept 1 → 256 against the uncapped path on two workloads that pull opposite ways — the block-topic
+/// fixture of `examples/10_sparse_highdim.py` (6000 × 4000, `max_leaves = 2048`, median of seeds
+/// 0/1/2) and 20-newsgroups TF-IDF (18 846 × 2 000, `k = 20`):
+///
+/// | slack | topic fixture | 20news raw | 20news `svd`, 256 leaves | 20news `svd`, 2048 |
+/// |---|---|---|---|---|
+/// | 1 | 0.596 | 0.143 | 0.055 | 0.168 |
+/// | 2 | 0.847 | 0.109 | 0.048 | 0.176 |
+/// | 8 | 0.957 | 0.081 | 0.087 | 0.174 |
+/// | **32** | **0.976** | **0.038** | **0.146** | **0.195** |
+/// | 128 | 0.978 | 0.028 | 0.159 | 0.160 |
+/// | uncapped | −0.000 | 0.006 | 0.130 | 0.152 |
+///
+/// A tight cap spreads the forced rows over every leader and so corrupts every leader; the uncapped
+/// path concentrates the same damage in one, which is why 20-newsgroups at a small budget preferred
+/// it — 255 pure singletons beside one junk cluster reduce better than 256 averages of noise. The
+/// plateau runs from 16 up and no row on it is worse than uncapped; 32 is the round value inside it.
+const FORCED_MASS_SLACK: f64 = 32.0;
+
 /// Summarise CSR rows into spherical micro-clusters with a single `O(nnz)`-per-row leader pass: each
 /// row joins the nearest leader whose centroid is within `threshold` (squared distance), otherwise it
-/// seeds a new leader; once `max_leaders` is reached every further row joins its nearest leader
-/// (bounded memory). Returns dense [`Spherical`] micro-clusters. Caller has validated the CSR arrays.
+/// seeds a new leader; once the leader budget is spent every further row joins the nearest leader
+/// still under its share of the mass (bounded memory). Returns dense [`Spherical`] micro-clusters.
+/// Caller has validated the CSR arrays.
+///
+/// **Why the forced branch needs a mass cap.** Past the budget the proximity gate cannot refuse a row
+/// — there is nowhere to put a refusal — and an ungated nearest-centroid rule is degenerate here: a
+/// leader of `n` near-orthogonal sparse rows has `‖μ‖² ≈ ‖x‖²/n`, so its distance to any row falls
+/// toward `‖x‖²` as it grows while a singleton's stays near `2‖x‖²`. The first leader to take a second
+/// member is thereafter nearer to *every* remaining row than any singleton is, and it swallows the
+/// rest of the input — measured at 4001 of 6000 rows in one leader, 1999 singletons beside it, on the
+/// `examples/10_sparse_highdim.py` fixture at `max_leaders = 2048`. The dense tree meets the same
+/// concentration with a mass cap (`Tree::set_balance`); this is that constraint with the multiple
+/// fixed, because the ungated branch has no defensible uncapped form to keep as the default. The cap
+/// is soft in the same sense the tree's is: when every leader is full the row still goes to the
+/// nearest one rather than push the leader count over budget.
 pub fn summarize_sparse(
     data: &[f64],
     indices: &[i64],
@@ -157,7 +215,10 @@ pub fn summarize_sparse(
 ) -> Vec<Spherical<f64>> {
     // A leader is seeded by a row, so there can never be more of them than rows; taking the tighter
     // of the two bounds keeps the transposed buffer from over-allocating on a short input.
-    let hard_cap = max_leaders.max(1).min(indptr.len() - 1);
+    let n_rows = indptr.len() - 1;
+    let hard_cap = max_leaders.max(1).min(n_rows);
+    // `hard_cap <= n_rows`, so the share is at least `FORCED_MASS_SLACK` points wide.
+    let mass_share = FORCED_MASS_SLACK * n_rows as f64 / hard_cap as f64;
     let mut leaders = LeaderSet::new(n_features, hard_cap);
     let mut idx_buf: Vec<usize> = Vec::new();
     let mut dots: Vec<f64> = Vec::new();
@@ -177,10 +238,19 @@ pub fn summarize_sparse(
                 best = li;
             }
         }
-        if best != usize::MAX && (bd <= threshold || leaders.len >= max_leaders) {
+        if best != usize::MAX && bd <= threshold {
             leaders.push_into(best, &idx_buf, val, x_sq, dots[best]);
-        } else {
+        } else if leaders.len < hard_cap {
             leaders.push_new(&idx_buf, val, x_sq, hard_cap);
+        } else {
+            debug_assert!(
+                best != usize::MAX,
+                "the budget is spent, so a leader exists"
+            );
+            let target = leaders
+                .nearest_under(&dots, x_sq, mass_share)
+                .unwrap_or(best);
+            leaders.push_into(target, &idx_buf, val, x_sq, dots[target]);
         }
     }
     leaders.into_features()
@@ -220,6 +290,78 @@ impl SparseCentroids {
             musq.push(mean.iter().map(|v| v * v).sum());
         }
         Self { len, means_t, musq }
+    }
+
+    /// One centroid per non-empty cluster, pooled by mass from the micro-clusters carrying its label,
+    /// paired with the label each row of the result stands for. `unit` re-normalizes to the sphere,
+    /// for the heads whose argmin is a cosine argmax.
+    ///
+    /// This is the sparse-native form of the dense path's centre rule, and the row scan it feeds is
+    /// the labelling that head *is* — `O(nnz·k)` rather than the microcluster route's `O(nnz·L)`.
+    /// Routing a row to its nearest micro-cluster instead is not the same question and answers it
+    /// badly here: the argmin of `‖μ_i‖² − 2⟨x, μ_i⟩` over `L` micro-clusters of one to six sparse
+    /// rows is dominated by `‖μ_i‖²`, which varies threefold with how many terms those rows happened
+    /// to carry, while the overlap term that knows the topic is a fraction of one. Pooled to `k`
+    /// clusters of thousands of rows the norms are equal to within noise and the overlap decides,
+    /// which is why the dense tree recovers the same fixture the flat pass loses.
+    ///
+    /// `None` when there is no non-empty cluster to pool, or the features are zero-dimensional.
+    pub fn pooled(
+        micros: &[Spherical<f64>],
+        labels: &[i64],
+        unit: bool,
+    ) -> Option<(Self, Vec<i64>)> {
+        debug_assert_eq!(micros.len(), labels.len(), "one label per micro-cluster");
+        let n_features = micros.first().map_or(0, |c| c.mean().len());
+        let k = usize::try_from(labels.iter().copied().max().unwrap_or(-1) + 1).ok()?;
+        if n_features == 0 || k == 0 {
+            return None;
+        }
+        let mut sums = vec![0.0; n_features * k];
+        let mut wsum = vec![0.0; k];
+        for (f, &l) in micros.iter().zip(labels) {
+            let Ok(l) = usize::try_from(l) else { continue };
+            let w = f.weight();
+            wsum[l] += w;
+            for (c, &m) in f.mean().iter().enumerate() {
+                sums[c * k + l] += w * m;
+            }
+        }
+        let keep: Vec<i64> = (0..k)
+            .filter(|&c| wsum[c] > 0.0)
+            .map(|c| c as i64)
+            .collect();
+        if keep.is_empty() {
+            return None;
+        }
+        let len = keep.len();
+        let mut means_t = vec![0.0; n_features * len];
+        let mut musq = vec![0.0; len];
+        for c in 0..n_features {
+            for (i, &l) in keep.iter().enumerate() {
+                let l = l as usize;
+                let v = sums[c * k + l] / wsum[l];
+                means_t[c * len + i] = v;
+                musq[i] += v * v;
+            }
+        }
+        if unit {
+            // A centroid at the origin has no direction to normalize; leave it where it is rather
+            // than scale by infinity, and let its `‖μ‖² = 0` stand.
+            let scale: Vec<f64> = musq
+                .iter()
+                .map(|&s| if s > 0.0 { s.sqrt().recip() } else { 1.0 })
+                .collect();
+            for c in 0..n_features {
+                for (v, s) in means_t[c * len..(c + 1) * len].iter_mut().zip(&scale) {
+                    *v *= s;
+                }
+            }
+            for (m, &s) in musq.iter_mut().zip(&scale) {
+                *m *= s * s;
+            }
+        }
+        Some((Self { len, means_t, musq }, keep))
     }
 
     /// Index of the centroid nearest the sparse row `x`; equally near centroids keep the lowest index.
@@ -609,5 +751,116 @@ mod tests {
         let capped = summarize_sparse(&data, &indices, &indptr, 3, 0.0, 1);
         assert_eq!(capped.len(), 1, "max_leaders was not enforced");
         assert!((capped[0].weight() - 3.0).abs() < 1e-12);
+    }
+
+    /// A sparse "documents × terms" corpus in the shape of `examples/10_sparse_highdim.py`: rows of
+    /// ~24 non-zeros, 85 % of them drawn from the row's own topic block, topics interleaved.
+    fn topic_corpus(
+        n_docs: usize,
+        n_features: usize,
+        n_topics: usize,
+    ) -> (Vec<f64>, Vec<i64>, Vec<i64>) {
+        let block = n_features / n_topics;
+        let mut state = 0x2545_F491_4F6C_DD1Du64;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        let (mut data, mut indices, mut indptr) = (Vec::new(), Vec::new(), vec![0i64]);
+        for d in 0..n_docs {
+            let t = d % n_topics;
+            let n_on = 20 + (next() % 10) as usize;
+            let mut cols: Vec<usize> = (0..n_on)
+                .map(|j| {
+                    if j * 100 < n_on * 85 {
+                        t * block + next() as usize % block
+                    } else {
+                        next() as usize % n_features
+                    }
+                })
+                .collect();
+            cols.sort_unstable();
+            cols.dedup();
+            for c in cols {
+                indices.push(c as i64);
+                data.push(0.3 + (next() % 1000) as f64 / 1000.0);
+            }
+            indptr.push(data.len() as i64);
+        }
+        (data, indices, indptr)
+    }
+
+    #[test]
+    fn no_leader_swallows_the_stream_once_the_budget_is_spent() {
+        // Uncapped, this fixture's 6000-row form put 4001 rows in a single leader with 1999
+        // singletons beside it: past the budget the gate cannot refuse a row, and a leader's centroid
+        // collapses toward the origin as it grows, so the first one to take a second member is nearer
+        // to every row left. The mass share is what forbids that.
+        let (n_docs, n_features, cap) = (1200usize, 2000usize, 300usize);
+        let (data, indices, indptr) = topic_corpus(n_docs, n_features, 4);
+        let micros = summarize_sparse(&data, &indices, &indptr, n_features, 0.5, cap);
+        assert_eq!(
+            micros.len(),
+            cap,
+            "the fixture did not spend the leader budget"
+        );
+        let share = FORCED_MASS_SLACK * n_docs as f64 / cap as f64;
+        let heaviest = micros
+            .iter()
+            .map(ClusterFeature::weight)
+            .fold(0.0f64, f64::max);
+        assert!(
+            heaviest <= share,
+            "a leader holds {heaviest} of a {share}-point share"
+        );
+        let total: f64 = micros.iter().map(ClusterFeature::weight).sum();
+        assert_eq!(total as usize, n_docs, "the cap lost or duplicated mass");
+    }
+
+    #[test]
+    fn pooled_centroids_average_by_mass_and_drop_the_empty_cluster() {
+        let micros = vec![
+            Spherical::from_moments(3.0, vec![2.0, 0.0], 0.0),
+            Spherical::from_moments(1.0, vec![6.0, 0.0], 0.0),
+            Spherical::from_moments(2.0, vec![0.0, 5.0], 0.0),
+        ];
+        let (c, ids) = SparseCentroids::pooled(&micros, &[0, 0, 2], false)
+            .expect("two clusters carry micro-clusters");
+        assert_eq!(
+            ids,
+            vec![0, 2],
+            "an empty cluster was emitted at the origin"
+        );
+        // (3·2 + 1·6)/4 = 3 on axis 0, 5 on axis 1; feature-major with a stride of two centroids.
+        assert_eq!(c.means_t, vec![3.0, 0.0, 0.0, 5.0]);
+        assert_eq!(c.musq, vec![9.0, 25.0]);
+    }
+
+    #[test]
+    fn pooled_centroids_reach_the_sphere_only_when_asked() {
+        let micros = vec![Spherical::from_moments(1.0, vec![3.0, 4.0], 0.0)];
+        let (raw, _) = SparseCentroids::pooled(&micros, &[0], false).unwrap();
+        assert_eq!(raw.musq, vec![25.0]);
+        let (unit, _) = SparseCentroids::pooled(&micros, &[0], true).unwrap();
+        for (got, want) in unit.means_t.iter().zip([0.6, 0.8]) {
+            assert!((got - want).abs() < 1e-12, "{got} is not {want}");
+        }
+        assert!((unit.musq[0] - 1.0).abs() < 1e-12);
+
+        // A centroid at the origin has no direction to normalize, and dividing by its norm would put
+        // it at infinity instead of leaving it where the pooling found it.
+        let origin = vec![Spherical::from_moments(1.0, vec![0.0, 0.0], 0.0)];
+        let (zero, _) = SparseCentroids::pooled(&origin, &[0], true).unwrap();
+        assert_eq!(zero.means_t, vec![0.0, 0.0]);
+        assert_eq!(zero.musq, vec![0.0]);
+    }
+
+    #[test]
+    fn pooling_needs_a_labelled_micro_cluster() {
+        let micros = vec![Spherical::from_moments(1.0, vec![1.0], 0.0)];
+        assert!(SparseCentroids::pooled(&micros, &[-1], false).is_none());
+        assert!(SparseCentroids::pooled(&[], &[], false).is_none());
     }
 }

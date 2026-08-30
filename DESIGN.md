@@ -291,7 +291,13 @@ CF-tree method, sklearn-Birch included) and keeps the cancellation-free guarante
 for very high-$d$ sparse data. A micro-cluster keeps $(n, \Sigma X, \|\Sigma X\|^2, S)$, so the mean $\mu = \Sigma X/n$,
 cached $\|\mu\|^2 = \|\Sigma X\|^2/n^2$, and the centroid distance $\|x-\mu\|^2 = \|x\|^2 - 2\langle x,\mu\rangle + \|\mu\|^2$ update/evaluate
 in $O(\mathrm{nnz})$. Rows are summarised by a flat leader pass (bounded by `max_leaves`), then materialised to
-dense `Spherical` and clustered by the ordinary Phase-3 heads (`kmeans` default). **Trade-off:** an
+dense `Spherical` and clustered by the ordinary Phase-3 heads (`kmeans` default). Past the budget the
+leader pass has no proximity gate left to apply, so a leader may not take more than a bounded share of
+the mass — without that bound its centroid collapses toward the origin as it grows ($\|\mu\|^2 \approx \|x\|^2/n$ for
+near-orthogonal sparse rows) and it is nearest to *every* remaining row. Rows are labelled by the
+head's own point rule where it has one; the heads that do not (posterior, agglomerative) route to the
+nearest micro-cluster, which on raw sparse rows is a weak labelling and is documented as such.
+**Trade-off:** an
 $O(\mathrm{nnz})$ scatter update is only possible via this *expanded* squared-distance form, which is **not**
 cancellation-free (accurate when sparse rows sit far from the dense centroid; near-duplicate dense
 points lose precision). The dense path remains the stable default; this is a documented opt-in. A

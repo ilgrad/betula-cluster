@@ -1133,6 +1133,31 @@ All notable changes to this project are documented here. The format follows
   changed identity at 1 M. `bench/RESULTS.md` names each one.
 
 ### Fixed
+- **`fit_predict_sparse` returned ARI ≈ 0 wherever `max_leaves` was smaller than the row count, and
+  the dense path scored 1.000 on the same matrix. Labels change on every input that spends the leader
+  budget.** Two faults, one geometry. **(a)** Past the budget the leader pass dropped the proximity
+  gate entirely and absorbed each further row into its nearest leader — but for near-orthogonal sparse
+  rows a leader of `n` members has `‖μ‖² ≈ ‖x‖²/n`, so its distance falls toward `‖x‖²` as it grows
+  while a singleton's stays near `2‖x‖²`. The first leader to take a second member was thereafter
+  nearer to *every* remaining row, and it swallowed the stream: **4001 of 6000 rows in one leader,
+  1999 singletons beside it** on the `examples/10_sparse_highdim.py` fixture at `max_leaves = 2048`.
+  A leader may now hold at most `32 × (rows / max_leaves)`, the same constraint the dense tree offers
+  as `balance=` — soft, so a row still lands somewhere when every leader is full. The multiple was
+  swept 1 → 256 against the uncapped path on two workloads that pull opposite ways; the table and the
+  reason a *tight* cap is worse than none are in `sparse.rs`. **(b)** Each row was then labelled by
+  its nearest *micro-cluster*, an argmin of `‖μ_i‖² − 2⟨x, μ_i⟩` that over `L` centroids of one to six
+  sparse rows is decided by `‖μ_i‖²` — by how many terms those rows happened to carry — rather than by
+  overlap. The centre-based heads (`kmeans` / `xmeans` / `spherical-kmeans`) now label each row by its
+  nearest *cluster* centroid, which is the partition the head defines and the rule the dense estimator
+  has used since 0.6.0; it is also `O(nnz·k)` against the old `O(nnz·L)`. Neither fix works alone —
+  A/B'd on the shipped settings, that fixture stays at **−0.000** with only (b) and reaches **0.078**
+  with only (a); with both it is **0.976** against the dense tree's 1.000. On 20-newsgroups TF-IDF the
+  raw sparse row goes
+  0.004 → **0.038** and `projection="svd"` at `max_leaves=2048` goes 0.152 → **0.195**, the best that
+  table has carried. The heads with no centre rule — the posterior (`gmm` / `gmm-full` / `vmf`) and
+  agglomerative ones, whose density would cost `O(d)` or `O(d²)` a row — keep the microcluster route
+  and its weakness is now documented rather than shipped silently. Tables in
+  [`bench/RESULTS.md`](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md).
 - Mapper dropped a microcluster outright when `lo + (hi − lo)` rounded below `hi`: the cover
   recomputed the last bin's upper edge from the step rather than from the observed range, so the
   leaf holding the maximum lens value could fall outside every bin. It happened on one seed in three

@@ -2492,6 +2492,43 @@ def test_fit_predict_sparse_recovers_topics():
     assert ari(labels, y) > 0.95
 
 
+def _sparse_topic_blocks(n_docs=1200, n_terms=800, n_topics=4, seed=0):
+    """`examples/10_sparse_highdim.py` in miniature: ~24 non-zeros a row, 85 % of them from the
+    row's own topic block, topics interleaved so any leader budget sees all of them early."""
+    sp = pytest.importorskip("scipy.sparse")
+    rng = np.random.default_rng(seed)
+    block = n_terms // n_topics
+    rows, cols, vals, y = [], [], [], []
+    for d in range(n_docs):
+        t = d % n_topics
+        n_on = int(rng.integers(20, 30))
+        n_topic = int(n_on * 0.85)
+        c = np.r_[
+            rng.integers(t * block, (t + 1) * block, n_topic),
+            rng.integers(0, n_terms, n_on - n_topic),
+        ]
+        rows += [d] * len(c)
+        cols += c.tolist()
+        vals += (rng.random(len(c)) + 0.3).tolist()
+        y.append(t)
+    return sp.csr_matrix((vals, (rows, cols)), shape=(n_docs, n_terms)), np.array(y)
+
+
+def test_fit_predict_sparse_recovers_topics_past_the_leader_budget():
+    # Below the budget every row seeds its own leader and neither the summary nor the labelling has
+    # to choose. Past it the flat pass handed the corpus to whichever leader grew first — its
+    # centroid collapses toward the origin, so it is nearest to everything — and then labelled every
+    # row from the shortest micro-cluster rather than the nearest *cluster*. Both scored ARI 0 here
+    # against the dense tree's 1.0.
+    x, y = _sparse_topic_blocks()
+    labels = np.asarray(
+        betula_cluster.fit_predict_sparse(
+            x, n_clusters=4, method="kmeans", threshold=0.5, seed=1, max_leaves=300
+        )
+    )
+    assert ari(labels, y) > 0.8
+
+
 @pytest.mark.parametrize("method", ["gmm-full", "ward"])
 def test_fit_predict_sparse_other_heads(method):
     x, y = _sparse_topics()

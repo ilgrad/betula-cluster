@@ -122,17 +122,20 @@ res = pd.DataFrame(results)
 res
 
 # %% [markdown]
-# **Read it, including the failure.** The dense-tree path recovers the four topic blocks exactly. The
-# `O(nnz)` path **does not** — it returns four clusters that carry no signal at all (ARI ≈ 0), and it
-# does so at every `threshold` from 0.0 to 2.0, so this is not a tuning artefact. That is a defect, it
-# is tracked, and it is printed here rather than hidden: a notebook that quietly dropped the row would
-# be worse than one that shows it.
+# **Read it, including what it used to say.** Both paths recover the four topic blocks; the dense-tree
+# path gets there exactly and the `O(nnz)` path lands a little short of it. That residual is
+# structural rather than a defect — the flat leader pass has one absorption radius and no tree, so
+# once `max_leaves` micro-clusters exist every further row must join one of them, where the dense tree
+# raises its threshold and rebuilds instead.
 #
-# Until it is diagnosed, **use the dense-tree path** (`Betula(...).fit_predict` on a CSR matrix) for
-# sparse input. It never materializes the dense array either — the memory chart below is what both
-# paths buy you — it just routes each row through the tree with dense arithmetic instead of the
-# expanded `O(nnz)` scatter update. `DESIGN.md` § *Known limitations* documents that the expanded form
-# is not cancellation-free; whether that is the cause here is a hypothesis, not yet a diagnosis.
+# Before 0.7.0 this row printed **ARI ≈ 0**, from two faults with one geometry behind them. Past the
+# budget a leader's centroid collapses toward the origin as it grows — for near-orthogonal sparse rows
+# `‖μ‖² ≈ ‖x‖²/n` — so the first leader to take a second member was nearer to *every* remaining row
+# than any singleton, and it ended up holding 4001 of these 6000 documents. Rows were then labelled by
+# their nearest *micro-cluster*, an argmin of `‖μ_i‖² − 2⟨x, μ_i⟩` that on one-to-six-row centroids is
+# decided by `‖μ_i‖²` — by how many terms those rows happened to carry — rather than by overlap.
+# Micro-clusters now hold at most a bounded share of the mass, and the centre-based heads label each
+# row by its nearest *cluster* centroid, which is the partition the head actually defines.
 
 # %% [markdown]
 # ## Memory: sparse never densifies

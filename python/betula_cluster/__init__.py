@@ -442,11 +442,21 @@ def fit_predict_sparse(
 
     Summarises rows into spherical micro-clusters touching only the non-zeros (a flat leader pass
     bounded by ``max_leaves``), clusters those with a parametric head (``kmeans`` / ``gmm`` /
-    ``gmm-full`` / ``ward``), and labels each row by its nearest micro-cluster. For very
+    ``gmm-full`` / ``ward``), and labels each row by the head's own point rule. For very
     high-dimensional sparse data this avoids the ``O(d)``-per-row cost of the dense path. It uses
     the expanded squared-distance form for speed and so does **not** carry the dense path's
     cancellation-free guarantee (accurate for sparse rows far from the dense centroid; see the
     library docs). Returns one ``int64`` label per row.
+
+    The centre-based heads (``kmeans`` / ``xmeans`` / ``spherical-kmeans``) label each row by its
+    nearest cluster centroid, the rule the dense path uses. The posterior heads (``gmm`` /
+    ``gmm-full`` / ``vmf``) and the agglomerative ones (``ward`` / ``average`` / ``weighted`` /
+    ``centroid`` / ``median``) have no centroid rule to apply here — a posterior costs ``O(d)`` or
+    ``O(d²)`` a row, which is the cost this path exists to avoid — so they fall back to routing each
+    row to its nearest micro-cluster. That route is weak on raw sparse rows, where the argmin is
+    driven by the micro-cluster's own norm rather than by overlap: on a 6 000 × 4 000 block-topic
+    corpus at ``max_leaves=2048`` it scores ARI 0.02 where ``kmeans`` scores 0.98. Prefer a
+    centre-based head on this path, or reduce first with ``projection="svd"``.
 
     ``projection="svd"`` turns this into the one-call reduce-then-cluster pipeline for text: the
     leaf summary is reduced to ``projection_dim`` CF-weighted principal directions, the head

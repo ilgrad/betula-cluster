@@ -813,9 +813,10 @@ labels = fit_predict_sparse(X, n_clusters=20, threshold=0.5)   # kmeans by defau
 ### Text: reduce and cluster in one call — `projection="svd"`
 
 Clustering TF-IDF in its own geometry does not work, and the size of the failure is worth stating:
-on 20-newsgroups the unprojected sparse path scores **ARI 0.003**. The standard fix is to reduce
-first, and `projection="svd"` does it inside the same call — a CF-weighted PCA of the **leaf
-summary**, so the factorization runs over `M ≈ 10³` micro-clusters rather than `N` documents.
+on 20-newsgroups the unprojected sparse path scores **ARI 0.053**, against 0.056 for scikit-learn's
+k-means on the same rows. The standard fix is to reduce first, and `projection="svd"` does it inside
+the same call — a CF-weighted PCA of the **leaf summary**, so the factorization runs over `M ≈ 10³`
+micro-clusters rather than `N` documents.
 
 ```python
 labels = fit_predict_sparse(
@@ -824,34 +825,37 @@ labels = fit_predict_sparse(
 )
 ```
 
-20-newsgroups TF-IDF (18 846 × 2 000, `k`=20, rank 50, median of seeds 0/1/2, one BLAS thread):
+20-newsgroups TF-IDF (18 846 × 2 000, `k`=20, rank 50, median of seeds 0/1/2, single-threaded,
+re-measured 2026-08-30):
 
 | | ARI | time |
 |---|---|---|
-| sparse path, no projection | 0.003 | 8.1 s |
-| `projection="svd"`, `max_leaves=256` | 0.130 | 0.30 s |
-| `projection="svd"`, `max_leaves=512` | 0.144 | 0.58 s |
-| `projection="svd"`, `max_leaves=2048` | 0.152 | 5.4 s |
-| `TruncatedSVD(50)` + `KMeans` on the raw rows | 0.143 | 0.54 s |
+| sparse path, no projection | 0.053 | 3.2 s |
+| `projection="svd"`, `max_leaves=256` | 0.146 | 0.61 s |
+| `projection="svd"`, `max_leaves=512` | 0.136 | 1.2 s |
+| `projection="svd"`, `max_leaves=2048` | 0.195 | 4.7 s |
+| `TruncatedSVD(50)` + `KMeans` on the raw rows | 0.143 | 0.78 s |
 
 Two things decide whether this works for you.
 
-**Use a cosine head on the codes.** `method="kmeans"` on the same codes scores **0.014** against
-`spherical-kmeans`'s 0.152 — an eleven-fold difference, because the leading principal direction of a
+**Use a cosine head on the codes.** `method="kmeans"` on the same codes scores **0.026** against
+`spherical-kmeans`'s 0.195 — a seven-fold difference, because the leading principal direction of a
 TF-IDF corpus is document length, and only an angular objective ignores it.
 
 **The leaf budget is the cost, not the projection.** Sweeping the rank from 1 to 100 moves the total
-by 1.2 s; sweeping `max_leaves` from 256 to 2048 moves it from 0.30 s to 5.4 s, because the sparse
+by 1.2 s; sweeping `max_leaves` from 256 to 2048 moves it from 0.61 s to 4.7 s, because the sparse
 summarizer compares each row against every micro-cluster it has so far. Buy resolution deliberately.
 
-The basis is not a compromise for being built from a summary: labelling raw rows in it scores 0.159
-against 0.143 for `TruncatedSVD`'s own basis on the same rows. Under the spherical cluster feature the
-discarded within-leaf scatter is isotropic, so it shifts eigenvalues and leaves the directions alone.
+The basis is not a compromise for being built from a summary: labelling raw rows in it scored 0.159
+against 0.143 for `TruncatedSVD`'s own basis on the same rows (2026-08-24, not re-measured since the
+leader pass changed). Under the spherical cluster feature the discarded within-leaf scatter is
+isotropic, so it shifts eigenvalues and leaves the directions alone.
 
 Unlike `weighted-nmf`, a PCA is a linear map, so each row is labelled by **its own** code
-(`(x − x̄)Vᵀ`, computed from its non-zeros) rather than by its micro-cluster's. That distinction is
-worth 0.062 ARI here, and it is why the NMF projection cannot be given the same treatment: its code
-is the solution of a per-row nonnegative least squares, not a matrix product.
+(`(x − x̄)Vᵀ`, computed from its non-zeros) rather than by its micro-cluster's. That distinction was
+worth 0.062 ARI here when it was measured (2026-08-24), and it is why the NMF projection cannot be
+given the same treatment: its code is the solution of a per-row nonnegative least squares, not a
+matrix product.
 
 ## Hyperparameter tuning — memory-aware, dependency-free
 

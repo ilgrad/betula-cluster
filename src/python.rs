@@ -4689,7 +4689,9 @@ fn parse_parametric(method: &str) -> PyResult<Method> {
 /// One-shot `O(nnz)` clustering of a CSR matrix (`data` / `indices` / `indptr`, `n_features`). Rows
 /// are summarised into spherical micro-clusters touching only the non-zeros (flat leader pass, bounded
 /// by `max_leaves`), the micro-clusters are clustered by a parametric head, and each row is labelled by
-/// its nearest micro-cluster. See `sparse.rs` for the numerical trade-off of the sparse-native path.
+/// the head's own point rule — its nearest cluster centroid for the centre-based heads, and its nearest
+/// micro-cluster for the rest. See `sparse.rs` for the numerical trade-off of the sparse-native path
+/// and for why the microcluster route is a poor labelling of raw sparse rows.
 ///
 /// `projection="svd"` makes this the one-call reduce-then-cluster pipeline for text: the leaf summary
 /// is reduced to `projection_dim` CF-weighted principal directions, the head clusters the codes, and
@@ -4745,19 +4747,31 @@ fn fit_predict_sparse<'py>(
         let leaves = micros.len();
         let kind = Kind::Parametric(m);
         let out = label_features_proba(&micros, kind, n_clusters, max_iter, seed, auto_k_max, spec);
-        // A linear projection labels each row from its own code, touching only the non-zeros; every
-        // other configuration routes the row to its nearest micro-cluster and reads that label.
+        // A linear projection labels each row from its own code, touching only the non-zeros.
         let labels = match &out.rule {
             Some(rule) => rule.label_csr(data, indices, indptr, n_features),
             None => {
                 let micro_labels = out.labels;
-                let centroids = SparseCentroids::from_features(&micros);
+                // Otherwise the row goes to its nearest *cluster* centroid, which is the partition a
+                // centre-based head defines and what the dense path has labelled with since 0.6.0.
+                // The microcluster route stays the fallback for the heads with no centre rule
+                // (agglomerative), for the posterior heads — whose density is `O(d)` or `O(d²)` per
+                // row, the cost this path exists to avoid — and behind an NMF projection, which
+                // moved the rows into a space the pooled raw-space centroids do not describe.
+                let pooled = match (spec, assignment_rule(m)) {
+                    (None, Rule::Centroid { unit }) => {
+                        SparseCentroids::pooled(&micros, &micro_labels, unit)
+                    }
+                    _ => None,
+                };
+                let (centroids, ids) = pooled
+                    .unwrap_or_else(|| (SparseCentroids::from_features(&micros), micro_labels));
                 map_rows(indptr.len() - 1, |r| {
                     let (lo, hi) = (indptr[r] as usize, indptr[r + 1] as usize);
                     let val = &data[lo..hi];
                     let idx: Vec<usize> = indices[lo..hi].iter().map(|&c| c as usize).collect();
                     let x_sq: f64 = val.iter().map(|v| v * v).sum();
-                    micro_labels[centroids.nearest(&idx, val, x_sq)]
+                    ids[centroids.nearest(&idx, val, x_sq)]
                 })
             }
         };
