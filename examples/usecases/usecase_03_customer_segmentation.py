@@ -5,9 +5,9 @@
 #       extension: .py
 #       format_name: percent
 #   kernelspec:
-#     display_name: Python (betula examples)
+#     display_name: Python 3
 #     language: python
-#     name: betula-examples
+#     name: python3
 # ---
 
 # %% [markdown]
@@ -29,9 +29,11 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 
-from betula_cluster import KPrototypes, fit_predict
+from betula_cluster import KPrototypes, __version__, fit_predict
 
 sns.set_theme(style="whitegrid", context="notebook", palette="deep")
+
+print("betula-cluster", __version__)
 plt.rcParams.update({"figure.dpi": 110, "axes.titleweight": "bold"})
 rng = np.random.default_rng(7)
 

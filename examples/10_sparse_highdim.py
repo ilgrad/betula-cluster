@@ -5,9 +5,9 @@
 #       extension: .py
 #       format_name: percent
 #   kernelspec:
-#     display_name: Python (betula examples)
+#     display_name: Python 3
 #     language: python
-#     name: betula-examples
+#     name: python3
 # ---
 
 # %% [markdown]
@@ -34,11 +34,12 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
+from betula_cluster import Betula, __version__, fit_predict_sparse
 from scipy import sparse
 
-from betula_cluster import Betula, fit_predict_sparse
-
 sns.set_theme(style="whitegrid", context="notebook", palette="deep")
+
+print("betula-cluster", __version__)
 plt.rcParams.update({"figure.dpi": 110, "axes.titleweight": "bold"})
 rng = np.random.default_rng(0)
 
@@ -56,7 +57,7 @@ def ari(a, b):
 # ## A sparse "documents × terms" matrix
 #
 # 6,000 documents, 4,000 terms, 4 topics. Each document activates ~30 terms — mostly from its topic's
-# term block, plus a little cross-talk. Only ~0.8% of the matrix is non-zero.
+# term block, plus a little cross-talk. Only ~0.7% of the matrix is non-zero.
 
 # %%
 n_docs, n_terms, n_topics = 6000, 4000, 4
@@ -97,14 +98,41 @@ plt.show()
 # %%
 results = []
 for name, fn in [
-    ("Betula.fit_predict (sparse, dense-tree)", lambda: Betula(n_clusters=4, feature="spherical", method="kmeans", threshold=0.5, seed=1).fit_predict(X)),
-    ("fit_predict_sparse (O(nnz))", lambda: fit_predict_sparse(X, n_clusters=4, method="kmeans", threshold=0.5, seed=1)),
+    (
+        "Betula.fit_predict (sparse, dense-tree)",
+        lambda: Betula(
+            n_clusters=4, feature="spherical", method="kmeans", threshold=0.5, seed=1
+        ).fit_predict(X),
+    ),
+    (
+        "fit_predict_sparse (O(nnz))",
+        lambda: fit_predict_sparse(X, n_clusters=4, method="kmeans", threshold=0.5, seed=1),
+    ),
 ]:
     t0 = time.perf_counter()
     labels = np.asarray(fn())
-    results.append({"method": name, "time (s)": round(time.perf_counter() - t0, 2), "ARI": round(ari(labels, truth), 3)})
+    results.append(
+        {
+            "method": name,
+            "time (s)": round(time.perf_counter() - t0, 2),
+            "ARI": round(ari(labels, truth), 3),
+        }
+    )
 res = pd.DataFrame(results)
 res
+
+# %% [markdown]
+# **Read it, including the failure.** The dense-tree path recovers the four topic blocks exactly. The
+# `O(nnz)` path **does not** — it returns four clusters that carry no signal at all (ARI ≈ 0), and it
+# does so at every `threshold` from 0.0 to 2.0, so this is not a tuning artefact. That is a defect, it
+# is tracked, and it is printed here rather than hidden: a notebook that quietly dropped the row would
+# be worse than one that shows it.
+#
+# Until it is diagnosed, **use the dense-tree path** (`Betula(...).fit_predict` on a CSR matrix) for
+# sparse input. It never materializes the dense array either — the memory chart below is what both
+# paths buy you — it just routes each row through the tree with dense arithmetic instead of the
+# expanded `O(nnz)` scatter update. `DESIGN.md` § *Known limitations* documents that the expanded form
+# is not cancellation-free; whether that is the cause here is a hypothesis, not yet a diagnosis.
 
 # %% [markdown]
 # ## Memory: sparse never densifies
@@ -115,12 +143,17 @@ res
 dense_mb = n_docs * n_terms * 8 / 1e6
 sparse_mb = (X.data.nbytes + X.indices.nbytes + X.indptr.nbytes) / 1e6
 mem = pd.DataFrame(
-    {"representation": ["dense N×d (float64)", "scipy.sparse CSR"], "size (MB)": [round(dense_mb, 1), round(sparse_mb, 1)]}
+    {
+        "representation": ["dense N×d (float64)", "scipy.sparse CSR"],
+        "size (MB)": [round(dense_mb, 1), round(sparse_mb, 1)],
+    }
 )
 fig, ax = plt.subplots(figsize=(6, 3.2))
 sns.barplot(data=mem, x="size (MB)", y="representation", ax=ax)
 for i, v in enumerate(mem["size (MB)"]):
     ax.text(v, i, f" {v:.1f}", va="center")
-ax.set_title(f"{dense_mb / sparse_mb:.0f}× smaller — and betula-cluster never builds the dense form")
+ax.set_title(
+    f"{dense_mb / sparse_mb:.0f}× smaller — and betula-cluster never builds the dense form"
+)
 plt.show()
 mem

@@ -5,9 +5,9 @@
 #       extension: .py
 #       format_name: percent
 #   kernelspec:
-#     display_name: Python (betula examples)
+#     display_name: Python 3
 #     language: python
-#     name: betula-examples
+#     name: python3
 # ---
 
 # %% [markdown]
@@ -34,9 +34,11 @@ from sklearn.datasets import make_blobs
 from sklearn.decomposition import PCA
 from sklearn.metrics import roc_auc_score
 
-from betula_cluster import Betula, DbStream
+from betula_cluster import Betula, DbStream, __version__
 
 sns.set_theme(style="whitegrid", context="notebook", palette="deep")
+
+print("betula-cluster", __version__)
 plt.rcParams.update({"figure.dpi": 110, "axes.titleweight": "bold"})
 rng = np.random.default_rng(0)
 

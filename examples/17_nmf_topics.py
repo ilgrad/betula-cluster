@@ -26,15 +26,16 @@
 # All numbers are computed live. See [`docs/MATH.md`](../docs/MATH.md#cf-weighted-nmf-for-nonnegative-data).
 
 # %%
+import betula_cluster
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
 from sklearn.metrics import adjusted_rand_score as ari
 
-import betula_cluster
-
 sns.set_theme(style="whitegrid", context="notebook", palette="deep")
+
+print("betula-cluster", betula_cluster.__version__)
 plt.rcParams.update({"figure.dpi": 110, "font.size": 9})
 
 
@@ -66,7 +67,11 @@ print(f"corpus: {X.shape[0]} documents × {d} nonnegative features, {k} latent t
 fig, ax = plt.subplots(figsize=(7, 2.8))
 order = np.argsort(y)
 ax.imshow(X[order][::12].T, aspect="auto", cmap="magma")
-ax.set(title="documents (sorted by topic) × features — blocks are the latent parts", xticks=[], yticks=[])
+ax.set(
+    title="documents (sorted by topic) × features — blocks are the latent parts",
+    xticks=[],
+    yticks=[],
+)
 fig.tight_layout()
 plt.show()
 
@@ -103,12 +108,21 @@ plt.show()
 scores
 
 # %% [markdown]
-# ## Why it is fast — NMF runs over the leaves, not the points
+# ## Why it scales — the NMF input stops growing
 #
 # The factorization cost is bounded by the leaf count `max_leaves`, not `N`. So the same call scales:
-# doubling `N` leaves the NMF work unchanged (only the `O(N)` tree build grows). That is the whole point
-# — point-level NMF is `O(N·d·r)` per iteration and cannot stream; this stays memory-bounded.
-# `bench/nmf_cf_weighted.py` times it against `sklearn.decomposition.NMF → k-means` as `N` grows.
+# doubling `N` leaves the NMF work unchanged (only the `O(N)` tree build grows). Point-level NMF is
+# `O(N·d·r)` per iteration and holds an `N × r` code matrix; this holds `M × r` and stays
+# memory-bounded, so it keeps running where a dense NMF runs out of room.
+#
+# **That is a scaling property, not a wall-clock win, and the difference is worth being blunt about.**
+# Measured head-to-head (`bench/nmf_cf_weighted.py`) the CF-weighted path is *slower* than
+# `sklearn.decomposition.NMF → k-means` at every size tried — 0.2× / 0.7× / 0.9× at `N` = 8 k / 40 k /
+# 160 k. The gap closes as `N` grows but had not crossed by 160 k. What it buys instead is
+# **determinism**: ARI 1.000 ± 0.000 against scikit-learn's 0.812–0.991 with a ±0.37 seed spread,
+# because NMF is invariant to `(W D, D⁻¹H)` and betula returns a canonical factorization (unit-L2
+# parts, energy-ordered) where scikit-learn's does not. Reach for it for that, or for the memory
+# bound — not for throughput at these sizes.
 
 # %%
 sizes = [400, 800, 1600, 3200]
@@ -122,7 +136,12 @@ for per in sizes:
 
 fig, ax = plt.subplots(figsize=(6.4, 3.2))
 ax.plot([s * k for s in sizes], curve, "o-", lw=2, color="#2a9d8f")
-ax.set(xlabel="N (documents)", ylabel="ARI", title="weighted-nmf: quality holds as N grows (NMF work is flat in N)", ylim=(0, 1.05))
+ax.set(
+    xlabel="N (documents)",
+    ylabel="ARI",
+    title="weighted-nmf: quality holds as N grows (NMF work is flat in N)",
+    ylim=(0, 1.05),
+)
 fig.tight_layout()
 plt.show()
 
@@ -138,6 +157,15 @@ plt.show()
 # The advantage is **largest where the counts are sparsest** — low rates are where Poisson noise
 # departs most from Gaussian. As the mean count grows, the central-limit theorem pulls Poisson toward
 # Gaussian and Frobenius catches up. The sweep below draws the same topic mixture at rising intensities.
+#
+# **The margin is now small, and it used to be large.** On a 0.5.0 build this sweep read Frobenius
+# 0.243 against KL 0.830 at the sparsest rate — a gap of +0.59, which is what the docs and the draft
+# article quoted. Frobenius has since improved to 0.850 there, so the measured gap is **+0.04**, and
+# from a mean count of 0.4 upward the two objectives are indistinguishable. The direction of the
+# argument survives — KL is still the maximum-likelihood fit and it is still ahead exactly where the
+# counts are thinnest — but the number that made it dramatic does not. Both curves are a single draw
+# at `seed=0`; treat a four-hundredth gap as a tie.
+
 
 # %%
 def poisson_corpus(n_per, d, k, seed, scale):
@@ -159,22 +187,48 @@ mean_counts, frob, kl_ = [], [], []
 for sc in scales:
     Xc, yc = poisson_corpus(600, d, k, seed=0, scale=sc)
     mean_counts.append(Xc.mean())
-    frob.append(ari(yc, np.asarray(betula_cluster.fit_predict(
-        Xc, k, method="kmeans", projection="weighted-nmf", projection_dim=8, **kw))))
-    kl_.append(ari(yc, np.asarray(betula_cluster.fit_predict(
-        Xc, k, method="kmeans", projection="weighted-nmf-kl", projection_dim=8, **kw))))
+    frob.append(
+        ari(
+            yc,
+            np.asarray(
+                betula_cluster.fit_predict(
+                    Xc, k, method="kmeans", projection="weighted-nmf", projection_dim=8, **kw
+                )
+            ),
+        )
+    )
+    kl_.append(
+        ari(
+            yc,
+            np.asarray(
+                betula_cluster.fit_predict(
+                    Xc, k, method="kmeans", projection="weighted-nmf-kl", projection_dim=8, **kw
+                )
+            ),
+        )
+    )
 
 fig, ax = plt.subplots(figsize=(6.4, 3.4))
 ax.plot(mean_counts, frob, "o-", lw=2, color="#bbb", label="weighted-nmf (Frobenius)")
 ax.plot(mean_counts, kl_, "o-", lw=2, color="#e76f51", label="weighted-nmf-kl (Poisson)")
-ax.set(xlabel="mean count per entry (sparser ←)", ylabel="ARI vs ground-truth topics",
-       title="KL wins most on sparse counts; the gap closes as counts grow", ylim=(0, 1.05))
+ax.set(
+    xlabel="mean count per entry (sparser ←)",
+    ylabel="ARI vs ground-truth topics",
+    title="KL wins most on sparse counts; the gap closes as counts grow",
+    ylim=(0, 1.05),
+)
 ax.set_xscale("log")
 ax.legend()
 fig.tight_layout()
 plt.show()
-pd.DataFrame({"mean_count": np.round(mean_counts, 2), "Frobenius": np.round(frob, 3),
-              "KL": np.round(kl_, 3), "delta": np.round(np.array(kl_) - np.array(frob), 3)})
+pd.DataFrame(
+    {
+        "mean_count": np.round(mean_counts, 2),
+        "Frobenius": np.round(frob, 3),
+        "KL": np.round(kl_, 3),
+        "delta": np.round(np.array(kl_) - np.array(frob), 3),
+    }
+)
 
 # %% [markdown]
 # ## Nonnegative only — signed input is rejected, not shifted
@@ -185,7 +239,9 @@ pd.DataFrame({"mean_count": np.round(mean_counts, 2), "Frobenius": np.round(frob
 
 # %%
 try:
-    betula_cluster.fit_predict(X - 1.0, k, method="kmeans", projection="weighted-nmf", projection_dim=8)
+    betula_cluster.fit_predict(
+        X - 1.0, k, method="kmeans", projection="weighted-nmf", projection_dim=8
+    )
     print("no error (unexpected)")
 except ValueError as e:
     print("rejected signed input:", str(e)[:80])

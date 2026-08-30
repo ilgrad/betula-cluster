@@ -29,6 +29,7 @@
 # All numbers are computed live. See [`docs/adr/001-gmm-toeplitz.md`](../docs/adr/001-gmm-toeplitz.md).
 
 # %%
+import betula_cluster
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -36,9 +37,9 @@ import seaborn as sns
 from sklearn.metrics import adjusted_rand_score as ari
 from sklearn.mixture import GaussianMixture
 
-import betula_cluster
-
 sns.set_theme(style="whitegrid", context="notebook", palette="deep")
+
+print("betula-cluster", betula_cluster.__version__)
 plt.rcParams.update({"figure.dpi": 110, "font.size": 9})
 
 SPECS = ([0.8], [1.1, -0.4], [])  # AR(1) a=0.8 · AR(2) [1.1,-0.4] · white-noise control
@@ -65,6 +66,7 @@ def make_mixture(d, per, seed):
     xs = [ar_windows(per, d, a, rng) for a in SPECS]
     y = np.concatenate([np.full(per, c) for c in range(len(SPECS))])
     return np.ascontiguousarray(np.vstack(xs), dtype=np.float64), y
+
 
 # %% [markdown]
 # ## The data — three processes that look alike
@@ -93,6 +95,7 @@ plt.show()
 # separate: the AR(1) autocovariance decays slowly, the AR(2) one oscillates, white noise drops to
 # zero at lag 1. `gmm-toeplitz` fits exactly this curve (as an AR model) per component.
 
+
 # %%
 def autocov(rows, w=16):
     out = np.zeros(w + 1)
@@ -106,7 +109,9 @@ fig, ax = plt.subplots(figsize=(6.4, 3.6))
 for c, name in enumerate(NAMES):
     ax.plot(autocov(X[y == c]), "o-", ms=3, label=name)
 ax.axhline(0, color="grey", lw=0.8)
-ax.set(xlabel="lag τ", ylabel="autocovariance r(τ)", title="Components differ only in autocovariance")
+ax.set(
+    xlabel="lag τ", ylabel="autocovariance r(τ)", title="Components differ only in autocovariance"
+)
 ax.legend()
 fig.tight_layout()
 plt.show()
@@ -116,22 +121,50 @@ plt.show()
 #
 # The same 90 windows, `n_clusters=3`. betula's `gmm-toeplitz` is scored against the diagonal and full
 # GMM heads and scikit-learn's `GaussianMixture` — none of which can use the autocovariance.
+#
+# Every table on this page is a **single draw at `seed=1`**, and this ladder is seed-sensitive: at
+# `d = 64` the three Toeplitz rungs span up to 0.18 ARI across seeds, so their *relative* order in a
+# one-seed table is luck. The seeded medians of record — seeds 0/1/2, with per-cell min/max — are in
+# [`bench/RESULTS.md`](../bench/RESULTS.md) § *Structured covariance* and
+# `bench/results_toeplitz_spread.csv`. What is seed-stable, and what this notebook is here to show, is
+# the gap between the Toeplitz rungs and everything else.
 
 # %%
 kw = dict(feature="spherical", threshold=0.0, seed=1)
 rows = [
     ("betula gmm-toeplitz", betula_cluster.fit_predict(X, 3, method="gmm-toeplitz", **kw)),
-    ("betula gmm (diag)", betula_cluster.fit_predict(X, 3, method="gmm", feature="diagonal", threshold=0.0, seed=1)),
-    ("betula gmm-full", betula_cluster.fit_predict(X, 3, method="gmm-full", feature="full", threshold=0.0, seed=1)),
-    ("sklearn GMM (diag)", GaussianMixture(3, covariance_type="diag", n_init=8, random_state=0).fit_predict(X)),
-    ("sklearn GMM (full)", GaussianMixture(3, covariance_type="full", reg_covar=1e-3, n_init=8, random_state=0).fit_predict(X)),
+    (
+        "betula gmm (diag)",
+        betula_cluster.fit_predict(X, 3, method="gmm", feature="diagonal", threshold=0.0, seed=1),
+    ),
+    (
+        "betula gmm-full",
+        betula_cluster.fit_predict(X, 3, method="gmm-full", feature="full", threshold=0.0, seed=1),
+    ),
+    (
+        "sklearn GMM (diag)",
+        GaussianMixture(3, covariance_type="diag", n_init=8, random_state=0).fit_predict(X),
+    ),
+    (
+        "sklearn GMM (full)",
+        GaussianMixture(
+            3, covariance_type="full", reg_covar=1e-3, n_init=8, random_state=0
+        ).fit_predict(X),
+    ),
 ]
-tbl = pd.DataFrame({"method": [r[0] for r in rows], "ARI": [round(ari(y, np.asarray(r[1])), 3) for r in rows]}).set_index("method")
+tbl = pd.DataFrame(
+    {"method": [r[0] for r in rows], "ARI": [round(ari(y, np.asarray(r[1])), 3) for r in rows]}
+).set_index("method")
 
 fig, ax = plt.subplots(figsize=(6.4, 3.4))
 colors = ["#2a9d8f"] + ["#bbb"] * 4
 ax.barh(range(len(tbl)), tbl["ARI"], color=colors)
-ax.set(yticks=range(len(tbl)), xlabel="ARI", xlim=(min(0, tbl["ARI"].min()), 1.05), title=f"windows of length d={d}, N_k/d={30 / d:.2f}")
+ax.set(
+    yticks=range(len(tbl)),
+    xlabel="ARI",
+    xlim=(min(0, tbl["ARI"].min()), 1.05),
+    title=f"windows of length d={d}, N_k/d={30 / d:.2f}",
+)
 ax.set_yticklabels(tbl.index)
 ax.invert_yaxis()
 for i, v in enumerate(tbl["ARI"]):
@@ -152,14 +185,37 @@ ds = [32, 64, 128, 256]
 curve = {"betula gmm-toeplitz": [], "betula gmm (diag)": [], "sklearn GMM (full)": []}
 for dd in ds:
     Xd, yd = make_mixture(dd, per=30, seed=1)
-    curve["betula gmm-toeplitz"].append(ari(yd, np.asarray(betula_cluster.fit_predict(Xd, 3, method="gmm-toeplitz", **kw))))
-    curve["betula gmm (diag)"].append(ari(yd, np.asarray(betula_cluster.fit_predict(Xd, 3, method="gmm", feature="diagonal", threshold=0.0, seed=1))))
-    curve["sklearn GMM (full)"].append(ari(yd, GaussianMixture(3, covariance_type="full", reg_covar=1e-3, n_init=8, random_state=0).fit_predict(Xd)))
+    curve["betula gmm-toeplitz"].append(
+        ari(yd, np.asarray(betula_cluster.fit_predict(Xd, 3, method="gmm-toeplitz", **kw)))
+    )
+    curve["betula gmm (diag)"].append(
+        ari(
+            yd,
+            np.asarray(
+                betula_cluster.fit_predict(
+                    Xd, 3, method="gmm", feature="diagonal", threshold=0.0, seed=1
+                )
+            ),
+        )
+    )
+    curve["sklearn GMM (full)"].append(
+        ari(
+            yd,
+            GaussianMixture(
+                3, covariance_type="full", reg_covar=1e-3, n_init=8, random_state=0
+            ).fit_predict(Xd),
+        )
+    )
 
 fig, ax = plt.subplots(figsize=(6.4, 3.8))
 for name, vals in curve.items():
     ax.plot(ds, vals, "o-", lw=2, label=name)
-ax.set(xlabel="window length d  (N_k/d shrinks →)", ylabel="ARI", title="AR/Toeplitz improves with d; the others stay at chance", ylim=(-0.1, 1.05))
+ax.set(
+    xlabel="window length d  (N_k/d shrinks →)",
+    ylabel="ARI",
+    title="AR/Toeplitz improves with d; the others stay at chance",
+    ylim=(-0.1, 1.05),
+)
 ax.set_xscale("log", base=2)
 ax.set_xticks(ds)
 ax.get_xaxis().set_major_formatter(plt.ScalarFormatter())
@@ -204,7 +260,10 @@ def echo_mixture(d, per, seed):
 de = 96
 Xe, ye = echo_mixture(de, per=30, seed=1)
 echo_rows = [
-    ("betula gmm-toeplitz-full", betula_cluster.fit_predict(Xe, 3, method="gmm-toeplitz-full", **kw)),
+    (
+        "betula gmm-toeplitz-full",
+        betula_cluster.fit_predict(Xe, 3, method="gmm-toeplitz-full", **kw),
+    ),
     ("betula gmm-toeplitz (AR)", betula_cluster.fit_predict(Xe, 3, method="gmm-toeplitz", **kw)),
     (
         "betula gmm (diag)",
@@ -261,7 +320,10 @@ dg = 96
 Xg, yg = gs_echo_mixture(dg, per=30, seed=1)
 gs_rows = [
     ("betula gmm-toeplitz-gs", betula_cluster.fit_predict(Xg, 3, method="gmm-toeplitz-gs", **kw)),
-    ("betula gmm-toeplitz-full", betula_cluster.fit_predict(Xg, 3, method="gmm-toeplitz-full", **kw)),
+    (
+        "betula gmm-toeplitz-full",
+        betula_cluster.fit_predict(Xg, 3, method="gmm-toeplitz-full", **kw),
+    ),
     ("betula gmm-toeplitz (AR)", betula_cluster.fit_predict(Xg, 3, method="gmm-toeplitz", **kw)),
 ]
 gtbl = pd.DataFrame(

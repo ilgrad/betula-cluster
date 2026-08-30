@@ -40,6 +40,8 @@ from sklearn.preprocessing import StandardScaler
 import betula_cluster
 
 sns.set_theme(style="whitegrid", context="notebook", palette="deep")
+
+print("betula-cluster", betula_cluster.__version__)
 plt.rcParams.update({"figure.dpi": 110, "axes.titleweight": "bold"})
 
 # %% [markdown]

@@ -27,6 +27,8 @@ import seaborn as sns
 
 sns.set_theme(style="whitegrid", context="notebook", palette="deep")
 
+print("betula-cluster", betula_cluster.__version__)
+
 
 def direction_clusters(n=12_000, k=6, sigma=0.06, seed=0):
     """2-D vectors whose cluster is the angle; radius (magnitude) is lognormal noise."""

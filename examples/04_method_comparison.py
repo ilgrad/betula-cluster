@@ -22,16 +22,17 @@
 import time
 import warnings
 
+import betula_cluster
 import matplotlib.pyplot as plt
 import numpy as np
+import seaborn as sns
 from sklearn.cluster import HDBSCAN, Birch
 from sklearn.datasets import make_blobs, make_circles, make_moons
 from sklearn.preprocessing import StandardScaler
 
-import betula_cluster
-import seaborn as sns
-
 sns.set_theme(style="whitegrid", context="notebook", palette="deep")
+
+print("betula-cluster", betula_cluster.__version__)
 
 warnings.filterwarnings("ignore")
 plt.rcParams.update({"figure.dpi": 110, "font.size": 9})
@@ -63,10 +64,24 @@ DATASETS = [(name, StandardScaler().fit_transform(X), k) for name, X, k in DATAS
 def methods(k):
     """(column title, callable X -> labels) for each algorithm."""
     return [
-        ("betula\nk-means", lambda X: betula_cluster.fit_predict(X, k, feature="diagonal", method="kmeans")),
-        ("betula\nGMM-full", lambda X: betula_cluster.fit_predict(X, k, feature="full", method="gmm-full")),
-        ("betula\nWard", lambda X: betula_cluster.fit_predict(X, k, feature="diagonal", method="ward")),
-        ("betula\nHDBSCAN", lambda X: betula_cluster.fit_predict(X, method="hdbscan", min_samples=5, min_cluster_size=30)),
+        (
+            "betula\nk-means",
+            lambda X: betula_cluster.fit_predict(X, k, feature="diagonal", method="kmeans"),
+        ),
+        (
+            "betula\nGMM-full",
+            lambda X: betula_cluster.fit_predict(X, k, feature="full", method="gmm-full"),
+        ),
+        (
+            "betula\nWard",
+            lambda X: betula_cluster.fit_predict(X, k, feature="diagonal", method="ward"),
+        ),
+        (
+            "betula\nHDBSCAN",
+            lambda X: betula_cluster.fit_predict(
+                X, method="hdbscan", min_samples=5, min_cluster_size=30
+            ),
+        ),
         ("sklearn\nBirch", lambda X: Birch(n_clusters=k).fit_predict(X)),
         ("sklearn\nHDBSCAN", lambda X: HDBSCAN(min_samples=5, min_cluster_size=30).fit_predict(X)),
     ]
@@ -100,8 +115,16 @@ for r, (dname, X, k) in enumerate(DATASETS):
             ax.set_title(title, fontsize=9)
         if c == 0:
             ax.set_ylabel(dname, fontsize=10, rotation=90)
-        ax.text(0.97, 0.03, f"{dt * 1000:.0f} ms", transform=ax.transAxes, ha="right", va="bottom",
-                fontsize=7, color="#444")
+        ax.text(
+            0.97,
+            0.03,
+            f"{dt * 1000:.0f} ms",
+            transform=ax.transAxes,
+            ha="right",
+            va="bottom",
+            fontsize=7,
+            color="#444",
+        )
 fig.suptitle("Clustering methods across dataset shapes", y=1.005, fontsize=13)
 fig.tight_layout()
 plt.show()
@@ -121,9 +144,12 @@ for n in Ns:
     Xb, _ = make_blobs(n_samples=n, centers=8, n_features=8, cluster_std=1.0, random_state=0)
     Xb = np.ascontiguousarray(Xb, dtype=np.float64)
     for name, fn in [
-        ("betula-kmeans", lambda X: betula_cluster.fit_predict(X, 8, feature="diagonal", method="kmeans")),
+        (
+            "betula-kmeans",
+            lambda X: betula_cluster.fit_predict(X, 8, feature="diagonal", method="kmeans"),
+        ),
         ("sklearn-KMeans", lambda X: KMeans(8, n_init=4, random_state=0).fit_predict(X)),
-        ("sklearn-Birch", lambda X: Birch(n_clusters=8, threshold=8 ** 0.5 * 0.5).fit_predict(X)),
+        ("sklearn-Birch", lambda X: Birch(n_clusters=8, threshold=8**0.5 * 0.5).fit_predict(X)),
     ]:
         t0 = time.perf_counter()
         fn(Xb)
@@ -143,17 +169,33 @@ plt.show()
 # %% [markdown]
 # ## Memory — the headline
 #
-# betula's CF-tree is bounded by `max_leaves`; classic Birch's subclusters explode in high-d. Peak
-# RSS at **100 000 × 10-d** (isolated-subprocess measurement from `bench/RESULTS.md`):
+# The CF-tree is bounded by `max_leaves`, so betula's footprint is **flat in `N`** while any in-core
+# method's grows linearly (it has to hold `X`). The figures below are the streaming memory table from
+# [`bench/RESULTS.md`](../bench/RESULTS.md) — peak RSS of the process itself, `/proc/self/statm`,
+# 20-dimensional data, betula via chunked `partial_fit` against a one-shot scikit-learn `KMeans`. They
+# are quoted, not measured here: peak RSS is only meaningful in an isolated subprocess, and a notebook
+# kernel that has already imported matplotlib, pandas and seaborn is not one.
 
 # %%
-plt.figure(figsize=(5, 3.6))
-bars = {"betula": 154, "sklearn-KMeans": 156, "sklearn-Birch": 5216}
-plt.bar(bars.keys(), bars.values(), color=["#2a9d8f", "#888", "#e76f51"])
-plt.ylabel("peak RSS (MB, log)")
-plt.yscale("log")
-for i, (k, v) in enumerate(bars.items()):
-    plt.text(i, v * 1.1, f"{v} MB", ha="center", fontsize=9)
-plt.title("Peak memory @ 100k × 10-d  (betula ~34× lighter than Birch)")
+# bench/RESULTS.md § "Memory — streaming stays bounded"; 20-d, peak RSS in MB.
+mem_N = [500_000, 1_000_000, 2_000_000, 5_000_000, 10_000_000]
+mem_betula = [60.1, 60.4, 60.1, 60.5, 60.3]
+mem_sklearn = [407, 647, 1130, 2570, 4970]
+
+plt.figure(figsize=(6, 3.8))
+plt.loglog(mem_N, mem_betula, "o-", lw=2, color="#2a9d8f", label="betula (streaming partial_fit)")
+plt.loglog(mem_N, mem_sklearn, "o-", lw=2, color="#e76f51", label="sklearn KMeans (in-core)")
+plt.annotate(
+    f"{mem_sklearn[-1] / mem_betula[-1]:.0f}× at 10 M",
+    xy=(mem_N[-1], mem_sklearn[-1]),
+    xytext=(-70, -22),
+    textcoords="offset points",
+    fontsize=9,
+)
+plt.xlabel("N points (20-d)")
+plt.ylabel("peak RSS (MB)")
+plt.title("Memory is flat in N — the tree is capped by max_leaves")
+plt.grid(True, which="both", alpha=0.3)
+plt.legend()
 plt.tight_layout()
 plt.show()

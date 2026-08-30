@@ -30,6 +30,8 @@ import seaborn as sns
 
 sns.set_theme(style="whitegrid", context="notebook", palette="deep")
 
+print("betula-cluster", betula_cluster.__version__)
+
 X, y = make_blobs(n_samples=60_000, centers=5, cluster_std=0.7, random_state=0)
 X = X.astype(np.float64)
 

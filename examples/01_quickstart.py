@@ -31,7 +31,7 @@ import seaborn as sns
 
 sns.set_theme(style="whitegrid", context="notebook", palette="deep")
 
-print("betula-cluster", "ready")
+print("betula-cluster", betula_cluster.__version__)
 
 # %% [markdown]
 # ## Data — four Gaussian blobs

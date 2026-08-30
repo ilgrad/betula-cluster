@@ -35,6 +35,8 @@ import seaborn as sns
 
 sns.set_theme(style="whitegrid", context="notebook", palette="deep")
 
+print("betula-cluster", betula_cluster.__version__)
+
 
 def ring(center, radius, n, thickness, rng):
     """`n` noisy points on a circle — an annulus with a genuine hole in the middle."""

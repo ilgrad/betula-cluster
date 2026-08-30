@@ -5,9 +5,9 @@
 #       extension: .py
 #       format_name: percent
 #   kernelspec:
-#     display_name: Python (betula examples)
+#     display_name: Python 3
 #     language: python
-#     name: betula-examples
+#     name: python3
 # ---
 
 # %% [markdown]
@@ -34,9 +34,11 @@ import pandas as pd
 import seaborn as sns
 from sklearn.decomposition import PCA
 
-from betula_cluster import Betula
+from betula_cluster import Betula, __version__
 
 sns.set_theme(style="whitegrid", context="notebook", palette="deep")
+
+print("betula-cluster", __version__)
 plt.rcParams.update({"figure.dpi": 110, "axes.titleweight": "bold"})
 rng = np.random.default_rng(1)
 

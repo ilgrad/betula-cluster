@@ -4,9 +4,17 @@ Executed Jupyter notebooks (with plots, tables, and graphs) demonstrating **ever
 `betula-cluster`. Each notebook is paired with a [jupytext](https://jupytext.readthedocs.io/) `.py`
 source (the diff-friendly form); the `.ipynb` is the rendered, executed output you can read on GitHub.
 
-> **The stored outputs were executed on 2026-07-18, against a pre-0.6.0 build.** The code cells are
-> current; the *printed* ARIs and plots predate 0.6.0's change to how every head labels a point, so
-> re-executing a notebook will move its scores. See [`CHANGELOG.md`](../CHANGELOG.md) § 0.6.0.
+> **Provenance.** The stored outputs were executed on **2026-08-30** against the working tree after
+> 0.7.0 — the same tree [`bench/RESULTS.md`](../bench/RESULTS.md) is measured on. Every notebook
+> prints the build it ran under in its first cell, and every one pins its seeds in code, so
+> re-executing reproduces what you see.
+>
+> But a quality figure printed here is a **single draw**, and clustering quality is seed-dependent.
+> Where a notebook makes a head-to-head claim it says which seed produced it. The seeded medians of
+> record — seeds 0/1/2, with per-cell ranges — are in `bench/RESULTS.md`, and that is what to quote.
+> Wall-clock cells were run single-threaded on both sides (`OMP_NUM_THREADS=1`,
+> `RAYON_NUM_THREADS=1`), matching the benchmark harness; anything else compares thread counts rather
+> than algorithms.
 
 | notebook | what it covers |
 |----------|----------------|
@@ -24,7 +32,7 @@ source (the diff-friendly form); the `.ipynb` is the rendered, executed output y
 | [`12_drift_robust_memory`](12_drift_robust_memory.ipynb) | `snapshot` + `compare_snapshots` drift; `active_learning_batch`; robust `huber_k`; `memory_budget_mb` |
 | [`13_graph_clustering`](13_graph_clustering.ipynb) | graph & manifold heads — `method="spectral"` on moons/spirals, `method="leiden"` community detection (auto-count), and `consensus` per-point stability maps |
 | [`14_directional_embeddings`](14_directional_embeddings.ipynb) | **directional** heads for L2-normalized embeddings — `method="vmf"` (von Mises–Fisher mixture: soft posterior, concentration `κ`, BIC auto-`k`) and `method="spherical-kmeans"`; why direction beats Euclidean distance when magnitude varies |
-| [`15_geometry_aware_clustering`](15_geometry_aware_clustering.ipynb) | head-to-head vs scikit-learn: **`method="scale-space"`** is parameter-free *and* more accurate + faster than `MeanShift` (and beats wrong-`k` k-means), and **covariance-aware `gmm-full`** ties `GaussianMixture` while crushing spherical k-means on anisotropic clusters — plus the GeoBETULA `covariance_weight` / `tangent_weight` knobs |
+| [`15_geometry_aware_clustering`](15_geometry_aware_clustering.ipynb) | head-to-head vs scikit-learn: **`method="scale-space"`** is parameter-free and far more accurate than `MeanShift` (ARI 1.00 vs 0.62; a modest 1.6× on time at 5 000 points, and the margin is a *scaling* one), and **covariance-aware `gmm-full`** ties `GaussianMixture` while crushing spherical k-means on anisotropic clusters — plus the GeoBETULA `covariance_weight` / `tangent_weight` knobs |
 | [`16_toeplitz_timeseries`](16_toeplitz_timeseries.ipynb) | the **three-rung Toeplitz ladder** for ordered **time-series windows** clustered by their autocovariance *shape*. Where a diagonal model is blind and full covariance is singular (`N_k ≪ d`), **`method="gmm-toeplitz"`** (banded AR) recovers the components and **beats scikit-learn's `GaussianMixture`** (sharpening as the window grows), **`"gmm-toeplitz-full"`** captures a long-lag echo beyond any low AR order, and **`"gmm-toeplitz-gs"`** fits the likelihood-optimal Gohberg-Semencul precision |
 | [`17_nmf_topics`](17_nmf_topics.ipynb) | **`projection="weighted-nmf"`** — CF-weighted nonnegative matrix factorization for **nonnegative** data (TF-IDF / counts / spectrograms): factorizes the `M ≪ N` leaf centroids into interpretable nonnegative codes (König-Huygens), then clusters them — so NMF runs at BETULA scale + bounded memory where point-level NMF cannot stream; **`"weighted-nmf-kl"`** switches to the KL (Poisson-MLE) objective for count data; signed input is rejected |
 
@@ -38,7 +46,7 @@ Applied walk-throughs that compose the features above into a real task, each sco
 | [`usecase_02_log_anomaly_detection`](usecases/usecase_02_log_anomaly_detection.ipynb) | anomaly detection on log events — batch `outlier_scores` (ROC-AUC, precision@k) **and** streaming `DbStream` real-time noise flags |
 | [`usecase_03_customer_segmentation`](usecases/usecase_03_customer_segmentation.ipynb) | mixed RFM + categorical segmentation with `KPrototypes` — a persona + action table, and why mixed beats numeric-only |
 | [`usecase_04_rag_corpus_curation`](usecases/usecase_04_rag_corpus_curation.ipynb) | prepping an embedding store for RAG — junk removal (`outlier_scores`), topic coherence (`mapper_stability`, β₀ = #topics), and topic-leakage detection (Mapper) |
-| [`usecase_05_real_data_clustering`](usecases/usecase_05_real_data_clustering.ipynb) | clustering a **real** 64-D dataset (handwritten `digits`) — betula's regularized `gmm` / `gmm-full` **lead scikit-learn on both mean ARI and worst-case stability** (the per-dimension covariance floor stops the high-dimensional component collapse), plus average-digit centroids, medoid exemplars, a refit-anything coreset |
+| [`usecase_05_real_data_clustering`](usecases/usecase_05_real_data_clustering.ipynb) | clustering a **real** 64-D dataset (handwritten `digits`) — the per-dimension covariance floor buys **worst-case stability, not a higher mean**: full-cov ARI ties scikit-learn on the mean (0.533 vs 0.533) while its worst seed is 0.470 against 0.402, and the diagonal head leads on both; plus average-digit centroids, medoid exemplars, a refit-anything coreset |
 | [`usecase_06_graph_communities`](usecases/usecase_06_graph_communities.ipynb) | community detection on an embedding corpus — **`method="leiden"`** discovers the group count with no `k`, `resolution` γ / CPM dial granularity, and `consensus` flags ambiguous items |
 
 ## Run / re-render
@@ -52,6 +60,14 @@ jupytext --to ipynb 01_quickstart.py && jupyter lab 01_quickstart.ipynb
 
 # or re-execute headless (regenerates outputs + plots in place)
 jupytext --to ipynb --execute 01_quickstart.py
+```
+
+To reproduce the committed outputs, run from the **repo root** with both libraries pinned to one
+thread — the timing cells compare betula against scikit-learn, and an asymmetric thread count
+measures the thread count rather than the algorithm:
+
+```bash
+OMP_NUM_THREADS=1 RAYON_NUM_THREADS=1 jupytext --to ipynb --execute examples/01_quickstart.py
 ```
 
 All plots use [seaborn](https://seaborn.pydata.org/) for a consistent look; graphs use
