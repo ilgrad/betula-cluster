@@ -164,9 +164,16 @@ mis-specified — counts are Poisson. `projection="weighted-nmf-kl"` minimizes t
 (I-divergence) $\sum_{ij} [X_{ij}\ln(X_{ij}/(WH)_{ij}) - X_{ij} + (WH)_{ij}]$ by Lee-Seung multiplicative
 updates over the raw centroids, with the shared components $H$ weighted by leaf mass $n_j$ (the per-row
 $W$ update is weight-invariant, each row minimized independently) — the Poisson maximum-likelihood fit.
-The gain is rate-dependent: largest at **sparse** counts (measured up to **+0.5 ARI** over Frobenius on a
-Poisson-count mixture at mean rate $< 0.5$), narrowing to a few points as the mean count grows past $\sim1.5$
-and the central-limit theorem pulls Poisson toward Gaussian.
+The gain is rate-dependent and, on the current tree, **small**: largest at **sparse** counts (+0.04 ARI
+over Frobenius on a Poisson-count mixture at mean rate 0.2 — 0.892 against 0.850) and zero to three
+decimals once the mean count passes $\sim0.4$, where the central-limit theorem pulls Poisson toward
+Gaussian (`examples/17_nmf_topics.ipynb`). **Correction to the previous edition, which reported up to
++0.5 ARI (0.83 against 0.24).** That gap did not close because KL got worse — it closed because
+Frobenius went from 0.24 to 0.85 at the same setting, once 0.6.0 moved the k-means head that consumes
+the codes to its own partition and the mixture heads to maximum-posterior labelling. Most of what the
+KL objective appeared to be buying was a labelling defect downstream of the factorization. The
+objective remains the correct likelihood for Poisson counts; the measured margin over Frobenius is now
+worth about four hundredths at the sparsest rate.
 
 **Initialization and the scale gauge.** Both solvers start from **NNDSVDar** (Boutsidis & Gallopoulos,
 2008): a rank-$r$ truncated SVD — obtained from a randomized range finder (Halko-Martinsson-Tropp:

@@ -127,8 +127,10 @@ A capability-by-capability reference. For runnable code see [`USAGE.md`](USAGE.m
   any head clusters the nonnegative codes. Dependency-free weighted **HALS** (no BLAS — the matrices are
   small because $M \ll N$); `projection="weighted-nmf-kl"` switches to the **KL-divergence** variant
   (Lee-Seung multiplicative updates) — the Poisson maximum-likelihood objective for **count** data. The
-  advantage is largest where counts are **sparse** (measured up to **+0.5 ARI** over Frobenius on
-  Poisson counts at mean rate < 0.5), converging to Frobenius as counts grow and Poisson → Gaussian.
+  advantage is largest where counts are **sparse** and is now small: **+0.04 ARI** over Frobenius at
+  mean rate 0.2 (0.892 against 0.850) and nil beyond it, converging to Frobenius as counts grow and
+  Poisson → Gaussian. An earlier edition reported up to +0.5 ARI; that margin closed when 0.6.0 fixed
+  the labelling downstream of the factorization, not because this objective changed.
   Both solvers start from a deterministic **NNDSVDar** initialization (a randomized range finder, so no
   LAPACK; rank-deficient triplets cut at the numerical-rank threshold rather than amplified) and return a
   **canonical** factorization — component rows unit-L2, ordered by descending
