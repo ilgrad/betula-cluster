@@ -1361,6 +1361,36 @@ All notable changes to this project are documented here. The format follows
   cap *is* the leaf count went looking. On a 24-leaf, 6-blob fixture in 10-D the sweep selected 24
   before and 6 after, and the regression test fails on a build with the term removed.
 
+### Notes
+- **CURE α-shrinkage (Guha, Rastogi & Shim 1998) was implemented, measured and refuted; not shipped.**
+  The full head — farthest-first representatives per cluster, shrunk toward the cluster centroid by
+  `α`, linked by the closest pair — dropped straight onto the Anderberg driver, and its anchors hold
+  (`α = 1` reproduces UPGMC exactly at every `k`). It still does not earn a place. Against the heads
+  already here at `max_leaves=600`, median of seeds 0/1/2: `moons` (noise 0.06) **1.000** in 0.018 s,
+  which `hdbscan` also reads in 0.013 s without needing `k` or `α`; `circles` **1.000**, same story;
+  and then `moons` at noise **0.10** — the same generator, one step noisier — **0.039** against
+  `ward`'s 0.516 and `spectral`'s 0.733, and 5 % uniform noise over blobs **0.008** against `ward`'s
+  0.691. It never beats a shipped head on any fixture measured.
+
+  `α` is the reason. On `moons-.06` it reads 0.032 at α = 0.05, **1.000** at α = 0.10 and 0.044 at
+  α = 0.15; the window moves with the representative count (α = 0.05: 0.032 at `c = 10`, 1.000 at
+  `c = 20`, 0.000 at `c = 40`) and with the leaf budget (0.983 at 300 leaves, 0.032 at 600, 0.964 at
+  1200). A setting that narrow and that unstable can only be found by scoring against the labels
+  being computed.
+
+  The mechanism is a fact about cluster features rather than about CURE, and it is the part worth
+  keeping. The dendrogram is right and the *cut* is wrong: at α = 0.05 and `k = 2` the head returns
+  clusters of 5999 and **1** points, while `k = 3` returns 3000 / 2999 / 1 at ARI 0.982. That is
+  single linkage's outlier failure, and shrinkage is precisely Guha's cure for it — but on a summary
+  an outlier is a low-mass **leaf**, so the linkage meets it as a cluster of one member with one
+  representative sitting on its own centroid, where `(1 − α)·μ + α·μ = μ` for every α. Shrinkage
+  damps an outlier *inside* a cluster and can never damp an outlier that *is* a cluster. The paper's
+  own outlier-elimination stage, transferred to leaf mass, rescues the clean fixtures and leaves the
+  noisy ones ranked backwards: on blobs + noise the best cell is α = 1.0 (0.794), which is plain
+  centroid linkage with no CURE in it at all. Any future rim-based head here needs a mass-based
+  answer to that, not a geometric one.
+
+
 ## [0.7.0] — 2026-08-23
 
 ### Changed
