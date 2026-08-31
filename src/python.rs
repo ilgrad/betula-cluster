@@ -304,6 +304,7 @@ fn parse_method(
         "gmm-toeplitz-full" => Ok(Kind::Parametric(Method::GmmToeplitzFull)),
         "gmm-toeplitz-gs" => Ok(Kind::Parametric(Method::GmmToeplitzGs)),
         "mppca" => Ok(Kind::Parametric(Method::Mppca { rank })),
+        "mfa" => Ok(Kind::Parametric(Method::Mfa { rank })),
         "dc-center" => Ok(Kind::DcDist {
             objective: DcObjective::Center,
             min_samples,
@@ -322,7 +323,7 @@ fn parse_method(
         "scale-space" => Ok(Kind::ScaleSpace),
         _ => Err(PyValueError::new_err(
             "method must be 'kmeans', 'xmeans', 'kmedoids', 'fuzzy-cmeans', 'gmm', 'gmm-full', \
-             'mppca', 'ward', 'average', 'weighted', 'centroid', 'median', 'spectral', 'leiden', \
+             'mppca', 'mfa', 'ward', 'average', 'weighted', 'centroid', 'median', 'spectral', 'leiden', \
              'leiden-cpm', 'spherical-kmeans', 'vmf', 'watson', 'gmm-toeplitz', \
              'gmm-toeplitz-full', 'gmm-toeplitz-gs', 'hdbscan', 'dc-center', 'dc-median' or \
              'scale-space'",
@@ -2233,7 +2234,7 @@ struct Betula {
     /// Rank `r` of the local tangent subspaces compared by `tangent_weight`; kept for `get_params`.
     #[serde(default = "default_tangent_rank")]
     tangent_rank: usize,
-    /// Subspace rank `q` of the MPPCA head (`method="mppca"`); kept for `get_params`.
+    /// Subspace rank `q` of the subspace heads (`method="mppca"` / `"mfa"`); kept for `get_params`.
     #[serde(default = "default_rank")]
     rank: usize,
     /// Fuzzifier `m > 1` of the fuzzy c-means head (`method="fuzzy-cmeans"`); kept for `get_params`.
@@ -2671,7 +2672,7 @@ impl Betula {
         }
         let (leaf, k) = self.proba.as_ref().ok_or_else(|| {
             PyValueError::new_err(
-                "predict_proba is only available after fit with method='gmm', 'gmm-full', 'mppca', 'vmf', 'gmm-toeplitz', 'gmm-toeplitz-full', 'gmm-toeplitz-gs' or 'fuzzy-cmeans'",
+                "predict_proba is only available after fit with method='gmm', 'gmm-full', 'mppca', 'mfa', 'vmf', 'watson', 'gmm-toeplitz', 'gmm-toeplitz-full', 'gmm-toeplitz-gs' or 'fuzzy-cmeans'",
             )
         })?;
         let idx = py.detach(|| tree.assign_microclusters(flat, n, dim));
@@ -3166,7 +3167,7 @@ impl Betula {
     fn microcluster_proba_<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray2<f64>>> {
         let (flat, k) = self.proba.as_ref().ok_or_else(|| {
             PyValueError::new_err(
-                "predict_proba posterior is only available after fit with method='gmm', 'gmm-full', 'mppca', 'vmf', 'gmm-toeplitz', 'gmm-toeplitz-full' or 'gmm-toeplitz-gs'",
+                "predict_proba posterior is only available after fit with method='gmm', 'gmm-full', 'mppca', 'mfa', 'vmf', 'watson', 'gmm-toeplitz', 'gmm-toeplitz-full' or 'gmm-toeplitz-gs'",
             )
         })?;
         let rows = flat.len().checked_div(*k).unwrap_or(0);

@@ -155,6 +155,31 @@ impl<R: Real> SecondMoment<R> {
             }
         }
     }
+
+    /// `out[j] += w · Σ[j][j]` — the diagonal alone, which a per-dimension noise model needs and
+    /// neither [`trace`](Self::trace) (which has already summed it) nor
+    /// [`apply_rows`](Self::apply_rows) can answer. For `LowRank` it is `Σ_r f_r[j]² + iso`, so the
+    /// `d×d` matrix `add_scaled` would build to read `d` numbers off its diagonal never exists.
+    pub fn add_diagonal_scaled(&self, out: &mut [R], w: R) {
+        match self {
+            SecondMoment::Dense(cov) => {
+                for (j, o) in out.iter_mut().enumerate() {
+                    *o = *o + w * cov[j][j];
+                }
+            }
+            SecondMoment::LowRank { rows, iso, .. } => {
+                for f in rows {
+                    for (o, &fv) in out.iter_mut().zip(f) {
+                        *o = *o + w * fv * fv;
+                    }
+                }
+                let c = w * *iso;
+                if c != R::zero() {
+                    out.iter_mut().for_each(|o| *o = *o + c);
+                }
+            }
+        }
+    }
 }
 
 /// A weighted point summary: weight `n`, mean `μ`, and second-moment information `S`.
@@ -1314,6 +1339,28 @@ mod tests {
                 );
             }
         }
+
+        // The diagonal is the third product, and the one the diagonal-noise head needs: `trace`
+        // has already summed it away and `apply_rows` cannot isolate it.
+        let (mut da, mut db) = (vec![0.0_f64; 4], vec![0.0_f64; 4]);
+        low.add_diagonal_scaled(&mut da, 1.5);
+        full.add_diagonal_scaled(&mut db, 1.5);
+        for i in 0..4 {
+            assert!(close(da[i], db[i]), "dim {i}: {} vs {}", da[i], db[i]);
+            assert!(close(da[i], 1.5 * dense[i][i]));
+        }
+        assert!(close(da.iter().sum::<f64>(), 1.5 * low.trace()));
+
+        // The shrink mass a sketch could not place has to reach the diagonal too, or a
+        // diagonal-noise head would read a floor of zero where the sketch says otherwise.
+        let iso = SecondMoment::LowRank {
+            rows: Vec::new(),
+            iso: 0.25,
+            dim: 4,
+        };
+        let mut di = vec![0.0_f64; 4];
+        iso.add_diagonal_scaled(&mut di, 2.0);
+        assert!(di.iter().all(|&v| close(v, 0.5)), "{di:?}");
     }
 
     /// `apply_rows` accumulates: two half-weight calls must equal one full-weight call, which is

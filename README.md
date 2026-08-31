@@ -224,6 +224,16 @@ snapshots / active-learning batches, the Rust API, and the CLI — all in the
   point on `digits` it beats both the diagonal and the full head (ARI 0.600 vs 0.461 / 0.575); on a
   coarse summary it loses to the diagonal head, and
   [`docs/USAGE.md`](https://github.com/ilgrad/betula-cluster/blob/main/docs/USAGE.md) measures why.
+- **Factor-analyser GMM** — **`method="mfa"`** (Ghahramani & Hinton 1996), the same subspace model
+  with `mppca`'s single `σ²` relaxed to a per-dimension `diag(ψ)`, for tables whose columns are in
+  different units and cannot be standardised. The two heads dissociate in both directions on
+  controlled fixtures — `mfa` reads a quiet axis that a loud nuisance pair drowns (ARI **1.00** vs
+  `mppca`'s 0.04–0.34), `mppca` reads lines that differ only in orientation (**1.00** vs ≈ 0.00) —
+  but on real tables already on a common scale `mppca` wins every row measured (`digits` 0.738 vs
+  0.562, MNIST-20k 0.365 vs 0.277). What `mfa` buys is a floor, not a ceiling: it contains the
+  diagonal Gaussian mixture at `rank=0` and falls back onto it, where `mppca` can land at less than
+  half its score. Not rotation-equivariant, for the same reason `gmm` is not.
+  [`docs/USAGE.md`](https://github.com/ilgrad/betula-cluster/blob/main/docs/USAGE.md) has the tables.
 - **Axial mixture** — **`method="watson"`** (Watson 1965), for directional data whose **sign is
   arbitrary**: eigenvectors, SVD/PCA axes, line orientations, any feature where `x` and `−x` are the
   same observation. `p(x) ∝ exp(κ (μᵀx)²)` is antipodally symmetric, so where `vmf` spends half its

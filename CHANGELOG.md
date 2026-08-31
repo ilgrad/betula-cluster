@@ -49,6 +49,35 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- **`method="mfa"` — a mixture of factor analysers, `mppca` with the isotropic residual relaxed to a
+  per-dimension one (Ghahramani & Hinton 1996).** `Σ_c = W_c W_cᵀ + diag(ψ_c)` at `rank` = `q`:
+  `d − 1` more parameters per component than `mppca`, against `d²/2` for `gmm-full`. The M-step is
+  Ghahramani & Hinton's, rewritten so the weighted scatter `S_c` enters **only** through the `d×q`
+  product `S_c U_c` and its diagonal — both of which a leaf answers directly, the second through the
+  new `SecondMoment::add_diagonal_scaled`, so no `d×d` matrix is ever formed. Their published
+  `S βᵀ (I − βW + βSβᵀ)⁻¹` collapses to `W_new = (S U)(M + G)⁻¹ M` with `G = Uᵀ S U` and
+  `M + G ⪰ I`, which factors by Cholesky where the assembled form needs a general inverse. Nine
+  identities, with the `ψ_j` left as free symbols, were verified in Maxima at two shapes before any
+  of it was written (`local/scratch/mfa_identities.mac`, `mfa_mstep_collapse.mac`; residual exactly
+  zero). `rank=0` is a diagonal Gaussian mixture bit for bit. Like `gmm` and unlike `mppca` the head
+  is **not** rotation-equivariant — `diag(ψ)` is a statement about the coordinate axes — which
+  `tests/equivariance.rs` now asserts as a property rather than omitting.
+
+- **The `mfa` / `mppca` envelope, measured in both directions.** The two heads dissociate on
+  fixtures built to separate them: `mfa` reads a separation on a *quiet* axis that two loud nuisance
+  axes drown (ARI **1.00** against `mppca`'s 0.04–0.34), and `mppca` reads three lines that differ
+  only in *orientation* (**1.00** against `mfa`'s ≈ 0.00, because `ψ` absorbs an elongation that
+  belonged in `W`). On real tables, median of seeds 0/1/2 at `rank=2`, `mfa` is **behind `mppca` at
+  full leaf resolution everywhere it was tried** — `digits` 0.562 vs 0.738, MNIST-20k 0.277 vs 0.365,
+  `covtype`-20k in raw units 0.062 vs 0.087 — at indistinguishable cost (30.9 s vs 37.6 s on MNIST).
+  What it buys is a floor rather than a ceiling: on standardised `covtype` it converges onto the
+  diagonal head it contains (0.077 / 0.089, `gmm`'s partition exactly) where `mppca` scores less than
+  half that (0.030 / 0.045). Published in
+  [`docs/USAGE.md`](https://github.com/ilgrad/betula-cluster/blob/main/docs/USAGE.md), including why
+  the identical `covtype` labels are **not** evidence of a collapsed `W`: at 1899 leaves in 54
+  dimensions every one of the 20 000 posteriors is saturated to `1` within `1e-12` for `mfa`, `gmm`
+  and `gmm-full` alike, so agreement there restates the partition, not the covariance.
+
 - **`method="watson"` — a mixture of Watson distributions, for directional data whose sign is
   arbitrary (Watson 1965; Mardia & Jupp 2000 §9.4.1).** `p(x | μ, κ) ∝ exp(κ (μᵀx)²)` is invariant
   under `x ↦ −x`, so eigenvectors, SVD/PCA axes, line orientations and any feature a pipeline signs

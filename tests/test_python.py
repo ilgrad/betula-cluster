@@ -927,6 +927,84 @@ def test_mppca_rank_zero_is_a_spherical_mixture(blobs):
     assert ari(labels, y) > 0.95
 
 
+# ── the factor-analyser head (mfa) ──
+
+
+@pytest.fixture(scope="module")
+def heteroscedastic():
+    """Three clusters separated on a quiet axis, with two loud axes carrying no signal.
+
+    The scales span 13x, which is the case a single ``σ²`` cannot express: fitted to the whole
+    residual it is dominated by the loud axes, and the separation on the tight one drowns.
+    """
+    rng = np.random.default_rng(0)
+    sd = np.array([0.12, 0.12, 0.35, 0.35, 1.6, 1.6])
+    xs, ys = [], []
+    for c, offset in enumerate((0.0, 2.0, -2.0)):
+        z = rng.normal(size=(2000, 1))
+        block = rng.normal(size=(2000, 6)) * sd
+        block[:, 2:4] += 0.8 * z
+        block[:, 0] += offset
+        xs.append(block)
+        ys += [c] * 2000
+    return np.vstack(xs), np.array(ys)
+
+
+def test_mfa_reads_a_quiet_axis_an_isotropic_residual_drowns(heteroscedastic):
+    """The head's reason to exist, end to end and against the three heads around it.
+
+    ``mppca`` averages one ``σ²`` over axes whose variances differ by 13x, so the separation on the
+    tight axis is swamped. ``gmm`` scales per axis but cannot represent the shared factor tilting
+    axes 2-3. ``diag(ψ)`` plus one factor does both — and ties ``gmm-full`` at 18 parameters per
+    component against its 27.
+    """
+    x, truth = heteroscedastic
+    got = {}
+    for method in ("mfa", "mppca", "gmm", "gmm-full"):
+        est = betula_cluster.Betula(
+            n_clusters=3,
+            feature="full",
+            method=method,
+            rank=1,
+            threshold=0.05,
+            max_leaves=1000,
+            seed=0,
+        )
+        got[method] = ari(est.fit_predict(x), truth)
+    assert got["mppca"] < 0.6, f"mppca {got['mppca']:.4f}: fixture no longer discriminates"
+    assert got["gmm"] < 0.7, f"gmm {got['gmm']:.4f}: fixture no longer discriminates"
+    assert got["mfa"] > 0.9, f"mfa {got['mfa']:.4f}"
+
+
+def test_mfa_predict_proba_is_a_true_posterior(heteroscedastic):
+    x, _truth = heteroscedastic
+    est = betula_cluster.Betula(
+        n_clusters=3, feature="full", method="mfa", rank=1, max_leaves=1000, seed=0
+    ).fit(x)
+    p = est.predict_proba(x[:500])
+    assert p.shape == (500, 3)
+    np.testing.assert_allclose(p.sum(axis=1), 1.0, atol=1e-9)
+    np.testing.assert_array_equal(np.argmax(p, axis=1), est.predict(x[:500]))
+
+
+def test_mfa_rank_zero_is_a_diagonal_mixture(blobs):
+    """``rank=0`` leaves no subspace, so the head is a diagonal Gaussian mixture — the bottom rung
+    of the ladder, reachable rather than an error."""
+    x, y = blobs
+    labels = betula_cluster.fit_predict(
+        x, 4, feature="full", method="mfa", rank=0, threshold=0.05, max_leaves=300, seed=1
+    )
+    assert ari(labels, y) > 0.95
+
+
+def test_mfa_rank_is_clamped_below_the_dimension(blobs):
+    x, y = blobs
+    labels = betula_cluster.fit_predict(
+        x, 4, feature="full", method="mfa", rank=64, threshold=0.05, max_leaves=300, seed=1
+    )
+    assert ari(labels, y) > 0.95
+
+
 @pytest.mark.parametrize("distance", ["euclidean", "manhattan", "ward", "average"])
 def test_routing_distance_modes(blobs, distance):
     x, y = blobs
@@ -3087,6 +3165,7 @@ def test_consensus_parallel_matches_serial(blobs):
         "gmm",
         "gmm-full",
         "mppca",
+        "mfa",
         "vmf",
         "watson",
         "gmm-toeplitz",

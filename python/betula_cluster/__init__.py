@@ -499,8 +499,8 @@ def fit_predict_sparse(
     posterior: their kernels split over the support of a row, so the density costs ``O(nnz)`` rather
     than the ``O(d)`` this path exists to avoid. The rest — the agglomerative heads (``ward`` /
     ``average`` / ``weighted`` / ``centroid`` / ``median``) and ``gmm-full`` / ``gmm-toeplitz*`` /
-    ``mppca``, whose densities read every coordinate — keep the label of the micro-cluster the
-    summarisation put the row in.
+    ``mppca`` / ``mfa``, whose densities read every coordinate — keep the label of the
+    micro-cluster the summarisation put the row in.
 
     That last group is where the flat summary shows. Once the leader budget is spent the pass has no
     proximity gate left, so on a 6 000 × 4 000 block-topic corpus at ``max_leaves=2048`` it force-
@@ -685,8 +685,9 @@ class Betula:
         # `kmedoids` centre off the data and out of its own objective. A better objective is not
         # automatically a better partition. 0 = off.
         self.refine = refine
-        # Subspace rank q of the MPPCA head (method="mppca"): each component's covariance is
-        # W Wᵀ + σ²I with W of rank q, clamped to at most dim - 1. Ignored by every other head.
+        # Subspace rank q of the two subspace heads: each component's covariance is W Wᵀ + σ²I
+        # (method="mppca") or W Wᵀ + diag(ψ) (method="mfa") with W of rank q, clamped to at most
+        # dim - 1. Ignored by every other head.
         self.rank = rank
         # Fuzzifier m > 1 of the fuzzy c-means head (method="fuzzy-cmeans"): the exponent that
         # decides how soft the memberships are. m -> 1 is k-means, large m sends every membership
@@ -1483,12 +1484,12 @@ class Betula:
     def predict_proba(self, X):
         """Per-point soft assignment, shape ``(n, n_components)``.
 
-        The **GMM**, **vMF**, **Watson** and **Toeplitz** (``gmm-toeplitz`` / ``-full`` / ``-gs``)
-        heads score the point under the fitted mixture, so ``predict_proba(X).argmax(1)`` is exactly
-        :meth:`predict`. **fuzzy-cmeans** returns its own memberships
-        ``u_j ∝ d_j^{−1/(m−1)}``, which also argmax to :meth:`predict` but are a partition of
-        unity over the centres, **not** a posterior — no density is fitted. **k-means / x-means /
-        Ward / HDBSCAN** return a heuristic
+        The **GMM**, **subspace** (``mppca`` / ``mfa``), **vMF**, **Watson** and **Toeplitz**
+        (``gmm-toeplitz`` / ``-full`` / ``-gs``) heads score the point under the fitted mixture,
+        so ``predict_proba(X).argmax(1)`` is exactly :meth:`predict`. **fuzzy-cmeans** returns
+        its own memberships ``u_j ∝ d_j^{−1/(m−1)}``, which also argmax to :meth:`predict` but
+        are a partition of unity over the centres, **not** a posterior — no density is fitted.
+        **k-means / x-means / Ward / HDBSCAN** return a heuristic
         ``softmax(−d²/2τ²)`` over the cluster centroids (``τ`` = mean cluster radius) — a confidence
         *proxy*, **not** a calibrated posterior. Columns are component indices aligned with
         :meth:`predict`."""
@@ -1497,6 +1498,7 @@ class Betula:
             "gmm",
             "gmm-full",
             "mppca",
+            "mfa",
             "vmf",
             "watson",
             "gmm-toeplitz",

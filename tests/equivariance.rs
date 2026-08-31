@@ -13,11 +13,12 @@
 //! | `kmeans`, `xmeans`, `ward_hac`, `agglomerative`, `dyn_msc`, `kmedoids`, `fuzzy_cmeans`, `hdbscan` | yes | yes | yes | yes |
 //! | `dc_clustering` (both objectives) | yes | yes | yes | yes |
 //! | `gmm_full`, `mppca` | yes | yes | yes | yes |
-//! | `gmm_diagonal` | yes | **no** | yes | yes |
+//! | `gmm_diagonal`, `mfa` | yes | **no** | yes | yes |
 //! | `spectral`, `scale_space` | yes | yes | yes | yes |
 //! | `movmf`, `spherical_kmeans`, `watson` | **no** | yes | yes | yes |
 //!
-//! `gmm_diagonal` is the interesting row: axis-aligned covariance is a statement *about the axes*, so
+//! `gmm_diagonal` and `mfa` are the interesting row: axis-aligned covariance is a statement *about
+//! the axes*, so
 //! rotation is not a symmetry of the model and the head is not expected to be invariant under it.
 //! Rotating a diagonal fit and expecting the same answer is the error, not the head's behaviour —
 //! which is why that case is asserted to *differ* on a fixture built to make it differ, rather than
@@ -45,7 +46,7 @@
 
 use betula_cluster::clustering::{
     DcObjective, Linkage, Selection, agglomerative, dc_clustering, dyn_msc, fuzzy_cmeans,
-    gmm_diagonal, gmm_full, gmm_toeplitz, hdbscan_selected, kmeans, kmedoids, movmf, mppca,
+    gmm_diagonal, gmm_full, gmm_toeplitz, hdbscan_selected, kmeans, kmedoids, mfa, movmf, mppca,
     scale_space, spectral, spherical_kmeans, ward_hac, watson, xmeans,
 };
 use betula_cluster::feature::{ClusterFeature, Diagonal, Full, Spherical};
@@ -226,6 +227,7 @@ fn all_heads(pts: &[Vec<f64>]) -> Vec<(&'static str, Vec<i64>)> {
             "gmm_diagonal",
             as_i64(&gmm_diagonal(&lv, K, 100, SEED).labels),
         ),
+        ("mfa", as_i64(&mfa(&lv, K, 1, 100, SEED).labels)),
     ]
 }
 
@@ -250,8 +252,8 @@ fn every_euclidean_head_is_invariant_under_translation() {
 }
 
 #[test]
-fn every_euclidean_head_but_the_diagonal_gmm_is_invariant_under_rotation() {
-    check("rotation", rotate, &["gmm_diagonal"]);
+fn every_euclidean_head_but_the_two_diagonal_noise_ones_is_invariant_under_rotation() {
+    check("rotation", rotate, &["gmm_diagonal", "mfa"]);
 }
 
 #[test]
@@ -305,6 +307,22 @@ fn the_diagonal_gmm_is_not_rotation_invariant_and_the_fixture_can_see_it() {
     assert!(
         !same_partition(&a, &b),
         "a diagonal covariance is a claim about the axes; if rotating the data changes nothing, \
+         the fixture is axis-aligned and proves nothing"
+    );
+}
+
+#[test]
+fn the_factor_analyser_is_not_rotation_invariant_either_and_the_fixture_can_see_it() {
+    // `mfa` differs from `mppca` in exactly one place — `diag(ψ)` where `mppca` has `σ² I` — and
+    // that is what costs it the rotation. Same fixture, same reasoning as the diagonal GMM above;
+    // `mppca` on the same data is asserted invariant by the rotation test, so this pins the
+    // difference rather than a shared accident.
+    let pts = elongated();
+    let a = as_i64(&mfa(&leaves(&pts), 2, 1, 200, SEED).labels);
+    let b = as_i64(&mfa(&leaves(&rotate(&pts)), 2, 1, 200, SEED).labels);
+    assert!(
+        !same_partition(&a, &b),
+        "per-dimension noise is a claim about the axes; if rotating the data changes nothing, \
          the fixture is axis-aligned and proves nothing"
     );
 }

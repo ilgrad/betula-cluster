@@ -53,6 +53,7 @@ _Method = Literal[
     "gmm",
     "gmm-full",
     "mppca",
+    "mfa",
     "ward",
     "average",
     "weighted",

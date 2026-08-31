@@ -144,6 +144,16 @@ enum Kernel {
         m_chol: Vec<Vec<Vec<f64>>>,
         inv_noise: Vec<f64>,
     },
+    /// Factor-analysis component: `Σ_c = W_c W_cᵀ + diag(ψ_c)`, held as `U_c = Ψ_c⁻¹ W_c`, the
+    /// Cholesky of `M_c = I_q + W_cᵀ Ψ_c⁻¹ W_c` and `1/ψ_c`. The same Woodbury route as
+    /// [`Kernel::LowRank`], with the isotropic scalar replaced by a vector — which is the entire
+    /// difference between `mppca` and `mfa`.
+    FactorAnalysis {
+        means: Vec<Vec<f64>>,
+        proj: Vec<Vec<Vec<f64>>>,
+        m_chol: Vec<Vec<Vec<f64>>>,
+        inv_noise: Vec<Vec<f64>>,
+    },
 }
 
 /// The point-level density of a fitted mixture head: `ln π_c + ln p(x | θ_c)` per component, and the
@@ -324,6 +334,70 @@ impl Mixture {
         }
     }
 
+    /// Factor-analysis mixture (`method="mfa"`), given each component's `q` loading rows and its
+    /// per-dimension noise `ψ_c`.
+    ///
+    /// `M_c = I_q + W_cᵀ Ψ_c⁻¹ W_c` and `U_c = Ψ_c⁻¹ W_c` are built and factorized once here, so
+    /// scoring costs `O(q·d)` per component and `log|Σ_c| = Σ_j ln ψ_cj + log|M_c|` never touches a
+    /// `d×d` determinant.
+    pub(crate) fn factor_analysis<R: Real>(
+        weights: &[R],
+        means: &[Vec<R>],
+        loads: &[Vec<Vec<R>>],
+        noise: &[Vec<R>],
+    ) -> Self {
+        let dim = means.first().map_or(0, |m| m.len()) as f64;
+        let log_two_pi = std::f64::consts::TAU.ln();
+        let mut logw = Vec::with_capacity(weights.len());
+        let mut proj = Vec::with_capacity(weights.len());
+        let mut m_chol = Vec::with_capacity(weights.len());
+        let mut inv_noise = Vec::with_capacity(weights.len());
+        for ((&w, rows), psi) in weights.iter().zip(loads).zip(noise) {
+            let psi: Vec<f64> = psi
+                .iter()
+                .map(|&p| as_f64(p).max(f64::MIN_POSITIVE))
+                .collect();
+            let rows: Vec<Vec<f64>> = widen_rows(rows);
+            let q = rows.len();
+            let u: Vec<Vec<f64>> = rows
+                .iter()
+                .map(|r| r.iter().zip(&psi).map(|(&x, &p)| x / p).collect())
+                .collect();
+            let mut m = vec![vec![0.0; q]; q];
+            for i in 0..q {
+                for j in 0..=i {
+                    let dot: f64 = rows[i].iter().zip(&u[j]).map(|(&a, &b)| a * b).sum();
+                    m[i][j] = dot;
+                    m[j][i] = dot;
+                }
+                m[i][i] += 1.0;
+            }
+            let log_psi: f64 = psi.iter().map(|p| p.ln()).sum();
+            // `M ⪰ I ≻ 0`, so this factors unless a loading row has overflowed. Dropping the
+            // loadings then leaves a well-defined diagonal component rather than a NaN density.
+            let (u, chol, logdet) = match crate::linalg::cholesky_lower(&m) {
+                Some(l) => {
+                    let ld = log_psi + crate::linalg::logdet_from_chol(&l);
+                    (u, l, ld)
+                }
+                None => (Vec::new(), Vec::new(), log_psi),
+            };
+            logw.push(ln_weight(w) - 0.5 * (dim * log_two_pi + logdet));
+            proj.push(u);
+            m_chol.push(chol);
+            inv_noise.push(psi.iter().map(|&p| 1.0 / p).collect());
+        }
+        Self {
+            logw,
+            kernel: Kernel::FactorAnalysis {
+                means: widen_rows(means),
+                proj,
+                m_chol,
+                inv_noise,
+            },
+        }
+    }
+
     /// Silence every component that no leaf hard-assigns, so a prediction can only name a label the
     /// fitted partition actually uses. An EM component can end up with responsibility everywhere and
     /// the argmax nowhere; without this it would be reachable from `predict` but absent from
@@ -412,6 +486,40 @@ impl Mixture {
                     out.push(lw - 0.5 * (iso - corr) * iv);
                 }
             }
+            Kernel::FactorAnalysis {
+                means,
+                proj,
+                m_chol,
+                inv_noise,
+            } => {
+                let mut delta = vec![0.0; x.len()];
+                let mut p = Vec::new();
+                for (((&lw, mu), u), (l, iv)) in self
+                    .logw
+                    .iter()
+                    .zip(means)
+                    .zip(proj)
+                    .zip(m_chol.iter().zip(inv_noise))
+                {
+                    // `δᵀΨ⁻¹δ − (Uᵀδ)ᵀ M⁻¹ (Uᵀδ)`.
+                    let mut iso = 0.0;
+                    for (((dv, &xd), &md), &ivd) in delta.iter_mut().zip(x).zip(mu).zip(iv) {
+                        *dv = as_f64(xd) - md;
+                        iso += *dv * *dv * ivd;
+                    }
+                    p.clear();
+                    p.extend(
+                        u.iter()
+                            .map(|r| r.iter().zip(&delta).map(|(&f, &d)| f * d).sum::<f64>()),
+                    );
+                    let corr = if p.is_empty() {
+                        0.0
+                    } else {
+                        mahalanobis_sq_from_chol(l, &p)
+                    };
+                    out.push(lw - 0.5 * (iso - corr));
+                }
+            }
             Kernel::Vmf { means, kappas } => {
                 let norm = x.iter().map(|&v| as_f64(v) * as_f64(v)).sum::<f64>().sqrt();
                 let scale = if norm > 0.0 { 1.0 / norm } else { 0.0 };
@@ -450,7 +558,10 @@ impl Mixture {
                 .map(|(mu, iv)| mu.iter().zip(iv).map(|(&m, &v)| m * m * v).sum())
                 .collect(),
             Kernel::Vmf { .. } | Kernel::Watson { .. } => Vec::new(),
-            Kernel::Full { .. } | Kernel::Stationary { .. } | Kernel::LowRank { .. } => {
+            Kernel::Full { .. }
+            | Kernel::Stationary { .. }
+            | Kernel::LowRank { .. }
+            | Kernel::FactorAnalysis { .. } => {
                 return None;
             }
         };
@@ -556,7 +667,10 @@ impl SparseAssigner<'_> {
                 }
             }
             // `sparse_assigner` is the only constructor and it refuses these kernels.
-            Kernel::Full { .. } | Kernel::Stationary { .. } | Kernel::LowRank { .. } => {
+            Kernel::Full { .. }
+            | Kernel::Stationary { .. }
+            | Kernel::LowRank { .. }
+            | Kernel::FactorAnalysis { .. } => {
                 unreachable!("a kernel with no O(nnz) form has no assigner")
             }
         }

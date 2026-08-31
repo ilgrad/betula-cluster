@@ -43,6 +43,11 @@ A capability-by-capability reference. For runnable code see [`USAGE.md`](USAGE.m
   `O(d·rank)` per component instead of `O(d²)`, with the Woodbury inverse and the `σ^(2(d−q))|M|`
   determinant keeping every step off the `d×d` matrix; pair it with `feature="fd"`, whose leaf
   scatter is already low-rank,
+  a **mixture of factor analysers** (`method="mfa"`, Ghahramani & Hinton 1996) — the same subspace
+  model with the isotropic residual relaxed to a per-dimension one, `W Wᵀ + diag(ψ)`, for feature
+  tables whose columns are in different units; `rank=0` is a diagonal Gaussian mixture bit for bit,
+  and that floor is what the head is for, since on every already-standardised table measured `mppca`
+  scores higher,
   **Ward agglomerative HAC** (exact, via nearest-neighbour chain; dendrogram-cut auto-k) and the
   four non-Ward linkages **`average`** (UPGMA), **`weighted`** (WPGMA), **`centroid`** (UPGMC) and
   **`median`** (WPGMC) on an Anderberg driver — with a **height-bounded exact** variant

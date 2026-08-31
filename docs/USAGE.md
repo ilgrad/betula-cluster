@@ -19,7 +19,7 @@ labels = betula_cluster.fit_predict(X, method="hdbscan", min_samples=10, min_clu
 # hdbscan: label -1 == noise
 ```
 
-Keyword args: `feature ∈ {spherical, diagonal, full, fd}`, `method ∈ {kmeans, xmeans, kmedoids, fuzzy-cmeans, gmm, gmm-full, mppca, ward, average, weighted, centroid, median, spectral, leiden, leiden-cpm, spherical-kmeans, vmf, watson, gmm-toeplitz, gmm-toeplitz-full, gmm-toeplitz-gs, hdbscan, dc-center, dc-median, scale-space}`,
+Keyword args: `feature ∈ {spherical, diagonal, full, fd}`, `method ∈ {kmeans, xmeans, kmedoids, fuzzy-cmeans, gmm, gmm-full, mppca, mfa, ward, average, weighted, centroid, median, spectral, leiden, leiden-cpm, spherical-kmeans, vmf, watson, gmm-toeplitz, gmm-toeplitz-full, gmm-toeplitz-gs, hdbscan, dc-center, dc-median, scale-space}`,
 `distance ∈ {euclidean, manhattan, ward, average}` (routing measure),
 `absorb ∈ {euclidean, manhattan, average, diameter, ward, radius, chi2, subspace}` (see *Absorption criteria*
 below; `chi2` = mass-invariant Mahalanobis gate at level `chi2_p` with `chi2_scale` = within-cluster
@@ -46,8 +46,8 @@ to whatever `min_samples` needs — see *Graph-indexing the density head* below)
 ⇒ more communities), `covariance_weight` (Leiden β — a log-Euclidean covariance/shape term in the
 affinity, `feature="full"`; `0` = off, the centroid-only default), `tangent_weight` / `tangent_rank`
 (Leiden γ — a Grassmann tangent-subspace term of rank `tangent_rank` for manifold-aware communities,
-`feature="full"`; `0` = off), `rank` (MPPCA subspace rank `q` for `method="mppca"`, clamped to at
-most `dim - 1`; `0` makes every component spherical), `fuzzifier` (the exponent `m > 1` of
+`feature="full"`; `0` = off), `rank` (subspace rank `q` for `method="mppca"` and `method="mfa"`, clamped to at
+most `dim - 1`; `0` makes every `mppca` component spherical and every `mfa` component diagonal), `fuzzifier` (the exponent `m > 1` of
 `method="fuzzy-cmeans"`, default `2.0`; `m → 1⁺` is k-means, `m → ∞` sends every membership to
 `1/k`), `projection` / `projection_dim` / `projection_max_iter` (reduce the leaf centroids to
 `projection_dim` codes before the head; `"none"` = off. **`"weighted-nmf"`**, or
@@ -119,6 +119,7 @@ answer.
 | a **graded membership** with no density behind it (each point partly in several clusters) | `fuzzy-cmeans` | yes (or `0` = Xie–Beni) — read *A soft head that fits no density* first: the hard partition is a **loss** against `kmeans` |
 | elliptical / correlated / anisotropic, soft assignment | `gmm` (diag) or `gmm-full` | yes (or `0` = BIC) |
 | clusters on **low-dimensional subspaces**, `d` too large for `gmm-full` | `mppca` + `feature="fd"`, `rank` = the intrinsic dimension — read *`rank`, and where `mppca` loses* first | yes (or `0` = BIC) |
+| the same, but the **columns are in different units** and cannot be standardised | `mfa` — per-axis noise instead of one `σ²` — read *Per-axis noise, and the narrow case for it* first: on a common scale `mppca` wins every table measured | yes (or `0` = BIC) |
 | **L2-normalized embeddings** (CLIP / face / sentence / speaker), cosine geometry | `vmf` (soft) or `spherical-kmeans` (hard) | yes (or `0` = BIC, `vmf`) |
 | the same, but the **sign is arbitrary** — eigenvectors, SVD/PCA axes, line orientations, any feature where `x` and `−x` mean the same thing | `watson` — read *Directions without a sign* | yes (or `0` = BIC) |
 | a cluster *hierarchy* / merge structure | `ward` | yes (or `0` = dendrogram cut) |
@@ -139,7 +140,7 @@ For a robustness score per point, wrap any partitional head in `consensus` (see 
 
 Two families of selector sit behind `n_clusters=0`, and they pay for a wide search differently.
 
-A **sweep** — `kmeans`, `gmm`, `gmm-full`, `mppca`, `vmf`, `watson` and the three `gmm-toeplitz` rungs — refits
+A **sweep** — `kmeans`, `gmm`, `gmm-full`, `mppca`, `mfa`, `vmf`, `watson` and the three `gmm-toeplitz` rungs — refits
 the whole head at every candidate `k` and keeps the best BIC. Its work is `Σ_{k≤K} k = O(K²)`, so the
 ceiling is the only thing bounding it, and it defaults to **20**. A **cut** selector — `ward`,
 `average`, `weighted`, `centroid`, `median` — builds one dendrogram and scores its cuts, and `xmeans`
@@ -362,6 +363,67 @@ orientation each head carries. On MNIST-20k (784-D, `max_leaves=2000` ⇒ 1880 l
 puts `mppca` behind the diagonal head at every rank tried — ARI **0.159 / 0.069 / 0.024** for
 `rank` 2 / 5 / 10 against `gmm`'s **0.274** — and the loss grows with rank, as the mechanism
 predicts. Use `mppca` when the summary is fine relative to the clusters; use `gmm` when it is coarse.
+
+### Per-axis noise, and the narrow case for it — `method="mfa"`
+
+`mfa` is `mppca` with one constraint removed: the residual a component cannot explain with its
+`rank`-dimensional subspace is per dimension, `Σ_c = W_c W_cᵀ + diag(ψ_c)`, rather than a single
+`σ_c² I`. That is the classical mixture of factor analysers (Ghahramani & Hinton 1996). It costs
+`d − 1` extra parameters per component — against `d²/2` for `gmm-full` — and it removes the head's
+rotation equivariance, exactly as `gmm` (diagonal) does: `diag(ψ)` is a statement about the
+coordinate axes, so the answer depends on them. `rank=0` is a diagonal Gaussian mixture, bit for bit.
+
+**The two heads dissociate in both directions.** Which one is right is a question about where the
+signal sits relative to the axis scales, and neither answer is general:
+
+| fixture (6-D, ARI over 5 seeds) | `mfa` | `mppca` | `gmm` |
+|---|---|---|---|
+| separation on a **quiet** axis, two loud nuisance axes | **1.00** | 0.04–0.34 | 1.00 |
+| three lines differing only in **orientation** | ≈ 0.00 | **1.00** | ≈ 0.00 |
+
+The first row is `mppca` paying for its isotropic residual: one `σ²` has to cover an axis of sd 1.6
+and an axis of sd 0.12 at once, and the loud pair wins. The second is the mirror image — `ψ` can
+absorb an elongation that belonged in `W`, so the factor never has to find the orientation, and the
+head lands on the diagonal answer.
+
+**On real tables it is behind `mppca` at full leaf resolution everywhere it was tried.** ARI /
+seconds, `rank=2`, `threshold=0`, median of seeds 0/1/2:
+
+| dataset | `feature` | `max_leaves` | leaves | `gmm` | `gmm-full` | `mppca` | `mfa` |
+|---|---|---|---|---|---|---|---|
+| `digits` (1797×64) | `full` | 2000 | 1797 | 0.507 | **0.754** | 0.738 | 0.562 |
+| | | 300 | 270 | 0.576 | 0.623 | **0.657** | 0.523 |
+| | | 120 | 114 | 0.623 | **0.676** | 0.675 | 0.660 |
+| `digits` | `fd` | 300 | 270 | 0.562 | 0.467 | **0.652** | 0.502 |
+| | | 120 | 114 | 0.611 | 0.278 | **0.671** | 0.631 |
+| `covtype`-20k, raw units (54-D) | `full` | 2000 | 1815 | 0.045 | 0.080 | **0.087** | 0.062 |
+| | | 300 | 299 | **0.063** | 0.047 | 0.046 | **0.063** |
+| `covtype`-20k, standardised | `full` | 2000 | 1899 | **0.077** | **0.077** | 0.030 | **0.077** |
+| | | 300 | 271 | **0.089** | 0.084 | 0.045 | **0.089** |
+
+MNIST-20k (784-D, `feature="fd"`, `max_leaves=2000`) says the same by rank — `mppca`
+**0.365 / 0.309 / 0.205** at `rank` 2 / 5 / 10 against `mfa`'s **0.277 / 0.299 / 0.130** — at
+indistinguishable cost, 30.9 / 76.7 / 185.8 s against 37.6 / 80.6 / 197.5 s. The extra `d − 1`
+parameters are not what is expensive; they are what is hard to estimate.
+
+**What the head is actually for, then.** Not a higher ceiling — a *floor*. It contains the diagonal
+Gaussian mixture as its `rank=0` limit and, where the factor finds nothing, converges onto it: on
+standardised `covtype` it reproduces `gmm`'s partition exactly at both budgets, while `mppca` — whose
+model cannot fall back on a per-axis noise — scores **less than half** the diagonal head there
+(0.030 against 0.077). Reach for `mfa` when the columns are in different units and you cannot
+standardise them (a mixed feature table, a physical measurement whose scales are meaningful), and for
+`mppca` when they are already on a common scale, which is every image, embedding and whitened
+design matrix.
+
+One reading to avoid: the `covtype`-standardised row is *not* evidence that `W` collapsed to zero.
+At `max_leaves=2000` in 54 dimensions the posterior is saturated — all 20 000 points sit at
+`max_c P(c|x) = 1` to within `1e-12`, for `mfa`, `gmm` **and** `gmm-full` alike — so agreeing on
+labels is what any mean-driven partition looks like there, and identical `predict_proba` output
+restates the labels rather than the covariance. At `max_leaves=300`, where the posterior is no longer
+saturated, the two partitions come apart — ARI 0.909 between them, not 1.
+
+The `fd` rows start at 300 because at `max_leaves=2000` every leaf holds one point, where the sketch
+has nothing to truncate and reproduces `full` to the last digit.
 
 ### Directions without a sign — `method="watson"`
 

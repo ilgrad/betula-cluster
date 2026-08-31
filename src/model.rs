@@ -1,12 +1,12 @@
 //! End-to-end model: build a CF-tree, cluster its leaves (Phase 3), and label points.
 
 use crate::clustering::{
-    Gmm, GmmFull, GmmToeplitz, Linkage, Movmf, Mppca, Objective, Watson, agglomerative,
+    Gmm, GmmFull, GmmToeplitz, Linkage, Mfa, Movmf, Mppca, Objective, Watson, agglomerative,
     agglomerative_auto, dyn_msc, fuzzy_cmeans, fuzzy_cmeans_auto, gmm_diagonal, gmm_diagonal_auto,
     gmm_full, gmm_full_auto, gmm_toeplitz, gmm_toeplitz_auto, gmm_toeplitz_full,
     gmm_toeplitz_full_auto, gmm_toeplitz_gs, gmm_toeplitz_gs_auto, kmeans, kmeans_auto, kmedoids,
-    leiden, movmf, movmf_auto, mppca, mppca_auto, spectral, spherical_kmeans, ward_hac,
-    ward_hac_auto, watson, watson_auto, xmeans,
+    leiden, mfa, mfa_auto, movmf, movmf_auto, mppca, mppca_auto, spectral, spherical_kmeans,
+    ward_hac, ward_hac_auto, watson, watson_auto, xmeans,
 };
 use crate::distance::CFDistance;
 use crate::feature::ClusterFeature;
@@ -88,6 +88,12 @@ pub enum Method {
     /// `feature="fd"`, whose low-rank leaf scatter the E-step consumes without forming `d×d`. BIC
     /// auto-`k` when `k == 0`.
     Mppca { rank: usize },
+    /// Mixture of factor analysers: `Σ_c = W_c W_cᵀ + diag(ψ_c)` with `W_c` of rank `rank`. One
+    /// constraint looser than [`Method::Mppca`] — the residual noise is per dimension rather than
+    /// isotropic — which is what makes it right for features that were never put on a common scale.
+    /// Unlike `Mppca` it is **not** rotation-equivariant, for the same reason `Gmm` is not. BIC
+    /// auto-`k` when `k == 0`.
+    Mfa { rank: usize },
 }
 
 /// How a head labels a raw point — by its own objective, not by a routing shortcut.
@@ -121,7 +127,8 @@ pub(crate) fn assignment_rule(method: Method) -> Rule {
         | Method::GmmToeplitzGs
         | Method::Movmf
         | Method::Watson
-        | Method::Mppca { .. } => Rule::Posterior,
+        | Method::Mppca { .. }
+        | Method::Mfa { .. } => Rule::Posterior,
         Method::Ward | Method::Agglomerative { .. } | Method::Spectral | Method::Leiden { .. } => {
             Rule::Microcluster
         }
@@ -438,6 +445,7 @@ mixture_fit!(GmmToeplitz);
 mixture_fit!(Movmf);
 mixture_fit!(Watson);
 mixture_fit!(Mppca);
+mixture_fit!(Mfa);
 
 /// What one Phase-3 head fit produced.
 pub(crate) struct HeadFit<R: Real> {
@@ -592,6 +600,10 @@ pub(crate) fn fit_head<R: Real, C: ClusterFeature<R>>(
             HeadFit::soft(mppca_auto(features, 1, hi, rank, max_iter, seed))
         }
         Method::Mppca { rank } => HeadFit::soft(mppca(features, kk, rank, max_iter, seed)),
+        Method::Mfa { rank } if k == 0 => {
+            HeadFit::soft(mfa_auto(features, 1, hi, rank, max_iter, seed))
+        }
+        Method::Mfa { rank } => HeadFit::soft(mfa(features, kk, rank, max_iter, seed)),
         Method::Ward if k == 0 => HeadFit::hard(ward_hac_auto(features, 2, hi).labels),
         Method::Ward => HeadFit::hard(ward_hac(features, kk).labels),
         Method::Agglomerative { linkage } if k == 0 => {
@@ -742,6 +754,7 @@ mod tests {
             Method::GmmToeplitzFull,
             Method::GmmToeplitzGs,
             Method::Mppca { rank: 1 },
+            Method::Mfa { rank: 1 },
             Method::Ward,
             Method::Spectral,
             Method::Leiden {
@@ -817,13 +830,14 @@ mod tests {
         let (feats, _truth) = blob_leaves(6, 10, 40, 0);
         let n = feats.len();
         assert_eq!(n, 24, "the fixture is four leaves per blob");
-        let selected: [(&str, usize); 8] = [
+        let selected: [(&str, usize); 9] = [
             ("kmeans", kmeans_auto(&feats, 1, n, 100, 1).centers.len()),
             ("xmeans", xmeans(&feats, 2, n, 100, 1).centers.len()),
             ("kmedoids", dyn_msc(&feats, n, 100, 1).k),
             ("gmm", gmm_diagonal_auto(&feats, 1, n, 100, 1).means.len()),
             ("gmm-full", gmm_full_auto(&feats, 1, n, 100, 1).means.len()),
             ("mppca", mppca_auto(&feats, 1, n, 1, 100, 1).means.len()),
+            ("mfa", mfa_auto(&feats, 1, n, 1, 100, 1).means.len()),
             ("ward", distinct_count(&ward_hac_auto(&feats, 2, n).labels)),
             (
                 "average",
@@ -867,6 +881,7 @@ mod tests {
             ("gmm-toeplitz-full", Method::GmmToeplitzFull),
             ("gmm-toeplitz-gs", Method::GmmToeplitzGs),
             ("mppca", Method::Mppca { rank: 2 }),
+            ("mfa", Method::Mfa { rank: 2 }),
         ] {
             let auto = distinct_count(&fit_head(&feats, 0, method, 100, 1, 0).labels);
             let one = distinct_count(&fit_head(&feats, 1, method, 100, 1, 0).labels);
@@ -953,6 +968,7 @@ mod tests {
             ("gmm", Method::Gmm),
             ("gmm-full", Method::GmmFull),
             ("mppca", Method::Mppca { rank: 2 }),
+            ("mfa", Method::Mfa { rank: 2 }),
         ] {
             let got = distinct_count(&fit_head(&feats, 0, method, 100, 1, 0).labels);
             assert_eq!(
