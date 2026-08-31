@@ -117,33 +117,6 @@ fn dot<R: Real>(a: &[R], b: &[R]) -> R {
         .fold(R::zero(), |p, q| p + q)
 }
 
-/// Gram-Schmidt with one re-orthogonalisation pass, in place. A row that collapses is left at zero:
-/// it then carries no loading and no direction, which is the honest answer when the cluster's
-/// scatter has lower rank than `q`.
-fn orthonormalize<R: Real>(rows: &mut [Vec<R>]) {
-    let tiny = R::from_f64(1e-150).unwrap();
-    for i in 0..rows.len() {
-        for _ in 0..2 {
-            for j in 0..i {
-                let p = dot(&rows[i], &rows[j]);
-                if p != R::zero() {
-                    for d in 0..rows[i].len() {
-                        rows[i][d] = rows[i][d] - p * rows[j][d];
-                    }
-                }
-            }
-        }
-        let norm = dot(&rows[i], &rows[i]).sqrt();
-        if norm > tiny {
-            for v in rows[i].iter_mut() {
-                *v = *v / norm;
-            }
-        } else {
-            rows[i].iter_mut().for_each(|v| *v = R::zero());
-        }
-    }
-}
-
 /// Fit a `k`-component MPPCA with subspace rank `q`, warm-started from k-means and a per-cluster
 /// subspace iteration.
 #[allow(clippy::needless_range_loop)] // component/rank/dimension indices read clearest explicitly
@@ -219,7 +192,7 @@ fn mppca_once<R: Real, C: ClusterFeature<R>>(
                         .collect()
                 })
                 .collect();
-            orthonormalize(&mut v);
+            crate::linalg::orthonormalize_rows(&mut v);
             let mut nk = R::zero();
             let mut tr_s = R::zero();
             for i in 0..m {
@@ -255,7 +228,7 @@ fn mppca_once<R: Real, C: ClusterFeature<R>>(
                     accumulate_scatter_rows(&v, &sig[i], &delta, n[i] / nk, &mut y);
                 }
                 if pass < INIT_SUBSPACE_ITERS {
-                    orthonormalize(&mut y);
+                    crate::linalg::orthonormalize_rows(&mut y);
                     v = std::mem::replace(&mut y, vec![vec![R::zero(); dim]; q]);
                 }
             }

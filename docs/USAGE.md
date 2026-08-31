@@ -547,6 +547,33 @@ for a positive one every term is positive. The leading asymptotic is **not** use
 Maxima it is still 42 % low at `d = 50, κ = 50`. `g` is strictly increasing with `g(0) = 1/d`, so
 `r̄ ≷ 1/d` fixes the sign of `κ` before any solving and the solver cannot pick the wrong branch.
 
+### How many leaves the spectral head can use — `method="spectral"`
+
+Every leaf is a node of the graph. It did not used to be: above 256 microclusters the head reduced
+them to 256 weighted k-means landmarks and let each leaf inherit its landmark's label, which is a
+second lossy summarisation on top of the tree's. What forced that was the `O(M³)` dense eigensolver,
+and it has been replaced by a Chebyshev-filtered subspace iteration that only ever multiplies by the
+sparse graph. Two internal boundaries remain, both about cost rather than correctness: the exact
+Jacobi solver runs to 256 nodes, the exact `O(M²)` affinity to 2048, and past each the approximate
+route takes over.
+
+What that buys, A/B against the landmark path on identical trees, median of seeds 0/1/2:
+
+| | `max_leaves` | landmark | Chebyshev |
+|---|---|---|---|
+| two-moons / two-circles, N=20 000 | 500 → 5000 | ARI 1.000, 0.20–0.43 s | ARI 1.000, **0.02–0.36 s** |
+| `digits`-PCA20 | 500 | 0.660, 0.36 s | **0.779**, 0.03 s |
+| | 1000 | 0.786, 0.40 s | **0.801**, 0.06 s |
+| | 1797 (= n) | **0.766**, 0.50 s | 0.735, 0.19 s |
+
+**The head has a leaf ceiling anyway, and it is the graph's, not the solver's.** At 10 000 leaves the
+non-convex fixtures still score ARI 1.000 in 0.7 s. At 20 000 — one leaf per point — they fall to
+≈ 0.6, and forcing the *exact* affinity there gives the same answer for ten times the wall clock. The
+cause is the fixed neighbour count: 10 neighbours is `1.0 · log n` at 20 000 nodes, at the
+connectivity threshold below which a k-NN Laplacian's spectrum stops describing the manifold. So
+spend the budget where the head reads it — a few hundred to a few thousand leaves — and note that
+this is the same advice `max_leaves` gets everywhere else, now with the mechanism attached.
+
 ### `min_samples` on a summary — `hdbscan`
 
 `min_samples` and `min_cluster_size` are counted in **points**, not in leaves: a leaf contributes its

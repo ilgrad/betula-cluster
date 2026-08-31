@@ -55,10 +55,12 @@ A capability-by-capability reference. For runnable code see [`USAGE.md`](USAGE.m
   a candidate radius graph and reports how far it is certified, so a cut it cannot serve exactly is
   *refused* rather than approximated; average and weighted get radius $r^2 = h$, Ward
   $r^2 = h/w_{\min}$, and centroid/median get no radius at all because they invert,
-  **spectral clustering** (self-tuning k-NN affinity + normalized Laplacian embedding via the
-  in-house Jacobi eigensolver, k-means-landmark-reduced above 256 microclusters — separates
-  non-convex / manifold clusters the centroid heads cannot; pair it with a small `threshold` so the
-  microclusters resolve the manifold),
+  **spectral clustering** (self-tuning k-NN affinity + normalized Laplacian embedding — exact
+  Jacobi to 256 microclusters, then **Chebyshev-filtered subspace iteration** on the sparse graph,
+  so every leaf stays a node instead of being reduced to 256 k-means landmarks: ARI is a tie or a
+  win wherever the two paths differ and the fit is 2–12× faster, `digits`-PCA20 0.660 → 0.779 at 500
+  leaves for 0.36 s → 0.03 s — separates non-convex / manifold clusters the centroid heads cannot;
+  pair it with a small `threshold` so the microclusters resolve the manifold),
   **Leiden community detection** (graph clustering, Traag et al. 2019) over the microcluster affinity
   graph — local moving → refinement (each community connected by construction) → seeded aggregation;
   **discovers the community count**, no `k` needed; a `resolution` γ knob with **modularity**

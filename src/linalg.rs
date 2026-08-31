@@ -179,6 +179,45 @@ pub fn matrix_log<R: Real>(a: &[Vec<R>], floor: R) -> Vec<Vec<R>> {
     out
 }
 
+/// Gram-Schmidt with one re-orthogonalisation pass, in place, over the **rows**.
+///
+/// A row that collapses is left at zero rather than filled with a random replacement: it then
+/// carries no direction, which is the honest answer when the block has lower rank than it has rows.
+/// The second pass is not decoration — one pass loses orthogonality to `O(κ)` on an ill-conditioned
+/// block, and every caller here feeds the result to a Rayleigh quotient, where that loss shows up as
+/// a wrong eigenvalue rather than as a warning.
+pub fn orthonormalize_rows<R: Real>(rows: &mut [Vec<R>]) {
+    let tiny = R::from_f64(1e-150).unwrap();
+    for i in 0..rows.len() {
+        for _ in 0..2 {
+            for j in 0..i {
+                let p = rows[i]
+                    .iter()
+                    .zip(&rows[j])
+                    .map(|(&x, &y)| x * y)
+                    .fold(R::zero(), |a, b| a + b);
+                if p != R::zero() {
+                    for d in 0..rows[i].len() {
+                        rows[i][d] = rows[i][d] - p * rows[j][d];
+                    }
+                }
+            }
+        }
+        let norm = rows[i]
+            .iter()
+            .map(|&x| x * x)
+            .fold(R::zero(), |a, b| a + b)
+            .sqrt();
+        if norm > tiny {
+            for v in rows[i].iter_mut() {
+                *v = *v / norm;
+            }
+        } else {
+            rows[i].iter_mut().for_each(|v| *v = R::zero());
+        }
+    }
+}
+
 /// Squared Frobenius distance `‖A − B‖²_F = Σ_{ij} (A_ij − B_ij)²` between two same-shape matrices.
 pub fn frobenius_sq_diff<R: Real>(a: &[Vec<R>], b: &[Vec<R>]) -> R {
     a.iter()

@@ -114,31 +114,6 @@ fn chol_spd<R: Real>(a: &[Vec<R>], scale: R) -> (Vec<Vec<R>>, R) {
     }
 }
 
-/// Gram-Schmidt with one re-orthogonalisation pass, in place; a collapsed row is left at zero.
-fn orthonormalize<R: Real>(rows: &mut [Vec<R>]) {
-    let tiny = R::from_f64(1e-150).unwrap();
-    for i in 0..rows.len() {
-        for _ in 0..2 {
-            for j in 0..i {
-                let p = dot(&rows[i], &rows[j]);
-                if p != R::zero() {
-                    for d in 0..rows[i].len() {
-                        rows[i][d] = rows[i][d] - p * rows[j][d];
-                    }
-                }
-            }
-        }
-        let norm = dot(&rows[i], &rows[i]).sqrt();
-        if norm > tiny {
-            for v in rows[i].iter_mut() {
-                *v = *v / norm;
-            }
-        } else {
-            rows[i].iter_mut().for_each(|v| *v = R::zero());
-        }
-    }
-}
-
 /// `out[r] += w · (Σ + δδᵀ) v_r` for every row of `v` — one leaf's contribution to `S V`.
 fn accumulate_scatter_rows<R: Real>(
     v: &[Vec<R>],
@@ -247,7 +222,7 @@ fn mfa_once<R: Real, C: ClusterFeature<R>>(
                         .collect()
                 })
                 .collect();
-            orthonormalize(&mut v);
+            crate::linalg::orthonormalize_rows(&mut v);
             // Per-dimension cluster variance, which is where the diagonal init differs from
             // `mppca`'s scalar one: `Ψ` starts at the residual the subspace has not taken, per axis.
             let mut nk = R::zero();
@@ -309,7 +284,7 @@ fn mfa_once<R: Real, C: ClusterFeature<R>>(
                     }
                 }
                 if pass < INIT_SUBSPACE_ITERS {
-                    orthonormalize(&mut y);
+                    crate::linalg::orthonormalize_rows(&mut y);
                     v = std::mem::replace(&mut y, vec![vec![R::zero(); dim]; q]);
                 }
             }

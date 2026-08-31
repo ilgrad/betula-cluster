@@ -61,10 +61,12 @@ radius $R = \sqrt{S/n}$. Mahalanobis-$\chi^2$ as an absorption option (`distance
   merges (no Lance-Williams update approximation).
 - **Spectral**: symmetric $k$-NN affinity over the leaf means with the self-tuning local scale of
   Zelnik-Manor & Perona ($A_{ij}=\exp(-d_{ij}^2/\sigma_i\sigma_j)$), normalized $P=D^{-1/2}AD^{-1/2}$,
-  the top-$k$ eigenvectors of $P$ (= bottom-$k$ of $L_\text{sym}=I-P$, Ng-Jordan-Weiss) via the
-  in-house Jacobi solver, row-normalized and k-means-clustered. Above $256$ microclusters a k-means
-  landmark reduction keeps the $O(m^3)$ eigendecomposition bounded. Separates non-convex clusters;
-  no built-in $k$ selection ($k=0 \Rightarrow 2$).
+  the top-$k$ eigenvectors of $P$ (= bottom-$k$ of $L_\text{sym}=I-P$, Ng-Jordan-Weiss),
+  row-normalized and k-means-clustered. The in-house Jacobi solver answers exactly to $256$
+  microclusters; above that a Chebyshev-filtered subspace iteration reads the same eigenvectors off
+  the sparse graph in $O(\text{nnz})$ per product, so every leaf stays a node and no landmark
+  reduction is needed. Separates non-convex clusters; no built-in $k$ selection
+  ($k=0 \Rightarrow 2$).
 - **Leiden** (graph clustering / community detection, Traag-Waltman-van Eck 2019): the same shared
   self-tuning $k$-NN affinity graph (`clustering::graph`), then the full three-phase Leiden per level
   — **local moving** (move gain $k_{i,C}-\gamma k_i\Sigma_{tot,C}/2m$ to a fixpoint) → **refinement**

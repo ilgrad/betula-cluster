@@ -26,6 +26,61 @@ pub fn knn_affinity<R: Real>(centers: &[Vec<R>]) -> Vec<Vec<(usize, R)>> {
     knn_affinity_impl(centers, None, None, None)
 }
 
+/// [`knn_affinity`] built on the capped-beam-search proximity graph instead of the complete
+/// distance matrix — same weights, same self-tuning scale, `O(n·log n)` distance evaluations
+/// instead of `O(n²)`.
+///
+/// [`knn_affinity`] materialises an `n×n` distance matrix to sort each node's neighbours exactly.
+/// That is 134 MB at `n = 4096` and 3.2 GB at `n = 20 000`, which is what actually bounds the
+/// spectral head once its eigensolver no longer does. [`knn::build`](super::knn::build) answers the
+/// same question approximately at bounded degree, and it is the graph the HDBSCAN head has been
+/// built on since the graph index landed.
+///
+/// Two differences from the exact builder, both deliberate:
+///
+/// * The neighbour lists are **approximate** — a beam search can miss a true nearest neighbour. On a
+///   similarity graph that is a weight this edge does not carry, not a wrong answer; the spectral
+///   embedding reads the whole graph, not any single edge.
+/// * The degree is floored at `LOCAL_SCALE_NN`, because `σ_i` is read off the `LOCAL_SCALE_NN`-th
+///   neighbour and a shorter list would silently rescale it. [`knn_degree`] alone can return 4.
+///
+/// The random shortcut edges [`knn::build`](super::knn::build) adds are kept. They are far, so
+/// `exp(−d²/σ_iσ_j)` makes them numerically negligible, and they are what stops the graph from
+/// fragmenting into components the Laplacian would then report as clusters.
+pub(crate) fn knn_affinity_approx<R: Real>(centers: &[Vec<R>], seed: u64) -> Vec<Vec<(usize, R)>> {
+    let n = centers.len();
+    let tiny = R::from_f64(1e-12).unwrap();
+    let degree = knn_degree(n).max(LOCAL_SCALE_NN).min(n - 1);
+    let dist = |i: usize, j: usize| -> f64 {
+        sq_euclidean(&centers[i], &centers[j])
+            .to_f64()
+            .unwrap_or(f64::MAX)
+            .sqrt()
+    };
+    let adj = super::knn::build(n, degree, seed, dist);
+    let sigma: Vec<R> = adj
+        .iter()
+        .map(|list| {
+            let rank = LOCAL_SCALE_NN.min(list.len()).saturating_sub(1);
+            list.get(rank)
+                .and_then(|&(_, d)| R::from_f64(d))
+                .unwrap_or(tiny)
+                .max(tiny)
+        })
+        .collect();
+    adj.iter()
+        .enumerate()
+        .map(|(i, list)| {
+            list.iter()
+                .map(|&(j, d)| {
+                    let d2 = R::from_f64(d * d).unwrap_or_else(R::zero);
+                    (j, (-d2 / (sigma[i] * sigma[j])).exp())
+                })
+                .collect()
+        })
+        .collect()
+}
+
 /// [`knn_affinity`] with the neighbour count forced, for measuring what [`knn_degree`] is worth.
 pub(crate) fn knn_affinity_with_degree<R: Real>(
     centers: &[Vec<R>],
@@ -39,10 +94,16 @@ pub(crate) fn knn_affinity_with_degree<R: Real>(
 /// The floor is not decoration. García Trillos & Slepčev (*A variational approach to the consistency
 /// of spectral clustering*, ACHA 45(2), 2018) show the graph Laplacian Γ-converges to the continuum
 /// Dirichlet energy only above a connectivity threshold — for a k-NN graph, `k_n / log n → ∞` — below
-/// which the graph fragments and the spectrum stops describing the manifold. The spectral head caps
-/// its node count at `SPECTRAL_MAX_NODES = 256`, where `log n ≈ 5.5`, so the shipped `KNN = 10` sits
-/// at `1.8 log n` and the asymptotic requirement has no room to bite. That is why a fixed cap is
-/// defensible *here* and would not be on an uncapped graph.
+/// which the graph fragments and the spectrum stops describing the manifold.
+///
+/// **A fixed `KNN` does not satisfy that, and the spectral head no longer hides behind a node cap.**
+/// It used to: 256 nodes put `log n ≈ 5.5` and the shipped `KNN = 10` at `1.8 log n`, comfortably
+/// above the threshold with nowhere for the asymptotics to bite. Now that the head runs on every
+/// leaf, the same 10 is `1.3 log n` at 2000 nodes and `1.0 log n` at 20 000, and the ratio keeps
+/// falling. That is a real limitation of the constant, stated rather than papered over: the
+/// consistency guarantee is asymptotic in a regime this crate does not enter, and what the graph
+/// *actually* has instead is the random shortcut edges of
+/// [`knn::build`](super::knn::build), which bound its diameter without bounding its degree.
 pub(crate) fn knn_degree(n: usize) -> usize {
     (n / 10).clamp(MIN_KNN, KNN).min(n.saturating_sub(1))
 }

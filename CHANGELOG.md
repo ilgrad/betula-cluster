@@ -7,6 +7,44 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Changed
+- **The spectral head clusters every leaf instead of 256 k-means landmarks, and it is 2–12× faster
+  for it.** Above 256 microclusters `method="spectral"` used to reduce them to 256 weighted landmarks,
+  cluster those, and let each leaf inherit its landmark's label — a second lossy summarisation stacked
+  on the one the tree had already done, forced by the `O(M³)` cyclic-Jacobi eigensolver. The top-`k`
+  eigenvectors of `P = D^{-1/2}AD^{-1/2}` now come from **Chebyshev-filtered subspace iteration**: the
+  iteration only ever needs the product `P x`, which is `O(nnz)` on the sparse graph; a degree-12
+  Chebyshev polynomial evaluated by the three-term recurrence multiplies the wanted end of the
+  spectrum by `cosh(12 · arccosh σ)` while staying bounded by 1 on the damped interval, and the
+  Rayleigh–Ritz step runs on a `(k+4)×(k+4)` matrix. Nothing `M×M` is formed. Past **2048** nodes the
+  affinity graph comes from the bounded-degree beam-search index as well (the same graph the HDBSCAN
+  head runs on), since the `O(M²)` distance matrix is the next thing to become unaffordable — 134 MB
+  at 4096 nodes, 3.2 GB at 20 000. A/B on identical trees, both sides rebuilt, median of seeds 0/1/2:
+  `two-moons` and `two-circles` at N = 20 000 hold ARI **1.000** at every budget from 500 to 5000
+  leaves while the fit drops from 0.34 s to **0.02 s** at 500; `digits`-PCA20 goes **0.660 → 0.779**
+  at 500 leaves and **0.786 → 0.801** at 1000, and loses one budget, 0.766 → 0.735 at one leaf per
+  point; `covtype` stays within ±0.01 of zero on both paths, which is its documented failure case.
+  At or below 256 microclusters the code path is unchanged and the labels are identical.
+  **Labels change above 256 microclusters.** The eigenvectors are checked against the exact solver by
+  **subspace angle** under Davis–Kahan's `sin θ_max ≤ ‖R‖_F / gap`, not by ARI — on three fixtures
+  whose eigengaps span an order of magnitude the measured angle tracks the gap from `1.5·10⁻⁸` to
+  `1.5·10⁻⁵`, and a fixed tolerance would pass a broken solver on one and fail a correct one on
+  another. The head's remaining ceiling is the *graph's*, and the control says so: at 20 000 nodes it
+  scores ≈ 0.60, and forcing the exact `O(M²)` affinity there returns the same answer for 17.2 s
+  instead of 1.7 — what breaks is `KNN = 10` falling to `1.0 · log n`, the García Trillos–Slepčev
+  connectivity threshold. Tables in
+  [`bench/RESULTS.md`](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md).
+
+- **`clustering::SPECTRAL_MAX_NODES` is now `SPECTRAL_EXACT_NODES`, and a second constant
+  `SPECTRAL_DENSE_GRAPH_MAX` joins it.** Rust API only; the Python surface is unaffected. The old name
+  described a landmark cap that no longer exists — the value 256 is now the size at which the *exact
+  eigensolver* hands over, not the size the node set is truncated to, and the two boundaries the head
+  actually has are worth naming separately because they exist for different reasons (`O(M³)` solve,
+  then `O(M²)` memory).
+
+- **`linalg::orthonormalize_rows` is public, and `mppca` / `mfa` / `spectral` share it.** Gram-Schmidt
+  with one re-orthogonalisation pass existed twice already, byte-identical; the Chebyshev solver needs
+  a third caller, and three copies of a numerical primitive is how they drift apart.
+
 - **`clustering::xmeans` is now `clustering::kmeans_auto`; the name `xmeans` belongs to the new
   splitter.** Rust API only — the Python `method` strings are unaffected. The function was never
   x-means: it fits a full k-means at every `k ∈ [k_min, k_max]` and keeps the best BIC, which is a

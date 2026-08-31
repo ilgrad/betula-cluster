@@ -1542,10 +1542,12 @@ Which of those is a *defensible* default is where the citation earns its place. 
 Slepčev (*A variational approach to the consistency of spectral clustering*, ACHA 45(2), 2018) show
 the graph Laplacian Γ-converges to the continuum Dirichlet energy only above a connectivity
 threshold — for a k-NN graph, `k_n / log n → ∞` — below which the graph fragments and its spectrum
-stops describing the manifold. The spectral head caps its node count at `SPECTRAL_MAX_NODES = 256`,
-so `log n ≈ 5.5`: the shipped `k = 10` sits at `1.8 log n`, `k = 7` at `1.3 log n`, and `k = 5` is
+stops describing the manifold. This sweep ran when the spectral head still capped its node count at
+256, so `log n ≈ 5.5`: the shipped `k = 10` sat at `1.8 log n`, `k = 7` at `1.3 log n`, and `k = 5`
 *below* the threshold. So `k = 5`'s extra 0.016 on one fixture is exactly the kind of win the theory
-says not to bank, and `k = 7` is the candidate.
+says not to bank, and `k = 7` is the candidate. (The cap is gone as of task #82, which makes the
+threshold argument sharper rather than weaker — at 20 000 nodes `k = 10` is `1.0 log n`, and the
+section below measures what happens there.)
 
 **The default stays at 10 anyway, and the reason is scope rather than doubt.** `knn_affinity` is
 shared with the community (Leiden) head, so the constant is label-changing for two heads at once, and
@@ -1556,6 +1558,64 @@ the constant is not free: it is worth 0.04 ARI on anisotropic shapes, it degrade
 and it now has a floor with a citation instead of a round number.
 
 Harness: `cargo test --lib clustering::spectral::tests::measure_graph_degree -- --ignored --nocapture`.
+
+## The spectral head stopped throwing away leaves, and got faster doing it (task #82)
+
+Above 256 microclusters the head used to reduce them to 256 weighted k-means landmarks, cluster
+those, and let every leaf inherit its landmark's label — a second lossy summarisation stacked on the
+one the tree had already done, and one the user never asked for. The `O(M³)` cyclic-Jacobi
+eigensolver is what forced it.
+
+It is replaced by **Chebyshev-filtered subspace iteration** on the sparse graph. The only thing the
+iteration needs of `P = D^{-1/2}AD^{-1/2}` is the product `P x`, which is `O(nnz)`; a degree-12
+Chebyshev polynomial in `P`, evaluated by the three-term recurrence, multiplies the wanted end of the
+spectrum by `cosh(12 · arccosh σ)` while staying bounded by 1 on the damped interval, and the
+Rayleigh–Ritz step runs on a `(k+4)×(k+4)` matrix. Nothing `M×M` is formed. Past 2048 nodes the graph
+comes from the bounded-degree beam-search index as well, since the `O(M²)` distance matrix is the
+next thing to become unaffordable.
+
+A/B on identical trees, both sides rebuilt, `feature="spherical"`, `threshold=0`, median of seeds
+0/1/2. Below 256 nodes the two paths are the same code and the rows agree exactly, which is the
+control:
+
+| fixture | `max_leaves` | leaves | landmark ARI | Chebyshev ARI | landmark s | Chebyshev s |
+|---|---|---|---|---|---|---|
+| two-moons, N=20 000 | 256 | 253 | 0.830 | 0.830 | 0.34 | 0.36 |
+| | 500 | 452 | 1.000 | 1.000 | 0.34 | **0.02** |
+| | 1000 | 973 | 1.000 | 1.000 | 0.21 | 0.09 |
+| | 2000 | 1801 | 1.000 | 1.000 | 0.25 | 0.22 |
+| | 5000 | 4842 | 1.000 | 1.000 | 0.43 | 0.36 |
+| two-circles, N=20 000 | 500 | 454 | 1.000 | 1.000 | 0.20 | **0.03** |
+| | 1000 | 937 | 1.000 | 1.000 | 0.21 | 0.08 |
+| | 2000 | 1823 | 1.000 | 1.000 | 0.26 | 0.22 |
+| | 5000 | 4677 | 1.000 | 1.000 | 0.42 | 0.35 |
+| `digits`-PCA20 | 256 | 238 | 0.532 | 0.532 | 0.26 | 0.28 |
+| | 500 | 470 | 0.660 | **0.779** | 0.36 | **0.03** |
+| | 1000 | 910 | 0.786 | **0.801** | 0.40 | 0.06 |
+| | 1797 | 1797 | **0.766** | 0.735 | 0.50 | 0.19 |
+| `covtype`-20k | 1000 | 917 | −0.004 | −0.008 | 0.48 | 0.11 |
+| | 2000 | 1815 | 0.001 | −0.002 | 0.71 | 0.23 |
+
+Two wins on `digits`, one loss at one leaf per point, ties everywhere the non-convex fixtures are
+already saturated, and 2–12× off the wall clock. `covtype` is within ±0.01 of zero on both paths;
+that is the head's documented failure case, not a comparison.
+
+**Where it stops, and the control that says why.** At 10 000 leaves the head still returns ARI 1.000
+on both non-convex fixtures, in 0.70 s and 0.78 s. At 20 000 — one leaf per point — it falls to
+**0.600** and **0.625**. The obvious suspect is the approximate graph, and the obvious suspect is
+wrong: forcing the *exact* `O(M²)` affinity at the same 20 000 nodes returns **0.603** and **0.594**,
+the same answer for 17.2 s instead of 1.7. What breaks is the fixed `KNN = 10`. It is `1.0 · log n`
+at 20 000 nodes — at the García Trillos–Slepčev connectivity threshold below which a k-NN Laplacian's
+spectrum stops describing the manifold, and the section above measured that the constant is not free.
+No eigensolver recovers a graph that has already fragmented.
+
+The eigenvectors themselves are checked against the exact solver by **subspace angle**, not by ARI:
+`the_chebyshev_solver_finds_the_subspace_the_exact_one_does` asserts Davis–Kahan's
+`sin θ_max ≤ ‖R‖_F / gap` on three fixtures whose eigengaps span an order of magnitude
+(`1.6·10⁻³` to `1.2·10⁻²`), where the measured angle tracks the gap from `1.5·10⁻⁸` to `1.5·10⁻⁵`.
+A fixed tolerance would pass a broken solver on one fixture and fail a correct one on another.
+
+Harness: `local/scratch/measure_spectral_cheb.py` and `local/scratch/spectral_scale.py`.
 
 ## A drift number that reads the drift, where the labels read nothing at all (task #56)
 
