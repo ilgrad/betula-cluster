@@ -19,7 +19,7 @@ labels = betula_cluster.fit_predict(X, method="hdbscan", min_samples=10, min_clu
 # hdbscan: label -1 == noise
 ```
 
-Keyword args: `feature ∈ {spherical, diagonal, full, fd}`, `method ∈ {kmeans, xmeans, gmm, gmm-full, mppca, ward, average, weighted, centroid, median, spectral, leiden, leiden-cpm, spherical-kmeans, vmf, gmm-toeplitz, gmm-toeplitz-full, gmm-toeplitz-gs, hdbscan, scale-space}`,
+Keyword args: `feature ∈ {spherical, diagonal, full, fd}`, `method ∈ {kmeans, xmeans, kmedoids, gmm, gmm-full, mppca, ward, average, weighted, centroid, median, spectral, leiden, leiden-cpm, spherical-kmeans, vmf, gmm-toeplitz, gmm-toeplitz-full, gmm-toeplitz-gs, hdbscan, scale-space}`,
 `distance ∈ {euclidean, manhattan, ward, average}` (routing measure),
 `absorb ∈ {euclidean, manhattan, average, diameter, ward, radius, chi2, subspace}` (see *Absorption criteria*
 below; `chi2` = mass-invariant Mahalanobis gate at level `chi2_p` with `chi2_scale` = within-cluster
@@ -113,6 +113,7 @@ answer.
 |---|---|---|
 | compact/spherical groups, fastest | `kmeans` | yes (or `0` = BIC sweep, capped at 20) |
 | the same, but the count may exceed 20, or the sweep is too slow | `xmeans` | **no** — `n_clusters` is an upper bound; see *Where `xmeans` refuses to split* |
+| the same, but the centre must be a real observation (an exemplar you can show) | `kmedoids` | yes — `0` switches objective to the medoid silhouette |
 | elliptical / correlated / anisotropic, soft assignment | `gmm` (diag) or `gmm-full` | yes (or `0` = BIC) |
 | clusters on **low-dimensional subspaces**, `d` too large for `gmm-full` | `mppca` + `feature="fd"`, `rank` = the intrinsic dimension — read *`rank`, and where `mppca` loses* first | yes (or `0` = BIC) |
 | **L2-normalized embeddings** (CLIP / face / sentence / speaker), cosine geometry | `vmf` (soft) or `spherical-kmeans` (hard) | yes (or `0` = BIC, `vmf`) |
@@ -207,6 +208,52 @@ sweep is stuck at its cap, for 6–16× less time. At `d = 2` it still under-spl
 large — 6.7 short of 30 — because that is where one cut has to capture half the scatter; use
 `kmeans` with `n_clusters=0` there, since a sweep compares `k = 1` against `k = 30` directly and
 never has to pass through the cuts the split test refuses.
+
+### A centre that exists in the data — `method="kmedoids"`
+
+`kmedoids` runs eager FasterPAM (Schubert & Rousseeuw 2021) over the leaf centroids, weighting each
+leaf by its mass. The centre of a cluster is one of the summary's own micro-clusters rather than an
+average, which is the point: it is an exemplar you can show, and it stays on the data manifold where
+a mean need not.
+
+It is **exact on the summary** under the whole-leaf restriction every shipped head accepts. With the
+medoid drawn from the leaf-centroid set,
+
+$$\sum_{x \in \text{leaf } i} \lVert x - \mu_j \rVert^2 = S_i + n_i \lVert \mu_i - \mu_j \rVert^2,$$
+
+so the leaf-level total the swap search minimises **is** the point-level sum of squares, up to the
+constant $\sum_i S_i$ no medoid choice can move. Note the square: classical PAM minimises the sum of
+*absolute* distances, and $\sum_{x \in \text{leaf}} \lVert x - \mu_j \rVert$ has no closed form in a
+cluster feature. The squared objective is the one a summary can answer exactly, and it is what this
+head reports as its loss.
+
+`n_clusters=0` is **not** a free auto-`k` here: total deviation falls monotonically as `k` grows, so
+this head's own objective cannot choose. The automatic arm runs `dyn_msc` — the medoid silhouette of
+Lenssen & Schubert 2024, a different objective — and says so rather than pretending the sweep is free.
+
+`refine` is a no-op. A Lloyd sweep is the k-means update; it would move each medoid to the mean of
+its cluster, off the data and out of the head's own objective.
+
+Measured on `digits` (1797 × 64, `feature="spherical"`, `threshold=0.0`), ARI as median [min–max]
+over seeds 0–4:
+
+| `max_leaves` | leaves | `kmeans` | `kmedoids` | `kmeans` s | `kmedoids` s |
+|---|---|---|---|---|---|
+| 2000 (one leaf per point) | 1797 | 0.467 [0.443–0.571] | **0.554** [0.554–0.570] | 0.025 | 0.157 |
+| 300 | 296 | 0.487 [0.381–0.523] | **0.520** [0.468–0.520] | 0.007 | 0.008 |
+| 120 | 115 | **0.240** [0.202–0.252] | 0.219 [0.219–0.219] | 0.005 | 0.004 |
+
+Two things to read off it. The medoid restriction is a regulariser: at a fine summary it wins on the
+median *and* on the spread, because the centre cannot drift into the gap between two digit classes.
+And it inverts at a coarse summary — 115 candidate centres is not enough to place ten of them well,
+and there `kmeans` is free to put a centre where no leaf sits. The `O(m²)` swap pass is what costs:
+invisible at 296 leaves, 6× `kmeans` at 1797.
+
+On the synthetic fixtures at `max_leaves=4000` the two are level (`blobs` 0.864/0.864, `aniso`
+0.545/0.548, `varied` 0.540/0.548, `highdim` 1.000/1.000, median of seeds 0/1/2), which is the
+expected result: where the mean is a good centre, so is the nearest micro-cluster to it.
+
+`fit_predict_sparse` does not accept this head — see [Sparse input](#sparse-input).
 
 ### `rank`, and where `mppca` loses — `method="mppca"`
 
@@ -809,6 +856,15 @@ from betula_cluster import fit_predict_sparse
 
 labels = fit_predict_sparse(X, n_clusters=20, threshold=0.5)   # kmeans by default; O(nnz) per row
 ```
+
+`kmedoids` is rejected on this entry point, and the reason is a property of the flat summary rather
+than of the head. A medoid centre is one micro-cluster, and a row's squared distance to one is
+dominated by that micro-cluster's own norm — which varies with how many terms its handful of rows
+happened to carry — while the overlap term that knows the topic is a fraction of it. On the
+four-block corpus at `max_leaves=300` the head reads ARI **0.017** by its own medoid rule and
+**0.002** by the micro-cluster route, against **1.000** for `kmeans`, whose pooled cluster centroids
+average the norms out. `Betula(method="kmedoids").fit(X)` on the same CSR builds a real CF-tree and
+scores **1.000**; use that.
 
 ### Text: reduce and cluster in one call — `projection="svd"`
 

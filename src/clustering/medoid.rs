@@ -346,6 +346,175 @@ pub fn dyn_msc<R: Real, C: ClusterFeature<R>>(
     })
 }
 
+/// Result of a [`kmedoids`] run.
+pub struct Pam {
+    /// Cluster index per input feature.
+    pub labels: Vec<usize>,
+    /// The medoid of each cluster, as an index into `features`, in label order. Empty clusters are
+    /// dropped, so `medoids.len()` is the realised cluster count and label `c` is `medoids[c]`.
+    pub medoids: Vec<usize>,
+    /// Total deviation at convergence — `Σ_i Σ_{x ∈ leaf i} ‖x − μ_{m(i)}‖²`, the point-level sum of
+    /// squares, not the leaf-level one.
+    pub loss: f64,
+}
+
+/// `(distance, slot)` of the nearest and second-nearest medoid to each leaf, ascending.
+///
+/// Two, where the silhouette search needs [`three_nearest`]: the `k`-medoid cost reads only a leaf's
+/// own medoid, and the second is needed only to price that medoid's removal.
+fn two_nearest(lv: &Leaves, medoids: &[usize]) -> Vec<[(f64, usize); 2]> {
+    let far = (f64::INFINITY, usize::MAX);
+    (0..lv.len())
+        .map(|i| {
+            let mut best = [far; 2];
+            for (slot, &m) in medoids.iter().enumerate() {
+                let d = lv.dist(i, m);
+                if d < best[0].0 {
+                    best[1] = best[0];
+                    best[0] = (d, slot);
+                } else if d < best[1].0 {
+                    best[1] = (d, slot);
+                }
+            }
+            best
+        })
+        .collect()
+}
+
+/// Total deviation of the current medoid set: `Σ_i n_i · d̄(i, m(i))`, which because [`Leaves::dist`]
+/// carries the leaf's own scatter is the sum of squares over the **points**, not over the leaves.
+fn total_deviation(lv: &Leaves, near: &[[(f64, usize); 2]]) -> f64 {
+    (0..lv.len()).map(|i| lv.w[i] * near[i][0].0).sum()
+}
+
+/// One eager FasterPAM sweep: try every non-medoid leaf as a candidate, in `order`, and take each
+/// improving swap the moment it is found. Returns the number of swaps performed.
+///
+/// The cost of a swap decomposes so that one `O(m)` pass prices the candidate against **every**
+/// medoid slot at once (Schubert & Rousseeuw 2021, *Fast and eager k-medoids clustering*). Removing
+/// slot `i` and inserting `c` moves leaf `o` to `min(d_o,c , d_n(o))` when `o` is not on `i`, and to
+/// `min(d_o,c , d_s(o))` when it is — so every `o` nearer to `c` than to its own medoid contributes
+/// the same improvement whichever slot leaves, and only the leaves sitting on slot `i` need a
+/// correction. Hence `ΔTD(i, c) = shared(c) + corr_i(c)` with one `corr` entry per slot.
+fn eager_pam_sweep(
+    lv: &Leaves,
+    medoids: &mut [usize],
+    near: &mut Vec<[(f64, usize); 2]>,
+    td: &mut f64,
+    order: &[usize],
+) -> usize {
+    let mut swaps = 0;
+    let mut corr = vec![0.0; medoids.len()];
+    for &c in order {
+        if medoids.contains(&c) {
+            continue;
+        }
+        let mut shared = 0.0;
+        corr.iter_mut().for_each(|v| *v = 0.0);
+        for (o, n) in near.iter().enumerate() {
+            let d = lv.dist(o, c);
+            let (dn, slot) = n[0];
+            if d < dn {
+                shared += lv.w[o] * (d - dn);
+            } else {
+                corr[slot] += lv.w[o] * (d.min(n[1].0) - dn);
+            }
+        }
+        let Some((slot, &best)) = corr
+            .iter()
+            .enumerate()
+            .min_by(|a, b| a.1.partial_cmp(b.1).expect("finite corrections"))
+        else {
+            continue;
+        };
+        let delta = shared + best;
+        // A relative floor, not zero: a swap that only moves the total by rounding is not an
+        // improvement, and accepting it lets two candidates trade places for as many passes as the
+        // iteration cap allows.
+        if delta < -1e-12 * td.abs().max(1.0) {
+            medoids[slot] = c;
+            *near = two_nearest(lv, medoids);
+            *td += delta;
+            swaps += 1;
+        }
+    }
+    swaps
+}
+
+/// Drop medoid slots no leaf is nearest to, renumbering the labels to stay contiguous.
+///
+/// An empty slot is a centre the fit gave no points, and keeping it would let `predict` return a
+/// label `fit_predict` never produced. The centroid heads drop their empty clusters for the same
+/// reason.
+fn compact(near: &[[(f64, usize); 2]], medoids: &[usize]) -> (Vec<usize>, Vec<usize>) {
+    let mut slot_to_label = vec![usize::MAX; medoids.len()];
+    let mut kept = Vec::new();
+    for n in near {
+        if slot_to_label[n[0].1] == usize::MAX {
+            slot_to_label[n[0].1] = kept.len();
+            kept.push(medoids[n[0].1]);
+        }
+    }
+    let labels = near.iter().map(|n| slot_to_label[n[0].1]).collect();
+    (labels, kept)
+}
+
+/// Weighted `k`-medoids over the leaf centroids, by eager FasterPAM.
+///
+/// Exact on the summary under the whole-leaf restriction every shipped head already accepts: with
+/// the medoid drawn from the leaf-centroid set, `Σ_{x ∈ leaf i} ‖x − μ_j‖² = S_i + n_i‖μ_i − μ_j‖²`,
+/// so the leaf-level objective **is** the point-level one, up to the constant `Σ_i S_i` that no
+/// medoid choice can move. What it buys over `kmeans` is that the centre is one of the data's own
+/// microclusters — readable, and defined for a cost function whose mean has no closed form.
+///
+/// Cost is `O(iter · m²)` on the `m ≪ N` microclusters, the same shape as [`dyn_msc`] and the density
+/// head's MST. `max_iter` bounds the sweeps; `0` means the default.
+///
+/// `k` is clamped to the leaf count. **`k = 0` is not an automatic mode here**: total deviation falls
+/// monotonically as `k` grows, so this head's own objective cannot choose `k` — the caller wanting
+/// that gets [`dyn_msc`], whose medoid silhouette can.
+pub fn kmedoids<R: Real, C: ClusterFeature<R>>(
+    features: &[C],
+    k: usize,
+    max_iter: usize,
+    seed: u64,
+) -> Pam {
+    let lv = Leaves::of(features);
+    let m = lv.len();
+    if m == 0 {
+        return Pam {
+            labels: Vec::new(),
+            medoids: Vec::new(),
+            loss: 0.0,
+        };
+    }
+    let k = k.clamp(1, m);
+    let max_iter = if max_iter == 0 { 100 } else { max_iter };
+    let mut rng = SplitMix64::new(seed);
+    let mut medoids = seed_medoids(&lv, k, &mut rng);
+    let mut near = two_nearest(&lv, &medoids);
+    let mut td = total_deviation(&lv, &near);
+
+    // A fixed shuffle, not a fresh one per sweep: the eager rule makes the candidate order part of
+    // the search, and re-drawing it every sweep would keep finding the same swaps in a new order
+    // rather than converging.
+    let mut order: Vec<usize> = (0..m).collect();
+    for i in (1..m).rev() {
+        order.swap(i, (rng.next_u64() % (i as u64 + 1)) as usize);
+    }
+    for _ in 0..max_iter {
+        if eager_pam_sweep(&lv, &mut medoids, &mut near, &mut td, &order) == 0 {
+            break;
+        }
+    }
+    let (labels, medoids) = compact(&near, &medoids);
+    Pam {
+        labels,
+        medoids,
+        loss: td,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -704,6 +873,175 @@ mod tests {
         let two = &micros[..2];
         let got = dyn_msc(two, 50, 100, 0);
         assert!(got.k <= 2, "k = {} on two leaves", got.k);
+    }
+
+    /// One leaf per point, unit weight and no scatter — the discrete `k`-medoids problem in its
+    /// plainest form, small enough to enumerate every medoid set.
+    fn point_leaves(mu: &[[f64; 2]]) -> Vec<Spherical<f64>> {
+        mu.iter()
+            .map(|p| {
+                let mut f = Spherical::new(2);
+                f.push(p, 1.0);
+                f
+            })
+            .collect()
+    }
+
+    /// Total deviation of an explicit medoid set, recomputed from scratch rather than maintained.
+    fn td_of(features: &[Spherical<f64>], medoids: &[usize]) -> f64 {
+        let lv = Leaves::of(features);
+        (0..lv.len())
+            .map(|i| {
+                lv.w[i]
+                    * medoids
+                        .iter()
+                        .map(|&m| lv.dist(i, m))
+                        .fold(f64::INFINITY, f64::min)
+            })
+            .sum()
+    }
+
+    #[test]
+    fn the_reported_loss_is_the_sum_of_squares_over_the_points_not_over_the_leaves() {
+        let mut rng = SplitMix64::new(3);
+        let centres = [[0.0, 0.0], [12.0, 0.0], [6.0, 11.0], [18.0, 11.0]];
+        let (pts, _) = blobs(&mut rng, 150, &centres, 0.8);
+        let (micros, assign) = grid_micros(&pts, 0.6);
+        let got = kmedoids(&micros, 4, 100, 3);
+        // The identity the head is built on: `Σ_{x ∈ leaf i} ‖x − μ_j‖² = S_i + n_i‖μ_i − μ_j‖²`, so
+        // the leaf-level total the sweep minimises is already the point-level one. Recomputed here
+        // from the raw points, which the head never sees.
+        let sse: f64 = pts
+            .iter()
+            .enumerate()
+            .map(|(i, p)| sq_euclidean(p, micros[got.medoids[got.labels[assign[i]]]].mean()))
+            .sum();
+        assert!(
+            (got.loss - sse).abs() <= 1e-9 * sse,
+            "loss {} against the point-level SSE {sse}",
+            got.loss
+        );
+    }
+
+    #[test]
+    fn the_incrementally_maintained_total_deviation_survives_the_swaps_that_built_it() {
+        for seed in [0u64, 1, 2] {
+            let (micros, _, _) = fixture(seed, 0.8);
+            let got = kmedoids(&micros, 4, 100, seed);
+            let fresh = td_of(&micros, &got.medoids);
+            assert!(
+                (got.loss - fresh).abs() <= 1e-9 * fresh,
+                "seed {seed}: carried {} against a recomputed {fresh}",
+                got.loss
+            );
+        }
+    }
+
+    #[test]
+    fn the_converged_set_is_a_local_optimum_no_single_exchange_improves() {
+        let (micros, _, _) = fixture(4, 0.8);
+        let got = kmedoids(&micros, 5, 100, 4);
+        for slot in 0..got.medoids.len() {
+            for c in 0..micros.len() {
+                if got.medoids.contains(&c) {
+                    continue;
+                }
+                let mut trial = got.medoids.clone();
+                trial[slot] = c;
+                let td = td_of(&micros, &trial);
+                assert!(
+                    td >= got.loss - 1e-9 * got.loss,
+                    "swapping slot {slot} for leaf {c} reaches {td} below {}",
+                    got.loss
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_search_reaches_the_optimum_a_full_enumeration_finds() {
+        // Four tight triples: `k = 4` has one obviously best answer, and `C(12, 4) = 495` sets is
+        // few enough to check the local search against the global one rather than against itself.
+        let mu = [
+            [0.0, 0.0],
+            [0.3, 0.1],
+            [-0.2, 0.2],
+            [10.0, 0.0],
+            [10.2, -0.1],
+            [9.8, 0.3],
+            [0.0, 9.0],
+            [0.1, 9.4],
+            [-0.3, 8.7],
+            [10.0, 9.0],
+            [9.7, 9.2],
+            [10.4, 8.8],
+        ];
+        let micros = point_leaves(&mu);
+        let mut best = f64::INFINITY;
+        for a in 0..mu.len() {
+            for b in a + 1..mu.len() {
+                for c in b + 1..mu.len() {
+                    for d in c + 1..mu.len() {
+                        best = best.min(td_of(&micros, &[a, b, c, d]));
+                    }
+                }
+            }
+        }
+        for seed in 0u64..4 {
+            let got = kmedoids(&micros, 4, 100, seed);
+            assert_eq!(got.medoids.len(), 4, "seed {seed} lost a cluster");
+            assert!(
+                got.loss <= best * (1.0 + 1e-9),
+                "seed {seed}: {} against the enumerated optimum {best}",
+                got.loss
+            );
+        }
+    }
+
+    #[test]
+    fn the_head_recovers_the_blobs_and_every_medoid_labels_its_own_cluster() {
+        for seed in [0u64, 1, 2] {
+            let (micros, assign, truth) = fixture(seed, 0.8);
+            let got = kmedoids(&micros, 4, 100, seed);
+            let labels: Vec<usize> = assign.iter().map(|&i| got.labels[i]).collect();
+            assert!(
+                ari(&labels, &truth) > 0.99,
+                "seed {seed}: ARI = {}",
+                ari(&labels, &truth)
+            );
+            for (slot, &m) in got.medoids.iter().enumerate() {
+                assert_eq!(
+                    got.labels[m], slot,
+                    "seed {seed}: medoid {m} sits outside its own cluster"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_degenerate_k_medoid_inputs_answer_rather_than_panic() {
+        let empty: Vec<Spherical<f64>> = Vec::new();
+        let got = kmedoids(&empty, 5, 100, 0);
+        assert!(got.labels.is_empty());
+        assert!(got.medoids.is_empty());
+        assert_eq!(got.loss, 0.0);
+
+        let (micros, _, _) = fixture(2, 0.8);
+        // `k = 0` is not an automatic mode here — total deviation is monotone in `k`, so the head
+        // clamps rather than sweeping, and the caller wanting a chosen `k` gets `dyn_msc`.
+        for k in [0usize, 1] {
+            let got = kmedoids(&micros, k, 100, 0);
+            assert_eq!(got.medoids.len(), 1);
+            assert!(got.labels.iter().all(|&l| l == 0));
+        }
+        // More medoids asked for than leaves available: `k` is clamped, not honoured.
+        let two = &micros[..2];
+        let got = kmedoids(two, 50, 100, 0);
+        assert!(
+            got.medoids.len() <= 2,
+            "{} medoids on two leaves",
+            got.medoids.len()
+        );
     }
 
     /// The measurement behind the DynMSC section of `bench/RESULTS.md`. Run it with

@@ -449,7 +449,9 @@ def fit_predict_sparse(
     library docs). Returns one ``int64`` label per row.
 
     The centre-based heads (``kmeans`` / ``xmeans`` / ``spherical-kmeans``) label each row by its
-    nearest cluster centroid, the rule the dense path uses. ``gmm`` and ``vmf`` label by maximum
+    nearest cluster centroid, the rule the dense path uses; ``kmedoids`` uses the same scan against
+    the micro-clusters it chose as medoids, which are not the cluster means. ``gmm`` and ``vmf``
+    label by maximum
     posterior: their kernels split over the support of a row, so the density costs ``O(nnz)`` rather
     than the ``O(d)`` this path exists to avoid. The rest — the agglomerative heads (``ward`` /
     ``average`` / ``weighted`` / ``centroid`` / ``median``) and ``gmm-full`` / ``gmm-toeplitz*`` /
@@ -631,8 +633,10 @@ class Betula:
         # pay for NMF sweeps too.
         self.projection_max_iter = projection_max_iter
         # BIRCH Phase 4: Lloyd sweeps over the raw rows after the leaf clustering, warm-started from
-        # the CF centres. Centroid heads only (kmeans / spherical-kmeans), dense in-memory `fit` /
-        # `fit_predict` only. A better objective is not automatically a better partition. 0 = off.
+        # the CF centres. Centroid heads only (kmeans / xmeans / spherical-kmeans), dense in-memory
+        # `fit` / `fit_predict` only — a Lloyd sweep is the k-means update, so it would move a
+        # `kmedoids` centre off the data and out of its own objective. A better objective is not
+        # automatically a better partition. 0 = off.
         self.refine = refine
         # Subspace rank q of the MPPCA head (method="mppca"): each component's covariance is
         # W Wᵀ + σ²I with W of rank q, clamped to at most dim - 1. Ignored by every other head.

@@ -182,6 +182,16 @@ snapshots / active-learning batches, the Rust API, and the CLI — all in the
   return more than 20 clusters. Its split test needs a cut capturing `1 − 2^(−2/d)` of a region's
   scatter, so it lands on the true count at every `d ≥ 5` and under-splits only at `d = 2` — see
   [*Where `xmeans` refuses to split*](https://github.com/ilgrad/betula-cluster/blob/main/docs/USAGE.md).
+- **k-medoids** (`method="kmedoids"`, eager FasterPAM — Schubert & Rousseeuw 2021) — the centre of a
+  cluster is one of the summary's own micro-clusters rather than an average: an exemplar you can show,
+  and a centre that stays on the data manifold. Exact on the summary, because
+  `Σ_{x∈leaf} ‖x − μ‖² = S + n‖μ_leaf − μ‖²` makes the leaf-level objective the point-level one — note
+  the *square*, since classical PAM's absolute distance has no closed form in a cluster feature. On
+  `digits` at one leaf per point it reads ARI **0.554** [0.554–0.570] against `kmeans`'s 0.467
+  [0.443–0.571] over seeds 0–4, and loses at a coarse summary (115 leaves: 0.219 vs 0.240) where there
+  are too few candidate centres; the `O(m²)` swap pass costs 6× `kmeans` at 1797 leaves. `n_clusters=0`
+  switches objective to the medoid silhouette, because total deviation is monotone in `k` —
+  [`docs/USAGE.md`](https://github.com/ilgrad/betula-cluster/blob/main/docs/USAGE.md).
 - **Structured-covariance GMM** — a three-rung Toeplitz ladder: **`method="gmm-toeplitz"`** (banded AR),
   **`"gmm-toeplitz-full"`** (general positive-definite Toeplitz covariance), and **`"gmm-toeplitz-gs"`**
   (full-order Gohberg–Semencul **MLE** precision): covariance-*shape* clustering for **ordered, stationary

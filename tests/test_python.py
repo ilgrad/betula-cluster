@@ -71,6 +71,7 @@ def moons():
     "feature,method",
     [
         ("spherical", "kmeans"),
+        ("spherical", "kmedoids"),
         ("diagonal", "gmm"),
         ("full", "gmm-full"),
         ("fd", "gmm-full"),
@@ -406,6 +407,44 @@ def test_kmeans_labels_are_the_nearest_centre(method):
         centers = centers / np.maximum(np.linalg.norm(centers, axis=1, keepdims=True), 1e-12)
     d = (x**2).sum(1)[:, None] - 2 * x @ centers[live].T + (centers[live] ** 2).sum(1)[None, :]
     assert np.array_equal(labels, live[d.argmin(1)])
+
+
+def test_kmedoids_labels_by_its_medoids_and_not_by_the_cluster_means():
+    """A medoid is one of the data's own micro-clusters, not the mean of the cluster around it.
+
+    Deriving the point rule from the labels the way every other centroid head does would average
+    each cluster, and the head would then answer a Voronoi partition its own fit never produced —
+    the defect `fit_predict_sparse` shipped with in 0.6.0. On separated blobs the two partitions
+    coincide and prove nothing, so this uses `digits`, where they differ on 100 of 1797 points at
+    `max_leaves=300` (5.6%, identical across seeds 1/2/3).
+
+    `cluster_centers_` stays the mass-weighted mean of each cluster's leaves — its documented
+    contract, and the same quantity `cluster_radii_` / `cluster_sizes_` are computed under.
+    """
+    datasets = pytest.importorskip("sklearn.datasets")
+    x, _y = datasets.load_digits(return_X_y=True)
+    est = betula_cluster.Betula(n_clusters=10, method="kmedoids", max_leaves=300, seed=1)
+    labels = np.asarray(est.fit_predict(x))
+    assert np.array_equal(labels, np.asarray(est.predict(x)))
+    means = np.asarray(est.cluster_centers_, dtype=np.float64)
+    by_mean = ((x[:, None, :] - means[None]) ** 2).sum(2).argmin(1)
+    assert (labels != by_mean).sum() > 0.02 * len(labels)
+
+
+def test_kmedoids_declines_the_refinement_sweep():
+    """A Lloyd sweep is the k-means update, so `refine` would move a medoid off the data.
+
+    The head would keep its name and stop optimising its own objective, which is worse than
+    declining: `refine` is a no-op here and the labels must be byte-identical to `refine=0`.
+    """
+    rng = np.random.default_rng(6)
+    x = rng.normal(size=(1500, 6)) + rng.integers(0, 4, 1500)[:, None] * 7.0
+    plain = betula_cluster.Betula(n_clusters=4, method="kmedoids", max_leaves=150, seed=2)
+    swept = betula_cluster.Betula(
+        n_clusters=4, method="kmedoids", max_leaves=150, seed=2, refine=10
+    )
+    assert np.array_equal(plain.fit_predict(x), swept.fit_predict(x))
+    assert np.array_equal(np.asarray(plain.cluster_centers_), np.asarray(swept.cluster_centers_))
 
 
 def test_predict_reaches_a_cluster_whose_radius_is_zero():
@@ -2543,6 +2582,22 @@ def test_fit_predict_sparse_normalizes_rows_for_the_directional_heads():
             )
         )
         assert ari(labels, y) > 0.9, method
+
+
+def test_fit_predict_sparse_refuses_kmedoids_but_the_estimator_runs_it():
+    """`kmedoids` is not on the `O(nnz)` path, and the CSR estimator is the documented alternative.
+
+    A medoid centre is one micro-cluster, and on the flat leader summary a row's distance to one
+    micro-cluster is dominated by that micro-cluster's norm rather than by the overlap that knows
+    the topic — the effect `SparseCentroids::pooled` exists to avoid. Measured here: 0.017 by the
+    head's own medoid rule and 0.002 by the micro-cluster route, against 1.000 through
+    `Betula.fit`, which builds a real CF-tree from the same CSR.
+    """
+    x, y = _sparse_topic_blocks()
+    with pytest.raises(ValueError, match="method"):
+        betula_cluster.fit_predict_sparse(x, n_clusters=4, method="kmedoids")
+    est = betula_cluster.Betula(n_clusters=4, method="kmedoids", threshold=0.5, max_leaves=300)
+    assert ari(np.asarray(est.fit_predict(x)), y) > 0.9
 
 
 @pytest.mark.parametrize("method", ["gmm-full", "ward"])

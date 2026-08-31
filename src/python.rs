@@ -40,7 +40,7 @@ use crate::feature::{ClusterFeature, Diagonal, FdSketch, Full, Spherical};
 use crate::linalg::{cholesky_lower, mahalanobis_sq_from_chol};
 use crate::mixture::{Mixture, SparseAssigner};
 use crate::model::{
-    Method, Model, Rule, assignment_rule, auto_k_ceiling, fit_head, refine_centers,
+    Method, Model, Rule, assignment_rule, auto_k_ceiling, fit_head, refinable, refine_centers,
 };
 use crate::sparse::{SparseCentroids, normalize_csr_rows, summarize_sparse};
 use crate::stats::chi2_quantile;
@@ -274,6 +274,7 @@ fn parse_method(
             tangent_weight,
             tangent_rank,
         })),
+        "kmedoids" => Ok(Kind::Parametric(Method::KMedoids)),
         "spherical-kmeans" => Ok(Kind::Parametric(Method::SphericalKMeans)),
         "vmf" => Ok(Kind::Parametric(Method::Movmf)),
         "gmm-toeplitz" => Ok(Kind::Parametric(Method::GmmToeplitz)),
@@ -287,8 +288,8 @@ fn parse_method(
         }),
         "scale-space" => Ok(Kind::ScaleSpace),
         _ => Err(PyValueError::new_err(
-            "method must be 'kmeans', 'xmeans', 'gmm', 'gmm-full', 'mppca', 'ward', 'average', \
-             'weighted', 'centroid', 'median', 'spectral', 'leiden', 'leiden-cpm', \
+            "method must be 'kmeans', 'xmeans', 'kmedoids', 'gmm', 'gmm-full', 'mppca', 'ward', \
+             'average', 'weighted', 'centroid', 'median', 'spectral', 'leiden', 'leiden-cpm', \
              'spherical-kmeans', 'vmf', 'gmm-toeplitz', 'gmm-toeplitz-full', 'gmm-toeplitz-gs', \
              'hdbscan' or 'scale-space'",
         )),
@@ -361,7 +362,7 @@ fn dispatch_kind<R: Real, C: ClusterFeature<R>>(
     max_iter: usize,
     seed: u64,
     auto_k_max: usize,
-) -> (Vec<i64>, Option<(Vec<f64>, usize)>, Option<Mixture>) {
+) -> Dispatch {
     match kind {
         Kind::Parametric(method) => {
             let fit = fit_head(feats, k, method, max_iter, seed, auto_k_max);
@@ -373,30 +374,59 @@ fn dispatch_kind<R: Real, C: ClusterFeature<R>>(
                     .collect();
                 (flat, kk)
             });
-            (
-                fit.labels.into_iter().map(|l| l as i64).collect(),
+            // A head that named its own centres has already answered the "where are the centres"
+            // question; deriving them again from the labels would average the clusters and hand
+            // `predict` a partition the fit never produced.
+            let rule = fit.centers.map(|c| PointRule::Centers {
+                labels: c.iter().map(|&(l, _)| l as i64).collect(),
+                rows: c
+                    .iter()
+                    .flat_map(|(_, row)| row.iter().map(|v| v.to_f64().unwrap_or(0.0)))
+                    .collect(),
+            });
+            Dispatch {
+                labels: fit.labels.into_iter().map(|l| l as i64).collect(),
                 proba,
-                fit.mixture,
-            )
+                mixture: fit.mixture,
+                rule,
+            }
         }
         Kind::Hdbscan {
             min_samples,
             min_cluster_size,
             graph_degree,
-        } => (
+        } => Dispatch::hard(
             hdbscan_with(feats, min_samples, min_cluster_size, graph_degree, seed).labels,
-            None,
-            None,
         ),
-        Kind::ScaleSpace => (
+        Kind::ScaleSpace => Dispatch::hard(
             scale_space(feats, 0, max_iter)
                 .labels
                 .into_iter()
                 .map(|l| l as i64)
                 .collect(),
-            None,
-            None,
         ),
+    }
+}
+
+/// What one head dispatch produced, in this layer's own types.
+struct Dispatch {
+    labels: Vec<i64>,
+    /// Flattened `n_leaves × k` responsibilities and `k`, for the probabilistic heads.
+    proba: Option<(Vec<f64>, usize)>,
+    mixture: Option<Mixture>,
+    /// The head's own point rule, for a head whose centres are not the cluster means. `None` leaves
+    /// the rule to be derived from the labels, which is what every other head wants.
+    rule: Option<PointRule>,
+}
+
+impl Dispatch {
+    fn hard(labels: Vec<i64>) -> Self {
+        Self {
+            labels,
+            proba: None,
+            mixture: None,
+            rule: None,
+        }
     }
 }
 
@@ -409,9 +439,10 @@ struct Labelling {
     parts: Option<(Vec<Vec<f64>>, f64)>,
     /// The head's point-level density, for the generative heads.
     mixture: Option<Mixture>,
-    /// The point rule a *linear* projection leaves behind, already in code space. Built here because
-    /// this is the only place that holds the coded leaves; `None` off the projected path, where the
-    /// estimator derives the rule from the tree's own leaf statistics.
+    /// The point rule the head itself defines, when it defines one: a *linear* projection's rule in
+    /// code space (built here because this is the only place that holds the coded leaves), or a
+    /// head's own centres where those are not the cluster means. `None` leaves the rule to be derived
+    /// from the tree's own leaf statistics, which is what every other head wants.
     rule: Option<PointRule>,
 }
 
@@ -433,9 +464,9 @@ fn label_features_proba<R: Real, C: ClusterFeature<R>>(
             // The head clustered *codes*, so its density lives in code space. A linear projection can
             // carry a raw row there and keep the head's own point rule; an NMF cannot, and falls back
             // to the microcluster route.
-            let (labels, proba, mixture) =
-                dispatch_kind(&p.coded, kind, k, max_iter, seed, auto_k_max);
-            let rule = projected_rule(&p, &labels, kind, mixture);
+            let d = dispatch_kind(&p.coded, kind, k, max_iter, seed, auto_k_max);
+            let (labels, proba) = (d.labels, d.proba);
+            let rule = projected_rule(&p, &labels, kind, d.mixture, d.rule);
             let parts = p
                 .components
                 .iter()
@@ -454,14 +485,13 @@ fn label_features_proba<R: Real, C: ClusterFeature<R>>(
             }
         }
         None => {
-            let (labels, proba, mixture) =
-                dispatch_kind(feats, kind, k, max_iter, seed, auto_k_max);
+            let d = dispatch_kind(feats, kind, k, max_iter, seed, auto_k_max);
             Labelling {
-                labels,
-                proba,
+                labels: d.labels,
+                proba: d.proba,
                 parts: None,
-                mixture,
-                rule: None,
+                mixture: d.mixture,
+                rule: d.rule,
             }
         }
     }
@@ -579,15 +609,18 @@ fn projected_rule<R: Real>(
     labels: &[i64],
     kind: Kind,
     mixture: Option<Mixture>,
+    head_rule: Option<PointRule>,
 ) -> Option<PointRule> {
     let centre = proj.centre.as_ref()?;
     let Kind::Parametric(method) = kind else {
         return None;
     };
-    let inner = match assignment_rule(method) {
-        Rule::Posterior => PointRule::Posterior(mixture?),
-        Rule::Microcluster => return None,
-        Rule::Centroid { unit } => {
+    // The head's own centres are already in code space — the projection is what it clustered.
+    let inner = match (head_rule, assignment_rule(method)) {
+        (Some(rule), _) => rule,
+        (None, Rule::Posterior) => PointRule::Posterior(mixture?),
+        (None, Rule::Microcluster) => return None,
+        (None, Rule::Centroid { unit }) => {
             let k = cluster_count_for_centers(labels);
             let (centers, _radii, weights, dim) = compute_cluster_stats(&proj.coded, labels, k);
             centers_rule(&centers, &weights, dim, unit)?
@@ -2336,6 +2369,10 @@ impl Betula {
         let Rule::Centroid { unit } = assignment_rule(method) else {
             return Ok(());
         };
+        // A Lloyd sweep is the k-means update, so it refines a k-means centre and destroys a medoid.
+        if !refinable(method) {
+            return Ok(());
+        }
         if self.refine == 0 || !matches!(self.rule, Some(PointRule::Centers { .. })) {
             return Ok(());
         }
@@ -4658,6 +4695,15 @@ impl PyDdSketch {
 /// Compiled core (`betula_cluster._core`); the public API is re-exported by the `betula_cluster`
 /// Python package (which also carries the type stubs and `py.typed` marker).
 /// Map a method name to a parametric Phase-3 head (the sparse path has no posterior / HDBSCAN).
+///
+/// `kmedoids` is absent deliberately. Its centre is a single micro-cluster, and this path's leader
+/// summary makes that centre useless as a row rule for the reason [`SparseCentroids::pooled`] states:
+/// a row's distance to one micro-cluster is dominated by that micro-cluster's norm, not by the
+/// overlap that knows the topic. Measured on the four-block corpus at `max_leaves = 300`, the head
+/// reads ARI 0.017 by its own medoid rule and 0.002 by the micro-cluster route, against 1.000 for
+/// `kmeans` here and 1.000 for `kmedoids` itself through `Betula.fit`, which builds a real CF-tree
+/// from the same CSR. Pooling its labels into cluster means would score well and answer a partition
+/// the fit never produced, which is the defect this path was fixed for in 0.7.0.
 fn parse_parametric(method: &str) -> PyResult<Method> {
     match method {
         "kmeans" => Ok(Method::KMeans),

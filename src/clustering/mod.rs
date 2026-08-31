@@ -38,7 +38,7 @@ pub use gmm_toeplitz::{
 pub use hdbscan::{Hdbscan, Selection, hdbscan, hdbscan_selected};
 pub use kmeans::{ConstraintError, KMeans, cop_kmeans, kmeans, kmeans_auto};
 pub use kprototypes::{MixedCf, kprototypes, nearest_micro, summarize_mixed};
-pub use medoid::{MedoidClustering, dyn_msc};
+pub use medoid::{MedoidClustering, Pam, dyn_msc, kmedoids};
 pub use mppca::{Mppca, mppca, mppca_auto};
 pub use scalespace::{ScaleSpace, scale_space};
 pub use spectral::{Spectral, spectral};

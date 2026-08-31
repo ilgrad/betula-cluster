@@ -47,6 +47,7 @@ _Projection = Literal["none", "weighted-nmf", "weighted-nmf-kl", "svd"]
 _Method = Literal[
     "kmeans",
     "xmeans",
+    "kmedoids",
     "gmm",
     "gmm-full",
     "mppca",

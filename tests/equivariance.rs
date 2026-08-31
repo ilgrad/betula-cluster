@@ -10,7 +10,7 @@
 //!
 //! | head | translate | rotate | scale | swap axes |
 //! |---|---|---|---|---|
-//! | `kmeans`, `xmeans`, `ward_hac`, `agglomerative`, `dyn_msc`, `hdbscan` | yes | yes | yes | yes |
+//! | `kmeans`, `xmeans`, `ward_hac`, `agglomerative`, `dyn_msc`, `kmedoids`, `hdbscan` | yes | yes | yes | yes |
 //! | `gmm_full`, `mppca` | yes | yes | yes | yes |
 //! | `gmm_diagonal` | yes | **no** | yes | yes |
 //! | `spectral`, `scale_space` | yes | yes | yes | yes |
@@ -44,8 +44,8 @@
 
 use betula_cluster::clustering::{
     Linkage, Selection, agglomerative, dyn_msc, gmm_diagonal, gmm_full, gmm_toeplitz,
-    hdbscan_selected, kmeans, movmf, mppca, scale_space, spectral, spherical_kmeans, ward_hac,
-    xmeans,
+    hdbscan_selected, kmeans, kmedoids, movmf, mppca, scale_space, spectral, spherical_kmeans,
+    ward_hac, xmeans,
 };
 use betula_cluster::feature::{ClusterFeature, Diagonal, Full, Spherical};
 
@@ -193,6 +193,7 @@ fn all_heads(pts: &[Vec<f64>]) -> Vec<(&'static str, Vec<i64>)> {
         ("gmm_full", as_i64(&gmm_full(&lv, K, 100, SEED).labels)),
         ("mppca", as_i64(&mppca(&lv, K, 1, 100, SEED).labels)),
         ("dyn_msc", as_i64(&dyn_msc(&lv, 8, 100, SEED).labels)),
+        ("kmedoids", as_i64(&kmedoids(&lv, K, 100, SEED).labels)),
         ("spectral", as_i64(&spectral(&lv, K, 100, SEED).labels)),
         ("scale_space", as_i64(&scale_space(&lv, 15, 100).labels)),
         (

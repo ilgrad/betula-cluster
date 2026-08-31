@@ -49,6 +49,36 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- **`method="kmedoids"` — weighted k-medoids over the leaf centroids, by eager FasterPAM.** The centre
+  of a cluster is one of the summary's own micro-clusters rather than an average: an exemplar you can
+  show, and a centre that stays on the data manifold where a mean need not. Schubert & Rousseeuw 2021;
+  the `ΔTD(i, c) = shared(c) + corr_i(c)` decomposition prices one candidate against every medoid slot
+  in a single `O(m)` pass. Exact on the summary under the whole-leaf restriction every shipped head
+  accepts — `Σ_{x ∈ leaf i} ‖x − μ_j‖² = S_i + n_i‖μ_i − μ_j‖²`, so the leaf-level total the swap
+  search minimises **is** the point-level sum of squares up to the constant `Σ_i S_i`. Note the
+  square: classical PAM minimises absolute distance, which has no closed form in a cluster feature, so
+  the squared objective is the one a summary can answer exactly.
+
+  On `digits` (`feature="spherical"`, `threshold=0.0`, ARI median [min–max] over seeds 0–4) it reads
+  **0.554 [0.554–0.570]** at one leaf per point against `kmeans`'s 0.467 [0.443–0.571] — better on the
+  median *and* on the spread, because the centre cannot drift into the gap between two digit classes —
+  and **0.520 [0.468–0.520]** against 0.487 [0.381–0.523] at 296 leaves. It **loses** at a coarse
+  summary, 0.219 against 0.240 at 115 leaves, where there are too few candidate centres to place ten
+  of them well. The `O(m²)` swap pass costs 6× `kmeans` at 1797 leaves and nothing measurable at 296.
+  On the synthetic fixtures at `max_leaves=4000` the two are level (`blobs` 0.864/0.864, `aniso`
+  0.545/0.548, `varied` 0.540/0.548, `highdim` 1.000/1.000, median of seeds 0/1/2).
+
+  Two consequences the head states rather than hides. `n_clusters=0` is not free auto-`k`: total
+  deviation falls monotonically in `k`, so this objective cannot choose one, and the automatic arm
+  runs the medoid silhouette (`dyn_msc`, Lenssen & Schubert 2024) — a different objective. And
+  `refine` is a no-op, because a Lloyd sweep is the k-means update and would move each medoid to the
+  mean of its cluster, off the data. `fit_predict_sparse` rejects the head: on its flat leader summary
+  a row's distance to a single micro-cluster is dominated by that micro-cluster's norm rather than by
+  the overlap that knows the topic, measured at ARI 0.017 (own rule) and 0.002 (micro-cluster route)
+  against 1.000 for `kmeans` — and 1.000 for `kmedoids` itself through `Betula.fit`, which builds a
+  real CF-tree from the same CSR. Rust: `clustering::kmedoids` → `Pam`. Tables in
+  [`docs/USAGE.md`](https://github.com/ilgrad/betula-cluster/blob/main/docs/USAGE.md).
+
 - **`DenStream.drift_` and `DbStream.drift_` — an ADWIN change detector on the streaming heads.**
   `decay` is a schedule: it forgets at a fixed rate whether or not anything changed, and a wrong λ is
   silent in both directions. The detector (Bifet & Gavaldà, SDM 2007) answers the other question —

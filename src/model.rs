@@ -2,10 +2,10 @@
 
 use crate::clustering::{
     Gmm, GmmFull, GmmToeplitz, Linkage, Movmf, Mppca, Objective, agglomerative, agglomerative_auto,
-    gmm_diagonal, gmm_diagonal_auto, gmm_full, gmm_full_auto, gmm_toeplitz, gmm_toeplitz_auto,
-    gmm_toeplitz_full, gmm_toeplitz_full_auto, gmm_toeplitz_gs, gmm_toeplitz_gs_auto, kmeans,
-    kmeans_auto, leiden, movmf, movmf_auto, mppca, mppca_auto, spectral, spherical_kmeans,
-    ward_hac, ward_hac_auto, xmeans,
+    dyn_msc, gmm_diagonal, gmm_diagonal_auto, gmm_full, gmm_full_auto, gmm_toeplitz,
+    gmm_toeplitz_auto, gmm_toeplitz_full, gmm_toeplitz_full_auto, gmm_toeplitz_gs,
+    gmm_toeplitz_gs_auto, kmeans, kmeans_auto, kmedoids, leiden, movmf, movmf_auto, mppca,
+    mppca_auto, spectral, spherical_kmeans, ward_hac, ward_hac_auto, xmeans,
 };
 use crate::distance::CFDistance;
 use crate::feature::ClusterFeature;
@@ -58,6 +58,10 @@ pub enum Method {
         tangent_weight: f64,
         tangent_rank: usize,
     },
+    /// Weighted `k`-medoids over the leaf centroids, by eager FasterPAM. The centre of a cluster is
+    /// one of the data's own microclusters rather than an average. `k == 0` is not automatic: total
+    /// deviation falls monotonically in `k`, so this head's objective cannot select it.
+    KMedoids,
     /// Spherical k-means on the unit sphere (hard cosine assignment) for L2-normalized embeddings.
     SphericalKMeans,
     /// Mixture of von Mises–Fisher distributions (soft directional EM; BIC auto-`k` when `k == 0`).
@@ -98,7 +102,7 @@ pub(crate) enum Rule {
 
 pub(crate) fn assignment_rule(method: Method) -> Rule {
     match method {
-        Method::KMeans | Method::XMeans => Rule::Centroid { unit: false },
+        Method::KMeans | Method::XMeans | Method::KMedoids => Rule::Centroid { unit: false },
         Method::SphericalKMeans => Rule::Centroid { unit: true },
         Method::Gmm
         | Method::GmmFull
@@ -151,6 +155,41 @@ fn cluster_centroids<R: Real, C: ClusterFeature<R>>(
     out
 }
 
+/// Whether BIRCH Phase 4 — Lloyd sweeps over the raw rows, warm-started from the Phase-3 centres —
+/// is defined for this head.
+///
+/// A Lloyd sweep replaces each centre with the mean of the rows nearest it. For `kmeans` and its
+/// variants that *is* the head's own update, so the sweep refines the objective it optimised. For
+/// `kmedoids` it destroys that objective: the centre stops being one of the data's own
+/// microclusters, which is the only reason to have asked for a medoid.
+pub(crate) fn refinable(method: Method) -> bool {
+    !matches!(method, Method::KMedoids)
+}
+
+/// The chosen medoid of each cluster, as `(label, centre)` pairs — the centres a medoid head's
+/// Voronoi partition is actually around.
+///
+/// Only labels a leaf carries are emitted, mirroring [`cluster_centroids`]: a centre no leaf sits on
+/// would let `predict` return a label the fit never produced.
+fn medoid_centers<R: Real, C: ClusterFeature<R>>(
+    features: &[C],
+    medoids: &[usize],
+    labels: &[usize],
+) -> Vec<(usize, Vec<R>)> {
+    let mut used = vec![false; medoids.len()];
+    for &l in labels {
+        if l < used.len() {
+            used[l] = true;
+        }
+    }
+    medoids
+        .iter()
+        .enumerate()
+        .filter(|&(l, _)| used[l])
+        .map(|(l, &i)| (l, features[i].mean().to_vec()))
+        .collect()
+}
+
 /// What a fitted head does with a raw point. The three cases are mutually exclusive by
 /// construction, so no combination of them can be represented.
 enum Assignment<R: Real> {
@@ -180,6 +219,9 @@ pub struct Model<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistan
     entry_labels: Vec<usize>,
     assign: Assignment<R>,
     n_clusters: usize,
+    /// Kept so [`Model::refine`] can refuse the heads a Lloyd sweep would re-optimise into a
+    /// different objective; see [`refinable`].
+    method: Method,
 }
 
 impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> Model<R, C, D, A> {
@@ -199,8 +241,12 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> Mo
         let fit = fit_head(tree.leaf_features(), k, method, max_iter, seed, auto_k_max);
         let n_clusters = distinct_count(&fit.labels);
         let assign = match (assignment_rule(method), fit.mixture) {
+            // A head that named its own centres keeps them: averaging the clusters instead would
+            // hand `predict` a Voronoi partition the fit never produced.
             (Rule::Centroid { unit }, _) => Assignment::Centers {
-                centers: cluster_centroids(tree.leaf_features(), &fit.labels, unit),
+                centers: fit
+                    .centers
+                    .unwrap_or_else(|| cluster_centroids(tree.leaf_features(), &fit.labels, unit)),
                 unit,
             },
             (Rule::Posterior, Some(m)) => Assignment::Posterior(m),
@@ -211,6 +257,7 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> Mo
             entry_labels: fit.labels,
             assign,
             n_clusters,
+            method,
         }
     }
 
@@ -224,10 +271,14 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> Mo
     }
 
     /// BIRCH Phase 4 over the raw rows `flat` (`n × dim`), warm-started from the Phase-3 centres.
-    /// Returns the number of Lloyd sweeps run, `0` for a head that has no centre model — for
-    /// [`Rule::Posterior`] and [`Rule::Microcluster`] "nearest centre" is not the partition the head
-    /// defines, so a centre sweep would silently replace it with a different one.
+    /// Returns the number of Lloyd sweeps run, `0` for a head a centre sweep would re-optimise into a
+    /// different objective: for [`Rule::Posterior`] and [`Rule::Microcluster`] "nearest centre" is
+    /// not the partition the head defines, and for a medoid head the sweep would move the centre off
+    /// the data (see [`refinable`]).
     pub fn refine(&mut self, flat: &[R], n: usize, dim: usize, iters: usize) -> usize {
+        if !refinable(self.method) {
+            return 0;
+        }
         let Assignment::Centers { centers, unit } = &mut self.assign else {
             return 0;
         };
@@ -379,6 +430,11 @@ pub(crate) struct HeadFit<R: Real> {
     pub resp: Option<Vec<Vec<R>>>,
     /// The point-level density, for the heads that are generative.
     pub mixture: Option<Mixture>,
+    /// The head's own `(label, centre)` pairs, for a [`Rule::Centroid`] head whose centres are **not**
+    /// the cluster means — today only `kmedoids`, whose Voronoi partition is around the medoids it
+    /// chose. `None` means "derive them from the labels", which is what every other centroid head
+    /// wants.
+    pub centers: Option<Vec<(usize, Vec<R>)>>,
 }
 
 impl<R: Real> HeadFit<R> {
@@ -388,6 +444,17 @@ impl<R: Real> HeadFit<R> {
             labels,
             resp: None,
             mixture: None,
+            centers: None,
+        }
+    }
+
+    /// A centroid head that names its own centres rather than leaving them to be averaged.
+    fn centred(labels: Vec<usize>, centers: Vec<(usize, Vec<R>)>) -> Self {
+        Self {
+            labels,
+            resp: None,
+            mixture: None,
+            centers: Some(centers),
         }
     }
 
@@ -400,6 +467,7 @@ impl<R: Real> HeadFit<R> {
             labels,
             resp: Some(resp),
             mixture: Some(mixture),
+            centers: None,
         }
     }
 }
@@ -458,6 +526,19 @@ pub(crate) fn fit_head<R: Real, C: ClusterFeature<R>>(
             HeadFit::hard(kmeans_auto(features, 1, hi, max_iter, seed).labels)
         }
         Method::KMeans => HeadFit::hard(kmeans(features, kk, max_iter, 4, seed).labels),
+        // `k == 0` has no meaning for total deviation, which falls monotonically in `k`. The medoid
+        // silhouette can choose, so the automatic arm is DynMSC — a different objective, and the
+        // head's docs say so rather than pretending the sweep is free.
+        Method::KMedoids if k == 0 => {
+            let fit = dyn_msc(features, hi, max_iter, seed);
+            let centers = medoid_centers(features, &fit.medoids, &fit.labels);
+            HeadFit::centred(fit.labels, centers)
+        }
+        Method::KMedoids => {
+            let fit = kmedoids(features, kk, max_iter, seed);
+            let centers = medoid_centers(features, &fit.medoids, &fit.labels);
+            HeadFit::centred(fit.labels, centers)
+        }
         // `AUTO_K_MAX` bounds the *sweep*, whose cost is quadratic in the cap. X-means stops when no
         // centre wants to split, so at `k == 0` the only bound it needs is the leaf count -- taking
         // the sweep's cost guard here would silently truncate the answer this head exists to give.
@@ -612,6 +693,7 @@ mod tests {
         // every head, both fixed-k and auto-k (k == 0), hits its `cluster_leaves` arm.
         for method in [
             Method::KMeans,
+            Method::KMedoids,
             Method::Gmm,
             Method::GmmFull,
             Method::GmmToeplitz,
@@ -692,9 +774,10 @@ mod tests {
         let (feats, _truth) = blob_leaves(6, 10, 40, 0);
         let n = feats.len();
         assert_eq!(n, 24, "the fixture is four leaves per blob");
-        let selected: [(&str, usize); 7] = [
+        let selected: [(&str, usize); 8] = [
             ("kmeans", kmeans_auto(&feats, 1, n, 100, 1).centers.len()),
             ("xmeans", xmeans(&feats, 2, n, 100, 1).centers.len()),
+            ("kmedoids", dyn_msc(&feats, n, 100, 1).k),
             ("gmm", gmm_diagonal_auto(&feats, 1, n, 100, 1).means.len()),
             ("gmm-full", gmm_full_auto(&feats, 1, n, 100, 1).means.len()),
             ("mppca", mppca_auto(&feats, 1, n, 1, 100, 1).means.len()),
@@ -733,6 +816,7 @@ mod tests {
                     linkage: Linkage::Median,
                 },
             ),
+            ("kmedoids", Method::KMedoids),
             ("spherical-kmeans", Method::SphericalKMeans),
             ("movmf", Method::Movmf),
             ("gmm-toeplitz", Method::GmmToeplitz),
@@ -929,6 +1013,7 @@ mod tests {
         for (name, method) in [
             ("kmeans", Method::KMeans),
             ("xmeans", Method::XMeans),
+            ("kmedoids", Method::KMedoids),
             ("spherical-kmeans", Method::SphericalKMeans),
             ("gmm", Method::Gmm),
             ("movmf", Method::Movmf),
@@ -1128,6 +1213,65 @@ mod tests {
         let mut centers = vec![0.0, 1.0];
         refine_centers(&mut centers, &[1.0, 0.0, -1.0, 0.0], 2, 2, true, 10);
         assert_eq!(centers, [0.0, 0.0], "{centers:?}");
+    }
+
+    #[test]
+    fn the_medoid_head_publishes_the_centres_it_chose_and_not_the_cluster_means() {
+        // The medoid head's partition is Voronoi around leaves it picked out of the data. Deriving
+        // the centres from the labels instead — which is what every other centroid head wants — would
+        // average each cluster and hand `predict` a partition the fit never produced, the #106/#107
+        // bug class. So every published centre has to *be* a leaf centroid, exactly.
+        let mut rng = SplitMix64::new(6);
+        let centers = [[0.0, 0.0], [9.0, 0.0], [0.0, 9.0], [9.0, 9.0]];
+        let (pts, truth) = blobs(&mut rng, 250, &centers, 1.0);
+        let mut tree: CFTree<f64, Diagonal<f64>, _, _> =
+            CFTree::new(2, 8, 8, 1.5, 64, CentroidEuclidean, CentroidEuclidean);
+        for p in &pts {
+            tree.insert(p);
+        }
+        let leaves: Vec<Vec<f64>> = tree
+            .leaf_features()
+            .iter()
+            .map(|f| f.mean().to_vec())
+            .collect();
+        let model = Model::fit(tree, 4, Method::KMedoids, 100, 6, 0);
+        let Assignment::Centers { centers, .. } = &model.assign else {
+            unreachable!("the medoid head is a centroid head")
+        };
+        assert_eq!(centers.len(), 4);
+        for (_, c) in centers {
+            assert!(
+                leaves.iter().any(|mu| mu == c),
+                "centre {c:?} is not one of the leaf centroids"
+            );
+        }
+        let labels: Vec<usize> = pts.iter().map(|p| model.predict(p)).collect();
+        assert!(
+            ari(&labels, &truth) > 0.95,
+            "ARI = {}",
+            ari(&labels, &truth)
+        );
+    }
+
+    #[test]
+    fn refinement_is_declined_by_the_medoid_head_whose_centre_lives_in_the_data() {
+        // A Lloyd sweep is the k-means update, so refining a medoid replaces it with the mean of its
+        // cluster — a point that is generally not in the data at all. The head would keep its name
+        // and stop answering its own objective, which is worse than declining the sweep.
+        let mut rng = SplitMix64::new(8);
+        let centers = [[0.0, 0.0], [8.0, 0.0], [0.0, 8.0]];
+        let (pts, _) = blobs(&mut rng, 200, &centers, 0.8);
+        let flat: Vec<f64> = pts.iter().flatten().copied().collect();
+        let mut tree: CFTree<f64, Diagonal<f64>, _, _> =
+            CFTree::new(2, 16, 16, 1.0, 64, CentroidEuclidean, CentroidEuclidean);
+        for p in &pts {
+            tree.insert(p);
+        }
+        let mut model = Model::fit(tree, 3, Method::KMedoids, 100, 8, 0);
+        let before: Vec<usize> = pts.iter().map(|p| model.predict(p)).collect();
+        assert_eq!(model.refine(&flat, pts.len(), 2, 10), 0);
+        let after: Vec<usize> = pts.iter().map(|p| model.predict(p)).collect();
+        assert_eq!(before, after, "a declined sweep still moved a centre");
     }
 
     #[test]
