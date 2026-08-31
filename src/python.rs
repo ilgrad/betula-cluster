@@ -299,6 +299,7 @@ fn parse_method(
         }
         "spherical-kmeans" => Ok(Kind::Parametric(Method::SphericalKMeans)),
         "vmf" => Ok(Kind::Parametric(Method::Movmf)),
+        "watson" => Ok(Kind::Parametric(Method::Watson)),
         "gmm-toeplitz" => Ok(Kind::Parametric(Method::GmmToeplitz)),
         "gmm-toeplitz-full" => Ok(Kind::Parametric(Method::GmmToeplitzFull)),
         "gmm-toeplitz-gs" => Ok(Kind::Parametric(Method::GmmToeplitzGs)),
@@ -322,8 +323,9 @@ fn parse_method(
         _ => Err(PyValueError::new_err(
             "method must be 'kmeans', 'xmeans', 'kmedoids', 'fuzzy-cmeans', 'gmm', 'gmm-full', \
              'mppca', 'ward', 'average', 'weighted', 'centroid', 'median', 'spectral', 'leiden', \
-             'leiden-cpm', 'spherical-kmeans', 'vmf', 'gmm-toeplitz', 'gmm-toeplitz-full', \
-             'gmm-toeplitz-gs', 'hdbscan', 'dc-center', 'dc-median' or 'scale-space'",
+             'leiden-cpm', 'spherical-kmeans', 'vmf', 'watson', 'gmm-toeplitz', \
+             'gmm-toeplitz-full', 'gmm-toeplitz-gs', 'hdbscan', 'dc-center', 'dc-median' or \
+             'scale-space'",
         )),
     }
 }
@@ -1398,7 +1400,7 @@ fn run_oneshot<R: Real + Element>(
     let normalize = normalize
         || matches!(
             kind,
-            Kind::Parametric(Method::SphericalKMeans | Method::Movmf)
+            Kind::Parametric(Method::SphericalKMeans | Method::Movmf | Method::Watson)
         );
     if normalize {
         normalize_rows(&mut flat, n, dim);

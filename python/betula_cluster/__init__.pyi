@@ -63,6 +63,7 @@ _Method = Literal[
     "leiden-cpm",
     "spherical-kmeans",
     "vmf",
+    "watson",
     "gmm-toeplitz",
     "gmm-toeplitz-full",
     "gmm-toeplitz-gs",

@@ -174,6 +174,81 @@ def test_vmf_predict_proba_is_true_posterior(sphere_blobs):
     assert ari(proba.argmax(axis=1), y) > 0.9
 
 
+# ── the axial head (Watson) ──────────────────────────────────────────────────────────────────────
+
+
+@pytest.fixture(scope="module")
+def axial_blobs():
+    """Three *axes* on the unit hypersphere, each populated at both of its poles.
+
+    To a vMF mixture this is six clusters whose resultants cancel in pairs; to a Watson mixture it
+    is three. Returns ``(X unit-norm float64, y)`` with `y` naming the axis, not the pole.
+    """
+    rng = np.random.default_rng(2)
+    d, k, per = 16, 3, 600
+    axes = rng.normal(size=(k, d))
+    axes /= np.linalg.norm(axes, axis=1, keepdims=True)
+    xs, ys = [], []
+    for c, axis in enumerate(axes):
+        sign = np.where(np.arange(per) % 2 == 0, 1.0, -1.0)[:, None]
+        pts = sign * axis + 0.25 * rng.normal(size=(per, d))
+        pts /= np.linalg.norm(pts, axis=1, keepdims=True)
+        xs.append(pts)
+        ys += [c] * per
+    return np.vstack(xs).astype(np.float64), np.array(ys)
+
+
+def test_watson_reads_an_axis_where_the_vmf_head_reads_two_directions(axial_blobs):
+    x, y = axial_blobs
+    kw = dict(threshold=0.05, max_leaves=300, seed=1)
+    axial = betula_cluster.fit_predict(x, 3, method="watson", **kw)
+    directional = betula_cluster.fit_predict(x, 3, method="vmf", **kw)
+    assert ari(axial, y) > 0.9
+    # Not a weaker score on the same partition — the vMF head is answering a different question,
+    # and three components cannot cover six poles.
+    assert ari(directional, y) < 0.6
+
+
+def test_watson_labels_a_point_and_its_antipode_alike(axial_blobs):
+    x, y = axial_blobs
+    est = betula_cluster.Betula(
+        method="watson", n_clusters=3, threshold=0.05, max_leaves=300, seed=1
+    )
+    labels = est.fit(x).predict(x)
+    np.testing.assert_array_equal(labels, est.predict(-x))
+    assert ari(labels, y) > 0.9
+
+
+def test_watson_auto_k_selects_the_axis_count(axial_blobs):
+    x, y = axial_blobs
+    labels = betula_cluster.fit_predict(
+        x, n_clusters=0, method="watson", threshold=0.05, max_leaves=300, seed=1
+    )
+    assert n_labels(labels) == 3
+    assert ari(labels, y) > 0.9
+
+
+def test_watson_predict_proba_is_true_posterior(axial_blobs):
+    x, y = axial_blobs
+    est = betula_cluster.Betula(
+        method="watson", n_clusters=3, threshold=0.05, max_leaves=300, seed=1
+    ).fit(x)
+    proba = est.predict_proba(x)
+    assert proba.shape == (len(x), 3)
+    assert np.allclose(proba.sum(axis=1), 1.0, atol=1e-6)
+    assert ari(proba.argmax(axis=1), y) > 0.9
+
+
+def test_watson_wants_the_off_diagonal_scatter_a_spherical_leaf_discards(axial_blobs):
+    # The axial signal is in `Σ_i + μ_i μ_iᵀ`; a spherical leaf keeps one scalar of it. The head
+    # still runs there, on the leaf means alone, and this is what that costs.
+    x, y = axial_blobs
+    kw = dict(n_clusters=3, method="watson", threshold=0.05, max_leaves=300, seed=1)
+    full = betula_cluster.fit_predict(x, feature="full", **kw)
+    spherical = betula_cluster.fit_predict(x, feature="spherical", **kw)
+    assert ari(full, y) > ari(spherical, y)
+
+
 @pytest.fixture(scope="module")
 def ar_windows():
     """Three AR components distinguishable ONLY by autocovariance (unit marginal variance)."""
@@ -3008,7 +3083,16 @@ def test_consensus_parallel_matches_serial(blobs):
 
 @pytest.mark.parametrize(
     "method",
-    ["gmm", "gmm-full", "mppca", "vmf", "gmm-toeplitz", "gmm-toeplitz-full", "gmm-toeplitz-gs"],
+    [
+        "gmm",
+        "gmm-full",
+        "mppca",
+        "vmf",
+        "watson",
+        "gmm-toeplitz",
+        "gmm-toeplitz-full",
+        "gmm-toeplitz-gs",
+    ],
 )
 def test_mixture_labels_are_the_maximum_posterior(method):
     """A mixture head assigns by maximum posterior; `predict` must return that partition.

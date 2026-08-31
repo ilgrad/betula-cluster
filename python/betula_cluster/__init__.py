@@ -573,10 +573,11 @@ _DEFAULTS = {
 }
 _PARAM_NAMES = tuple(_DEFAULTS)
 
-# Directional heads (`spherical-kmeans` / `vmf`) cluster points on the unit sphere, so the engine
-# is always built with ``normalize=True`` for them. ``self.normalize`` is left as the user set it —
-# ``get_params`` stays verbatim so ``sklearn.base.clone`` / ``set_params`` round-trip unchanged.
-_DIRECTIONAL_METHODS = ("spherical-kmeans", "vmf")
+# Directional heads (`spherical-kmeans` / `vmf` / `watson`) cluster points on the unit sphere, so
+# the engine is always built with ``normalize=True`` for them. ``self.normalize`` is left as the
+# user set it — ``get_params`` stays verbatim so ``sklearn.base.clone`` / ``set_params``
+# round-trip unchanged.
+_DIRECTIONAL_METHODS = ("spherical-kmeans", "vmf", "watson")
 
 # `threshold="auto"` pilot: fit this many points (max of the two) to estimate a warm-start
 # threshold. Oversampling the leaf budget makes the subsample crowd the tree to `max_leaves`, so
@@ -1482,8 +1483,8 @@ class Betula:
     def predict_proba(self, X):
         """Per-point soft assignment, shape ``(n, n_components)``.
 
-        The **GMM**, **vMF**, and **Toeplitz** (``gmm-toeplitz`` / ``-full`` / ``-gs``) heads score
-        the point under the fitted mixture, so ``predict_proba(X).argmax(1)`` is exactly
+        The **GMM**, **vMF**, **Watson** and **Toeplitz** (``gmm-toeplitz`` / ``-full`` / ``-gs``)
+        heads score the point under the fitted mixture, so ``predict_proba(X).argmax(1)`` is exactly
         :meth:`predict`. **fuzzy-cmeans** returns its own memberships
         ``u_j ∝ d_j^{−1/(m−1)}``, which also argmax to :meth:`predict` but are a partition of
         unity over the centres, **not** a posterior — no density is fitted. **k-means / x-means /
@@ -1497,6 +1498,7 @@ class Betula:
             "gmm-full",
             "mppca",
             "vmf",
+            "watson",
             "gmm-toeplitz",
             "gmm-toeplitz-full",
             "gmm-toeplitz-gs",

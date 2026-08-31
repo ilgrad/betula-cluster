@@ -1,11 +1,12 @@
 //! End-to-end model: build a CF-tree, cluster its leaves (Phase 3), and label points.
 
 use crate::clustering::{
-    Gmm, GmmFull, GmmToeplitz, Linkage, Movmf, Mppca, Objective, agglomerative, agglomerative_auto,
-    dyn_msc, fuzzy_cmeans, fuzzy_cmeans_auto, gmm_diagonal, gmm_diagonal_auto, gmm_full,
-    gmm_full_auto, gmm_toeplitz, gmm_toeplitz_auto, gmm_toeplitz_full, gmm_toeplitz_full_auto,
-    gmm_toeplitz_gs, gmm_toeplitz_gs_auto, kmeans, kmeans_auto, kmedoids, leiden, movmf,
-    movmf_auto, mppca, mppca_auto, spectral, spherical_kmeans, ward_hac, ward_hac_auto, xmeans,
+    Gmm, GmmFull, GmmToeplitz, Linkage, Movmf, Mppca, Objective, Watson, agglomerative,
+    agglomerative_auto, dyn_msc, fuzzy_cmeans, fuzzy_cmeans_auto, gmm_diagonal, gmm_diagonal_auto,
+    gmm_full, gmm_full_auto, gmm_toeplitz, gmm_toeplitz_auto, gmm_toeplitz_full,
+    gmm_toeplitz_full_auto, gmm_toeplitz_gs, gmm_toeplitz_gs_auto, kmeans, kmeans_auto, kmedoids,
+    leiden, movmf, movmf_auto, mppca, mppca_auto, spectral, spherical_kmeans, ward_hac,
+    ward_hac_auto, watson, watson_auto, xmeans,
 };
 use crate::distance::CFDistance;
 use crate::feature::ClusterFeature;
@@ -69,6 +70,10 @@ pub enum Method {
     SphericalKMeans,
     /// Mixture of von Mises–Fisher distributions (soft directional EM; BIC auto-`k` when `k == 0`).
     Movmf,
+    /// Mixture of Watson distributions — directions **up to sign**, for data where `x` and `−x` mean
+    /// the same thing (eigenvectors, line orientations, symmetric embeddings). Reads the leaf
+    /// scatter, so it wants `feature="full"`. BIC auto-`k` when `k == 0`.
+    Watson,
     /// AR / Toeplitz-structured GMM for ordered, wide-sense-stationary signals (time-series windows,
     /// trajectories). BIC auto-`k` when `k == 0`; use `feature="spherical"` or `"diagonal"`.
     GmmToeplitz,
@@ -115,6 +120,7 @@ pub(crate) fn assignment_rule(method: Method) -> Rule {
         | Method::GmmToeplitzFull
         | Method::GmmToeplitzGs
         | Method::Movmf
+        | Method::Watson
         | Method::Mppca { .. } => Rule::Posterior,
         Method::Ward | Method::Agglomerative { .. } | Method::Spectral | Method::Leiden { .. } => {
             Rule::Microcluster
@@ -430,6 +436,7 @@ mixture_fit!(Gmm);
 mixture_fit!(GmmFull);
 mixture_fit!(GmmToeplitz);
 mixture_fit!(Movmf);
+mixture_fit!(Watson);
 mixture_fit!(Mppca);
 
 /// What one Phase-3 head fit produced.
@@ -633,6 +640,8 @@ pub(crate) fn fit_head<R: Real, C: ClusterFeature<R>>(
         }
         Method::Movmf if k == 0 => HeadFit::soft(movmf_auto(features, 1, hi, max_iter, seed)),
         Method::Movmf => HeadFit::soft(movmf(features, kk, max_iter, seed)),
+        Method::Watson if k == 0 => HeadFit::soft(watson_auto(features, 1, hi, max_iter, seed)),
+        Method::Watson => HeadFit::soft(watson(features, kk, max_iter, seed)),
         Method::GmmToeplitz if k == 0 => {
             HeadFit::soft(gmm_toeplitz_auto(features, 1, hi, max_iter, seed))
         }
@@ -758,6 +767,7 @@ mod tests {
             },
             Method::SphericalKMeans,
             Method::Movmf,
+            Method::Watson,
         ] {
             for k in [3usize, 0usize] {
                 let labels = fit_head(&feats, k, method, 100, 1, 0).labels;
@@ -852,6 +862,7 @@ mod tests {
             ("kmedoids", Method::KMedoids),
             ("spherical-kmeans", Method::SphericalKMeans),
             ("movmf", Method::Movmf),
+            ("watson", Method::Watson),
             ("gmm-toeplitz", Method::GmmToeplitz),
             ("gmm-toeplitz-full", Method::GmmToeplitzFull),
             ("gmm-toeplitz-gs", Method::GmmToeplitzGs),
@@ -1050,6 +1061,7 @@ mod tests {
             ("spherical-kmeans", Method::SphericalKMeans),
             ("gmm", Method::Gmm),
             ("movmf", Method::Movmf),
+            ("watson", Method::Watson),
             ("ward", Method::Ward),
             (
                 "centroid",

@@ -264,7 +264,7 @@ a new point follows from that head's own objective — not from where the tree h
 | head | rule |
 |---|---|
 | `kmeans`, `spherical-kmeans` | $\arg\min_c \lVert x - c \rVert^2$ over the cluster centres (spherical compares unit-normalized centres, where the Euclidean argmin and the cosine argmax agree) |
-| `gmm`, `gmm-full`, `vmf`, `gmm-toeplitz{,-full,-gs}` | $\arg\max_c\ \ln \pi_c + \ln p(x \mid \theta_c)$ |
+| `gmm`, `gmm-full`, `vmf`, `watson`, `gmm-toeplitz{,-full,-gs}` | $\arg\max_c\ \ln \pi_c + \ln p(x \mid \theta_c)$ |
 | `ward`, `spectral`, `leiden`, `hdbscan`, `scale-space` | nearest leaf entry, then that entry's label |
 
 The third row is not a fallback but the only defined answer: those clusters need not be convex, so any
@@ -437,7 +437,7 @@ or an initialisation that reads coordinate 0. The groups the crate claims, and e
 | `kmeans`, `xmeans`, `ward_hac`, `agglomerative`, `dyn_msc`, `kmedoids`, `fuzzy_cmeans`, `hdbscan` | yes | yes | yes | yes |
 | `gmm_full`, `mppca`, `spectral`, `scale_space` | yes | yes | yes | yes |
 | `gmm_diagonal` | yes | **no** | yes | yes |
-| `spherical_kmeans`, `movmf` | **no** | yes | yes | yes |
+| `spherical_kmeans`, `movmf`, `watson` | **no** | yes | yes | yes |
 | `gmm_toeplitz` | yes | **no** | yes | **no** |
 
 Three rows are exceptions by construction, not defects. An axis-aligned covariance is a claim *about

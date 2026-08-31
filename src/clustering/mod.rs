@@ -25,6 +25,7 @@ pub mod scalespace;
 pub mod spectral;
 pub mod vmf;
 pub mod ward;
+pub mod watson;
 pub mod xmeans;
 
 pub use agglomerative::{
@@ -50,6 +51,7 @@ pub use scalespace::{ScaleSpace, scale_space};
 pub use spectral::{Spectral, spectral};
 pub use vmf::{Movmf, SphericalKMeans, movmf, movmf_auto, spherical_kmeans};
 pub use ward::{WardHac, ward_hac, ward_hac_auto};
+pub use watson::{Watson, watson, watson_auto};
 pub use xmeans::xmeans;
 
 #[cfg(test)]

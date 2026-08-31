@@ -68,7 +68,12 @@ A capability-by-capability reference. For runnable code see [`USAGE.md`](USAGE.m
   true posterior and BIC auto-`k`) for L2-normalized embeddings (CLIP / face / sentence / speaker),
   where cosine — not Euclidean — geometry matters; each leaf keeps its weighted mean so the resultant
   `R_c = Σ n_i μ_i` is exactly mergeable (BETULA on the sphere) and the concentration `κ`
-  (Banerjee 2005) is estimated without a Bessel library, with input auto-L2-normalized, and
+  (Banerjee 2005) is estimated without a Bessel library, with input auto-L2-normalized;
+  **axial** clustering for data whose sign carries no information — eigenvectors, SVD/PCA axes, line
+  orientations — through a **mixture of Watson distributions** (`"watson"`, Watson 1965;
+  `p(x) ∝ exp(κ (μᵀx)²)`, so `x` and `−x` are the same point), whose sufficient statistic is the
+  second moment `Σ_i + μ_i μ_iᵀ` the `full` leaf already carries exactly, with `κ < 0` fitting
+  **girdle** (equatorial) components as well as bipolar ones and BIC auto-`k`, and
   **HDBSCAN-style density clustering over the CF microclusters** (mass-aware mutual-reachability +
   mass-weighted stability → non-convex clusters and noise, automatic count; an *approximation* of
   raw-point HDBSCAN over the $M \ll N$ microclusters, not identical to it, with `graph_degree > 0`

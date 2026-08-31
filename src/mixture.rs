@@ -129,6 +129,12 @@ enum Kernel {
         means: Vec<Vec<f64>>,
         kappas: Vec<f64>,
     },
+    /// Watson on the unit sphere — the same shape as [`Kernel::Vmf`] with the dot product **squared**,
+    /// which is the whole difference between a direction and an axis.
+    Watson {
+        means: Vec<Vec<f64>>,
+        kappas: Vec<f64>,
+    },
     /// Probabilistic-PCA component: `Σ_c = W_c W_cᵀ + σ_c² I`, held as the `q` loading rows, the
     /// Cholesky of `M_c = σ_c² I_q + W_cᵀ W_c` and `1/σ_c²`. Scoring goes through Woodbury, so no
     /// `d×d` matrix exists here either — the reason this head can hold `k` components at `d = 784`.
@@ -235,6 +241,27 @@ impl Mixture {
                 .collect(),
             kernel: Kernel::Vmf {
                 means: widen_rows(means),
+                kappas: widen_row(kappas),
+            },
+        }
+    }
+
+    /// Watson axial mixture (`method="watson"`), given each component's log-normalizer
+    /// `ln(Γ(d/2) / (2 π^(d/2) M(1/2, d/2, κ_c)))` — the Kummer numerics stay with the head.
+    pub(crate) fn watson<R: Real>(
+        weights: &[R],
+        axes: &[Vec<R>],
+        kappas: &[R],
+        logc: &[f64],
+    ) -> Self {
+        Self {
+            logw: weights
+                .iter()
+                .zip(logc)
+                .map(|(&w, &lc)| ln_weight(w) + lc)
+                .collect(),
+            kernel: Kernel::Watson {
+                means: widen_rows(axes),
                 kappas: widen_row(kappas),
             },
         }
@@ -393,6 +420,15 @@ impl Mixture {
                     out.push(lw + kap * dot * scale);
                 }
             }
+            Kernel::Watson { means, kappas } => {
+                let norm = x.iter().map(|&v| as_f64(v) * as_f64(v)).sum::<f64>().sqrt();
+                let scale = if norm > 0.0 { 1.0 / norm } else { 0.0 };
+                for ((&lw, mu), &kap) in self.logw.iter().zip(means).zip(kappas) {
+                    let dot: f64 = x.iter().zip(mu).map(|(&xd, &md)| as_f64(xd) * md).sum();
+                    let c = dot * scale;
+                    out.push(lw + kap * c * c);
+                }
+            }
         }
     }
 
@@ -413,7 +449,7 @@ impl Mixture {
                 .zip(inv_var)
                 .map(|(mu, iv)| mu.iter().zip(iv).map(|(&m, &v)| m * m * v).sum())
                 .collect(),
-            Kernel::Vmf { .. } => Vec::new(),
+            Kernel::Vmf { .. } | Kernel::Watson { .. } => Vec::new(),
             Kernel::Full { .. } | Kernel::Stationary { .. } | Kernel::LowRank { .. } => {
                 return None;
             }
@@ -509,6 +545,14 @@ impl SparseAssigner<'_> {
                 for ((&lw, mu), &kap) in m.logw.iter().zip(means).zip(kappas) {
                     let dot: f64 = idx.iter().zip(val).map(|(&j, &x)| x * mu[j]).sum();
                     scores.push(lw + kap * dot * scale);
+                }
+            }
+            Kernel::Watson { means, kappas } => {
+                let scale = if x_sq > 0.0 { x_sq.sqrt().recip() } else { 0.0 };
+                for ((&lw, mu), &kap) in m.logw.iter().zip(means).zip(kappas) {
+                    let dot: f64 = idx.iter().zip(val).map(|(&j, &x)| x * mu[j]).sum();
+                    let c = dot * scale;
+                    scores.push(lw + kap * c * c);
                 }
             }
             // `sparse_assigner` is the only constructor and it refuses these kernels.

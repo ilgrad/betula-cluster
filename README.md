@@ -121,6 +121,7 @@ labels = betula_cluster.fit_predict(X, n_clusters=8, method="spectral", threshol
 labels = betula_cluster.fit_predict(X, method="leiden", threshold=0.4)                    # graph communities; count auto-discovered
 labels = betula_cluster.fit_predict(X, method="hdbscan", min_cluster_size=25)            # HDBSCAN-CF; -1 = noise
 labels = betula_cluster.fit_predict(X, n_clusters=10, method="vmf")                       # directional / cosine (input auto-L2-normalized)
+labels = betula_cluster.fit_predict(X, n_clusters=4, method="watson", feature="full")     # axial: x and -x are the same point
 ```
 
 Streaming / out-of-core — feed chunks, finalize, predict; memory stays bounded by `max_leaves`:
@@ -223,6 +224,18 @@ snapshots / active-learning batches, the Rust API, and the CLI — all in the
   point on `digits` it beats both the diagonal and the full head (ARI 0.600 vs 0.461 / 0.575); on a
   coarse summary it loses to the diagonal head, and
   [`docs/USAGE.md`](https://github.com/ilgrad/betula-cluster/blob/main/docs/USAGE.md) measures why.
+- **Axial mixture** — **`method="watson"`** (Watson 1965), for directional data whose **sign is
+  arbitrary**: eigenvectors, SVD/PCA axes, line orientations, any feature where `x` and `−x` are the
+  same observation. `p(x) ∝ exp(κ (μᵀx)²)` is antipodally symmetric, so where `vmf` spends half its
+  components on the antipodes of the other half, this reads one axis. Its sufficient statistic is the
+  second moment `Σ_i + μ_i μ_iᵀ`, which the `full` leaf carries exactly — the E-step is closed form,
+  not an approximation. On a 32-D four-axis fixture with half of each cluster at each pole it scores
+  ARI **0.953** against `vmf`'s 0.218 and `gmm-full`'s 0.316, and its BIC finds `k = 4` where `vmf`
+  answers 8; on `digits`-PCA20 with a random half of the rows sign-flipped it moves 0.498 → **0.503**
+  while every other head loses 60–70 %. The trade is explicit: where the sign *does* carry information
+  it loses to `vmf` (0.952 vs 0.976), and it costs 5–8× `vmf` in wall clock. `κ < 0` fits **girdle**
+  (equatorial) components too, and `n_clusters=0` selects `k` by BIC —
+  [`docs/USAGE.md`](https://github.com/ilgrad/betula-cluster/blob/main/docs/USAGE.md).
 - **More heads & data** — `DenStream` / `DbStream` evolving-stream density, mergeable `KllSketch` /
   `DdSketch` quantiles, `scipy.sparse` (`O(nnz)`, never densified), mixed numeric+categorical
   (`KPrototypes`), COP-KMeans constraints, robust (Huber) insertion, drift snapshots, dependency-free CLI.

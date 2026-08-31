@@ -49,6 +49,50 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- **`method="watson"` — a mixture of Watson distributions, for directional data whose sign is
+  arbitrary (Watson 1965; Mardia & Jupp 2000 §9.4.1).** `p(x | μ, κ) ∝ exp(κ (μᵀx)²)` is invariant
+  under `x ↦ −x`, so eigenvectors, SVD/PCA axes, line orientations and any feature a pipeline signs
+  arbitrarily are clustered as **axes**, not directions. `movmf` cannot: handed two equally populated
+  poles of one axis it either spends two components on them or watches its resultant `Σ n_i μ_i`
+  cancel to nothing. The sufficient statistic is the second moment about the origin, which a cluster
+  feature carries **exactly** — `E[x xᵀ] = Σ_i + μ_i μ_iᵀ` — so the E-step term
+  `E_{x ∈ leaf}[(μ_cᵀx)²] = μ_cᵀ (Σ_i + μ_i μ_iᵀ) μ_c` is closed form and the within-leaf spread is
+  integrated rather than dropped, the same status the Gaussian heads' E-step has. `κ < 0` fits
+  **girdle** (equatorial) components alongside bipolar ones, chosen by likelihood rather than by a
+  flag. Input is auto-L2-normalized as for `vmf` / `spherical-kmeans`; `n_clusters=0` selects `k` by
+  BIC. Rust: `clustering::{watson, watson_auto, Watson}`. **Dense path only** — a sparse leaf summary
+  is spherical and carries no off-diagonal scatter, so `fit_predict_sparse` does not accept it.
+- **What the axial head buys, and what it costs.** `N = 6 000`, `max_leaves=300`, `feature="full"`,
+  median of seeds 0/1/2, ARI — on an axial fixture with **half of each cluster's points at each pole**
+  of its axis: 8-D **0.870**, 32-D **0.953**, 64-D **0.961**, against `vmf` 0.208 / 0.218 / 0.221,
+  `gmm-full` 0.309 / 0.316 / 0.200 and `kmeans` 0.233 / 0.244 / 0.232. Its BIC answers `k = 4` where
+  `vmf` answers 8 — one component per pole, the failure the head exists to fix. On `digits`-PCA20 with
+  a random half of the rows multiplied by −1 and the labels untouched it reads 0.498 → **0.503**,
+  while `vmf` falls 0.631 → 0.173, `gmm-full` 0.685 → 0.284 and `kmeans` 0.665 → 0.221. **The trade is
+  explicit and ships in the docs**: where the sign *does* carry information the head is a loss
+  (one pole per axis, 32-D: 0.952 against `vmf`'s 0.976), on un-flipped `digits` it is the worst of the
+  five, a *mixture* of girdles is not recovered (0.100 on a three-great-circle fixture, where the
+  circles intersect and no axial model can separate them), and it is the most expensive directional
+  head at 5–8× `vmf`. **`feature="full"`, but the margin is narrower than the derivation suggests** —
+  measured across `max_leaves` 4…300, `spherical` / `diagonal` / `full` tie at ARI ≈ 0.95 once every
+  leaf mean has unit norm (~20 leaves up), and `full` leads by 0.10–0.15 only below that, where a leaf
+  straddles both poles and its mean cancels; `fd` is the one to avoid at a coarse budget. Tables in
+  [`docs/USAGE.md`](https://github.com/ilgrad/betula-cluster/blob/main/docs/USAGE.md).
+- **The two special-function identities the head rests on were verified in Maxima before it was
+  written.** `M'(a,b,z) = (a/b) M(a+1,b+1,z)` gives the concentration equation
+  `g(κ) = (1/d) M(3/2, d/2+1, κ) / M(1/2, d/2, κ) = r̄`, and Kummer's transformation
+  `M(a,b,z) = e^z M(b−a,b,−z)` is what makes `κ < 0` computable at all — the ascending series
+  alternates for a negative argument and loses every digit to cancellation, while for a positive one
+  every term is positive and the sum is exact to roundoff. Both residuals are exactly `0` as series
+  identities in `z` for symbolic `a`, `b`. The leading asymptotic
+  `M(a,b,κ) ≈ Γ(b)/Γ(a) e^κ κ^(a−b)` is **not** used: against the Maxima table it is 42 % low at
+  `d = 50, κ = 50` and still 1.2 % low at `κ = 1000`, because the expansion parameter at fixed `(a,b)`
+  is `(b−a)²/z ≈ d²/4z`, which is not small at moderate `d`. The series therefore runs everywhere and
+  `κ` is capped at `10⁴` instead, where its length is bounded. `g` is strictly increasing with
+  `g(0) = 1/d`, `g(−∞) = 0`, `g(+∞) = 1`, so `r̄ ≷ 1/d` fixes the sign of `κ` before any solving and
+  the solver cannot pick the wrong branch. Unit tests check `log M` and `g` against 24 Maxima goldens
+  spanning `d ∈ [2, 200]` and both signs of `κ`.
+
 - **`method="dc-median"` / `method="dc-center"` — exact `k`-median and `k`-center in the
   density-connectivity ultrametric (Beer, Draganov, Hohma, Jahn, Frey & Assent, KDD 2023).** The same
   mutual-reachability spanning tree `method="hdbscan"` takes its hierarchy from, cut for a `k` the

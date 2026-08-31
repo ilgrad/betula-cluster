@@ -19,7 +19,7 @@ labels = betula_cluster.fit_predict(X, method="hdbscan", min_samples=10, min_clu
 # hdbscan: label -1 == noise
 ```
 
-Keyword args: `feature ∈ {spherical, diagonal, full, fd}`, `method ∈ {kmeans, xmeans, kmedoids, fuzzy-cmeans, gmm, gmm-full, mppca, ward, average, weighted, centroid, median, spectral, leiden, leiden-cpm, spherical-kmeans, vmf, gmm-toeplitz, gmm-toeplitz-full, gmm-toeplitz-gs, hdbscan, dc-center, dc-median, scale-space}`,
+Keyword args: `feature ∈ {spherical, diagonal, full, fd}`, `method ∈ {kmeans, xmeans, kmedoids, fuzzy-cmeans, gmm, gmm-full, mppca, ward, average, weighted, centroid, median, spectral, leiden, leiden-cpm, spherical-kmeans, vmf, watson, gmm-toeplitz, gmm-toeplitz-full, gmm-toeplitz-gs, hdbscan, dc-center, dc-median, scale-space}`,
 `distance ∈ {euclidean, manhattan, ward, average}` (routing measure),
 `absorb ∈ {euclidean, manhattan, average, diameter, ward, radius, chi2, subspace}` (see *Absorption criteria*
 below; `chi2` = mass-invariant Mahalanobis gate at level `chi2_p` with `chi2_scale` = within-cluster
@@ -120,6 +120,7 @@ answer.
 | elliptical / correlated / anisotropic, soft assignment | `gmm` (diag) or `gmm-full` | yes (or `0` = BIC) |
 | clusters on **low-dimensional subspaces**, `d` too large for `gmm-full` | `mppca` + `feature="fd"`, `rank` = the intrinsic dimension — read *`rank`, and where `mppca` loses* first | yes (or `0` = BIC) |
 | **L2-normalized embeddings** (CLIP / face / sentence / speaker), cosine geometry | `vmf` (soft) or `spherical-kmeans` (hard) | yes (or `0` = BIC, `vmf`) |
+| the same, but the **sign is arbitrary** — eigenvectors, SVD/PCA axes, line orientations, any feature where `x` and `−x` mean the same thing | `watson` — read *Directions without a sign* | yes (or `0` = BIC) |
 | a cluster *hierarchy* / merge structure | `ward` | yes (or `0` = dendrogram cut) |
 | **non-convex / manifold** shapes (moons, rings, spirals) | `spectral` | yes (pair with a **small** `threshold`) |
 | **community / graph structure**, unknown count | `leiden` (or `leiden-cpm`) | **no** — count is discovered; tune `resolution` |
@@ -138,7 +139,7 @@ For a robustness score per point, wrap any partitional head in `consensus` (see 
 
 Two families of selector sit behind `n_clusters=0`, and they pay for a wide search differently.
 
-A **sweep** — `kmeans`, `gmm`, `gmm-full`, `mppca`, `vmf` and the three `gmm-toeplitz` rungs — refits
+A **sweep** — `kmeans`, `gmm`, `gmm-full`, `mppca`, `vmf`, `watson` and the three `gmm-toeplitz` rungs — refits
 the whole head at every candidate `k` and keeps the best BIC. Its work is `Σ_{k≤K} k = O(K²)`, so the
 ceiling is the only thing bounding it, and it defaults to **20**. A **cut** selector — `ward`,
 `average`, `weighted`, `centroid`, `median` — builds one dendrogram and scores its cuts, and `xmeans`
@@ -361,6 +362,128 @@ orientation each head carries. On MNIST-20k (784-D, `max_leaves=2000` ⇒ 1880 l
 puts `mppca` behind the diagonal head at every rank tried — ARI **0.159 / 0.069 / 0.024** for
 `rank` 2 / 5 / 10 against `gmm`'s **0.274** — and the loss grows with rank, as the mechanism
 predicts. Use `mppca` when the summary is fine relative to the clusters; use `gmm` when it is coarse.
+
+### Directions without a sign — `method="watson"`
+
+`vmf` models a *direction*: `−μ` is as far from `μ` as its density goes. A great deal of directional
+data is not like that. An eigenvector, an SVD or PCA axis, a line's orientation, a fibre direction,
+the output of any routine that fixes a sign arbitrarily — for all of them `x` and `−x` are the same
+observation. Handed that, `vmf` spends half its components on the antipodes of the other half, and
+where the two poles are equally populated its resultant $\sum_i n_i \mu_i$ cancels to nothing.
+
+The Watson distribution (Watson 1965; Mardia & Jupp 2000 §9.4.1) is the axial answer:
+
+$$p(x \mid \mu, \kappa) = \frac{\Gamma(d/2)}{2\pi^{d/2} M(\tfrac12, \tfrac d2, \kappa)} \exp\!\big(\kappa (\mu^\top x)^2\big), \qquad x, \mu \in S^{d-1}$$
+
+$(\mu^\top x)^2$ does not change when `x` flips sign, which is the whole point. $M$ is Kummer's
+confluent hypergeometric $_1F_1$. `κ > 0` is **bipolar** — mass at both ends of the axis; `κ < 0` is
+**girdle** — mass on the equator *orthogonal* to `μ`, which is how a co-planar structure is
+described. Both signs are fitted, and which one a component takes is decided by likelihood, not by a
+flag.
+
+```python
+labels = betula_cluster.fit_predict(X, n_clusters=4, method="watson", feature="full")
+```
+
+Input is auto-L2-normalized, exactly as for `vmf` / `spherical-kmeans`. `n_clusters=0` selects `k`
+by BIC.
+
+**Why the leaf summary is enough.** The sufficient statistic is the second moment about the origin,
+and a cluster feature carries it exactly: $E[x x^\top] = \Sigma_i + \mu_i \mu_i^\top$. So the E-step
+term $E_{x \in \text{leaf } i}[(\mu_c^\top x)^2] = \mu_c^\top (\Sigma_i + \mu_i \mu_i^\top) \mu_c$ is
+closed-form and exact, and the within-leaf spread is integrated rather than dropped — the same status
+as the Gaussian heads' E-step. The M-step needs $T_c = \sum_i r_{ic} n_i (\Sigma_i + \mu_i \mu_i^\top)$,
+also exact, and takes an extreme eigenvector of it.
+
+**Where it wins.** `N = 6 000`, `max_leaves=300`, `feature="full"`, `k` given, median of seeds 0/1/2 —
+ARI / seconds. Each axial fixture puts **half of each cluster's points at each pole** of its axis:
+
+| fixture | `watson` | `vmf` | `spherical-kmeans` | `gmm-full` | `kmeans` |
+|---|---|---|---|---|---|
+| axial, 8-D, 2 poles/axis | **0.870** / 0.114 | 0.208 / 0.009 | 0.269 / 0.007 | 0.309 / 0.013 | 0.233 / 0.008 |
+| axial, 32-D | **0.953** / 0.176 | 0.218 / 0.041 | 0.202 / 0.039 | 0.316 / 0.093 | 0.244 / 0.038 |
+| axial, 64-D | **0.961** / 0.653 | 0.221 / 0.131 | 0.234 / 0.129 | 0.200 / 0.384 | 0.232 / 0.130 |
+| one pole per axis, 32-D | 0.952 / 0.186 | **0.976** / 0.041 | **0.976** / 0.034 | 0.966 / 0.082 | **0.976** / 0.034 |
+| girdles, 8-D | 0.100 / 0.476 | 0.000 / 0.011 | −0.000 / 0.009 | 0.000 / 0.015 | −0.000 / 0.008 |
+
+Three readings, in order of how much they should change what you do:
+
+1. **Where the sign is genuinely arbitrary, the gap is not close** — 0.87–0.96 against 0.20–0.32 for
+   every other head, which is the difference between recovering the structure and not.
+2. **Where it is not arbitrary, `watson` costs you.** Row four is the same generator with one pole per
+   axis: `vmf` reads 0.976 and `watson` 0.952, because identifying `μ` with `−μ` throws away
+   information that was there. This is a head for a property of your data, not a strictly better `vmf`.
+3. **A mixture of girdles is not recovered on this fixture.** `κ < 0` fits and every other head scores
+   exactly zero, but 0.100 is not a result — three great circles through a common origin intersect, and
+   near the intersections no axial model can separate them. Read `κ < 0` as *a component that can
+   describe a flat cluster*, not as a girdle-mixture head.
+
+**Real data, where the sign ambiguity is the whole story.** `digits`, PCA-20, L2-normalized;
+`flipped` multiplies a random half of the rows by −1 and leaves the labels alone — the transformation
+a sign-arbitrary pipeline applies for free:
+
+| fixture | `watson` | `vmf` | `spherical-kmeans` | `gmm-full` | `kmeans` |
+|---|---|---|---|---|---|
+| `digits`-PCA20 | 0.498 / 1.407 | 0.631 / 0.036 | 0.625 / 0.010 | **0.685** / 0.120 | 0.665 / 0.009 |
+| `digits`-PCA20, signs flipped | **0.503** / 1.282 | 0.173 / 0.020 | 0.204 / 0.009 | 0.284 / 0.341 | 0.221 / 0.010 |
+
+`watson` moves by 0.005 across the flip and every other head loses 60–70 % of its score. That
+invariance is the deliverable. It is also the whole trade: on the un-flipped data `watson` is the
+worst of the five, because `digits` has no axial structure to find and the head has given up the sign
+for nothing.
+
+**Which leaf model.** The theory says the axial signal lives in the off-diagonal scatter that
+`spherical` and `diagonal` leaves discard. The measurement says that is only true at a coarse budget.
+Axial 32-D, `k = 4`, median of seeds 0/1/2; `leaves` is the realised count:
+
+| `max_leaves` | leaves | `spherical` | `diagonal` | `full` | `fd` | median leaf-mean norm |
+|---|---|---|---|---|---|---|
+| 4 | 4 | 0.477 | 0.496 | **0.573** | 0.181 | 0.454 |
+| 6 | 6 | 0.655 | 0.654 | **0.668** | 0.322 | 0.577 |
+| 8 | 8 | 0.623 | 0.618 | **0.678** | 0.570 | 0.584 |
+| 12 | 11 | 0.782 | 0.680 | **0.935** | 0.384 | 0.582 |
+| 20 | 18 | 0.609 | 0.604 | **0.641** | 0.396 | 1.000 |
+| 40 | 39 | 0.950 | 0.950 | 0.949 | 0.938 | 1.000 |
+| 100 | 100 | 0.914 | 0.915 | **0.936** | 0.763 | 1.000 |
+| 300 | 272 | 0.953 | 0.953 | 0.953 | 0.951 | 1.000 |
+
+The last column is the mechanism. A leaf holding one pole has a mean of unit norm; a leaf straddling
+both poles of its axis has a mean that cancels toward zero, and there the off-diagonal block is the
+only thing left that names the axis. Above ~20 leaves every leaf sits on one pole, the mean alone is
+enough, and the three dense leaf models tie. Below that `full` leads by 0.10–0.15 — on a budget whose
+absolute quality is poor either way, and where the column is not monotone in the budget at all.
+**Take `full`; do not expect it to buy much once the summary is fine.** `fd` is the one to avoid at a
+coarse budget: the sketch's rank truncation costs it 0.2–0.55 there.
+
+**Cost.** Axial fixture, `k = 4`, seed 0, seconds:
+
+| `d` | `max_leaves` | `watson` | `vmf` | `gmm-full` |
+|---|---|---|---|---|
+| 8 | 120 / 300 / 1000 | 0.062 / 0.086 / 0.121 | 0.007 / 0.008 / 0.018 | 0.010 / 0.012 / 0.036 |
+| 64 | 120 / 300 / 1000 | 0.751 / 0.656 / 1.954 | 0.119 / 0.132 / 0.243 | 0.193 / 0.380 / 1.491 |
+| 256 | 120 / 300 / 1000 | 16.218 / 12.660 / 29.536 | 2.336 / 2.396 / 4.873 | 3.105 / 4.357 / 14.957 |
+
+It is the most expensive of the directional heads: 5–8× `vmf`, and 2–6× `gmm-full`. The cost is the
+special function, not the linear algebra — every E-step normalizer and every `κ` solve runs an
+ascending $_1F_1$ series whose length grows with `κ`, which is why the head is capped at `κ = 10⁴`.
+
+**Auto-`k`.** `n_clusters=0` runs the BIC sweep. On the axial fixture it is the *only* head that
+finds the axis count: `vmf` answers 8 for 4 true axes, one component per pole, which is exactly the
+failure the head exists to fix.
+
+| fixture | true `k` | `watson` | `vmf` |
+|---|---|---|---|
+| axial, 32-D | 4 | **4** | 8 |
+| one pole per axis, 32-D | 4 | **4** | **4** |
+| girdles, 8-D | 3 | 1 | 1 |
+
+**Numerics.** `log M(1/2, d/2, κ)` and the concentration equation `g(κ) = r̄` rest on two identities
+verified symbolically in Maxima before any of it was written: `M'(a,b,z) = (a/b) M(a+1,b+1,z)`, and
+Kummer's transformation `M(a,b,z) = e^z M(b−a,b,−z)`, which is what makes `κ < 0` computable at all —
+the ascending series alternates for a negative argument and loses every digit to cancellation, while
+for a positive one every term is positive. The leading asymptotic is **not** used: measured against
+Maxima it is still 42 % low at `d = 50, κ = 50`. `g` is strictly increasing with `g(0) = 1/d`, so
+`r̄ ≷ 1/d` fixes the sign of `κ` before any solving and the solver cannot pick the wrong branch.
 
 ### `min_samples` on a summary — `hdbscan`
 

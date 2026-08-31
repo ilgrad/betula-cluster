@@ -15,7 +15,7 @@
 //! | `gmm_full`, `mppca` | yes | yes | yes | yes |
 //! | `gmm_diagonal` | yes | **no** | yes | yes |
 //! | `spectral`, `scale_space` | yes | yes | yes | yes |
-//! | `movmf`, `spherical_kmeans` | **no** | yes | yes | yes |
+//! | `movmf`, `spherical_kmeans`, `watson` | **no** | yes | yes | yes |
 //!
 //! `gmm_diagonal` is the interesting row: axis-aligned covariance is a statement *about the axes*, so
 //! rotation is not a symmetry of the model and the head is not expected to be invariant under it.
@@ -46,7 +46,7 @@
 use betula_cluster::clustering::{
     DcObjective, Linkage, Selection, agglomerative, dc_clustering, dyn_msc, fuzzy_cmeans,
     gmm_diagonal, gmm_full, gmm_toeplitz, hdbscan_selected, kmeans, kmedoids, movmf, mppca,
-    scale_space, spectral, spherical_kmeans, ward_hac, xmeans,
+    scale_space, spectral, spherical_kmeans, ward_hac, watson, xmeans,
 };
 use betula_cluster::feature::{ClusterFeature, Diagonal, Full, Spherical};
 
@@ -278,6 +278,7 @@ fn the_directional_heads_are_invariant_under_rotation_and_not_under_translation(
                 as fn(&[Full<f64>]) -> _,
         ),
         ("movmf", |f: &[Full<f64>]| movmf(f, K, 100, SEED).labels),
+        ("watson", |f: &[Full<f64>]| watson(f, K, 100, SEED).labels),
     ] {
         let a = as_i64(&run(&base));
         assert!(
