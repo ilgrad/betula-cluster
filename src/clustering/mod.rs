@@ -6,6 +6,7 @@
 pub mod agglomerative;
 pub mod bregman;
 pub mod community;
+pub mod fuzzy;
 pub mod gmm;
 pub mod gmm_toeplitz;
 pub(crate) mod graph;
@@ -30,6 +31,7 @@ pub use agglomerative::{
 };
 pub use bregman::{BregmanMixture, bregman_agglomerative, bregman_em, bregman_kmeans};
 pub use community::{Community, Objective, leiden};
+pub use fuzzy::{FuzzyCMeans, fuzzy_cmeans, fuzzy_cmeans_auto};
 pub use gmm::{Gmm, GmmFull, gmm_diagonal, gmm_diagonal_auto, gmm_full, gmm_full_auto};
 pub use gmm_toeplitz::{
     GmmToeplitz, gmm_toeplitz, gmm_toeplitz_auto, gmm_toeplitz_full, gmm_toeplitz_full_auto,

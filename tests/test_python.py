@@ -72,6 +72,7 @@ def moons():
     [
         ("spherical", "kmeans"),
         ("spherical", "kmedoids"),
+        ("spherical", "fuzzy-cmeans"),
         ("diagonal", "gmm"),
         ("full", "gmm-full"),
         ("fd", "gmm-full"),
@@ -442,6 +443,79 @@ def test_kmedoids_declines_the_refinement_sweep():
     plain = betula_cluster.Betula(n_clusters=4, method="kmedoids", max_leaves=150, seed=2)
     swept = betula_cluster.Betula(
         n_clusters=4, method="kmedoids", max_leaves=150, seed=2, refine=10
+    )
+    assert np.array_equal(plain.fit_predict(x), swept.fit_predict(x))
+    assert np.array_equal(np.asarray(plain.cluster_centers_), np.asarray(swept.cluster_centers_))
+
+
+def test_fuzzy_cmeans_publishes_its_own_memberships_and_not_the_centroid_softmax():
+    """The fuzzy head is soft without being generative, so `predict_proba` is its own rule.
+
+    Every other centre-based head falls back to the wrapper's `softmax(-d^2/2 tau^2)` confidence
+    proxy over `cluster_centers_`. Fuzzy c-means has a real membership, `u_j` proportional to
+    `d_j^(-1/(m-1))`, defined by the objective it minimised, so the engine must answer instead of
+    the proxy. Both are rows summing to one that argmax to `predict`, and only their *values*
+    separate them — which is why this compares against the proxy rather than checking the shape.
+    """
+    rng = np.random.default_rng(11)
+    x = rng.normal(size=(1200, 5)) + rng.integers(0, 3, 1200)[:, None] * 5.0
+    est = betula_cluster.Betula(n_clusters=3, method="fuzzy-cmeans", max_leaves=200, seed=0)
+    labels = np.asarray(est.fit_predict(x))
+    u = np.asarray(est.predict_proba(x))
+    assert u.shape == (len(x), 3)
+    assert np.allclose(u.sum(1), 1.0)
+    assert np.array_equal(u.argmax(1), labels)
+
+    centers = np.asarray(est.cluster_centers_, dtype=np.float64)
+    d2 = ((x[:, None, :] - centers[None]) ** 2).sum(2)
+    tau = max(float(np.asarray(est.cluster_radii_).mean()), 1e-12)
+    logits = -d2 / (2.0 * tau * tau)
+    logits -= logits.max(1, keepdims=True)
+    proxy = np.exp(logits)
+    proxy /= proxy.sum(1, keepdims=True)
+    assert not np.allclose(u, proxy, atol=1e-3)
+
+
+@pytest.mark.parametrize("m,expected", [(1.05, 1.0), (200.0, 1.0 / 3.0)])
+def test_the_fuzzifier_runs_the_memberships_from_hard_to_uniform(m, expected):
+    """`m` is the only knob the head has, and both of its limits are known in closed form.
+
+    As `m -> 1+` the exponent `1/(m-1)` diverges and the membership collapses onto the nearest
+    centre (k-means); as `m -> inf` it flattens to `1/k` regardless of the data. A head that
+    ignored `m` would pass neither end. The flat limit is approached slowly — the ratio of two
+    distances is raised to `1/(m-1)`, so on this fixture the median peak reads 0.443 at `m=10`
+    and 0.366 at `m=30` before settling to 0.338 at `m=200`.
+    """
+    rng = np.random.default_rng(12)
+    x = rng.normal(size=(900, 4)) + rng.integers(0, 3, 900)[:, None] * 6.0
+    est = betula_cluster.Betula(
+        n_clusters=3, method="fuzzy-cmeans", fuzzifier=m, max_leaves=150, seed=0
+    )
+    est.fit(x)
+    u = np.asarray(est.predict_proba(x))
+    assert float(np.median(u.max(1))) == pytest.approx(expected, abs=0.02)
+
+
+@pytest.mark.parametrize("m", [1.0, 0.5, float("inf"), float("nan")])
+def test_a_fuzzifier_outside_its_domain_is_rejected_rather_than_clamped(m):
+    """At `m <= 1` the exponent `1/(m-1)` is undefined or negative, which inverts the rule into
+    "farthest centre wins" — a silently wrong partition rather than a slow one. The bound is a
+    modelling fact with no likelihood behind it to clamp against, so it raises."""
+    rng = np.random.default_rng(13)
+    x = rng.normal(size=(200, 3))
+    est = betula_cluster.Betula(n_clusters=2, method="fuzzy-cmeans", fuzzifier=m)
+    with pytest.raises(ValueError, match="fuzzifier"):
+        est.fit(x)
+
+
+def test_fuzzy_cmeans_declines_the_refinement_sweep():
+    """A Lloyd sweep is the hard k-means update, so it would replace each membership-weighted
+    centre with the mean of its argmax cluster — a different objective under the same name."""
+    rng = np.random.default_rng(14)
+    x = rng.normal(size=(1500, 6)) + rng.integers(0, 4, 1500)[:, None] * 7.0
+    plain = betula_cluster.Betula(n_clusters=4, method="fuzzy-cmeans", max_leaves=150, seed=2)
+    swept = betula_cluster.Betula(
+        n_clusters=4, method="fuzzy-cmeans", max_leaves=150, seed=2, refine=10
     )
     assert np.array_equal(plain.fit_predict(x), swept.fit_predict(x))
     assert np.array_equal(np.asarray(plain.cluster_centers_), np.asarray(swept.cluster_centers_))

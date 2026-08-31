@@ -49,6 +49,29 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- **`method="fuzzy-cmeans"` — weighted fuzzy c-means over the leaf centroids (Bezdek 1981).** The only
+  soft head in the crate that fits no density: `predict_proba` returns the memberships
+  `u_ij ∝ d_ij^(−1/(m−1))`, a partition of unity over the centres rather than a posterior. Exact on
+  the summary by the same identity `kmedoids` uses — tying the membership within a leaf turns
+  `Σ_{x ∈ leaf i} u_ij^m‖x − c_j‖²` into `u_ij^m · n_i · d_ij` with
+  `d_ij = ‖μ_i − c_j‖² + S_i/n_i`, so the leaf-level `J_m` **is** the point-level one. The new
+  `fuzzifier` keyword is the exponent `m > 1` (default `2.0`); it is validated rather than clamped,
+  because at `m ≤ 1` the exponent `1/(m−1)` inverts the rule into "farthest centre wins".
+  `n_clusters=0` selects by Xie–Beni, this family's own validity index.
+- **The fuzzy head's hard partition is a loss, and it ships saying so.** ARI against `kmeans` at
+  `max_leaves=4000`, `feature="spherical"`, median of seeds 0/1/2: `blobs` 0.847 vs **0.864**,
+  `aniso` 0.535 vs **0.545**, `varied` 0.531 vs **0.540**, `highdim` 1.000 vs 1.000, `digits`
+  **0.483** vs 0.467 (all at `m = 1.3`; `m = 2.0` is worse everywhere except `varied`). The intuition
+  that it should win where clusters overlap is backwards: on 6 000 × 8 blobs at `cluster_std` 3/4/5
+  it reads 0.990 / 0.913 / 0.623 against `kmeans`'s 0.990 / 0.922 / **0.804**, and the confidence AUC
+  — how well `assignment_confidence` separates right from wrong labels — falls with it (0.975 /
+  0.916 / 0.836 vs 0.985 / 0.931 / 0.881), so the membership is not a better boundary detector
+  either. Mechanism: no membership is ever zero, so every point pulls every centre toward the grand
+  mean. Measured on the `cluster_std=5.0` fixture, the mean centre-to-centroid distance runs 13.75
+  for `kmeans` and 13.19 / 12.98 / 11.88 at `m = 1.3 / 2.0 / 3.0` against a true 13.67. Take the head
+  for the membership, not for the labels. Rust: `clustering::{fuzzy_cmeans, fuzzy_cmeans_auto}`.
+  Tables in
+  [`docs/USAGE.md`](https://github.com/ilgrad/betula-cluster/blob/main/docs/USAGE.md).
 - **`method="kmedoids"` — weighted k-medoids over the leaf centroids, by eager FasterPAM.** The centre
   of a cluster is one of the summary's own micro-clusters rather than an average: an exemplar you can
   show, and a centre that stays on the data manifold where a mean need not. Schubert & Rousseeuw 2021;

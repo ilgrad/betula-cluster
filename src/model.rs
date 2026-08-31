@@ -2,10 +2,10 @@
 
 use crate::clustering::{
     Gmm, GmmFull, GmmToeplitz, Linkage, Movmf, Mppca, Objective, agglomerative, agglomerative_auto,
-    dyn_msc, gmm_diagonal, gmm_diagonal_auto, gmm_full, gmm_full_auto, gmm_toeplitz,
-    gmm_toeplitz_auto, gmm_toeplitz_full, gmm_toeplitz_full_auto, gmm_toeplitz_gs,
-    gmm_toeplitz_gs_auto, kmeans, kmeans_auto, kmedoids, leiden, movmf, movmf_auto, mppca,
-    mppca_auto, spectral, spherical_kmeans, ward_hac, ward_hac_auto, xmeans,
+    dyn_msc, fuzzy_cmeans, fuzzy_cmeans_auto, gmm_diagonal, gmm_diagonal_auto, gmm_full,
+    gmm_full_auto, gmm_toeplitz, gmm_toeplitz_auto, gmm_toeplitz_full, gmm_toeplitz_full_auto,
+    gmm_toeplitz_gs, gmm_toeplitz_gs_auto, kmeans, kmeans_auto, kmedoids, leiden, movmf,
+    movmf_auto, mppca, mppca_auto, spectral, spherical_kmeans, ward_hac, ward_hac_auto, xmeans,
 };
 use crate::distance::CFDistance;
 use crate::feature::ClusterFeature;
@@ -62,6 +62,9 @@ pub enum Method {
     /// one of the data's own microclusters rather than an average. `k == 0` is not automatic: total
     /// deviation falls monotonically in `k`, so this head's objective cannot select it.
     KMedoids,
+    /// Weighted fuzzy c-means (Bezdek 1981): the only soft head that fits no density. `fuzzifier` is
+    /// the exponent `m > 1` deciding how soft the memberships are; `k == 0` selects by Xie-Beni.
+    FuzzyCMeans { fuzzifier: f64 },
     /// Spherical k-means on the unit sphere (hard cosine assignment) for L2-normalized embeddings.
     SphericalKMeans,
     /// Mixture of von Mises–Fisher distributions (soft directional EM; BIC auto-`k` when `k == 0`).
@@ -102,7 +105,9 @@ pub(crate) enum Rule {
 
 pub(crate) fn assignment_rule(method: Method) -> Rule {
     match method {
-        Method::KMeans | Method::XMeans | Method::KMedoids => Rule::Centroid { unit: false },
+        Method::KMeans | Method::XMeans | Method::KMedoids | Method::FuzzyCMeans { .. } => {
+            Rule::Centroid { unit: false }
+        }
         Method::SphericalKMeans => Rule::Centroid { unit: true },
         Method::Gmm
         | Method::GmmFull
@@ -163,7 +168,7 @@ fn cluster_centroids<R: Real, C: ClusterFeature<R>>(
 /// `kmedoids` it destroys that objective: the centre stops being one of the data's own
 /// microclusters, which is the only reason to have asked for a medoid.
 pub(crate) fn refinable(method: Method) -> bool {
-    !matches!(method, Method::KMedoids)
+    !matches!(method, Method::KMedoids | Method::FuzzyCMeans { .. })
 }
 
 /// The chosen medoid of each cluster, as `(label, centre)` pairs — the centres a medoid head's
@@ -171,6 +176,13 @@ pub(crate) fn refinable(method: Method) -> bool {
 ///
 /// Only labels a leaf carries are emitted, mirroring [`cluster_centroids`]: a centre no leaf sits on
 /// would let `predict` return a label the fit never produced.
+/// Pair each centre with the label it stands for, for a head that already returns them in label
+/// order. The `(label, centre)` shape is what [`HeadFit::centers`] carries, because the centroid
+/// heads that derive their centres from labels can leave gaps in the numbering.
+fn numbered<R: Real>(centers: Vec<Vec<R>>) -> Vec<(usize, Vec<R>)> {
+    centers.into_iter().enumerate().collect()
+}
+
 fn medoid_centers<R: Real, C: ClusterFeature<R>>(
     features: &[C],
     medoids: &[usize],
@@ -458,6 +470,17 @@ impl<R: Real> HeadFit<R> {
         }
     }
 
+    /// A head that is soft without being generative: it publishes per-leaf memberships and its own
+    /// centres, but no density, so there is nothing for `predict_proba`'s mixture path to score.
+    fn soft_centred(labels: Vec<usize>, resp: Vec<Vec<R>>, centers: Vec<(usize, Vec<R>)>) -> Self {
+        Self {
+            labels,
+            resp: Some(resp),
+            mixture: None,
+            centers: Some(centers),
+        }
+    }
+
     /// A mixture head. Components that no leaf claims are silenced here — the single place that can
     /// forget to, so it does not.
     fn soft(fit: impl MixtureFit<R>) -> Self {
@@ -538,6 +561,16 @@ pub(crate) fn fit_head<R: Real, C: ClusterFeature<R>>(
             let fit = kmedoids(features, kk, max_iter, seed);
             let centers = medoid_centers(features, &fit.medoids, &fit.labels);
             HeadFit::centred(fit.labels, centers)
+        }
+        // A fuzzy centre is the membership-weighted mean, which is not the mean of the hard cluster
+        // its argmax defines, so the head hands over its own centres exactly as `kmedoids` does.
+        Method::FuzzyCMeans { fuzzifier } if k == 0 => {
+            let fit = fuzzy_cmeans_auto(features, hi, fuzzifier, max_iter, seed);
+            HeadFit::soft_centred(fit.labels, fit.memberships, numbered(fit.centers))
+        }
+        Method::FuzzyCMeans { fuzzifier } => {
+            let fit = fuzzy_cmeans(features, kk, fuzzifier, max_iter, seed);
+            HeadFit::soft_centred(fit.labels, fit.memberships, numbered(fit.centers))
         }
         // `AUTO_K_MAX` bounds the *sweep*, whose cost is quadratic in the cap. X-means stops when no
         // centre wants to split, so at `k == 0` the only bound it needs is the leaf count -- taking

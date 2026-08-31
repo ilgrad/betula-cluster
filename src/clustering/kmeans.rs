@@ -266,7 +266,7 @@ fn chunklet_scatter<R: Real, C: ClusterFeature<R>>(
 /// scatter, and dropping it makes such a leaf unsamplable however wide it is. The greedy candidate
 /// score inside the trial loop needs no such term — it differs from the exact potential by `Σ_i S_i`,
 /// which is constant in the candidate.
-fn kmeans_plus_plus<R: Real>(
+pub(crate) fn kmeans_plus_plus<R: Real>(
     means: &[Vec<R>],
     weights: &[R],
     ssd: &[R],

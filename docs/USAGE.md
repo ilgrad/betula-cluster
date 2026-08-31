@@ -19,7 +19,7 @@ labels = betula_cluster.fit_predict(X, method="hdbscan", min_samples=10, min_clu
 # hdbscan: label -1 == noise
 ```
 
-Keyword args: `feature ∈ {spherical, diagonal, full, fd}`, `method ∈ {kmeans, xmeans, kmedoids, gmm, gmm-full, mppca, ward, average, weighted, centroid, median, spectral, leiden, leiden-cpm, spherical-kmeans, vmf, gmm-toeplitz, gmm-toeplitz-full, gmm-toeplitz-gs, hdbscan, scale-space}`,
+Keyword args: `feature ∈ {spherical, diagonal, full, fd}`, `method ∈ {kmeans, xmeans, kmedoids, fuzzy-cmeans, gmm, gmm-full, mppca, ward, average, weighted, centroid, median, spectral, leiden, leiden-cpm, spherical-kmeans, vmf, gmm-toeplitz, gmm-toeplitz-full, gmm-toeplitz-gs, hdbscan, scale-space}`,
 `distance ∈ {euclidean, manhattan, ward, average}` (routing measure),
 `absorb ∈ {euclidean, manhattan, average, diameter, ward, radius, chi2, subspace}` (see *Absorption criteria*
 below; `chi2` = mass-invariant Mahalanobis gate at level `chi2_p` with `chi2_scale` = within-cluster
@@ -47,7 +47,9 @@ to whatever `min_samples` needs — see *Graph-indexing the density head* below)
 affinity, `feature="full"`; `0` = off, the centroid-only default), `tangent_weight` / `tangent_rank`
 (Leiden γ — a Grassmann tangent-subspace term of rank `tangent_rank` for manifold-aware communities,
 `feature="full"`; `0` = off), `rank` (MPPCA subspace rank `q` for `method="mppca"`, clamped to at
-most `dim - 1`; `0` makes every component spherical), `projection` / `projection_dim` / `projection_max_iter` (reduce the leaf centroids to
+most `dim - 1`; `0` makes every component spherical), `fuzzifier` (the exponent `m > 1` of
+`method="fuzzy-cmeans"`, default `2.0`; `m → 1⁺` is k-means, `m → ∞` sends every membership to
+`1/k`), `projection` / `projection_dim` / `projection_max_iter` (reduce the leaf centroids to
 `projection_dim` codes before the head; `"none"` = off. **`"weighted-nmf"`**, or
 **`"weighted-nmf-kl"`** for count data, gives nonnegative CF-weighted NMF codes — for **nonnegative**
 data only: TF-IDF / counts / spectrograms, dense or CSR. **`"svd"`** gives a CF-weighted PCA, accepts
@@ -114,6 +116,7 @@ answer.
 | compact/spherical groups, fastest | `kmeans` | yes (or `0` = BIC sweep, capped at 20) |
 | the same, but the count may exceed 20, or the sweep is too slow | `xmeans` | **no** — `n_clusters` is an upper bound; see *Where `xmeans` refuses to split* |
 | the same, but the centre must be a real observation (an exemplar you can show) | `kmedoids` | yes — `0` switches objective to the medoid silhouette |
+| a **graded membership** with no density behind it (each point partly in several clusters) | `fuzzy-cmeans` | yes (or `0` = Xie–Beni) — read *A soft head that fits no density* first: the hard partition is a **loss** against `kmeans` |
 | elliptical / correlated / anisotropic, soft assignment | `gmm` (diag) or `gmm-full` | yes (or `0` = BIC) |
 | clusters on **low-dimensional subspaces**, `d` too large for `gmm-full` | `mppca` + `feature="fd"`, `rank` = the intrinsic dimension — read *`rank`, and where `mppca` loses* first | yes (or `0` = BIC) |
 | **L2-normalized embeddings** (CLIP / face / sentence / speaker), cosine geometry | `vmf` (soft) or `spherical-kmeans` (hard) | yes (or `0` = BIC, `vmf`) |
@@ -254,6 +257,67 @@ On the synthetic fixtures at `max_leaves=4000` the two are level (`blobs` 0.864/
 expected result: where the mean is a good centre, so is the nearest micro-cluster to it.
 
 `fit_predict_sparse` does not accept this head — see [Sparse input](#sparse-input).
+
+### A soft head that fits no density — `method="fuzzy-cmeans"`
+
+`fuzzy-cmeans` is weighted fuzzy c-means (Bezdek 1981) over the leaf centroids. It minimises
+
+$$J_m = \sum_i \sum_j u_{ij}^m \, n_i \, d_{ij}, \qquad d_{ij} = \lVert \mu_i - c_j \rVert^2 + S_i / n_i,$$
+
+with $\sum_j u_{ij} = 1$. Tying the membership within a leaf makes the leaf-level objective **equal**
+to the point-level one — the same König–Huygens identity every centroid head here rests on — so
+`d_ij` is exact and the head pays leaf cost for a point-level answer. The alternating minimiser is
+$u_{ij} \propto d_{ij}^{-1/(m-1)}$ and $c_j = \sum_i u_{ij}^m n_i \mu_i / \sum_i u_{ij}^m n_i$; the
+mass $n_i$ cancels out of the membership normalisation and survives only in the centre update.
+
+It is the only soft head in the crate that fits no density. `predict_proba` returns the memberships
+themselves — a partition of unity over the centres, **not** a posterior, and not comparable across
+fits with different `m`. `n_clusters=0` selects by Xie–Beni, $J_m / (W \cdot \min_{i \ne j} \lVert c_i - c_j \rVert^2)$,
+which is this family's own validity index rather than a borrowed likelihood criterion.
+
+**Read this before choosing it: the hard partition is a loss.** ARI on the bench fixtures at
+`max_leaves=4000`, `feature="spherical"`, `threshold=0.0`, median of seeds 0/1/2:
+
+| fixture | `kmeans` | `fuzzy-cmeans` `m=1.3` | `fuzzy-cmeans` `m=2.0` |
+|---|---|---|---|
+| `blobs` | **0.864** | 0.847 | 0.843 |
+| `aniso` | **0.545** | 0.535 | 0.531 |
+| `varied` | **0.540** | 0.531 | 0.537 |
+| `highdim` | 1.000 | 1.000 | 1.000 |
+| `digits` | 0.467 | **0.483** | 0.356 |
+
+The intuition that a soft head should win where clusters overlap is the wrong way round, and the
+overlap sweep says so directly — 6 000 points, 8 dimensions, 5 centres, `max_leaves=2000`, median of
+seeds 0/1/2. `AUC` is how well `assignment_confidence` separates correctly- from wrongly-labelled
+points, so it scores the *membership* rather than the partition:
+
+| `cluster_std` | `kmeans` ARI / AUC | `m=1.3` | `m=2.0` |
+|---|---|---|---|
+| 3.0 | 0.990 / **0.985** | 0.990 / 0.975 | 0.990 / 0.955 |
+| 4.0 | **0.922** / **0.931** | 0.913 / 0.916 | 0.889 / 0.830 |
+| 5.0 | **0.804** / **0.881** | 0.623 / 0.836 | 0.580 / 0.792 |
+
+The gap widens with overlap, and it widens with `m`, because both push the same mechanism: no
+membership is ever zero, so **every** point contributes to **every** centre and each centre is pulled
+toward the grand mean. Measured on the `cluster_std=5.0` fixture (seed 0), the mean distance from a
+cluster centre to their common centroid runs 13.75 for `kmeans` and 13.19 / 12.98 / 11.88 for
+`m = 1.3 / 2.0 / 3.0`, against a true 13.67. `m` is a contraction knob as much as a softness knob.
+
+So take this head for the membership, not for the labels: a per-point degree of belonging that comes
+out of the objective the fit minimised, where every other centre-based head can only offer the
+`softmax(−d²/2τ²)` proxy with a τ nobody chose. If you want the labels, `kmeans` is faster and
+better; if you want a calibrated posterior, `gmm` fits one.
+
+Xie–Beni on the same fixtures (median over seeds 0/1/2, showing all three): exact on `highdim`
+(8/8/8 for a true 8) and on the separated overlap fixtures (5/5/5 at `cluster_std ≤ 3.0`); it
+under-counts on `blobs` (2/4/4 for 6) and `aniso` (2/2/2 for 3), over-counts on `varied` (4/4/4 for
+3), and on `digits` runs into the sweep ceiling (18/20/19 for 10, which raises the saturation
+warning). Like every sweep selector here it costs a refit per candidate `k`, so `auto_k_max` bounds
+it at 20 by default.
+
+`refine` is a no-op, for the same reason it is under `kmedoids`: a Lloyd sweep replaces each
+membership-weighted centre with the hard mean of its argmax cluster, which is a different objective
+under the same name.
 
 ### `rank`, and where `mppca` loses — `method="mppca"`
 
@@ -865,6 +929,11 @@ four-block corpus at `max_leaves=300` the head reads ARI **0.017** by its own me
 **0.002** by the micro-cluster route, against **1.000** for `kmeans`, whose pooled cluster centroids
 average the norms out. `Betula(method="kmedoids").fit(X)` on the same CSR builds a real CF-tree and
 scores **1.000**; use that.
+
+`fuzzy-cmeans` is absent for a duller reason: this entry point takes no `fuzzifier` keyword, and a
+head with a knob nobody can set is worse than no head. Its centre is a weighted mean of many
+micro-clusters, so the norm-domination argument above does not apply to it —
+`Betula(method="fuzzy-cmeans").fit(X)` on a CSR is the supported route.
 
 ### Text: reduce and cluster in one call — `projection="svd"`
 

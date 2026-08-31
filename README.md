@@ -192,6 +192,14 @@ snapshots / active-learning batches, the Rust API, and the CLI — all in the
   are too few candidate centres; the `O(m²)` swap pass costs 6× `kmeans` at 1797 leaves. `n_clusters=0`
   switches objective to the medoid silhouette, because total deviation is monotone in `k` —
   [`docs/USAGE.md`](https://github.com/ilgrad/betula-cluster/blob/main/docs/USAGE.md).
+- **Fuzzy c-means** (`method="fuzzy-cmeans"`, Bezdek 1981) — the only soft head that fits no density:
+  it publishes a partition of unity `u_j ∝ d_j^(−1/(m−1))` over the centres, exact on the summary by
+  the same identity `kmedoids` uses, with Xie–Beni as its automatic `k`. Take it for the membership,
+  not for the labels — the hard partition is a **loss** against `kmeans` on every fixture measured
+  (`blobs` 0.847 vs 0.864, `aniso` 0.535 vs 0.545, `digits` 0.483 vs 0.467 at `m=1.3`), and the loss
+  grows with cluster overlap and with `m`, because no membership is ever zero and every centre is
+  pulled toward the grand mean —
+  [`docs/USAGE.md`](https://github.com/ilgrad/betula-cluster/blob/main/docs/USAGE.md).
 - **Structured-covariance GMM** — a three-rung Toeplitz ladder: **`method="gmm-toeplitz"`** (banded AR),
   **`"gmm-toeplitz-full"`** (general positive-definite Toeplitz covariance), and **`"gmm-toeplitz-gs"`**
   (full-order Gohberg–Semencul **MLE** precision): covariance-*shape* clustering for **ordered, stationary

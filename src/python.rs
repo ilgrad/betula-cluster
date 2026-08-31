@@ -240,6 +240,7 @@ fn parse_method(
     tangent_rank: usize,
     rank: usize,
     graph_degree: usize,
+    fuzzifier: f64,
 ) -> PyResult<Kind> {
     match method {
         "kmeans" => Ok(Kind::Parametric(Method::KMeans)),
@@ -275,6 +276,17 @@ fn parse_method(
             tangent_rank,
         })),
         "kmedoids" => Ok(Kind::Parametric(Method::KMedoids)),
+        "fuzzy-cmeans" => {
+            // The exponent is a modelling choice with no likelihood behind it, so it is validated
+            // here rather than clamped silently: at `m <= 1` the membership exponent `1/(m−1)` is
+            // undefined or negative, which inverts the rule into "farthest centre wins".
+            if !fuzzifier.is_finite() || fuzzifier <= 1.0 {
+                return Err(PyValueError::new_err(
+                    "fuzzifier must be finite and > 1 (2.0 is the default; m -> 1 is k-means)",
+                ));
+            }
+            Ok(Kind::Parametric(Method::FuzzyCMeans { fuzzifier }))
+        }
         "spherical-kmeans" => Ok(Kind::Parametric(Method::SphericalKMeans)),
         "vmf" => Ok(Kind::Parametric(Method::Movmf)),
         "gmm-toeplitz" => Ok(Kind::Parametric(Method::GmmToeplitz)),
@@ -288,10 +300,10 @@ fn parse_method(
         }),
         "scale-space" => Ok(Kind::ScaleSpace),
         _ => Err(PyValueError::new_err(
-            "method must be 'kmeans', 'xmeans', 'kmedoids', 'gmm', 'gmm-full', 'mppca', 'ward', \
-             'average', 'weighted', 'centroid', 'median', 'spectral', 'leiden', 'leiden-cpm', \
-             'spherical-kmeans', 'vmf', 'gmm-toeplitz', 'gmm-toeplitz-full', 'gmm-toeplitz-gs', \
-             'hdbscan' or 'scale-space'",
+            "method must be 'kmeans', 'xmeans', 'kmedoids', 'fuzzy-cmeans', 'gmm', 'gmm-full', \
+             'mppca', 'ward', 'average', 'weighted', 'centroid', 'median', 'spectral', 'leiden', \
+             'leiden-cpm', 'spherical-kmeans', 'vmf', 'gmm-toeplitz', 'gmm-toeplitz-full', \
+             'gmm-toeplitz-gs', 'hdbscan' or 'scale-space'",
         )),
     }
 }
@@ -377,12 +389,23 @@ fn dispatch_kind<R: Real, C: ClusterFeature<R>>(
             // A head that named its own centres has already answered the "where are the centres"
             // question; deriving them again from the labels would average the clusters and hand
             // `predict` a partition the fit never produced.
-            let rule = fit.centers.map(|c| PointRule::Centers {
-                labels: c.iter().map(|&(l, _)| l as i64).collect(),
-                rows: c
+            let rule = fit.centers.map(|c| {
+                let labels = c.iter().map(|&(l, _)| l as i64).collect();
+                let rows = c
                     .iter()
                     .flat_map(|(_, row)| row.iter().map(|v| v.to_f64().unwrap_or(0.0)))
-                    .collect(),
+                    .collect();
+                match method {
+                    // The fuzzy head labels by the same argmin as any centroid head, but its soft
+                    // output is a membership rather than a posterior, so the rule carries the
+                    // fuzzifier that turns a distance into one.
+                    Method::FuzzyCMeans { fuzzifier } => PointRule::Fuzzy {
+                        labels,
+                        rows,
+                        m: fuzzifier,
+                    },
+                    _ => PointRule::Centers { labels, rows },
+                }
             });
             Dispatch {
                 labels: fit.labels.into_iter().map(|l| l as i64).collect(),
@@ -547,6 +570,16 @@ fn cluster_count_for_centers(labels: &[i64]) -> usize {
 enum PointRule {
     /// `(label, centre)` per non-empty cluster; `rows` is flat `labels.len() × dim`.
     Centers { labels: Vec<i64>, rows: Vec<f64> },
+    /// The same centres, plus the fuzzifier `m` that turns a distance into a membership. The label
+    /// is still the nearest centre — `u_j ∝ d_j^{−1/(m−1)}` is decreasing in `d_j`, so the argmax
+    /// and the argmin agree — but the soft output is a partition of unity, not a posterior. Separate
+    /// from [`PointRule::Centers`] because `m` is meaningless for every other centroid head, and an
+    /// `Option<f64>` they all have to ignore is a worse way to say that.
+    Fuzzy {
+        labels: Vec<i64>,
+        rows: Vec<f64>,
+        m: f64,
+    },
     /// The fitted mixture; the label is its maximum-posterior component.
     Posterior(Mixture),
     /// Encode the row through a linear projection — `(x − centre)·basisᵀ` — then apply `inner` in
@@ -559,6 +592,43 @@ enum PointRule {
         basis: Vec<Vec<f64>>,
         inner: Box<PointRule>,
     },
+}
+
+/// Fuzzy c-means memberships of one raw row against `k` centres laid out flat as `k × dim`.
+///
+/// `u_j = 1 / Σ_r (d_j / d_r)^{1/(m−1)}` with `d = ‖x − c‖²`, written as a ratio to the smallest
+/// distance so a row sitting on a centre does not raise `1/d` to a large power and overflow. A row
+/// exactly on one or more centres splits its membership over exactly those, which is the constrained
+/// minimum and the only finite answer — the same singleton rule the leaf-level head uses.
+fn fuzzy_memberships<R: Real>(x: &[R], rows: &[f64], dim: usize, m: f64, u: &mut [f64]) {
+    let mut dmin = f64::INFINITY;
+    for (c, v) in u.iter_mut().enumerate() {
+        *v = rows[c * dim..(c + 1) * dim]
+            .iter()
+            .enumerate()
+            .map(|(j, &mu)| {
+                let t = x[j].to_f64().unwrap_or(0.0) - mu;
+                t * t
+            })
+            .sum();
+        dmin = dmin.min(*v);
+    }
+    if dmin <= 0.0 {
+        let hits = u.iter().filter(|&&d| d <= 0.0).count() as f64;
+        for v in u.iter_mut() {
+            *v = if *v <= 0.0 { 1.0 / hits } else { 0.0 };
+        }
+        return;
+    }
+    let p = 1.0 / (m - 1.0);
+    let mut sum = 0.0;
+    for v in u.iter_mut() {
+        *v = (dmin / *v).powf(p);
+        sum += *v;
+    }
+    for v in u.iter_mut() {
+        *v /= sum;
+    }
 }
 
 /// `(x − centre)·basisᵀ` — one row through a linear projection, in `f64` whatever the tree's dtype
@@ -641,7 +711,7 @@ impl PointRule {
     /// Label one dense row. `scratch` is a reusable buffer for the posterior path.
     fn label_of<R: Real>(&self, x: &[R], scratch: &mut Vec<f64>) -> i64 {
         match self {
-            PointRule::Centers { labels, rows } => {
+            PointRule::Centers { labels, rows } | PointRule::Fuzzy { labels, rows, .. } => {
                 let dim = x.len();
                 let mut best = labels[0];
                 let mut bd = f64::INFINITY;
@@ -740,6 +810,17 @@ impl PointRule {
                 codes.extend(encode_row(centre, basis, &flat[i * dim..(i + 1) * dim]));
             }
             return inner.proba_rows(&codes, n, r);
+        }
+        if let PointRule::Fuzzy { labels, rows, m } = self {
+            let k = labels.len();
+            let mut out = Vec::with_capacity(n * k);
+            let mut u = vec![0.0; k];
+            for i in 0..n {
+                let x = &flat[i * dim..(i + 1) * dim];
+                fuzzy_memberships(x, rows, dim, *m, &mut u);
+                out.extend_from_slice(&u);
+            }
+            return Some((out, k));
         }
         let PointRule::Posterior(m) = self else {
             return None;
@@ -1327,7 +1408,7 @@ fn run_oneshot<R: Real + Element>(
     absorb = "euclidean", chi2_p = 0.95, chi2_scale = 0.0, n_jobs = 1, normalize = false,
     resolution = 1.0, covariance_weight = 0.0, tangent_weight = 0.0, tangent_rank = 2,
     projection = "none", projection_dim = 64, projection_max_iter = 100, refine = 0, rank = 2,
-    graph_degree = 0, balance = None, auto_k_max = 0
+    graph_degree = 0, balance = None, auto_k_max = 0, fuzzifier = 2.0
 ))]
 #[allow(clippy::too_many_arguments)]
 fn fit_predict<'py>(
@@ -1362,6 +1443,7 @@ fn fit_predict<'py>(
     graph_degree: usize,
     balance: Option<f64>,
     auto_k_max: usize,
+    fuzzifier: f64,
 ) -> PyResult<Bound<'py, PyArray1<i64>>> {
     let kind = parse_method(
         method,
@@ -1373,6 +1455,7 @@ fn fit_predict<'py>(
         tangent_rank,
         rank,
         graph_degree,
+        fuzzifier,
     )?;
     let nmf_dim = parse_projection(projection, projection_dim, projection_max_iter)?;
     let (labels, leaves) = if let Ok(a) = data.extract::<PyReadonlyArray2<'py, f64>>() {
@@ -2043,6 +2126,10 @@ fn default_rank() -> usize {
     2
 }
 
+fn default_fuzzifier() -> f64 {
+    2.0
+}
+
 #[pyclass(name = "Betula", module = "betula_cluster._core")]
 #[derive(serde::Serialize, serde::Deserialize)]
 struct Betula {
@@ -2089,6 +2176,10 @@ struct Betula {
     /// Subspace rank `q` of the MPPCA head (`method="mppca"`); kept for `get_params`.
     #[serde(default = "default_rank")]
     rank: usize,
+    /// Fuzzifier `m > 1` of the fuzzy c-means head (`method="fuzzy-cmeans"`); kept for `get_params`.
+    /// `#[serde(default = ...)]` is what lets a model persisted before this field existed still load.
+    #[serde(default = "default_fuzzifier")]
+    fuzzifier: f64,
     /// Out-degree of the `method="hdbscan"` proximity graph; `0` = exact complete graph.
     #[serde(default)]
     graph_degree: usize,
@@ -2520,7 +2611,7 @@ impl Betula {
         }
         let (leaf, k) = self.proba.as_ref().ok_or_else(|| {
             PyValueError::new_err(
-                "predict_proba is only available after fit with method='gmm', 'gmm-full', 'mppca', 'vmf', 'gmm-toeplitz', 'gmm-toeplitz-full' or 'gmm-toeplitz-gs'",
+                "predict_proba is only available after fit with method='gmm', 'gmm-full', 'mppca', 'vmf', 'gmm-toeplitz', 'gmm-toeplitz-full', 'gmm-toeplitz-gs' or 'fuzzy-cmeans'",
             )
         })?;
         let idx = py.detach(|| tree.assign_microclusters(flat, n, dim));
@@ -2629,7 +2720,7 @@ impl Betula {
         normalize = false, huber_k = None, resolution = 1.0, covariance_weight = 0.0,
         tangent_weight = 0.0, tangent_rank = 2, projection = "none", projection_dim = 64,
         projection_max_iter = 100, refine = 0, rank = 2, graph_degree = 0, balance = None,
-        auto_k_max = 0
+        auto_k_max = 0, fuzzifier = 2.0
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -2663,6 +2754,7 @@ impl Betula {
         graph_degree: usize,
         balance: Option<f64>,
         auto_k_max: usize,
+        fuzzifier: f64,
     ) -> PyResult<Self> {
         let kind = parse_method(
             method,
@@ -2674,6 +2766,7 @@ impl Betula {
             tangent_rank,
             rank,
             graph_degree,
+            fuzzifier,
         )?;
         let proj = parse_projection(projection, projection_dim, projection_max_iter)?;
         let nmf_dim = proj.map(|p| p.rank);
@@ -2740,6 +2833,7 @@ impl Betula {
             tangent_weight,
             tangent_rank,
             rank,
+            fuzzifier,
             graph_degree,
             nmf_dim,
             nmf_kl,
@@ -3382,6 +3476,7 @@ impl Betula {
         d.set_item("tangent_weight", self.tangent_weight)?;
         d.set_item("tangent_rank", self.tangent_rank)?;
         d.set_item("rank", self.rank)?;
+        d.set_item("fuzzifier", self.fuzzifier)?;
         d.set_item("graph_degree", self.graph_degree)?;
         d.set_item("auto_k_max", self.auto_k_max)?;
         d.set_item("refine", self.refine)?;
@@ -4704,6 +4799,11 @@ impl PyDdSketch {
 /// `kmeans` here and 1.000 for `kmedoids` itself through `Betula.fit`, which builds a real CF-tree
 /// from the same CSR. Pooling its labels into cluster means would score well and answer a partition
 /// the fit never produced, which is the defect this path was fixed for in 0.7.0.
+///
+/// `fuzzy-cmeans` is absent for a duller reason: this entry point carries no `fuzzifier` keyword, so
+/// the head could only ever run at one hard-coded `m`. Its centre is a weighted mean of many
+/// micro-clusters and is not subject to the norm domination above, so `Betula::fit` on the same CSR
+/// runs it without reservation.
 fn parse_parametric(method: &str) -> PyResult<Method> {
     match method {
         "kmeans" => Ok(Method::KMeans),

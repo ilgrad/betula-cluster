@@ -434,7 +434,7 @@ or an initialisation that reads coordinate 0. The groups the crate claims, and e
 
 | head | translate | rotate | uniform scale | swap axes |
 |---|---|---|---|---|
-| `kmeans`, `xmeans`, `ward_hac`, `agglomerative`, `dyn_msc`, `kmedoids`, `hdbscan` | yes | yes | yes | yes |
+| `kmeans`, `xmeans`, `ward_hac`, `agglomerative`, `dyn_msc`, `kmedoids`, `fuzzy_cmeans`, `hdbscan` | yes | yes | yes | yes |
 | `gmm_full`, `mppca`, `spectral`, `scale_space` | yes | yes | yes | yes |
 | `gmm_diagonal` | yes | **no** | yes | yes |
 | `spherical_kmeans`, `movmf` | **no** | yes | yes | yes |

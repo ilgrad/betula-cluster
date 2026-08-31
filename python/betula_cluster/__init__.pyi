@@ -48,6 +48,7 @@ _Method = Literal[
     "kmeans",
     "xmeans",
     "kmedoids",
+    "fuzzy-cmeans",
     "gmm",
     "gmm-full",
     "mppca",
@@ -168,6 +169,7 @@ def fit_predict(
     graph_degree: int = ...,
     balance: float | None = ...,
     auto_k_max: int = ...,
+    fuzzifier: float = ...,
 ) -> NDArray[np.int64]:
     """Cluster ``data`` in one shot and return per-point integer labels (``-1`` = noise)."""
 
@@ -229,6 +231,7 @@ class Betula:
         projection_max_iter: int = ...,
         refine: int = ...,
         rank: int = ...,
+        fuzzifier: float = ...,
         graph_degree: int = ...,
         auto_k_max: int = ...,
         memory_budget_mb: float | None = ...,

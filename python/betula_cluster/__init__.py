@@ -522,6 +522,7 @@ _DEFAULTS = {
     "projection_max_iter": 100,
     "refine": 0,
     "rank": 2,
+    "fuzzifier": 2.0,
     "graph_degree": 0,
     "auto_k_max": 0,
     "memory_budget_mb": None,
@@ -581,6 +582,7 @@ class Betula:
         projection_max_iter=100,
         refine=0,
         rank=2,
+        fuzzifier=2.0,
         graph_degree=0,
         auto_k_max=0,
         memory_budget_mb=None,
@@ -641,6 +643,10 @@ class Betula:
         # Subspace rank q of the MPPCA head (method="mppca"): each component's covariance is
         # W Wᵀ + σ²I with W of rank q, clamped to at most dim - 1. Ignored by every other head.
         self.rank = rank
+        # Fuzzifier m > 1 of the fuzzy c-means head (method="fuzzy-cmeans"): the exponent that
+        # decides how soft the memberships are. m -> 1 is k-means, large m sends every membership
+        # to 1/k. Ignored by every other head.
+        self.fuzzifier = fuzzifier
         # Out-degree of the proximity graph the hdbscan head takes its MST over. 0 (default) uses
         # the exact complete graph, which is O(m²) in the leaf count and is what makes a large
         # max_leaves unaffordable there. Any positive value is a floor: the head raises it to
@@ -1415,7 +1421,10 @@ class Betula:
 
         The **GMM**, **vMF**, and **Toeplitz** (``gmm-toeplitz`` / ``-full`` / ``-gs``) heads score
         the point under the fitted mixture, so ``predict_proba(X).argmax(1)`` is exactly
-        :meth:`predict`. **k-means / x-means / Ward / HDBSCAN** return a heuristic
+        :meth:`predict`. **fuzzy-cmeans** returns its own memberships
+        ``u_j ∝ d_j^{−1/(m−1)}``, which also argmax to :meth:`predict` but are a partition of
+        unity over the centres, **not** a posterior — no density is fitted. **k-means / x-means /
+        Ward / HDBSCAN** return a heuristic
         ``softmax(−d²/2τ²)`` over the cluster centroids (``τ`` = mean cluster radius) — a confidence
         *proxy*, **not** a calibrated posterior. Columns are component indices aligned with
         :meth:`predict`."""
@@ -1428,6 +1437,7 @@ class Betula:
             "gmm-toeplitz",
             "gmm-toeplitz-full",
             "gmm-toeplitz-gs",
+            "fuzzy-cmeans",
         ):
             return est.predict_proba(X)
         centers = np.asarray(est.cluster_centers_, dtype=np.float64)

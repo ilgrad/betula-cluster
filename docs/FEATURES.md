@@ -18,7 +18,10 @@ A capability-by-capability reference. For runnable code see [`USAGE.md`](USAGE.m
   summary's own micro-clusters rather than an average, exact on the summary because
   `Σ_{x ∈ leaf i} ‖x − μ_j‖² = S_i + n_i‖μ_i − μ_j‖²` makes the leaf-level total the point-level
   one (note the *square*: classical PAM's absolute distance has no closed form in a cluster
-  feature), **diagonal &
+  feature), weighted **fuzzy c-means**
+  (`method="fuzzy-cmeans"`, Bezdek 1981) — the only soft head that fits no density, publishing a
+  partition of unity `u_ij ∝ d_ij^(−1/(m−1))` rather than a posterior, with Xie–Beni as its
+  automatic `k`; **diagonal &
   full-covariance GMM-EM** (expected-log E-step + NIW/MAP regularization + a per-dimension covariance
   floor that keeps components well-conditioned in high dimensions — no starved-component collapse,
   full covariance captures rotated/correlated clusters, **BIC auto-selects the component count** when
@@ -267,7 +270,7 @@ A capability-by-capability reference. For runnable code see [`USAGE.md`](USAGE.m
 | `kernels` | distance kernels: scalar fold + hand-written AVX2/FMA path |
 | `distance` | D0–D4, radius, Mahalanobis (stable forms) |
 | `tree` | arena CF-tree + budget-targeting auto-rebuild |
-| `clustering` | `kmeans` / `kmeans_auto` / `cop_kmeans`, `xmeans` (recursive splitting), `kmedoids` / `dyn_msc` (FasterPAM), `gmm_diagonal`, `gmm_full`, `gmm_toeplitz{,_full,_gs}`, `ward_hac`, `agglomerative` (UPGMA/WPGMA/UPGMC/WPGMC), `spectral`, `leiden`, `spherical_kmeans`, `movmf`, `scale_space`, `hdbscan`, `kprototypes`, `nmf` (the `projection` reducer) |
+| `clustering` | `kmeans` / `kmeans_auto` / `cop_kmeans`, `xmeans` (recursive splitting), `kmedoids` / `dyn_msc` (FasterPAM), `fuzzy_cmeans` / `fuzzy_cmeans_auto`, `gmm_diagonal`, `gmm_full`, `gmm_toeplitz{,_full,_gs}`, `ward_hac`, `agglomerative` (UPGMA/WPGMA/UPGMC/WPGMC), `spectral`, `leiden`, `spherical_kmeans`, `movmf`, `scale_space`, `hdbscan`, `kprototypes`, `nmf` (the `projection` reducer) |
 | `mixture` | fitted-mixture kernels (diagonal / full-Cholesky / stationary / vMF) that score a raw point — what `predict` / `predict_proba` label by |
 | `stream` | `DenStream` + `DbStream` fading-microcluster density heads, with the `adwin` drift detector on their routing distance |
 | `window` | frame-summed windowed summaries + `WindowStream`; the conditioned inverse merge |
