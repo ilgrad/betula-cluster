@@ -11,6 +11,7 @@
 //! | head | translate | rotate | scale | swap axes |
 //! |---|---|---|---|---|
 //! | `kmeans`, `xmeans`, `ward_hac`, `agglomerative`, `dyn_msc`, `kmedoids`, `fuzzy_cmeans`, `hdbscan` | yes | yes | yes | yes |
+//! | `dc_clustering` (both objectives) | yes | yes | yes | yes |
 //! | `gmm_full`, `mppca` | yes | yes | yes | yes |
 //! | `gmm_diagonal` | yes | **no** | yes | yes |
 //! | `spectral`, `scale_space` | yes | yes | yes | yes |
@@ -43,9 +44,9 @@
 //! range from the data rather than taking a constant.
 
 use betula_cluster::clustering::{
-    Linkage, Selection, agglomerative, dyn_msc, fuzzy_cmeans, gmm_diagonal, gmm_full, gmm_toeplitz,
-    hdbscan_selected, kmeans, kmedoids, movmf, mppca, scale_space, spectral, spherical_kmeans,
-    ward_hac, xmeans,
+    DcObjective, Linkage, Selection, agglomerative, dc_clustering, dyn_msc, fuzzy_cmeans,
+    gmm_diagonal, gmm_full, gmm_toeplitz, hdbscan_selected, kmeans, kmedoids, movmf, mppca,
+    scale_space, spectral, spherical_kmeans, ward_hac, xmeans,
 };
 use betula_cluster::feature::{ClusterFeature, Diagonal, Full, Spherical};
 
@@ -199,6 +200,14 @@ fn all_heads(pts: &[Vec<f64>]) -> Vec<(&'static str, Vec<i64>)> {
             as_i64(&fuzzy_cmeans(&lv, K, 2.0, 100, SEED).labels),
         ),
         ("spectral", as_i64(&spectral(&lv, K, 100, SEED).labels)),
+        (
+            "dc_center",
+            as_i64(&dc_clustering(&lv, K, DcObjective::Center, 8, 0, SEED).labels),
+        ),
+        (
+            "dc_median",
+            as_i64(&dc_clustering(&lv, K, DcObjective::Median, 8, 0, SEED).labels),
+        ),
         ("scale_space", as_i64(&scale_space(&lv, 15, 100).labels)),
         (
             "hdbscan",

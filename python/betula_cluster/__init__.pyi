@@ -67,6 +67,8 @@ _Method = Literal[
     "gmm-toeplitz-full",
     "gmm-toeplitz-gs",
     "hdbscan",
+    "dc-center",
+    "dc-median",
     "scale-space",
 ]
 _Distance = Literal["euclidean", "manhattan", "ward", "average"]

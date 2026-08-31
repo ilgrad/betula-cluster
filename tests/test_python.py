@@ -4212,3 +4212,96 @@ def test_the_plot_answers_for_every_covariance_shape(blobs, feature):
 def test_reachability_before_fit_raises():
     with pytest.raises(AttributeError, match="not fitted"):
         betula_cluster.Betula().reachability()
+
+
+# ── dc-dist: exact k-center / k-median in the density-connectivity ultrametric ────────────────
+
+
+@pytest.fixture(scope="module")
+def blobs_with_stragglers():
+    """Five dense blobs plus uniform noise — a fixture where an outlier is a low-mass leaf."""
+    datasets = pytest.importorskip("sklearn.datasets")
+    x, y = datasets.make_blobs(n_samples=4000, centers=5, cluster_std=0.7, random_state=0)
+    rng = np.random.default_rng(0)
+    extra = rng.uniform(x.min(0), x.max(0), (200, x.shape[1]))
+    return np.vstack([x, extra]), np.r_[y, np.full(len(extra), -1)]
+
+
+def _dc(data, method, k=5, **kw):
+    return betula_cluster.Betula(
+        n_clusters=k, method=method, threshold=0.0, max_leaves=400, min_samples=5, seed=0, **kw
+    ).fit_predict(data)
+
+
+@pytest.mark.parametrize("method", ["dc-center", "dc-median"])
+def test_the_ultrametric_heads_find_a_shape_no_centroid_head_can(method):
+    """The reason to have them: they cut a spanning tree, so a cluster need not be convex."""
+    datasets = pytest.importorskip("sklearn.datasets")
+    ari = pytest.importorskip("sklearn.metrics").adjusted_rand_score
+    x, y = datasets.make_moons(n_samples=4000, noise=0.06, random_state=0)
+    assert ari(y, _dc(x, method, k=2)) > 0.99
+    assert ari(y, _dc(x, "ward", k=2)) < 0.6  # the control, on the same summary
+
+
+def test_dc_center_is_mass_blind_and_dc_median_is_not(blobs_with_stragglers):
+    """The measured trade between the two objectives, and the mechanism behind it.
+
+    ``max`` cannot see a weight, so `dc-center` spends clusters isolating single stray leaves;
+    the mass-weighted sum can, and keeps the blobs.
+    """
+    ari = pytest.importorskip("sklearn.metrics").adjusted_rand_score
+    x, y = blobs_with_stragglers
+    center, median = _dc(x, "dc-center"), _dc(x, "dc-median")
+    assert ari(y, median) > 0.6
+    assert ari(y, center) < 0.1
+    # ...and the cause, not just the score: `dc-center` answers one giant cluster and four shards.
+    sizes = np.sort(np.bincount(center))[::-1]
+    assert sizes[0] > 0.9 * len(x)
+    assert sizes[1] < 20
+    assert np.sort(np.bincount(median))[::-1][1] > 0.1 * len(x)
+    # Two of `dc-center`'s six clusters hold nothing but leaves no row routes back to, so the head
+    # answers fewer clusters than it was asked for. `dc-median` fills all of them.
+    assert len(set(_dc(x, "dc-center", k=6).tolist())) < 6
+    assert len(set(_dc(x, "dc-median", k=6).tolist())) == 6
+
+
+@pytest.mark.parametrize("method", ["dc-center", "dc-median"])
+def test_the_ultrametric_heads_partition_and_never_answer_noise(method, blobs_with_stragglers):
+    """`-1` is the density head's answer to a different question; these two never give it."""
+    x, _y = blobs_with_stragglers
+    labels = _dc(x, method, k=6)
+    assert labels.min() >= 0
+    assert set(labels.tolist()) <= set(range(6))
+
+
+@pytest.mark.parametrize("method", ["dc-center", "dc-median"])
+def test_predict_answers_the_partition_the_fit_produced(method, blobs_with_stragglers):
+    """Both heads label leaves, so `predict` must route to a leaf rather than to a centre."""
+    x, _y = blobs_with_stragglers
+    est = betula_cluster.Betula(
+        n_clusters=4, method=method, threshold=0.0, max_leaves=400, min_samples=5, seed=0
+    )
+    labels = est.fit_predict(x)
+    assert np.array_equal(labels, est.predict(x))
+
+
+@pytest.mark.parametrize("method", ["dc-center", "dc-median"])
+def test_the_ultrametric_heads_survive_a_save_load_round_trip(
+    method, tmp_path, blobs_with_stragglers
+):
+    x, _y = blobs_with_stragglers
+    est = betula_cluster.Betula(
+        n_clusters=4, method=method, threshold=0.0, max_leaves=200, min_samples=5, seed=0
+    ).fit(x)
+    path = str(tmp_path / "dc.betula")
+    est.save(path)
+    assert np.array_equal(est.predict(x), betula_cluster.Betula.load(path).predict(x))
+
+
+def test_a_leaf_budget_too_small_for_k_still_warns_on_the_ultrametric_heads(blobs_with_stragglers):
+    """These heads consume `n_clusters`, so the summary-too-coarse guard has to see them."""
+    x, _y = blobs_with_stragglers
+    with pytest.warns(UserWarning, match="max_leaves"):
+        betula_cluster.Betula(
+            n_clusters=40, method="dc-median", threshold=0.0, max_leaves=50, seed=0
+        ).fit(x)

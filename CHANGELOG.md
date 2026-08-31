@@ -49,6 +49,37 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- **`method="dc-median"` / `method="dc-center"` — exact `k`-median and `k`-center in the
+  density-connectivity ultrametric (Beer, Draganov, Hohma, Jahn, Frey & Assent, KDD 2023).** The same
+  mutual-reachability spanning tree `method="hdbscan"` takes its hierarchy from, cut for a `k` the
+  caller names instead of a `min_cluster_size`. `dc(a, b)` is the heaviest edge on the path between
+  `a` and `b`, so it is an ultrametric and both objectives are *solvable*, not approximable:
+  `k`-center by deleting the `k − 1` heaviest edges, and `k`-median by an `O(m·k)` knapsack over the
+  dendrogram, which exists because a leaf's service cost depends only on **which subtree** holds its
+  nearest centre and never on which centre it is. Draganov et al. (NeurIPS 2025) run the same
+  recursion for every `k` at once; this ships the single-`k` form. Both are asserted against brute
+  force over every `C(m, k)` centre set below `m = 12`, scored on an independently computed dc-dist
+  matrix. **Neither head emits `-1`** — they partition, and `hdbscan` remains the head that answers
+  noise over the same tree. Neither takes `n_clusters=0`: both costs fall monotonically in `k` to 0
+  at `k = m`, the same reason `kmedoids` has no automatic mode. Rust:
+  `clustering::{dc_clustering, DcObjective}`.
+- **`dc-median` is a win on the density fixtures; `dc-center` is mass-blind and ships saying so.**
+  ARI / seconds at `N = 6 000`, `max_leaves=600`, `min_samples=5`, median of seeds 0/1/2, `k` given:
+  moons-0.06 **1.000** / 0.021 (`spectral` 1.000 / 0.203, `ward` 0.434, `kmeans` 0.255);
+  moons-0.10 **0.889** / 0.014 (`spectral` 0.691 / 0.383, `ward` 0.420, `hdbscan` 0.015);
+  circles **1.000** / 0.015; `digits`-PCA20 **0.725** / 0.020 (`ward` 0.721, `spectral` 0.703,
+  `kmeans` 0.669, `hdbscan` 0.458); blobs + 5 % uniform noise 0.725 against `kmeans`'s **0.878** —
+  an ultrametric has no notion of a point lying *between* clusters. `dc-center` scores 0.000 on
+  moons-0.10, on the noise fixture and on `digits`: a maximum cannot see a weight, and on a summary
+  an outlier *is* a low-mass leaf, so at `k = 6` its clusters hold `[6297, 2, 1, 0]` rows against
+  `dc-median`'s `[1670, 1240, 1039, 1022]`. This is the mass-based answer the CURE probe went looking
+  for and could not find in shrinkage — a different objective, not a repair of the geometric one. The
+  same property read from the other side makes `dc-center` insensitive to over-specifying `k`
+  (1.000 / 1.000 / 0.999 / 0.999 / 0.997 at `k = 2/3/4/6/10` on moons-0.06, against `dc-median`'s
+  1.000 / 0.754 / 0.524 / 0.465 / 0.285), because its extra clusters are singletons. Cost is the
+  spanning tree's and within 2 % of `hdbscan`'s own: 0.014 / 0.047 / 0.350 / 1.528 s at `max_leaves`
+  300 / 1000 / 3000 / 6000.
+
 - **`reachability()` — an OPTICS reachability plot over the leaves, as the density diagnostic
   (Ankerst et al. 1999).** Returns a `ReachabilityPlot` with `order` / `reachability` /
   `core_distances` / `weights` and a `labels_at(eps)` that reads the DBSCAN\* cut off the plot.

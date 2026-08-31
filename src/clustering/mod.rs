@@ -6,6 +6,7 @@
 pub mod agglomerative;
 pub mod bregman;
 pub mod community;
+pub mod dcdist;
 pub mod fuzzy;
 pub mod gmm;
 pub mod gmm_toeplitz;
@@ -32,6 +33,7 @@ pub use agglomerative::{
 };
 pub use bregman::{BregmanMixture, bregman_agglomerative, bregman_em, bregman_kmeans};
 pub use community::{Community, Objective, leiden};
+pub use dcdist::{DcClustering, DcObjective, dc_clustering};
 pub use fuzzy::{FuzzyCMeans, fuzzy_cmeans, fuzzy_cmeans_auto};
 pub use gmm::{Gmm, GmmFull, gmm_diagonal, gmm_diagonal_auto, gmm_full, gmm_full_auto};
 pub use gmm_toeplitz::{

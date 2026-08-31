@@ -32,6 +32,7 @@ use crate::clustering::{
     ConstraintError, Linkage, MixedCf, bregman_agglomerative, bregman_em, bregman_kmeans,
     cop_kmeans, kprototypes, nearest_micro, summarize_mixed,
 };
+use crate::clustering::{DcObjective, dc_clustering};
 use crate::clustering::{Reachability, optics};
 use crate::distance::{
     AverageIntercluster, AverageIntracluster, CFDistance, CentroidEuclidean, CentroidManhattan,
@@ -62,6 +63,13 @@ enum Kind {
         /// the exact complete graph.
         graph_degree: usize,
     },
+    /// Exact `k`-center / `k`-median in the density-connectivity ultrametric — HDBSCAN\*'s own
+    /// spanning tree, cut for a `k` the caller names instead of a `min_cluster_size`.
+    DcDist {
+        objective: DcObjective,
+        min_samples: usize,
+        graph_degree: usize,
+    },
     /// Scale-space KDE-mode clustering with persistence-selected scale (no `k`, no bandwidth).
     ScaleSpace,
 }
@@ -70,7 +78,8 @@ impl Kind {
     /// Whether the head partitions the leaves into a caller-supplied `k`. HDBSCAN, scale-space and
     /// Leiden discover their own count, so a leaf budget stated relative to `k` says nothing there.
     fn consumes_k(self) -> bool {
-        matches!(self, Kind::Parametric(m) if !matches!(m, Method::Leiden { .. }))
+        matches!(self, Kind::DcDist { .. })
+            || matches!(self, Kind::Parametric(m) if !matches!(m, Method::Leiden { .. }))
     }
 }
 
@@ -294,6 +303,16 @@ fn parse_method(
         "gmm-toeplitz-full" => Ok(Kind::Parametric(Method::GmmToeplitzFull)),
         "gmm-toeplitz-gs" => Ok(Kind::Parametric(Method::GmmToeplitzGs)),
         "mppca" => Ok(Kind::Parametric(Method::Mppca { rank })),
+        "dc-center" => Ok(Kind::DcDist {
+            objective: DcObjective::Center,
+            min_samples,
+            graph_degree,
+        }),
+        "dc-median" => Ok(Kind::DcDist {
+            objective: DcObjective::Median,
+            min_samples,
+            graph_degree,
+        }),
         "hdbscan" => Ok(Kind::Hdbscan {
             min_samples,
             min_cluster_size,
@@ -304,7 +323,7 @@ fn parse_method(
             "method must be 'kmeans', 'xmeans', 'kmedoids', 'fuzzy-cmeans', 'gmm', 'gmm-full', \
              'mppca', 'ward', 'average', 'weighted', 'centroid', 'median', 'spectral', 'leiden', \
              'leiden-cpm', 'spherical-kmeans', 'vmf', 'gmm-toeplitz', 'gmm-toeplitz-full', \
-             'gmm-toeplitz-gs', 'hdbscan' or 'scale-space'",
+             'gmm-toeplitz-gs', 'hdbscan', 'dc-center', 'dc-median' or 'scale-space'",
         )),
     }
 }
@@ -421,6 +440,17 @@ fn dispatch_kind<R: Real, C: ClusterFeature<R>>(
             graph_degree,
         } => Dispatch::hard(
             hdbscan_with(feats, min_samples, min_cluster_size, graph_degree, seed).labels,
+        ),
+        Kind::DcDist {
+            objective,
+            min_samples,
+            graph_degree,
+        } => Dispatch::hard(
+            dc_clustering(feats, k, objective, min_samples, graph_degree, seed)
+                .labels
+                .into_iter()
+                .map(|l| l as i64)
+                .collect(),
         ),
         Kind::ScaleSpace => Dispatch::hard(
             scale_space(feats, 0, max_iter)
@@ -1304,6 +1334,23 @@ fn cluster<R: Real, C: ClusterFeature<R>>(
             );
             map_rows(n, |i| {
                 res.labels[tree.nearest_entry(&flat[i * dim..(i + 1) * dim])]
+            })
+        }
+        Kind::DcDist {
+            objective,
+            min_samples,
+            graph_degree,
+        } => {
+            let res = dc_clustering(
+                tree.leaf_features(),
+                k,
+                objective,
+                min_samples,
+                graph_degree,
+                seed,
+            );
+            map_rows(n, |i| {
+                res.labels[tree.nearest_entry(&flat[i * dim..(i + 1) * dim])] as i64
             })
         }
         Kind::ScaleSpace => {

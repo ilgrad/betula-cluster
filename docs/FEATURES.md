@@ -236,6 +236,21 @@ A capability-by-capability reference. For runnable code see [`USAGE.md`](USAGE.m
   `to_networkx()` (edges carry `weight` / `overlap` / `bridge`) for plotting; `mapper_stability()`
   sweeps the resolution to find the topologically stable scale. An exploration tool (structure, RAG
   curation, dedup), not a partition — complementary to the HDBSCAN density head.
+- **Exact `k`-center / `k`-median in the density-connectivity ultrametric**
+  (`method="dc-center"` / `"dc-median"`, Beer, Draganov, Hohma, Jahn, Frey & Assent, KDD 2023) — the
+  same mutual-reachability spanning tree `method="hdbscan"` takes its hierarchy from, cut for a `k`
+  you name instead of a `min_cluster_size`. `dc(a, b)` is the heaviest edge on the path between them,
+  which makes it an ultrametric and both objectives exactly solvable: `k`-center by deleting the
+  `k − 1` heaviest edges, `k`-median by an `O(m·k)` knapsack over the dendrogram (a leaf's cost
+  depends only on *which subtree* holds its nearest centre, never on which centre). Both are checked
+  against brute force over every `C(m, k)` centre set below `m = 12`. Neither emits `-1` — they
+  partition; `hdbscan` is the head for noise. Measured at `N = 6 000`, `max_leaves=600`, median of
+  seeds 0/1/2: `dc-median` reaches **0.889** on moons at noise 0.10 against `spectral`'s 0.691 and
+  `hdbscan`'s 0.015, at 0.014 s against 0.383 s, and **0.725** on `digits`-PCA20 against `ward`'s
+  0.721 and `hdbscan`'s 0.458. `dc-center` is **mass-blind by construction** — a maximum cannot see a
+  weight, so on a summary, where an outlier is a low-mass leaf, it spends its budget isolating strays
+  (`[6297, 2, 1, 0]` rows at `k = 6` on the noise fixture). Tables in
+  [`docs/USAGE.md`](https://github.com/ilgrad/betula-cluster/blob/main/docs/USAGE.md).
 - **OPTICS reachability plot** (`reachability()` → `ReachabilityPlot`) — the density *diagnostic*
   over the microclusters: one sweep position per leaf, with `core_distances` and per-leaf `weights`
   alongside, and `labels_at(ε)` for the DBSCAN\* cut. It is not an approximation of the HDBSCAN head

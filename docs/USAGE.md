@@ -19,7 +19,7 @@ labels = betula_cluster.fit_predict(X, method="hdbscan", min_samples=10, min_clu
 # hdbscan: label -1 == noise
 ```
 
-Keyword args: `feature ∈ {spherical, diagonal, full, fd}`, `method ∈ {kmeans, xmeans, kmedoids, fuzzy-cmeans, gmm, gmm-full, mppca, ward, average, weighted, centroid, median, spectral, leiden, leiden-cpm, spherical-kmeans, vmf, gmm-toeplitz, gmm-toeplitz-full, gmm-toeplitz-gs, hdbscan, scale-space}`,
+Keyword args: `feature ∈ {spherical, diagonal, full, fd}`, `method ∈ {kmeans, xmeans, kmedoids, fuzzy-cmeans, gmm, gmm-full, mppca, ward, average, weighted, centroid, median, spectral, leiden, leiden-cpm, spherical-kmeans, vmf, gmm-toeplitz, gmm-toeplitz-full, gmm-toeplitz-gs, hdbscan, dc-center, dc-median, scale-space}`,
 `distance ∈ {euclidean, manhattan, ward, average}` (routing measure),
 `absorb ∈ {euclidean, manhattan, average, diameter, ward, radius, chi2, subspace}` (see *Absorption criteria*
 below; `chi2` = mass-invariant Mahalanobis gate at level `chi2_p` with `chi2_scale` = within-cluster
@@ -124,6 +124,7 @@ answer.
 | **non-convex / manifold** shapes (moons, rings, spirals) | `spectral` | yes (pair with a **small** `threshold`) |
 | **community / graph structure**, unknown count | `leiden` (or `leiden-cpm`) | **no** — count is discovered; tune `resolution` |
 | variable-density clusters **+ noise**, unknown count | `hdbscan` | no |
+| the same density structure, but you know `k` and want a partition rather than noise | `dc-median` | yes — read *Naming `k` on the density hierarchy*; `dc-center` is the other objective and is **mass-blind** |
 | **density peaks**, arbitrary count, no `k` *or* bandwidth to pick | `scale-space` | **no** — scale chosen by mode persistence |
 | **ordered / stationary signals** (time-series windows, trajectories, sensor waveforms), covariance *shape* | `gmm-toeplitz` | yes (or `0` = BIC) |
 | ordered signals with structure **beyond a low-order AR** (long-lag echo, narrowband) | `gmm-toeplitz-full` (any lag) or `gmm-toeplitz-gs` (likelihood-optimal precision, ≤ order 16) | yes (or `0` = BIC) |
@@ -761,6 +762,69 @@ nxg = g.to_networkx()         # optional (needs networkx); edges carry weight / 
 # sweep resolution to find the topologically stable scale (β0 / branch / bridge counts vs resolution)
 curve = est.mapper_stability(resolutions=[8, 12, 16])
 ```
+
+## Naming `k` on the density hierarchy — `dc-center` / `dc-median`
+
+`hdbscan` reads its cluster count off the persistence of the mutual-reachability spanning tree. These
+two cut the *same tree* for a `k` you name instead, and both cuts are **provably optimal** — the
+density-connectivity distance (Beer et al., KDD 2023) is an ultrametric, and `k`-center and
+`k`-median are exactly solvable in one.
+
+```python
+# k-median: minimise the mass-weighted total dc-dist. The one to reach for.
+labels = betula_cluster.fit_predict(X, n_clusters=6, method="dc-median", min_samples=5)
+# k-center: minimise the largest dc-dist. Exact, and mass-blind — see below.
+labels = betula_cluster.fit_predict(X, n_clusters=6, method="dc-center", min_samples=5)
+```
+
+`min_samples` and `graph_degree` are `hdbscan`'s and mean the same thing. **Neither head ever
+answers `-1`**: they partition. If you want noise, the question is DBSCAN\*'s and `hdbscan` is the
+head for it, over this very tree.
+
+**Why they are exact.** `dc(a, b)` is the heaviest edge on the path between `a` and `b` in that tree,
+so it is the height of their lowest common ancestor in the single-linkage dendrogram. `k`-center then
+falls out of deleting the `k − 1` heaviest edges. `k`-median falls out of a second observation: a
+leaf's service cost depends only on *which subtree* its nearest centre sits in, never on which centre
+it is — which turns choosing `k` centres into an `O(m·k)` knapsack over the dendrogram. Draganov et
+al. (NeurIPS 2025) run the same recursion for every `k` at once. Both are checked against brute force
+over every `C(m, k)` centre set for `m ≤ 12`.
+
+**What they score.** `N = 6 000`, `max_leaves=600`, `min_samples=5`, `k` given (except `hdbscan`,
+which picks its own), median of seeds 0/1/2 — ARI / seconds:
+
+| fixture | `dc-center` | `dc-median` | `hdbscan` | `ward` | `spectral` | `kmeans` |
+|---|---|---|---|---|---|---|
+| moons, noise 0.06 | **1.000** / 0.020 | **1.000** / 0.021 | **1.000** / 0.020 | 0.434 / 0.011 | **1.000** / 0.203 | 0.255 / 0.004 |
+| moons, noise 0.10 | 0.000 / 0.014 | **0.889** / 0.014 | 0.015 / 0.016 | 0.420 / 0.007 | 0.691 / 0.383 | 0.256 / 0.003 |
+| circles | **1.000** / 0.015 | **1.000** / 0.015 | **1.000** / 0.015 | 0.000 / 0.006 | **1.000** / 0.221 | −0.000 / 0.004 |
+| blobs, 8-D | 1.000 / 0.019 | 1.000 / 0.019 | 1.000 / 0.020 | 1.000 / 0.015 | 1.000 / 0.095 | 1.000 / 0.008 |
+| blobs + 5 % noise | 0.000 / 0.015 | 0.725 / 0.015 | 0.322 / 0.016 | 0.841 / 0.007 | 0.864 / 0.381 | **0.878** / 0.005 |
+| digits, PCA-20 | −0.000 / 0.018 | **0.725** / 0.020 | 0.458 / 0.019 | 0.721 / 0.010 | 0.703 / 0.408 | 0.669 / 0.007 |
+
+`dc-median` is the head to take from this: it matches `spectral` wherever `spectral` wins and beats
+it by 0.198 on the harder moons, at **20×** less wall clock, and it ties `ward` on `digits` while
+beating `hdbscan` there by 0.267. It loses the noise fixture to the three centroid heads, which is
+the expected shape — an ultrametric has no notion of a point being *between* clusters.
+
+**`dc-center` is mass-blind, and that is not a bug to fix.** A maximum cannot see a weight, so on a
+summary — where an outlier *is* a low-mass leaf — it spends the whole budget isolating strays. On the
+noise fixture at `k = 6` its clusters hold `[6297, 2, 1, 0]` rows against `dc-median`'s
+`[1670, 1240, 1039, 1022]`. This is the mass-based answer the CURE probe went looking for and did not
+find in shrinkage: not a repair of the geometric objective but a different objective.
+
+Seen from the other side, the same property makes `dc-center` **insensitive to over-specifying `k`** —
+on moons-0.06 it holds 1.000 / 1.000 / 0.999 / 0.999 / 0.997 at `k = 2/3/4/6/10`, because its extra
+clusters are singletons, while `dc-median` falls 1.000 / 0.754 / 0.524 / 0.465 / 0.285 because it
+genuinely splits mass. Read that as one fact stated twice, not as two findings.
+
+**Cost is the spanning tree's**, which both heads share with `hdbscan`: at `N = 6 000`, `k = 8`,
+0.014 / 0.047 / 0.350 / 1.528 s at `max_leaves` 300 / 1000 / 3000 / 6000, within 2 % of `hdbscan`'s
+own 0.015 / 0.044 / 0.347 / 1.526 and about 3× `ward`'s. `graph_degree > 0` bounds it, with the same
+caveat as everywhere else on this tree: it changes the tree, so the answer stays optimal for a
+different problem.
+
+Neither head takes `n_clusters=0`. Both costs fall monotonically in `k` to zero at `k = m`, so the
+objective cannot select it — the same reason `kmedoids` has no automatic mode.
 
 ## Density structure — `reachability()`
 

@@ -54,26 +54,26 @@ pub enum Selection {
     Persistence,
 }
 
-struct UnionFind {
+pub(crate) struct UnionFind {
     parent: Vec<usize>,
     rank: Vec<u8>,
 }
 
 impl UnionFind {
-    fn new(n: usize) -> Self {
+    pub(crate) fn new(n: usize) -> Self {
         Self {
             parent: (0..n).collect(),
             rank: vec![0; n],
         }
     }
-    fn find(&mut self, mut x: usize) -> usize {
+    pub(crate) fn find(&mut self, mut x: usize) -> usize {
         while self.parent[x] != x {
             self.parent[x] = self.parent[self.parent[x]];
             x = self.parent[x];
         }
         x
     }
-    fn union(&mut self, a: usize, b: usize) -> usize {
+    pub(crate) fn union(&mut self, a: usize, b: usize) -> usize {
         let (ra, rb) = (self.find(a), self.find(b));
         if ra == rb {
             return ra;

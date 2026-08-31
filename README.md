@@ -177,6 +177,11 @@ snapshots / active-learning batches, the Rust API, and the CLI — all in the
 - **Density & topology** — HDBSCAN-CF (density over microclusters), **scale-space** Morse-persistence
   density-mode clustering (`method="scale-space"` — no `k`, no bandwidth), and a Mapper topological
   skeleton (`mapper` / `mapper_stability`).
+- **Naming `k` on the density hierarchy** (`method="dc-median"` / `"dc-center"`, Beer et al. 2023) —
+  exact `k`-median / `k`-center in the density-connectivity ultrametric, cutting the same
+  mutual-reachability tree `hdbscan` reads its count off. `dc-median` beats `spectral` by 0.198 on
+  noisy moons at 20× less wall clock and ties `ward` on `digits`; `dc-center` is mass-blind by
+  construction and is published with the measurement that shows it.
 - **OPTICS reachability plot** (`reachability()` → `ReachabilityPlot`) — the density diagnostic, over
   the microclusters. Not a lookalike of `method="hdbscan"`: OPTICS with no ε cutoff *is* Prim on the
   mutual-reachability graph, so the sweep walks that head's own spanning tree and `labels_at(ε)` is
