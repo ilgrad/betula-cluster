@@ -65,6 +65,7 @@ _Method = Literal[
     "spherical-kmeans",
     "vmf",
     "watson",
+    "hyperbolic",
     "gmm-toeplitz",
     "gmm-toeplitz-full",
     "gmm-toeplitz-gs",

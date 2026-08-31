@@ -4,9 +4,10 @@ use crate::clustering::{
     Gmm, GmmFull, GmmToeplitz, Linkage, Mfa, Movmf, Mppca, Objective, Watson, agglomerative,
     agglomerative_auto, dyn_msc, fuzzy_cmeans, fuzzy_cmeans_auto, gmm_diagonal, gmm_diagonal_auto,
     gmm_full, gmm_full_auto, gmm_toeplitz, gmm_toeplitz_auto, gmm_toeplitz_full,
-    gmm_toeplitz_full_auto, gmm_toeplitz_gs, gmm_toeplitz_gs_auto, kmeans, kmeans_auto, kmedoids,
-    leiden, mfa, mfa_auto, movmf, movmf_auto, mppca, mppca_auto, spectral, spherical_kmeans,
-    ward_hac, ward_hac_auto, watson, watson_auto, xmeans,
+    gmm_toeplitz_full_auto, gmm_toeplitz_gs, gmm_toeplitz_gs_auto, hyperbolic_kmeans, kmeans,
+    kmeans_auto, kmedoids, leiden, mfa, mfa_auto, movmf, movmf_auto, mppca, mppca_auto,
+    project_to_sheet, spectral, spherical_kmeans, ward_hac, ward_hac_auto, watson, watson_auto,
+    xmeans,
 };
 use crate::distance::CFDistance;
 use crate::feature::ClusterFeature;
@@ -94,6 +95,11 @@ pub enum Method {
     /// Unlike `Mppca` it is **not** rotation-equivariant, for the same reason `Gmm` is not. BIC
     /// auto-`k` when `k == 0`.
     Mfa { rank: usize },
+    /// k-means under the squared Lorentzian distance on the Lorentz model of hyperbolic space, for
+    /// rows that are already points of `H^d` — a Poincaré or hyperboloid embedding of a hierarchy.
+    /// The centroid is a normalized sum, so a leaf summary carries the objective exactly. `k == 0`
+    /// is **not** automatic: the cost falls monotonically in `k`, so this head cannot select it.
+    Hyperbolic,
 }
 
 /// How a head labels a raw point — by its own objective, not by a routing shortcut.
@@ -110,6 +116,9 @@ pub(crate) enum Rule {
     Centroid { unit: bool },
     /// Argmax of `ln π_c + ln p(x | θ_c)` under the fitted mixture.
     Posterior,
+    /// Argmax of the Minkowski form `⟨x, c⟩_L` — a Voronoi partition of `H^d`, which is not the
+    /// Voronoi partition of the ambient `R^{d+1}` that a nearest-centre rule would impose.
+    Lorentz,
     /// Route down the tree to a leaf and read its label.
     Microcluster,
 }
@@ -120,6 +129,7 @@ pub(crate) fn assignment_rule(method: Method) -> Rule {
             Rule::Centroid { unit: false }
         }
         Method::SphericalKMeans => Rule::Centroid { unit: true },
+        Method::Hyperbolic => Rule::Lorentz,
         Method::Gmm
         | Method::GmmFull
         | Method::GmmToeplitz
@@ -181,7 +191,10 @@ fn cluster_centroids<R: Real, C: ClusterFeature<R>>(
 /// `kmedoids` it destroys that objective: the centre stops being one of the data's own
 /// microclusters, which is the only reason to have asked for a medoid.
 pub(crate) fn refinable(method: Method) -> bool {
-    !matches!(method, Method::KMedoids | Method::FuzzyCMeans { .. })
+    !matches!(
+        method,
+        Method::KMedoids | Method::FuzzyCMeans { .. } | Method::Hyperbolic
+    )
 }
 
 /// The chosen medoid of each cluster, as `(label, centre)` pairs — the centres a medoid head's
@@ -226,6 +239,8 @@ enum Assignment<R: Real> {
     },
     /// Maximum posterior under the fitted mixture.
     Posterior(Mixture),
+    /// Argmax of `⟨x, c⟩_L` over the `(label, centre)` pairs, after putting `x` on the sheet.
+    Lorentz { centers: Vec<(usize, Vec<R>)> },
     /// Nearest leaf entry, then that entry's label.
     Microcluster,
 }
@@ -275,6 +290,12 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> Mo
                 unit,
             },
             (Rule::Posterior, Some(m)) => Assignment::Posterior(m),
+            (Rule::Lorentz, _) => {
+                fit.centers
+                    .map_or(Assignment::Microcluster, |centers| Assignment::Lorentz {
+                        centers,
+                    })
+            }
             _ => Assignment::Microcluster,
         };
         Self {
@@ -291,6 +312,7 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> Mo
         match &self.assign {
             Assignment::Centers { centers, .. } => nearest_center(centers, x),
             Assignment::Posterior(mixture) => mixture.assign(x),
+            Assignment::Lorentz { centers } => nearest_lorentz_center(centers, x),
             Assignment::Microcluster => self.entry_labels[self.tree.nearest_entry(x)],
         }
     }
@@ -341,6 +363,25 @@ fn nearest_center<R: Real>(centers: &[(usize, Vec<R>)], x: &[R]) -> usize {
         let d = sq_euclidean(x, c);
         if d < bd {
             bd = d;
+            best = i;
+        }
+    }
+    centers[best].0
+}
+
+/// Label of the centre a raw row is closest to *hyperbolically*: `argmax_c ⟨x, c⟩_L`, after putting
+/// the row on the sheet.
+///
+/// The projection is here and not only at the boundary because `predict` is reachable with a row the
+/// fit never saw, and a row off the sheet has no hyperbolic distance to anything.
+fn nearest_lorentz_center<R: Real>(centers: &[(usize, Vec<R>)], x: &[R]) -> usize {
+    let p = project_to_sheet(x);
+    let mut best = 0;
+    let mut bv = R::neg_infinity();
+    for (i, (_, c)) in centers.iter().enumerate() {
+        let v = crate::clustering::hyperbolic::lorentz_dot(&p, c);
+        if v > bv {
+            bv = v;
             best = i;
         }
     }
@@ -666,6 +707,25 @@ pub(crate) fn fit_head<R: Real, C: ClusterFeature<R>>(
             HeadFit::soft(gmm_toeplitz_gs_auto(features, 1, hi, max_iter, seed))
         }
         Method::GmmToeplitzGs => HeadFit::soft(gmm_toeplitz_gs(features, kk, max_iter, seed)),
+        // No automatic arm: `Σ_c 2(|R_c|_L − W_c)` falls monotonically in `k`, exactly as total
+        // deviation does for `kmedoids`, so the head's own objective cannot choose. `k == 0` lands
+        // on the single cluster `kk` already clamps to, and the `Method` doc says so.
+        Method::Hyperbolic => {
+            let fit = hyperbolic_kmeans(features, kk, max_iter, seed);
+            // An emptied cluster keeps its previous centre, so publishing all `k` of them would let
+            // `predict` return a label the fit never produced — the same rule `medoid_centers` keeps.
+            let mut used = vec![false; fit.centers.len()];
+            for &l in &fit.labels {
+                used[l] = true;
+            }
+            let centers = fit
+                .centers
+                .into_iter()
+                .enumerate()
+                .filter(|&(l, _)| used[l])
+                .collect();
+            HeadFit::centred(fit.labels, centers)
+        }
     }
 }
 
@@ -685,6 +745,40 @@ mod tests {
     use crate::distance::CentroidEuclidean;
     use crate::feature::{Diagonal, Spherical};
     use std::collections::HashMap;
+
+    #[test]
+    fn end_to_end_hyperbolic_from_points() {
+        // Three arms of `H^2` spanning radii 4 to 8 — the shape a hyperbolic embedding of a tree
+        // has, and the one where the two geometries rank pairs differently. The wiring is what is
+        // under test: the head's own rule has to survive the tree, the fit and `predict`, and a
+        // nearest-centre rule in the ambient coordinates would cut the arms into radial bands.
+        let mut rng = SplitMix64::new(13);
+        let mut pts = Vec::new();
+        let mut truth = Vec::new();
+        for c in 0..3usize {
+            for _ in 0..400 {
+                let r = 4.0 + 4.0 * rng.next_f64();
+                let a = std::f64::consts::TAU * (c as f64) / 3.0 + 0.10 * rng.gauss();
+                let s: f64 = r.sinh();
+                pts.push(vec![r.cosh(), s * a.cos(), s * a.sin()]);
+                truth.push(c);
+            }
+        }
+        let mut tree: CFTree<f64, Spherical<f64>, _, _> =
+            CFTree::new(3, 16, 16, 0.0, 300, CentroidEuclidean, CentroidEuclidean);
+        for p in &pts {
+            tree.insert(p);
+        }
+        let mut model = Model::fit(tree, 3, Method::Hyperbolic, 100, 7, 0);
+        let labels: Vec<usize> = pts.iter().map(|p| model.predict(p)).collect();
+        let score = ari(&labels, &truth);
+        assert!(score > 0.9, "ARI = {score}");
+        assert_eq!(
+            model.refine(&[], 0, 3, 5),
+            0,
+            "a Lloyd sweep is not this head's update"
+        );
+    }
 
     #[test]
     fn end_to_end_kmeans_from_points() {
@@ -781,6 +875,7 @@ mod tests {
             Method::SphericalKMeans,
             Method::Movmf,
             Method::Watson,
+            Method::Hyperbolic,
         ] {
             for k in [3usize, 0usize] {
                 let labels = fit_head(&feats, k, method, 100, 1, 0).labels;
@@ -1078,6 +1173,7 @@ mod tests {
             ("gmm", Method::Gmm),
             ("movmf", Method::Movmf),
             ("watson", Method::Watson),
+            ("hyperbolic", Method::Hyperbolic),
             ("ward", Method::Ward),
             (
                 "centroid",
@@ -1107,6 +1203,7 @@ mod tests {
                 (assignment_rule(method), &model.assign),
                 (Rule::Centroid { .. }, Assignment::Centers { .. })
                     | (Rule::Posterior, Assignment::Posterior(_))
+                    | (Rule::Lorentz, Assignment::Lorentz { .. })
                     | (Rule::Microcluster, Assignment::Microcluster)
             );
             assert!(ok, "{name}: fit installed a rule the head does not declare");

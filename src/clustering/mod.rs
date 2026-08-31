@@ -12,6 +12,7 @@ pub mod gmm;
 pub mod gmm_toeplitz;
 pub(crate) mod graph;
 pub mod hdbscan;
+pub mod hyperbolic;
 pub mod kmeans;
 pub(crate) mod knn;
 pub mod kprototypes;
@@ -43,6 +44,9 @@ pub use gmm_toeplitz::{
     gmm_toeplitz_gs, gmm_toeplitz_gs_auto,
 };
 pub use hdbscan::{Hdbscan, Selection, hdbscan, hdbscan_selected};
+pub use hyperbolic::{
+    HyperbolicKMeans, f64_working_radius, hyperbolic_kmeans, merge_increase, project_to_sheet,
+};
 pub use kmeans::{ConstraintError, KMeans, cop_kmeans, kmeans, kmeans_auto};
 pub use kprototypes::{MixedCf, kprototypes, nearest_micro, summarize_mixed};
 pub use medoid::{MedoidClustering, Pam, dyn_msc, kmedoids};

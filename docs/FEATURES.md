@@ -81,6 +81,15 @@ A capability-by-capability reference. For runnable code see [`USAGE.md`](USAGE.m
   `p(x) ∝ exp(κ (μᵀx)²)`, so `x` and `−x` are the same point), whose sufficient statistic is the
   second moment `Σ_i + μ_i μ_iᵀ` the `full` leaf already carries exactly, with `κ < 0` fitting
   **girdle** (equatorial) components as well as bipolar ones and BIC auto-`k`, and
+  **hyperbolic clustering on the Lorentz model of `H^d`** (`"hyperbolic"`, for embeddings of
+  hierarchies — Sarkar 2011, Nickel & Kiela 2017): the **squared Lorentzian distance**
+  `d_L² = −2 − 2⟨x,y⟩_L` of Law et al. (ICML 2019), whose Fréchet mean is the normalised sum
+  `R/|R|_L`. `d_L²` is *affine*, so the leaf enters through `(n_i, R_i)` and there is no scatter term
+  at all — the one head here that reads no second moment, making `feature="spherical"` lossless
+  rather than merely cheap. Boost-invariant by construction, which is the deliverable: on a boosted
+  embedding a Poincaré-ball chart plus `gmm-full` falls 0.817 → 0.311 while this holds 0.731 → 0.596,
+  and on an un-boosted one the ball route wins outright — read the trade in `docs/USAGE.md` before
+  reaching for it, and
   **HDBSCAN-style density clustering over the CF microclusters** (mass-aware mutual-reachability +
   mass-weighted stability → non-convex clusters and noise, automatic count; an *approximation* of
   raw-point HDBSCAN over the $M \ll N$ microclusters, not identical to it, with `graph_degree > 0`

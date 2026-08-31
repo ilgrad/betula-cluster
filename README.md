@@ -246,6 +246,19 @@ snapshots / active-learning batches, the Rust API, and the CLI — all in the
   it loses to `vmf` (0.952 vs 0.976), and it costs 5–8× `vmf` in wall clock. `κ < 0` fits **girdle**
   (equatorial) components too, and `n_clusters=0` selects `k` by BIC —
   [`docs/USAGE.md`](https://github.com/ilgrad/betula-cluster/blob/main/docs/USAGE.md).
+- **Hyperbolic embeddings** — **`method="hyperbolic"`** (Law et al., ICML 2019) for data that is
+  already a point set of `H^d`: Poincaré or Lorentz coordinates of a taxonomy, ontology or scale-free
+  graph. It clusters under the **squared Lorentzian distance** `d_L² = −2 − 2⟨x,y⟩_L`, whose centroid
+  is the normalised sum `R/|R|_L` — and which is *affine*, so a leaf enters only through `(n_i, R_i)`
+  and its covariance is not read at all. That makes `feature="spherical"` exactly as good as `"full"`
+  (measured: identical to four digits), which is true of no other head here. The deliverable is
+  **invariance, not ARI**: a Lorentz boost is an isometry of `H^d`, and on a 15 360-point tree
+  embedding boosted by rapidity 3 the Poincaré-ball route with `gmm-full` falls 0.817 → **0.311**
+  while this head holds 0.731 → **0.596**. On an *un-boosted* embedding that ball route wins outright,
+  and the residual drift here is the Euclidean CF-tree's, not the head's — at one leaf per point the
+  head is exactly boost-invariant (0.772 at every rapidity). The trade, and the `f64` working radius
+  of ≈ 18, are in
+  [`docs/USAGE.md`](https://github.com/ilgrad/betula-cluster/blob/main/docs/USAGE.md).
 - **More heads & data** — `DenStream` / `DbStream` evolving-stream density, mergeable `KllSketch` /
   `DdSketch` quantiles, `scipy.sparse` (`O(nnz)`, never densified), mixed numeric+categorical
   (`KPrototypes`), COP-KMeans constraints, robust (Huber) insertion, drift snapshots, dependency-free CLI.

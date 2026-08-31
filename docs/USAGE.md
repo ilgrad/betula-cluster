@@ -19,7 +19,7 @@ labels = betula_cluster.fit_predict(X, method="hdbscan", min_samples=10, min_clu
 # hdbscan: label -1 == noise
 ```
 
-Keyword args: `feature ∈ {spherical, diagonal, full, fd}`, `method ∈ {kmeans, xmeans, kmedoids, fuzzy-cmeans, gmm, gmm-full, mppca, mfa, ward, average, weighted, centroid, median, spectral, leiden, leiden-cpm, spherical-kmeans, vmf, watson, gmm-toeplitz, gmm-toeplitz-full, gmm-toeplitz-gs, hdbscan, dc-center, dc-median, scale-space}`,
+Keyword args: `feature ∈ {spherical, diagonal, full, fd}`, `method ∈ {kmeans, xmeans, kmedoids, fuzzy-cmeans, gmm, gmm-full, mppca, mfa, ward, average, weighted, centroid, median, spectral, leiden, leiden-cpm, spherical-kmeans, vmf, watson, hyperbolic, gmm-toeplitz, gmm-toeplitz-full, gmm-toeplitz-gs, hdbscan, dc-center, dc-median, scale-space}`,
 `distance ∈ {euclidean, manhattan, ward, average}` (routing measure),
 `absorb ∈ {euclidean, manhattan, average, diameter, ward, radius, chi2, subspace}` (see *Absorption criteria*
 below; `chi2` = mass-invariant Mahalanobis gate at level `chi2_p` with `chi2_scale` = within-cluster
@@ -122,6 +122,7 @@ answer.
 | the same, but the **columns are in different units** and cannot be standardised | `mfa` — per-axis noise instead of one `σ²` — read *Per-axis noise, and the narrow case for it* first: on a common scale `mppca` wins every table measured | yes (or `0` = BIC) |
 | **L2-normalized embeddings** (CLIP / face / sentence / speaker), cosine geometry | `vmf` (soft) or `spherical-kmeans` (hard) | yes (or `0` = BIC, `vmf`) |
 | the same, but the **sign is arbitrary** — eigenvectors, SVD/PCA axes, line orientations, any feature where `x` and `−x` mean the same thing | `watson` — read *Directions without a sign* | yes (or `0` = BIC) |
+| a **hyperbolic embedding** of a hierarchy (Poincaré / Lorentz coordinates of a tree, taxonomy, scale-free graph) | `hyperbolic` — read *Clustering in the hyperbolic plane* first: the win is **invariance**, not ARI, and a Poincaré-ball chart plus `gmm-full` scores higher on a centred embedding | yes — **no** auto-`k` |
 | a cluster *hierarchy* / merge structure | `ward` | yes (or `0` = dendrogram cut) |
 | **non-convex / manifold** shapes (moons, rings, spirals) | `spectral` | yes (pair with a **small** `threshold`) |
 | **community / graph structure**, unknown count | `leiden` (or `leiden-cpm`) | **no** — count is discovered; tune `resolution` |
@@ -546,6 +547,105 @@ the ascending series alternates for a negative argument and loses every digit to
 for a positive one every term is positive. The leading asymptotic is **not** used: measured against
 Maxima it is still 42 % low at `d = 50, κ = 50`. `g` is strictly increasing with `g(0) = 1/d`, so
 `r̄ ≷ 1/d` fixes the sign of `κ` before any solving and the solver cannot pick the wrong branch.
+
+### Clustering in the hyperbolic plane — `method="hyperbolic"`
+
+Hierarchies embed into hyperbolic space with vanishing distortion where Euclidean space needs
+exponentially many dimensions (Sarkar 2011; Nickel & Kiela 2017), so taxonomies, ontologies and
+scale-free graphs increasingly arrive as points of `H^d`. This head clusters them there.
+
+Rows are `(d+1)`-dimensional **Lorentz** coordinates, coordinate 0 time-like, and the boundary
+recomputes it as `x₀ = √(1 + ‖s‖²)` before insertion — so a row that is slightly off the sheet is
+projected rather than believed. A Poincaré-ball embedding `p` converts with
+`x = (1 + ‖p‖², 2p) / (1 − ‖p‖²)`.
+
+```python
+labels = betula_cluster.fit_predict(X_lorentz, n_clusters=16, method="hyperbolic")
+```
+
+**Why a cluster feature can carry this at all.** The head does not use the geodesic distance
+`d_H = arccosh(−⟨x,y⟩_L)`, which has no closed-form Fréchet mean. It uses the **squared Lorentzian
+distance** of Law, Liao, Snavely & Dhillon (ICML 2019), `d_L²(x,y) = −2 − 2⟨x,y⟩_L`, which is a
+strictly increasing function of `d_H` — so it orders pairs identically — and whose centroid is the
+normalised sum `μ = R/|R|_L` with `R = Σ_i n_i x_i`.
+
+`d_L²` is **affine in each argument**. Assigning a whole leaf costs `−2n_i − 2⟨R_i, c⟩_L`, which
+reads the leaf only through `(n_i, R_i)`. There is **no scatter term at all** — a linear function has
+no second order — so unlike every other head here the leaf's covariance is not merely cheap to use,
+it is not used. Measured, tree layout below, `k = 16`, seed 0: `feature="spherical"` /
+`"diagonal"` / `"full"` all read ARI **0.6911**, to four digits, because they are the same
+computation. Take `spherical`; the others buy nothing.
+
+**The fixture.** A 4-ary tree of depth 4 laid out in geodesic polar coordinates — depth sets the
+hyperbolic radius (`τ = 1.6` per level), each node owns an angular interval its children subdivide —
+with 60 points per tree leaf, 15 360 points, and the depth-2 subtree (16 groups) as the truth.
+`threshold=0`, `max_leaves=2000`, median of seeds 0/1/2.
+
+**Same points, three charts.** A hyperbolic embedding is handed over in one of three coordinate
+systems, and all three are things people feed a clustering routine:
+
+| chart | `hyperbolic` | `kmeans` | `gmm` | `gmm-full` | `ward` |
+|---|---|---|---|---|---|
+| Lorentz | **0.731** | 0.407 | 0.223 | 0.663 | 0.389 |
+| Poincaré ball | — | 0.575 | 0.584 | **0.817** | 0.598 |
+| tangent at the origin | — | 0.767 | 0.581 | 0.530 | 0.632 |
+
+Read that honestly: **on a centred embedding, converting to the Poincaré ball and running `gmm-full`
+scores higher than this head does.** The ball is a bounded chart that preserves angle and compresses
+radius by `tanh(r/2)`, which is exactly what a Euclidean head needs, and on this fixture the class
+structure is angular. What the head wins is the Lorentz-coordinate column, where a Euclidean head is
+ranking `sinh r` above angle and loses half its score.
+
+**Where that reading breaks.** A Lorentz boost is an *isometry* of `H^d` — the same points, the same
+hyperbolic distances, a different origin. Nothing about the data changed; a clustering that moves
+under it was answering about the chart. Boosting the fixture by rapidity `φ` along one axis:
+
+| `φ` | `hyperbolic` | Poincaré + `kmeans` | Poincaré + `gmm-full` | tangent + `kmeans` |
+|---|---|---|---|---|
+| 0.0 | 0.731 | 0.575 | **0.817** | 0.767 |
+| 0.5 | **0.653** | 0.618 | 0.637 | 0.647 |
+| 1.0 | **0.675** | 0.577 | 0.584 | 0.590 |
+| 2.0 | **0.614** | 0.478 | 0.513 | 0.523 |
+| 3.0 | **0.596** | 0.348 | 0.311 | 0.375 |
+
+The ball route loses 0.51 of its ARI and the head loses 0.14. **The head is the one whose answer is a
+property of the data rather than of where the embedding put its origin** — and if you do not know
+that your embedding is centred, which for a learned embedding you do not, the `φ = 0` column is the
+one you cannot count on.
+
+**And the residual 0.14 is not the head's.** Both Lloyd steps read only `(n_i, R_i)` and `Λ` is
+linear with `|ΛR|_L = |R|_L`, so the partition over a *fixed* leaf set is exactly boost-invariant
+(asserted in `tests/equivariance.rs`). What moves is the CF-tree, which routes and absorbs in the
+ambient Euclidean coordinates. Raise the budget until every point is its own leaf and the drift
+disappears entirely:
+
+| `max_leaves` | `φ=0` | `φ=1` | `φ=3` |
+|---|---|---|---|
+| 500 | 0.634 | 0.569 | 0.576 |
+| 2000 | 0.731 | 0.675 | 0.596 |
+| 8000 | 0.809 | 0.583 | 0.696 |
+| 20000 (one leaf per point) | **0.772** | **0.772** | **0.772** |
+
+That is the honest boundary of the feature: **the head is hyperbolic, the tree is not.** A
+Lorentz-aware routing distance would close it and is not built.
+
+**No automatic `k`.** `Σ_c 2(|R_c|_L − W_c)` falls monotonically in `k`, exactly as total deviation
+does for `kmedoids`, so this head's own objective cannot select the count. `n_clusters=0` yields a
+single cluster; name the `k` you want.
+
+**Constraints.** No `predict_proba` — there is no density, and the Euclidean softmax fallback the
+other centroid heads use would disagree with this head's own labels, so it raises instead. No
+`projection=` — a code vector has no time-like coordinate. No sparse (CSR) input — the sheet
+projection writes a nonzero into column 0 of every row. No `refine` — a Lloyd sweep is the Euclidean
+update.
+
+**The working radius is finite and is not a detail.** `⟨x,y⟩_L` is a difference of two nearly equal
+`Θ(cosh² r)` terms against an `Θ(1)` answer, so `f64` has a hard ceiling at `r ≈ ½ ln(2/ε) ≈ 18.4`.
+Measured against 60-digit mpmath, relative error of `d_L²` on two points a unit apart: `1e−16` at
+`r = 0`, `1e−8` at 10, `2e−3` at 15, and the **sign flips at 18**. `r ≲ 10` is exact for any purpose;
+past 18 nothing is. This is a property of the representation — a Poincaré-ball implementation
+saturates *earlier* — which is why the Rust API's `HyperbolicKMeans` reports the largest radius it
+saw.
 
 ### How many leaves the spectral head can use — `method="spectral"`
 

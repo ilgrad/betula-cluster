@@ -785,6 +785,14 @@ class Betula:
         pilot.fit(sub)
         return float(pilot.threshold_)
 
+    def _check_hyperbolic(self):
+        # A projection replaces the space the rows live in, and a code vector has no time-like
+        # coordinate — the sheet is a property of the input space, not of the codes.
+        if self.method == "hyperbolic" and str(self.projection) != "none":
+            raise ValueError(
+                "method='hyperbolic' does not accept a projection: the codes are not points of H^d"
+            )
+
     def _check_projection_input(self, X, csr):
         # CF-weighted NMF is defined only for nonnegative data; reject signed input rather than
         # silently shifting it (a shift changes angles / cosine geometry). The factorization runs on
@@ -812,6 +820,7 @@ class Betula:
         if must_link is not None or cannot_link is not None:
             return self._fit_constrained(X, must_link, cannot_link)
         csr = _to_csr(X)
+        self._check_hyperbolic()
         self._check_projection_input(X, csr)
         override = self._resolve_auto(X, csr)
         rows = _rows_of(X, csr)
@@ -833,6 +842,7 @@ class Betula:
             self._fit_constrained(X, must_link, cannot_link)
             return np.asarray(self.predict(X))
         csr = _to_csr(X)
+        self._check_hyperbolic()
         self._check_projection_input(X, csr)
         override = self._resolve_auto(X, csr)
         rows = _rows_of(X, csr)
@@ -862,6 +872,7 @@ class Betula:
         return self
 
     def partial_fit(self, X=None, y=None):
+        self._check_hyperbolic()
         csr = None if X is None else _to_csr(X)
         override = self._resolve_auto(X, csr) if self._est is None else None
         if csr is not None:
@@ -1492,7 +1503,16 @@ class Betula:
         **k-means / x-means / Ward / HDBSCAN** return a heuristic
         ``softmax(−d²/2τ²)`` over the cluster centroids (``τ`` = mean cluster radius) — a confidence
         *proxy*, **not** a calibrated posterior. Columns are component indices aligned with
-        :meth:`predict`."""
+        :meth:`predict`.
+
+        ``hyperbolic`` raises: that proxy is a Euclidean distance in the ambient coordinates, and
+        its argmax is not the head's own ``argmax_c ⟨x, c⟩_L`` — a confidence that disagrees with
+        the label it is reported for is worse than none."""
+        if self.method == "hyperbolic":
+            raise ValueError(
+                "predict_proba is not defined for method='hyperbolic': the Euclidean proxy would "
+                "disagree with the head's own Lorentzian assignment"
+            )
         est = self._require_fit()
         if self.method in (
             "gmm",

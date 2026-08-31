@@ -104,7 +104,7 @@ src/
   kernels.rs     distance kernels: scalar fold + a hand-written AVX2/FMA path (ADR 003)
   tree.rs        arena CF-tree (insert/split/rebuild)
   clustering/    kmeans.rs, gmm.rs, gmm_toeplitz.rs, ward.rs, spectral.rs, community.rs, graph.rs,
-                 vmf.rs, scalespace.rs, hdbscan.rs, kprototypes.rs, nmf.rs, rng.rs (Phase 3)
+                 vmf.rs, hyperbolic.rs, scalespace.rs, hdbscan.rs, kprototypes.rs, nmf.rs, rng.rs (Phase 3)
   mixture.rs     fitted-mixture kernels (diagonal / full-Cholesky / stationary / vMF) that score a
                  raw point — the density `predict` / `predict_proba` label by
   model.rs       end-to-end Model::fit / predict; Method enum; per-head assignment rule
@@ -182,7 +182,10 @@ Python end-to-end + scikit-learn benchmark (`README.md`, `bench/RESULTS.md`):
   stability; full-covariance GMM; self-tuning $k$-NN spectral embedding; **Leiden** modularity / CPM
   community detection over `clustering::graph`, optionally **covariance/manifold-aware** (log-Euclidean
   shape + Grassmann tangent terms, GeoBETULA); **directional** spherical k-means / von Mises–Fisher
-  mixtures on the unit sphere (`clustering::vmf`); **scale-space** Morse-persistence density-mode
+  mixtures on the unit sphere (`clustering::vmf`); **hyperbolic** k-means on the Lorentz model
+  (`clustering::hyperbolic`) under the squared Lorentzian distance `d_L² = −2 − 2⟨x,y⟩_L`, whose
+  Fréchet mean `R/|R|_L` is a *normalised sum* — the one head whose objective is affine in the leaf
+  and therefore reads no second moment at all; **scale-space** Morse-persistence density-mode
   clustering (`clustering::scalespace` — no `k`, no bandwidth); **Toeplitz-structured** GMM for ordered
   stationary signals — a three-rung ladder of banded AR precision / general PD Toeplitz covariance /
   full-order Gohberg-Semencul MLE precision (`clustering::gmm_toeplitz`); auto-$k$ at `n_clusters = 0` for every

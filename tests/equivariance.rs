@@ -16,6 +16,14 @@
 //! | `gmm_diagonal`, `mfa` | yes | **no** | yes | yes |
 //! | `spectral`, `scale_space` | yes | yes | yes | yes |
 //! | `movmf`, `spherical_kmeans`, `watson` | **no** | yes | yes | yes |
+//! | `hyperbolic_kmeans` | **no** | yes (spatial) | **no** | yes |
+//!
+//! `hyperbolic_kmeans` is the one head whose group is not a subgroup of the Euclidean one at all: it
+//! is `O⁺(1,d)`, the Lorentz group, which contains the spatial rotations and the **boosts** — the
+//! isometries of `H^d` — and not the ambient translations or dilations, which take a point off the
+//! sheet entirely. Its row is asserted in
+//! `the_hyperbolic_head_is_invariant_under_a_boost_and_not_under_an_ambient_shift`, in the boost's
+//! own terms rather than by omitting the head from the Euclidean tests.
 //!
 //! `gmm_diagonal` and `mfa` are the interesting row: axis-aligned covariance is a statement *about
 //! the axes*, so
@@ -46,8 +54,8 @@
 
 use betula_cluster::clustering::{
     DcObjective, Linkage, Selection, agglomerative, dc_clustering, dyn_msc, fuzzy_cmeans,
-    gmm_diagonal, gmm_full, gmm_toeplitz, hdbscan_selected, kmeans, kmedoids, mfa, movmf, mppca,
-    scale_space, spectral, spherical_kmeans, ward_hac, watson, xmeans,
+    gmm_diagonal, gmm_full, gmm_toeplitz, hdbscan_selected, hyperbolic_kmeans, kmeans, kmedoids,
+    mfa, movmf, mppca, scale_space, spectral, spherical_kmeans, ward_hac, watson, xmeans,
 };
 use betula_cluster::feature::{ClusterFeature, Diagonal, Full, Spherical};
 
@@ -293,6 +301,68 @@ fn the_directional_heads_are_invariant_under_rotation_and_not_under_translation(
              cannot be — the fixture has stopped testing anything"
         );
     }
+}
+
+/// Three arms of `H^2` spanning radii 3 to 6, in Lorentz coordinates.
+fn sheet_points() -> Vec<Vec<f64>> {
+    let mut pts = Vec::new();
+    let mut t = 0.0f64;
+    for c in 0..3usize {
+        for _ in 0..60 {
+            t += 0.41;
+            let r = 3.0 + 3.0 * (0.5 + 0.5 * (t * 1.7).sin());
+            let a = std::f64::consts::TAU * (c as f64) / 3.0 + 0.08 * (t * 2.3).cos();
+            let s: f64 = r.sinh();
+            pts.push(vec![r.cosh(), s * a.cos(), s * a.sin()]);
+        }
+    }
+    pts
+}
+
+/// A Lorentz boost of rapidity `phi` along the first spatial axis — a hyperbolic *translation*, and
+/// an isometry of `H^2`. It mixes the time-like coordinate into a spatial one, which no Euclidean
+/// transform of the same points does.
+fn boost(pts: &[Vec<f64>]) -> Vec<Vec<f64>> {
+    let (sh, ch) = (0.6f64.sinh(), 0.6f64.cosh());
+    pts.iter()
+        .map(|p| vec![ch * p[0] + sh * p[1], sh * p[0] + ch * p[1], p[2]])
+        .collect()
+}
+
+fn sheet_leaves(pts: &[Vec<f64>]) -> Vec<Full<f64>> {
+    pts.chunks(4)
+        .map(|chunk| {
+            let mut f = <Full<f64> as ClusterFeature<f64>>::new(3);
+            for p in chunk {
+                f.push(p, 1.0);
+            }
+            f
+        })
+        .collect()
+}
+
+#[test]
+fn the_hyperbolic_head_is_invariant_under_a_boost_and_not_under_an_ambient_shift() {
+    // The boost is exact, not approximate: `Λ` is linear, so a leaf's Lorentz sum transforms as
+    // `Σ Λx = Λ Σx`, and `|Λ R|_L = |R|_L` because `Λ` preserves the Minkowski form. Both steps of
+    // Lloyd read only those two quantities, so the partition has to be identical — not merely close.
+    let pts = sheet_points();
+    let run = |p: &[Vec<f64>]| as_i64(&hyperbolic_kmeans(&sheet_leaves(p), 3, 100, SEED).labels);
+    let base = run(&pts);
+    assert!(
+        same_partition(&base, &run(&boost(&pts))),
+        "a boost is an isometry of H^2; the head must not be able to see it"
+    );
+    // The control. An ambient shift of the spatial part takes every point off the sheet, so it is
+    // not a hyperbolic motion at all — and the head, which does not reproject, must disagree.
+    let shifted: Vec<Vec<f64>> = pts
+        .iter()
+        .map(|p| vec![p[0], p[1] + 90.0, p[2] - 40.0])
+        .collect();
+    assert!(
+        !same_partition(&base, &run(&shifted)),
+        "an ambient translation is not a hyperbolic motion; if it changes nothing the fixture has          stopped testing anything"
+    );
 }
 
 #[test]

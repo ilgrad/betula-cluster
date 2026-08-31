@@ -87,6 +87,44 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- **`method="hyperbolic"` — k-means on the Lorentz model of hyperbolic space, for embeddings of
+  hierarchies (Law, Liao, Snavely & Dhillon, ICML 2019).** Rows are `(d+1)` Lorentz coordinates of
+  `H^d = {⟨x,x⟩_L = −1, x₀ > 0}`; the boundary recomputes `x₀ = √(1 + ‖s‖²)` per row before
+  insertion, as the directional heads L2-normalize theirs. The head clusters under the **squared
+  Lorentzian distance** `d_L²(x,y) = −2 − 2⟨x,y⟩_L` rather than the geodesic `arccosh(−⟨x,y⟩_L)`,
+  because that is the one with a closed-form Fréchet mean — the normalised sum `μ = R/|R|_L`,
+  `R = Σ n_i x_i` — and a sum is what a cluster feature carries. `d_L²` is **affine in each
+  argument**, so a leaf enters the objective only through `(n_i, R_i)` and there is **no scatter term
+  at all**: `feature="spherical"` reaches the identical partition and identical cost as `"full"`
+  (measured, ARI 0.6911 to four digits for `spherical` / `diagonal` / `full`), which is true of no
+  other head in this crate. Assignment is `argmax_c ⟨R_i, c⟩_L`, the cost is `Σ_c 2(|R_c|_L − W_c)`,
+  and the merge increase `ΔS = 2(|R_a+R_b|_L − |R_a|_L − |R_b|_L) ≥ 0` is the hyperbolic analogue of
+  Ward's. All of it verified in Maxima before any of it was written
+  (`local/scratch/lorentz_identities.mac`): the lift lands on the sheet, Lagrange stationarity holds
+  componentwise, `S = 2(|R|_L − W)` has residual exactly zero, and `S ≥ 0`, `ΔS ≥ 0` survive 400
+  random weighted sums. Rust: `clustering::{hyperbolic_kmeans, HyperbolicKMeans, merge_increase,
+  project_to_sheet, f64_working_radius}`. `n_clusters=0` is **not** automatic — the cost falls
+  monotonically in `k`, as total deviation does for `kmedoids`. No `predict_proba` (no density, and
+  the Euclidean softmax fallback would disagree with the head's own labels), no `projection=` (a code
+  vector has no time-like coordinate), no sparse input (the sheet projection fills column 0 of every
+  row), no `refine` (a Lloyd sweep is the Euclidean update).
+- **What the hyperbolic head buys is invariance, not ARI — and the measurement says so.** Fixture: a
+  4-ary depth-4 tree laid out in geodesic polar coordinates, 15 360 points, 16 true groups,
+  `threshold=0`, `max_leaves=2000`, median of seeds 0/1/2. On the **Lorentz** coordinates it reads
+  **0.731** against `kmeans` 0.407, `gmm` 0.223, `gmm-full` 0.663, `ward` 0.389. But converting the
+  same points to the **Poincaré ball** and running `gmm-full` reads **0.817** — the ball is a bounded
+  chart that keeps angle and compresses radius by `tanh(r/2)`, which is what a Euclidean head wants,
+  and on a *centred* embedding it wins outright. What separates them is a **Lorentz boost**, an
+  isometry of `H^d`: the same points, a different origin. At rapidity 3 the ball route falls
+  0.817 → **0.311** and the tangent-space route 0.767 → 0.375, while this head holds
+  0.731 → **0.596**. The residual 0.14 is the *tree's*, not the head's — routing and absorption are
+  Euclidean — and raising the budget to one leaf per point makes the head exactly boost-invariant,
+  ARI **0.772 at every rapidity tried**. `tests/equivariance.rs` asserts the exact invariance over a
+  fixed leaf set, with an ambient shift as the control. The `f64` working radius is `½ln(2/ε) ≈ 18.4`
+  and is published with the measurement behind it (`local/scratch/lorentz_precision.py`): relative
+  error of `d_L²` is `1e−8` at `r = 10`, `2e−3` at 15, and the **sign flips at 18**. Tables in
+  [`docs/USAGE.md`](https://github.com/ilgrad/betula-cluster/blob/main/docs/USAGE.md).
+
 - **`method="mfa"` — a mixture of factor analysers, `mppca` with the isotropic residual relaxed to a
   per-dimension one (Ghahramani & Hinton 1996).** `Σ_c = W_c W_cᵀ + diag(ψ_c)` at `rank` = `q`:
   `d − 1` more parameters per component than `mppca`, against `d²/2` for `gmm-full`. The M-step is

@@ -249,6 +249,98 @@ def test_watson_wants_the_off_diagonal_scatter_a_spherical_leaf_discards(axial_b
     assert ari(full, y) > ari(spherical, y)
 
 
+# ── the hyperbolic head (Lorentz model) ──────────────────────────────────────────────────────────
+
+
+@pytest.fixture(scope="module")
+def lorentz_arms():
+    """Three arms of ``H^2`` in Lorentz coordinates, each spanning hyperbolic radii 4 to 8.
+
+    The shape a hyperbolic embedding of a tree has, and the one where the two geometries rank pairs
+    differently: hyperbolically two points on one arm are at most 4 apart, while in the ambient
+    coordinates one arm's radial extent is ``sinh 8 − sinh 4 = 538``, against 17 for the angular gap
+    at the inner end. Returns ``(X float64 (n, 3), y)``.
+    """
+    rng = np.random.default_rng(5)
+    k, per = 3, 500
+    pts, ys = [], []
+    for c in range(k):
+        r = rng.uniform(4.0, 8.0, per)
+        a = 2 * np.pi * c / k + 0.10 * rng.normal(size=per)
+        s = np.sinh(r)
+        pts.append(np.column_stack([np.cosh(r), s * np.cos(a), s * np.sin(a)]))
+        ys += [c] * per
+    return np.vstack(pts).astype(np.float64), np.array(ys)
+
+
+def test_hyperbolic_reads_the_arms_a_euclidean_head_cuts_into_radial_bands(lorentz_arms):
+    x, y = lorentz_arms
+    kw = dict(threshold=0.0, max_leaves=300, seed=1)
+    hyp = betula_cluster.fit_predict(x, 3, method="hyperbolic", **kw)
+    euc = betula_cluster.fit_predict(x, 3, method="kmeans", **kw)
+    assert ari(hyp, y) > 0.9
+    # Not a weaker score on the same partition: the Euclidean head is ranking radius above angle,
+    # so it splits every arm at the same radius instead of separating the three.
+    assert ari(euc, y) < 0.3
+
+
+def test_hyperbolic_labels_rows_the_fit_never_saw(lorentz_arms):
+    # `predict` runs the head's own rule over unseen rows, not a tree descent — and it puts each row
+    # on the sheet first, so a row whose time-like coordinate is inconsistent still lands correctly.
+    x, y = lorentz_arms
+    est = betula_cluster.Betula(
+        method="hyperbolic", n_clusters=3, threshold=0.0, max_leaves=300, seed=1
+    ).fit(x[::2])
+    held_out = x[1::2]
+    labels = est.predict(held_out)
+    assert ari(labels, y[1::2]) > 0.9
+    corrupted = held_out.copy()
+    corrupted[:, 0] = corrupted[:, 0] * 3.0 + 7.0
+    np.testing.assert_array_equal(labels, est.predict(corrupted))
+
+
+def test_hyperbolic_puts_an_off_sheet_row_back_on_the_sheet(lorentz_arms):
+    # The head's convention is that a row is a point of `H^d`; the boundary recomputes the time-like
+    # coordinate rather than trusting it, so corrupting column 0 must not move a single label.
+    x, y = lorentz_arms
+    kw = dict(n_clusters=3, method="hyperbolic", threshold=0.0, max_leaves=300, seed=1)
+    clean = betula_cluster.fit_predict(x, **kw)
+    corrupted = x.copy()
+    corrupted[:, 0] = corrupted[:, 0] * 3.0 + 7.0
+    np.testing.assert_array_equal(clean, betula_cluster.fit_predict(corrupted, **kw))
+    assert ari(clean, y) > 0.9
+
+
+def test_hyperbolic_has_no_posterior_to_report(lorentz_arms):
+    x, _ = lorentz_arms
+    est = betula_cluster.Betula(
+        method="hyperbolic", n_clusters=3, threshold=0.0, max_leaves=300, seed=1
+    ).fit(x)
+    with pytest.raises(ValueError, match="not defined for method='hyperbolic'"):
+        est.predict_proba(x)
+
+
+def test_hyperbolic_refuses_a_projection_and_a_sparse_matrix(lorentz_arms):
+    x, _ = lorentz_arms
+    est = betula_cluster.Betula(method="hyperbolic", n_clusters=3, projection="svd")
+    with pytest.raises(ValueError, match="does not accept a projection"):
+        est.fit(x)
+    with pytest.raises(ValueError, match="does not accept a projection"):
+        est.fit_predict(x)
+    with pytest.raises(ValueError, match="does not accept a projection"):
+        est.partial_fit(x)
+    sparse = pytest.importorskip("scipy.sparse")
+    csr = sparse.csr_matrix(x)
+    with pytest.raises(ValueError, match="needs dense rows"):
+        betula_cluster.Betula(method="hyperbolic", n_clusters=3, threshold=0.0, max_leaves=300).fit(
+            csr
+        )
+    # The sparse module function has its own, narrower allow-list: the head never reaches the
+    # projection guard because the method name is not one it accepts at all.
+    with pytest.raises(ValueError, match="for sparse input"):
+        betula_cluster.fit_predict_sparse(csr, 3, method="hyperbolic")
+
+
 @pytest.fixture(scope="module")
 def ar_windows():
     """Three AR components distinguishable ONLY by autocovariance (unit marginal variance)."""

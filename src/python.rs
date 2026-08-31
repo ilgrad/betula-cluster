@@ -26,11 +26,12 @@ use crate::bregman::{
     Logistic, SquaredEuclidean,
 };
 use crate::clustering::hdbscan::hdbscan_with;
+use crate::clustering::hyperbolic::lorentz_dot;
 use crate::clustering::nmf::{Projection, ProjectionKind, ProjectionSpec};
 use crate::clustering::scalespace::scale_space;
 use crate::clustering::{
     ConstraintError, Linkage, MixedCf, bregman_agglomerative, bregman_em, bregman_kmeans,
-    cop_kmeans, kprototypes, nearest_micro, summarize_mixed,
+    cop_kmeans, kprototypes, nearest_micro, project_to_sheet, summarize_mixed,
 };
 use crate::clustering::{DcObjective, dc_clustering};
 use crate::clustering::{Reachability, optics};
@@ -305,6 +306,7 @@ fn parse_method(
         "gmm-toeplitz-gs" => Ok(Kind::Parametric(Method::GmmToeplitzGs)),
         "mppca" => Ok(Kind::Parametric(Method::Mppca { rank })),
         "mfa" => Ok(Kind::Parametric(Method::Mfa { rank })),
+        "hyperbolic" => Ok(Kind::Parametric(Method::Hyperbolic)),
         "dc-center" => Ok(Kind::DcDist {
             objective: DcObjective::Center,
             min_samples,
@@ -324,7 +326,7 @@ fn parse_method(
         _ => Err(PyValueError::new_err(
             "method must be 'kmeans', 'xmeans', 'kmedoids', 'fuzzy-cmeans', 'gmm', 'gmm-full', \
              'mppca', 'mfa', 'ward', 'average', 'weighted', 'centroid', 'median', 'spectral', 'leiden', \
-             'leiden-cpm', 'spherical-kmeans', 'vmf', 'watson', 'gmm-toeplitz', \
+             'leiden-cpm', 'spherical-kmeans', 'vmf', 'watson', 'hyperbolic', 'gmm-toeplitz', \
              'gmm-toeplitz-full', 'gmm-toeplitz-gs', 'hdbscan', 'dc-center', 'dc-median' or \
              'scale-space'",
         )),
@@ -427,6 +429,10 @@ fn dispatch_kind<R: Real, C: ClusterFeature<R>>(
                         rows,
                         m: fuzzifier,
                     },
+                    // The hyperbolic head's centres are points of `H^d` and its assignment is a
+                    // Minkowski argmax, so a Euclidean nearest-centre rule would answer from a
+                    // different Voronoi diagram than the one the fit produced.
+                    Method::Hyperbolic => PointRule::Lorentz { labels, rows },
                     _ => PointRule::Centers { labels, rows },
                 }
             });
@@ -626,6 +632,10 @@ enum PointRule {
         basis: Vec<Vec<f64>>,
         inner: Box<PointRule>,
     },
+    /// `(label, centre)` per non-empty cluster, on the Lorentz sheet. The label is `argmax_c ⟨x,c⟩_L`
+    /// after the row is put on the sheet — a Voronoi diagram of `H^d`, which the Euclidean argmin over
+    /// the same rows does not reproduce.
+    Lorentz { labels: Vec<i64>, rows: Vec<f64> },
 }
 
 /// Fuzzy c-means memberships of one raw row against `k` centres laid out flat as `k × dim`.
@@ -723,6 +733,9 @@ fn projected_rule<R: Real>(
     let inner = match (head_rule, assignment_rule(method)) {
         (Some(rule), _) => rule,
         (None, Rule::Posterior) => PointRule::Posterior(mixture?),
+        // A projection replaces the space the rows live in, and a code vector has no time-like
+        // coordinate — the sheet is a property of the input space, not of the codes.
+        (None, Rule::Lorentz) => return None,
         (None, Rule::Microcluster) => return None,
         (None, Rule::Centroid { unit }) => {
             let k = cluster_count_for_centers(labels);
@@ -757,6 +770,21 @@ impl PointRule {
                     }
                     if d < bd {
                         bd = d;
+                        best = id;
+                    }
+                }
+                best
+            }
+            PointRule::Lorentz { labels, rows } => {
+                let dim = x.len();
+                let point: Vec<f64> = x.iter().map(|v| v.to_f64().unwrap_or(0.0)).collect();
+                let p = project_to_sheet(&point);
+                let mut best = labels[0];
+                let mut bv = f64::NEG_INFINITY;
+                for (c, &id) in labels.iter().enumerate() {
+                    let v = lorentz_dot(&p, &rows[c * dim..(c + 1) * dim]);
+                    if v > bv {
+                        bv = v;
                         best = id;
                     }
                 }
@@ -1127,6 +1155,36 @@ where
     (0..n).map(f).collect()
 }
 
+/// Which manifold a row is put on before it reaches the tree.
+///
+/// Two mutually exclusive preparations, so one value rather than two booleans of which only one may
+/// ever be set. Both are idempotent, which is what lets `predict` re-apply the same preparation to a
+/// row the fit never saw.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RowPrep {
+    /// The row enters as it is.
+    None,
+    /// Onto `S^{d-1}` — `normalize=True`, and every directional head regardless of the flag.
+    Unit,
+    /// Onto the Lorentz sheet, by recomputing the time-like coordinate — `method="hyperbolic"`.
+    Sheet,
+}
+
+/// Apply a [`RowPrep`] to a flat `n × dim` buffer in place.
+fn prepare_rows<R: Real>(flat: &mut [R], n: usize, dim: usize, prep: RowPrep) {
+    match prep {
+        RowPrep::None => {}
+        RowPrep::Unit => normalize_rows(flat, n, dim),
+        RowPrep::Sheet => {
+            for i in 0..n {
+                let row = &mut flat[i * dim..(i + 1) * dim];
+                let sq = row[1..].iter().fold(R::zero(), |a, &v| a + v * v);
+                row[0] = (R::one() + sq).sqrt();
+            }
+        }
+    }
+}
+
 /// L2-normalise each row in place (zero rows are left unchanged). With `normalize=True` this maps
 /// embeddings onto the unit sphere so direction (cosine) structure is what the tree clusters; on the
 /// sphere squared-Euclidean and cosine distance are monotonically equivalent (`d² = 2 − 2·cosθ`),
@@ -1396,16 +1454,15 @@ fn run_oneshot<R: Real + Element>(
     if matches!(nmf_dim.map(|s| s.kind), Some(ProjectionKind::Nmf { .. })) {
         require_nonnegative(&flat)?;
     }
-    // Directional heads cluster points on the unit sphere, so they always operate on L2-normalized
-    // rows regardless of the caller's `normalize` flag.
-    let normalize = normalize
-        || matches!(
-            kind,
-            Kind::Parametric(Method::SphericalKMeans | Method::Movmf | Method::Watson)
-        );
-    if normalize {
-        normalize_rows(&mut flat, n, dim);
-    }
+    // Directional heads cluster points on the unit sphere and the hyperbolic head on the Lorentz
+    // sheet, so they always operate on prepared rows regardless of the caller's `normalize` flag.
+    let prep = match kind {
+        Kind::Parametric(Method::Hyperbolic) => RowPrep::Sheet,
+        Kind::Parametric(Method::SphericalKMeans | Method::Movmf | Method::Watson) => RowPrep::Unit,
+        _ if normalize => RowPrep::Unit,
+        _ => RowPrep::None,
+    };
+    prepare_rows(&mut flat, n, dim, prep);
     let route = parse_route(distance)?;
     let balance = balance.and_then(R::from_f64);
     py.detach(|| {
@@ -2289,7 +2346,7 @@ struct Betula {
 /// (lossless `f32→f64`; the deliberate `f64→f32` narrowing matches the f32 tree).
 fn flat_as<R: Real + Element>(
     data: &Bound<'_, PyAny>,
-    normalize: bool,
+    prep: RowPrep,
 ) -> PyResult<(Vec<R>, usize, usize)> {
     let (mut flat, n, dim) = if let Ok(a) = data.extract::<PyReadonlyArray2<R>>() {
         to_flat(&a)?
@@ -2302,9 +2359,7 @@ fn flat_as<R: Real + Element>(
             "data must be a 2-D float32 or float64 array",
         ));
     };
-    if normalize {
-        normalize_rows(&mut flat, n, dim);
-    }
+    prepare_rows(&mut flat, n, dim, prep);
     Ok((flat, n, dim))
 }
 
@@ -2369,7 +2424,7 @@ impl Betula {
             balance: self.balance,
         };
         if use_f32 {
-            let (flat, n, dim) = flat_as::<f32>(data, self.normalize)?;
+            let (flat, n, dim) = flat_as::<f32>(data, self.row_prep())?;
             if self.dim != 0 && self.dim != dim {
                 return Err(PyValueError::new_err(
                     "dimension mismatch with previously fitted data",
@@ -2379,7 +2434,7 @@ impl Betula {
                 .map_err(PyValueError::new_err)?;
             self.dim = dim;
         } else {
-            let (flat, n, dim) = flat_as::<f64>(data, self.normalize)?;
+            let (flat, n, dim) = flat_as::<f64>(data, self.row_prep())?;
             if self.dim != 0 && self.dim != dim {
                 return Err(PyValueError::new_err(
                     "dimension mismatch with previously fitted data",
@@ -2406,6 +2461,13 @@ impl Betula {
         if self.state32.is_some() {
             return Err(PyValueError::new_err(
                 "sparse (CSR) input is float64-only; this estimator was already fit on float32 data",
+            ));
+        }
+        // The sheet projection writes `x_0 = √(1 + ‖s‖²) ≥ 1` into every row, so column 0 stops being
+        // sparse. Refused rather than run on rows the head's own convention was never applied to.
+        if self.row_prep() == RowPrep::Sheet {
+            return Err(PyValueError::new_err(
+                "method='hyperbolic' needs dense rows: the sheet projection fills column 0 in every row",
             ));
         }
         self.check_dim(n_features)?;
@@ -2455,6 +2517,21 @@ impl Betula {
         }
     }
 
+    /// The row preparation this estimator's head needs, from the one place that knows both the
+    /// user's `normalize` flag and the method it was configured with.
+    ///
+    /// `self.normalize` is left as the caller set it — the wrapper's `get_params` has to round-trip
+    /// through `clone()` unchanged — so the forcing lives here rather than in the stored field.
+    fn row_prep(&self) -> RowPrep {
+        if self.method == "hyperbolic" {
+            RowPrep::Sheet
+        } else if self.normalize {
+            RowPrep::Unit
+        } else {
+            RowPrep::None
+        }
+    }
+
     fn check_dim(&self, dim: usize) -> PyResult<()> {
         if self.dim != 0 && self.dim != dim {
             return Err(PyValueError::new_err(
@@ -2496,7 +2573,10 @@ impl Betula {
         let unit = match assignment_rule(method) {
             Rule::Centroid { unit } => unit,
             Rule::Posterior => return mixture.map(PointRule::Posterior),
-            Rule::Microcluster => return None,
+            // The hyperbolic head always names its own centres, so its rule arrives from the head
+            // itself. Deriving one here would average each cluster's leaves in the ambient
+            // coordinates, and that mean is not the Lorentzian centroid.
+            Rule::Lorentz | Rule::Microcluster => return None,
         };
         // `cluster_stats_any` yields radii *before* weights (`F64Stats` swaps the two between the
         // leaf and the cluster helper); reading them in leaf order drops every zero-radius cluster.
@@ -2528,7 +2608,7 @@ impl Betula {
         if self.refine == 0 || !matches!(self.rule, Some(PointRule::Centers { .. })) {
             return Ok(());
         }
-        let (flat, n, dim) = flat_as::<f64>(data, self.normalize)?;
+        let (flat, n, dim) = flat_as::<f64>(data, self.row_prep())?;
         self.check_dim(dim)?;
         let iters = self.refine;
         if let Some(PointRule::Centers { rows, .. }) = self.rule.as_mut() {
@@ -2603,7 +2683,7 @@ impl Betula {
         must: &[(i64, i64)],
         cannot: &[(i64, i64)],
     ) -> PyResult<()> {
-        let (k, mi, seed, norm) = (self.n_clusters, self.max_iter, self.seed, self.normalize);
+        let (k, mi, seed, norm) = (self.n_clusters, self.max_iter, self.seed, self.row_prep());
         let labels = if let Some(t) = self.state64.as_ref() {
             let (flat, n, dim) = flat_as::<f64>(data, norm)?;
             constrained_labels(t, &flat, n, dim, must, cannot, k, mi, seed)?
@@ -2631,7 +2711,7 @@ impl Betula {
         })?;
         let rule = self.rule.as_ref();
         if let Some(t) = &self.state64 {
-            let (flat, n, dim) = flat_as::<f64>(data, self.normalize)?;
+            let (flat, n, dim) = flat_as::<f64>(data, self.row_prep())?;
             self.check_dim(dim)?;
             Ok(py
                 .detach(|| match rule {
@@ -2640,7 +2720,7 @@ impl Betula {
                 })
                 .into_pyarray(py))
         } else if let Some(t) = &self.state32 {
-            let (flat, n, dim) = flat_as::<f32>(data, self.normalize)?;
+            let (flat, n, dim) = flat_as::<f32>(data, self.row_prep())?;
             self.check_dim(dim)?;
             Ok(py
                 .detach(|| match rule {
@@ -2967,11 +3047,11 @@ impl Betula {
         data: &Bound<'py, PyAny>,
     ) -> PyResult<Bound<'py, PyArray2<f64>>> {
         let (flat, k) = if let Some(t) = &self.state64 {
-            let (rows, n, dim) = flat_as::<f64>(data, self.normalize)?;
+            let (rows, n, dim) = flat_as::<f64>(data, self.row_prep())?;
             self.check_dim(dim)?;
             self.proba_of(py, t, &rows, n, dim)?
         } else if let Some(t) = &self.state32 {
-            let (rows, n, dim) = flat_as::<f32>(data, self.normalize)?;
+            let (rows, n, dim) = flat_as::<f32>(data, self.row_prep())?;
             self.check_dim(dim)?;
             self.proba_of(py, t, &rows, n, dim)?
         } else {
@@ -3310,7 +3390,7 @@ impl Betula {
             } else {
                 OutlierScale::Radius(&radii)
             };
-            let (flat, n, dim) = flat_as::<f64>(data, self.normalize)?;
+            let (flat, n, dim) = flat_as::<f64>(data, self.row_prep())?;
             self.check_dim(dim)?;
             Ok(py
                 .detach(|| t.outlier_scores(labels, &centers, scale, &flat, n, dim))
@@ -3327,7 +3407,7 @@ impl Betula {
             } else {
                 OutlierScale::Radius(&radii)
             };
-            let (flat, n, dim) = flat_as::<f32>(data, self.normalize)?;
+            let (flat, n, dim) = flat_as::<f32>(data, self.row_prep())?;
             self.check_dim(dim)?;
             Ok(py
                 .detach(|| t.outlier_scores(labels, &centers, scale, &flat, n, dim))
@@ -3344,13 +3424,13 @@ impl Betula {
         data: &Bound<'py, PyAny>,
     ) -> PyResult<Bound<'py, PyArray1<i64>>> {
         if let Some(t) = &self.state64 {
-            let (flat, n, dim) = flat_as::<f64>(data, self.normalize)?;
+            let (flat, n, dim) = flat_as::<f64>(data, self.row_prep())?;
             self.check_dim(dim)?;
             Ok(py
                 .detach(|| t.assign_microclusters(&flat, n, dim))
                 .into_pyarray(py))
         } else if let Some(t) = &self.state32 {
-            let (flat, n, dim) = flat_as::<f32>(data, self.normalize)?;
+            let (flat, n, dim) = flat_as::<f32>(data, self.row_prep())?;
             self.check_dim(dim)?;
             Ok(py
                 .detach(|| t.assign_microclusters(&flat, n, dim))
@@ -3701,7 +3781,7 @@ impl PyWindowStream {
         data: &Bound<'_, PyAny>,
         times: Vec<f64>,
     ) -> PyResult<()> {
-        let (flat, n, dim) = flat_as::<f64>(data, false)?;
+        let (flat, n, dim) = flat_as::<f64>(data, RowPrep::None)?;
         if times.len() != n {
             return Err(PyValueError::new_err(
                 "times must carry one timestamp per row of data",
@@ -3851,7 +3931,7 @@ impl PyDenStream {
 
     /// Stream a chunk (2-D float32/float64) of points into the fading micro-clusters.
     fn partial_fit(&mut self, py: Python<'_>, data: &Bound<'_, PyAny>) -> PyResult<()> {
-        let (flat, n, dim) = flat_as::<f64>(data, false)?;
+        let (flat, n, dim) = flat_as::<f64>(data, RowPrep::None)?;
         self.dim_check(dim)?;
         if self.inner.is_none() {
             self.inner = Some(
@@ -3897,7 +3977,7 @@ impl PyDenStream {
         let ds = self.inner.as_ref().ok_or_else(|| {
             PyValueError::new_err("call fit() (or partial_fit() + cluster()) first")
         })?;
-        let (flat, n, dim) = flat_as::<f64>(data, false)?;
+        let (flat, n, dim) = flat_as::<f64>(data, RowPrep::None)?;
         self.dim_check(dim)?;
         let labels = py.detach(|| map_rows(n, |i| ds.predict(&flat[i * dim..(i + 1) * dim])));
         Ok(labels.into_pyarray(py))
@@ -4020,7 +4100,7 @@ impl PyDbStream {
 
     /// Stream a chunk (2-D float32/float64) of points into the fading micro-clusters.
     fn partial_fit(&mut self, py: Python<'_>, data: &Bound<'_, PyAny>) -> PyResult<()> {
-        let (flat, n, dim) = flat_as::<f64>(data, false)?;
+        let (flat, n, dim) = flat_as::<f64>(data, RowPrep::None)?;
         self.dim_check(dim)?;
         if self.inner.is_none() {
             self.inner = Some(
@@ -4066,7 +4146,7 @@ impl PyDbStream {
         let ds = self.inner.as_ref().ok_or_else(|| {
             PyValueError::new_err("call fit() (or partial_fit() + cluster()) first")
         })?;
-        let (flat, n, dim) = flat_as::<f64>(data, false)?;
+        let (flat, n, dim) = flat_as::<f64>(data, RowPrep::None)?;
         self.dim_check(dim)?;
         let labels = py.detach(|| map_rows(n, |i| ds.predict(&flat[i * dim..(i + 1) * dim])));
         Ok(labels.into_pyarray(py))
@@ -4490,7 +4570,7 @@ impl PyBregmanBetula {
         if !(self.beta > 0.0 && self.beta.is_finite()) {
             return Err(PyValueError::new_err("beta must be positive and finite"));
         }
-        let (flat, n, dim) = flat_as::<f64>(data, false)?;
+        let (flat, n, dim) = flat_as::<f64>(data, RowPrep::None)?;
         if n < self.n_clusters {
             return Err(PyValueError::new_err(
                 "need at least n_clusters rows to fit",
@@ -4629,7 +4709,7 @@ impl PyKPrototypes {
             .model
             .as_ref()
             .ok_or_else(|| PyValueError::new_err("call fit() or fit_predict() first"))?;
-        let (flat, n, dim) = flat_as::<f64>(data, false)?;
+        let (flat, n, dim) = flat_as::<f64>(data, RowPrep::None)?;
         if dim != m.dim {
             return Err(PyValueError::new_err(
                 "dimension mismatch with previously fitted data",
@@ -4690,7 +4770,7 @@ impl PyKPrototypes {
                 "KPrototypes requires n_clusters >= 1",
             ));
         }
-        let (flat, n, dim) = flat_as::<f64>(data, false)?;
+        let (flat, n, dim) = flat_as::<f64>(data, RowPrep::None)?;
         let (is_cat, cat_cols, n_num, n_cat) = cat_mask(&self.categorical, dim)?;
         let (num, cat) = split_mixed(&flat, n, dim, &is_cat)?;
         let (k, thr, ml, mi, ni, seed, gpar) = (

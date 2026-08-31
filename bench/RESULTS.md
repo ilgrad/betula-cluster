@@ -1617,6 +1617,73 @@ A fixed tolerance would pass a broken solver on one fixture and fail a correct o
 
 Harness: `local/scratch/measure_spectral_cheb.py` and `local/scratch/spectral_scale.py`.
 
+## The hyperbolic head wins invariance, and loses ARI to a chart change (task #78)
+
+`method="hyperbolic"` clusters points of `H^d` in Lorentz coordinates under the squared Lorentzian
+distance `d_L² = −2 − 2⟨x,y⟩_L`. The reason it can live on a cluster feature is that `d_L²` is
+**affine**: a leaf enters only through `(n_i, R_i)`, with no scatter term at all.
+
+**Fixture.** A 4-ary tree of depth 4 laid out in geodesic polar coordinates — depth sets the
+hyperbolic radius (`τ = 1.6` per level), each node owns an angular interval its children subdivide —
+60 points per tree leaf, **15 360 points**, ground truth the depth-2 subtree (**16 groups**).
+`threshold=0`, `max_leaves=2000`, median of seeds 0/1/2, ARI.
+Harness: `local/scratch/hyperbolic_bench.py`.
+
+**The same points in three charts.** A hyperbolic embedding is handed over in one of three coordinate
+systems and all three are things people feed a clustering routine:
+
+| chart | `hyperbolic` | `kmeans` | `gmm` | `gmm-full` | `ward` |
+|---|---|---|---|---|---|
+| Lorentz | **0.731** | 0.407 | 0.223 | 0.663 | 0.389 |
+| Poincaré ball | — | 0.575 | 0.584 | **0.817** | 0.598 |
+| tangent at the origin | — | 0.767 | 0.581 | 0.530 | 0.632 |
+
+The honest headline is the second row: **on a centred embedding, converting to the Poincaré ball and
+running `gmm-full` beats this head.** The ball keeps angle and compresses radius by `tanh(r/2)`,
+which is what a Euclidean head needs, and this fixture's class structure is angular. What the head
+wins is the Lorentz column, where `sinh r` outranks angle and a Euclidean head loses half its score.
+
+**Then boost it.** A Lorentz boost is an isometry of `H^d`: the same points, the same hyperbolic
+distances, a different origin. A clustering that moves under it was answering about the chart.
+
+| rapidity `φ` | `hyperbolic` | Poincaré + `kmeans` | Poincaré + `gmm-full` | tangent + `kmeans` |
+|---|---|---|---|---|
+| 0.0 | 0.731 | 0.575 | **0.817** | 0.767 |
+| 0.5 | **0.653** | 0.618 | 0.637 | 0.647 |
+| 1.0 | **0.675** | 0.577 | 0.584 | 0.590 |
+| 2.0 | **0.614** | 0.478 | 0.513 | 0.523 |
+| 3.0 | **0.596** | 0.348 | 0.311 | 0.375 |
+
+The ball route gives up 0.51 of its ARI, the head 0.14. For a *learned* embedding you do not know
+where the origin ended up, so the `φ = 0` column is the one you cannot count on.
+
+**And the 0.14 is the tree's, not the head's.** Both Lloyd steps read only `(n_i, R_i)`, and a boost
+`Λ` is linear with `|ΛR|_L = |R|_L`, so over a fixed leaf set the partition is *exactly*
+boost-invariant — asserted in `tests/equivariance.rs`, with an ambient shift as the control. What
+moves is the CF-tree, which routes and absorbs in the ambient Euclidean coordinates. Raise the budget
+until every point is its own leaf and the drift is gone:
+
+| `max_leaves` | `φ=0` | `φ=1` | `φ=3` |
+|---|---|---|---|
+| 500 | 0.634 | 0.569 | 0.576 |
+| 2000 | 0.731 | 0.675 | 0.596 |
+| 8000 | 0.809 | 0.583 | 0.696 |
+| 20000 (one leaf per point) | **0.772** | **0.772** | **0.772** |
+
+That is the feature's boundary: **the head is hyperbolic, the tree is not.** A Lorentz-aware routing
+distance would close it and is not built.
+
+**The affineness, measured.** Because there is no scatter term, the leaf model cannot matter — and
+does not. Seed 0, `k = 16`, `max_leaves=2000`:
+
+| `feature` | ARI |
+|---|---|
+| `spherical` | 0.6911 |
+| `diagonal` | 0.6911 |
+| `full` | 0.6911 |
+
+Identical to four digits, because they are the same computation. Take `spherical`.
+
 ## A drift number that reads the drift, where the labels read nothing at all (task #56)
 
 `summary_w2` is the mixture-Wasserstein distance `MW₂` (Delon & Desolneux, SIAM J. Imaging Sci.
