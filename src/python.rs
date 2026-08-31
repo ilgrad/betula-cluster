@@ -9,7 +9,7 @@
 //! Parametric heads (`kmeans`, `gmm`, `gmm-full`; `n_clusters=0` ⇒ BIC auto-k) and the density
 //! head (`hdbscan`, where `-1` marks noise).
 
-use numpy::ndarray::Array2;
+use numpy::ndarray::{Array1, Array2};
 use numpy::{
     Element, IntoPyArray, PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2,
     PyReadonlyArrayDyn, PyUntypedArrayMethods,
@@ -32,6 +32,7 @@ use crate::clustering::{
     ConstraintError, Linkage, MixedCf, bregman_agglomerative, bregman_em, bregman_kmeans,
     cop_kmeans, kprototypes, nearest_micro, summarize_mixed,
 };
+use crate::clustering::{Reachability, optics};
 use crate::distance::{
     AverageIntercluster, AverageIntracluster, CFDistance, CentroidEuclidean, CentroidManhattan,
     MahalanobisChi2, Radius, SubspaceChi2, VarianceIncrease,
@@ -1953,6 +1954,16 @@ impl<R: Real> TreeState<R> {
         }
     }
 
+    /// OPTICS reachability plot over the leaf microclusters.
+    fn reachability(&self, min_samples: usize, graph_degree: usize, seed: u64) -> Reachability {
+        match self {
+            TreeState::Spherical(t) => optics(t.leaf_features(), min_samples, graph_degree, seed),
+            TreeState::Diagonal(t) => optics(t.leaf_features(), min_samples, graph_degree, seed),
+            TreeState::Full(t) => optics(t.leaf_features(), min_samples, graph_degree, seed),
+            TreeState::Fd(t) => optics(t.leaf_features(), min_samples, graph_degree, seed),
+        }
+    }
+
     /// Mapper topological-skeleton graph over the leaf microclusters.
     fn mapper(&self, p: &MapperParams) -> MapperGraph {
         match self {
@@ -3299,6 +3310,40 @@ impl Betula {
                 "call fit() or partial_fit() before assign_microclusters()",
             ))
         }
+    }
+
+    /// OPTICS reachability plot over the leaf microclusters, as a dict of arrays.
+    ///
+    /// Returns `order` (leaf indices in sweep order), `reachability` (aligned with `order`, the
+    /// first entry `inf`), `core_distances` and `weights` (both in leaf indexing). `min_samples`
+    /// and `graph_degree` mean what they do for `method="hdbscan"`, and the plot is a readout of
+    /// the same mutual-reachability spanning tree that head builds its hierarchy from.
+    #[pyo3(signature = (min_samples = 5, graph_degree = 0))]
+    fn reachability<'py>(
+        &self,
+        py: Python<'py>,
+        min_samples: usize,
+        graph_degree: usize,
+    ) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
+        let plot = match (&self.state64, &self.state32) {
+            (Some(t), _) => py.detach(|| t.reachability(min_samples, graph_degree, self.seed)),
+            (_, Some(t)) => py.detach(|| t.reachability(min_samples, graph_degree, self.seed)),
+            _ => {
+                return Err(PyValueError::new_err(
+                    "call fit() or partial_fit() before reachability()",
+                ));
+            }
+        };
+        let d = pyo3::types::PyDict::new(py);
+        let order: Vec<i64> = plot.order.iter().map(|&i| i as i64).collect();
+        d.set_item("order", Array1::from(order).into_pyarray(py))?;
+        d.set_item(
+            "reachability",
+            Array1::from(plot.reachability).into_pyarray(py),
+        )?;
+        d.set_item("core_distances", Array1::from(plot.core).into_pyarray(py))?;
+        d.set_item("weights", Array1::from(plot.mass).into_pyarray(py))?;
+        Ok(d)
     }
 
     /// Mapper topological-skeleton graph over the leaf microclusters, as a dict of arrays.

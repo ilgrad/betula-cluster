@@ -267,6 +267,37 @@ fn mst_over_graph(
     mst
 }
 
+/// The mutual-reachability MST over the leaf centroids, and the core distances it was built from.
+///
+/// Factored out because it is the object *two* readouts share. HDBSCAN\*'s hierarchy is this tree's
+/// 0-dimensional persistence; the OPTICS reachability plot in [`optics`](super::optics) is the same
+/// tree written down in Prim order. Building it once, here, is what makes the second a readout of
+/// the first rather than a second opinion about it.
+pub(crate) fn mutual_reachability(
+    m: usize,
+    mu: &[Vec<f64>],
+    mass: &[f64],
+    min_samples: usize,
+    graph_degree: usize,
+    seed: u64,
+) -> (Vec<(f64, usize, usize)>, Vec<f64>) {
+    let dist = |i: usize, j: usize| -> f64 { crate::kernels::sq_euclidean(&mu[i], &mu[j]).sqrt() };
+    if graph_degree == 0 {
+        let core = core_distances(m, min_samples, mass, dist);
+        let mst = prim_complete(m, &|i, j| core[i].max(core[j]).max(dist(i, j)));
+        (mst, core)
+    } else {
+        let degree = graph_degree_for(graph_degree, min_samples, mass);
+        let adj = crate::clustering::knn::build(m, degree, seed, dist);
+        let core = core_distances_from_graph(min_samples, mass, &adj);
+        let mst = {
+            let mreach = |i: usize, j: usize| -> f64 { core[i].max(core[j]).max(dist(i, j)) };
+            mst_over_graph(m, &adj, &mreach)
+        };
+        (mst, core)
+    }
+}
+
 /// Cluster `features` with HDBSCAN*. `min_samples` sets the core-distance neighbourhood and
 /// `min_cluster_size` the smallest admissible cluster.
 ///
@@ -354,18 +385,7 @@ pub fn hdbscan_selected<R: Real, C: ClusterFeature<R>>(
         .iter()
         .map(|f| f.weight().to_f64().unwrap())
         .collect();
-    let dist = |i: usize, j: usize| -> f64 { crate::kernels::sq_euclidean(&mu[i], &mu[j]).sqrt() };
-
-    let mst = if graph_degree == 0 {
-        let core = core_distances(m, min_samples, &mass, dist);
-        prim_complete(m, &|i, j| core[i].max(core[j]).max(dist(i, j)))
-    } else {
-        let degree = graph_degree_for(graph_degree, min_samples, &mass);
-        let adj = crate::clustering::knn::build(m, degree, seed, dist);
-        let core = core_distances_from_graph(min_samples, &mass, &adj);
-        let mreach = |i: usize, j: usize| -> f64 { core[i].max(core[j]).max(dist(i, j)) };
-        mst_over_graph(m, &adj, &mreach)
-    };
+    let (mst, _core) = mutual_reachability(m, &mu, &mass, min_samples, graph_degree, seed);
 
     match selection {
         Selection::ExcessOfMass { min_cluster_size } => from_mst(m, &mass, mst, min_cluster_size),

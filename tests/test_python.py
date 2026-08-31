@@ -4116,3 +4116,99 @@ def test_auto_k_max_survives_a_params_round_trip():
     est = betula_cluster.Betula(auto_k_max=45)
     assert est.get_params()["auto_k_max"] == 45
     assert betula_cluster.Betula().set_params(auto_k_max=45).get_params()["auto_k_max"] == 45
+
+
+# ── OPTICS reachability diagnostic ───────────────────────────────────────────────────────────
+
+
+def _reachable(data, **kw):
+    est = betula_cluster.Betula(
+        n_clusters=0, method="hdbscan", threshold=0.0, max_leaves=300, seed=0, **kw
+    ).fit(data)
+    return est, est.reachability(min_samples=5)
+
+
+def _mutual_reachability_mst(est, plot):
+    """The plot's tree, rebuilt from scratch by scipy — an independent second opinion."""
+    csgraph = pytest.importorskip("scipy.sparse.csgraph")
+    sparse = pytest.importorskip("scipy.sparse")
+    distance = pytest.importorskip("scipy.spatial.distance")
+    mu = est.microcluster_centers_
+    d = distance.cdist(mu, mu)
+    core = plot.core_distances
+    mr = np.maximum(d, np.maximum(core[:, None], core[None, :]))
+    return csgraph.minimum_spanning_tree(sparse.csr_matrix(mr))
+
+
+def test_the_plot_is_the_density_heads_own_spanning_tree(blobs):
+    """Not a lookalike: OPTICS with no cutoff *is* Prim, so a peak is a merge height of the head."""
+    x, _y = blobs
+    est, plot = _reachable(x)
+    m = est.n_leaves_
+    assert sorted(plot.order.tolist()) == list(range(m))  # a permutation of the leaves
+    assert np.isinf(plot.reachability[0])
+    assert np.all(np.isfinite(plot.reachability[1:]))
+    assert plot.core_distances.shape == plot.weights.shape == (m,)
+    assert abs(plot.weights.sum() - len(x)) < 1e-6  # leaf indexing, and it conserves mass
+    mst = _mutual_reachability_mst(est, plot)
+    assert np.allclose(np.sort(plot.reachability[1:]), np.sort(mst.data))
+
+
+def test_labels_at_is_the_tree_cut_and_not_a_resegmentation(blobs):
+    """`labels_at(eps)` must equal that same tree's components under eps, noise mask included."""
+    csgraph = pytest.importorskip("scipy.sparse.csgraph")
+    sparse = pytest.importorskip("scipy.sparse")
+    ari = pytest.importorskip("sklearn.metrics").adjusted_rand_score
+    x, _y = blobs
+    est, plot = _reachable(x)
+    mst = _mutual_reachability_mst(est, plot).toarray()
+    heights = np.sort(plot.reachability[1:])[[-1, -3, -6, -20]]
+    # Both just under a merge height and exactly on one: at `eps` a leaf that far away is still a
+    # neighbour and a leaf whose core distance is `eps` is still a core point, so both comparisons
+    # are strict. Cutting only between heights would never see the difference.
+    for eps in [*(heights * (1.0 - 1e-9)), *heights, *np.unique(plot.core_distances)[[-1, -3]]]:
+        kept = np.where(mst > eps, 0.0, mst)
+        _n, comp = csgraph.connected_components(sparse.csr_matrix(kept), directed=False)
+        comp = comp.astype(np.int64)
+        comp[plot.core_distances > eps] = -1
+        got = plot.labels_at(eps)
+        assert ari(comp, got) == pytest.approx(1.0)
+        assert np.array_equal(got < 0, comp < 0)
+
+
+def test_the_neck_of_a_dumbbell_is_a_peak_between_two_valleys(dumbbell):
+    """The diagnostic's whole claim: you can read the bottleneck off the plot without a label."""
+    _est, plot = _reachable(dumbbell)
+    interior = plot.reachability[1:]
+    peak = int(np.argmax(interior))
+    assert 0 < peak < len(interior) - 1  # the crossing is inside the sweep, not at either end
+    assert interior[peak] > np.median(interior) * 3  # a peak, not the average walk between leaves
+    # Cut just under it and the sweep parts into the two bells, by mass and without a label.
+    labels = plot.labels_at(interior[peak] * (1.0 - 1e-9))
+    mass = np.array([plot.weights[labels == c].sum() for c in np.unique(labels[labels >= 0])])
+    assert len(mass) == 2
+    assert mass.min() > 500  # both bells survive; neither side is a shard of one
+
+
+def test_a_cut_above_every_peak_is_one_cluster_and_below_every_core_is_all_noise(blobs):
+    x, _y = blobs
+    _est, plot = _reachable(x)
+    whole = plot.labels_at(np.inf)
+    assert np.all(whole == 0)
+    nothing = plot.labels_at(-1.0)
+    assert np.all(nothing == -1)
+
+
+@pytest.mark.parametrize("feature", ["spherical", "diagonal", "full", "fd"])
+def test_the_plot_answers_for_every_covariance_shape(blobs, feature):
+    x, _y = blobs
+    est = betula_cluster.Betula(
+        feature=feature, n_clusters=0, method="hdbscan", threshold=0.0, max_leaves=200, seed=0
+    ).fit(x)
+    plot = est.reachability(min_samples=5, graph_degree=16)
+    assert sorted(plot.order.tolist()) == list(range(est.n_leaves_))
+
+
+def test_reachability_before_fit_raises():
+    with pytest.raises(AttributeError, match="not fitted"):
+        betula_cluster.Betula().reachability()

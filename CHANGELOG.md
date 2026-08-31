@@ -49,6 +49,34 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- **`reachability()` — an OPTICS reachability plot over the leaves, as the density diagnostic
+  (Ankerst et al. 1999).** Returns a `ReachabilityPlot` with `order` / `reachability` /
+  `core_distances` / `weights` and a `labels_at(eps)` that reads the DBSCAN\* cut off the plot.
+  **It is the `method="hdbscan"` hierarchy, not a second opinion about it**: OPTICS with no ε cutoff
+  is Prim's algorithm on the mutual-reachability graph, so the sweep walks the same spanning tree
+  that head cuts, and the crate builds it once — `clustering::hdbscan::mutual_reachability` is now
+  shared by both. Two theorems carry it, asserted rather than measured: `reachability[1..]` is a
+  permutation of that tree's edge weights, and cutting the plot at ε gives exactly its components
+  under ε. That is also why the reachability is the mutual `max(core(p), core(q), d(p,q))` rather
+  than Ankerst's asymmetric `max(core(q), d(q,p))` — the asymmetric form pictures a *different*
+  tree. One sweep position per **leaf**, so a valley's width is a leaf count; `weights` is published
+  next to it for exactly that reason. Rust: `clustering::{optics, Reachability}`.
+- **The diagnostic's cost is the leaf count, and it loses the fixture that is about noise.** Median
+  of seeds 0/1/2. Cost does not see `N` — 0.0024 / 0.0027 / 0.0027 / **0.0028 s** at 5 k / 20 k /
+  80 k / 320 k rows against a 0.005 / 0.007 / 0.017 / 0.054 s fit — but it does see the leaf budget
+  quadratically: 0.0003 / 0.0028 / 0.0284 / 0.2970 s at 99 / 290 / 926 / 2883 leaves. `graph_degree`
+  bounds that and is not free: at 2883 leaves `graph_degree=16` runs 8× faster but its cut agrees
+  with the exact plot's at only ARI 0.518, and 32 / 64 / 128 all sit at 0.923 — an approximate graph
+  is a plot of a slightly different tree, not a cheaper plot of the same one. Read as a partition
+  against `sklearn.cluster.OPTICS` on the raw points (N = 6 000, `max_leaves=600`, best ε on each
+  side's own grid): blobs **0.452** vs 0.448, moons **0.997** vs 0.978, circles **0.997** vs 0.978,
+  blobs + 5 % uniform noise 0.687 vs **0.753**, at 0.024–0.041 s against 4.9–6.3 s. The compression
+  is not what costs the noise fixture — raising the budget to one leaf per point takes it only to
+  0.707, so the residual is the convention: DBSCAN\* has no border points, and the mutual
+  reachability is a stricter link. What the budget *does* fix is the mass-weighted core distance —
+  at 274 leaves 41 % of the true noise points sit in a leaf with core distance 0, which can never be
+  labelled noise; at 3899 leaves that is 2 %, and the ARI moves 0.518 → 0.686.
+
 - **`method="fuzzy-cmeans"` — weighted fuzzy c-means over the leaf centroids (Bezdek 1981).** The only
   soft head in the crate that fits no density: `predict_proba` returns the memberships
   `u_ij ∝ d_ij^(−1/(m−1))`, a partition of unity over the centres rather than a posterior. Exact on

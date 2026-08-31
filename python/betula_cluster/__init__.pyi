@@ -26,6 +26,7 @@ __all__ = [
     "KPrototypes",
     "KllSketch",
     "MapperGraph",
+    "ReachabilityPlot",
     "ThresholdEstimate",
     "TuneResult",
     "WindowStream",
@@ -113,6 +114,16 @@ def consensus(
     n_jobs: int = ...,
     **fit_kwargs: object,
 ) -> ConsensusResult: ...
+
+@dataclass(frozen=True)
+class ReachabilityPlot:
+    """An OPTICS reachability plot over a fitted model's leaf microclusters."""
+
+    order: NDArray[np.int64]
+    reachability: NDArray[np.float64]
+    core_distances: NDArray[np.float64]
+    weights: NDArray[np.float64]
+    def labels_at(self, eps: float) -> NDArray[np.int64]: ...
 
 @dataclass(frozen=True)
 class MapperGraph:
@@ -313,6 +324,7 @@ class Betula:
     def mapper_stability(
         self, resolutions: Sequence[int] | None = ..., **mapper_kwargs: Any
     ) -> list[dict[str, int]]: ...
+    def reachability(self, min_samples: int = ..., graph_degree: int = ...) -> ReachabilityPlot: ...
     # ── coreset / soft assignment / diagnostics ──────────────────────────────────────────────────
     @property
     def microcluster_proba_(self) -> NDArray[np.float64]: ...

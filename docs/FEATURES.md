@@ -236,6 +236,21 @@ A capability-by-capability reference. For runnable code see [`USAGE.md`](USAGE.m
   `to_networkx()` (edges carry `weight` / `overlap` / `bridge`) for plotting; `mapper_stability()`
   sweeps the resolution to find the topologically stable scale. An exploration tool (structure, RAG
   curation, dedup), not a partition — complementary to the HDBSCAN density head.
+- **OPTICS reachability plot** (`reachability()` → `ReachabilityPlot`) — the density *diagnostic*
+  over the microclusters: one sweep position per leaf, with `core_distances` and per-leaf `weights`
+  alongside, and `labels_at(ε)` for the DBSCAN\* cut. It is not an approximation of the HDBSCAN head
+  — OPTICS with no ε cutoff is Prim's algorithm on the mutual-reachability graph, so the sweep walks
+  the *same* spanning tree that head takes its hierarchy from, and every peak is one of its merge
+  heights. (That is also why the reachability is the mutual `max(core(p), core(q), d(p,q))` rather
+  than Ankerst's asymmetric form, which would picture a different tree.) Cost is set by the leaf
+  count, not `N`: 0.0028 s at both 20 000 and 320 000 rows, against a 0.007 s / 0.054 s fit. Read as
+  a partition against `sklearn.cluster.OPTICS` on the raw points (N = 6 000, best ε each side,
+  median of seeds 0/1/2) it wins three of four fixtures — blobs 0.452 vs 0.448, moons and circles
+  0.997 vs 0.978 — at ~200× the speed, and **loses the noise fixture 0.687 to 0.753**. The
+  compression is not the reason: at one leaf per point that fixture only reaches 0.707, so the
+  residual is the convention (DBSCAN\* has no border points, and mutual reachability is a stricter
+  link than the asymmetric one). Tables in
+  [`docs/USAGE.md`](https://github.com/ilgrad/betula-cluster/blob/main/docs/USAGE.md).
 - **Memory-aware hyperparameter tuning** (`tune` → `TuneResult`) — searches betula's CF-representation
   knobs (`max_leaves`, covariance model, `normalize`) for the best clustering into `n_clusters`,
   scored by an internal metric (Calinski-Harabasz / Davies-Bouldin) or ARI against ground-truth

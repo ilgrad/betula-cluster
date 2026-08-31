@@ -762,6 +762,78 @@ nxg = g.to_networkx()         # optional (needs networkx); edges carry weight / 
 curve = est.mapper_stability(resolutions=[8, 12, 16])
 ```
 
+## Density structure — `reachability()`
+
+An OPTICS reachability plot (Ankerst et al. 1999) over the microclusters — a **diagnostic**, not a
+head. It answers "what does the density structure look like, and at what scale does it change"
+rather than "which cluster is this row in".
+
+```python
+est = betula_cluster.Betula(method="hdbscan", min_samples=5, max_leaves=600).fit(X)
+p = est.reachability(min_samples=5)     # pass the same min_samples / graph_degree the fit used
+
+p.order            # leaf indices in sweep order
+p.reachability     # aligned with p.order; p.reachability[0] is inf — nothing reached the first leaf
+p.core_distances   # per leaf, in leaf indexing (not sweep order)
+p.weights          # per leaf mass, in leaf indexing
+
+import matplotlib.pyplot as plt
+plt.bar(range(len(p.order)), p.reachability)   # valleys are clusters, peaks are the walks between
+
+leaf_labels = p.labels_at(eps)                      # DBSCAN* at eps, per leaf; -1 is noise
+row_labels = leaf_labels[est.assign_microclusters(X)]   # ...lifted back to rows
+```
+
+**It is the density head's own hierarchy, not a second opinion about it.** OPTICS with no ε cutoff is
+Prim's algorithm on the mutual-reachability graph, so the sweep walks the *same* spanning tree
+`method="hdbscan"` cuts. Every peak is a merge height in that hierarchy and `labels_at(ε)` reproduces
+its cut at ε exactly — asserted by test, not measured as an approximation. That is also why the
+reachability here is the mutual `max(core(p), core(q), d(p, q))` rather than Ankerst's asymmetric
+`max(core(q), d(q, p))`: the asymmetric form draws a similar-looking picture of a *different* tree.
+
+**One position per leaf.** A valley's width is a leaf count, not a point count — three leaves can
+hold a hundred thousand rows. Read `weights` before reading a width. Core distances follow the head's
+convention too: they are mass-weighted, so a leaf that already carries `min_samples` points has core
+distance 0 and can never be noise.
+
+**Cost.** The sweep runs over the leaves, so it does not see `N` at all. `blobs`, 6 centres,
+`max_leaves=300`, median of seeds 0/1/2:
+
+| N | fit s | `reachability()` s | plot / fit | leaves |
+|---|---|---|---|---|
+| 5 000 | 0.005 | 0.0024 | 0.52 | 280 |
+| 20 000 | 0.007 | 0.0027 | 0.39 | 291 |
+| 80 000 | 0.017 | 0.0027 | 0.16 | 290 |
+| 320 000 | 0.054 | 0.0028 | 0.05 | 297 |
+
+What it *does* see is the leaf budget, quadratically — the default neighbour pass is exact. Same
+fixture at `N = 80 000`: 99 leaves 0.0003 s, 290 leaves 0.0028 s, 926 leaves 0.0284 s, 2883 leaves
+0.2970 s. `graph_degree > 0` bounds it with the same approximate proximity graph the density head
+uses, and pays for it in the same currency: at 2883 leaves, `graph_degree=16` runs in 0.0364 s but
+its cut agrees with the exact plot's at only **ARI 0.518**, and 32 / 64 / 128 all sit at **0.923** —
+so the approximate graph gives you a plot of a slightly different tree, not a cheaper plot of the
+same one. Leave it at 0 unless the leaf count makes that impossible.
+
+**Against `sklearn.cluster.OPTICS` on the raw points.** `N = 6 000`, `max_leaves=600`,
+`min_samples=5`, best ε on each side's own reachability grid, median of seeds 0/1/2:
+
+| fixture | `labels_at` ARI | sklearn ARI | betula s (fit + plot) | sklearn s |
+|---|---|---|---|---|
+| blobs, 6 centres | **0.452** | 0.448 | 0.024 | 5.38 |
+| moons | **0.997** | 0.978 | 0.028 | 4.92 |
+| circles | **0.997** | 0.978 | 0.026 | 5.86 |
+| blobs + 5 % uniform noise | 0.687 | **0.753** | 0.041 | 6.26 |
+
+Two hundred times faster on all four, and it loses the one that is about noise. **The compression is
+not why.** Pushing the leaf budget up on that fixture drives the mass per leaf from 23.0 to 1.0 —
+one leaf per point, no compression left — and the best ARI only moves 0.518 → 0.687 → 0.687 →
+0.686 → 0.707 at 274 / 572 / 1461 / 3899 / 6300 leaves. The first step is real and is the
+mass-weighted core distance: at 274 leaves, 41 % of the true noise points sit in a leaf whose core
+distance is 0, which by definition can never be labelled noise; by 3899 leaves that is 2 %. The rest
+of the gap to 0.753 survives at zero compression, so it is the convention, not the summary —
+DBSCAN\* has no border points to hand back to a cluster, and the mutual reachability is a stricter
+link than Ankerst's asymmetric one.
+
 ## Semi-supervised — COP-KMeans constraints
 
 Constraints are `(row_i, row_j)` index pairs into `X`:

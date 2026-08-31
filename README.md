@@ -177,6 +177,11 @@ snapshots / active-learning batches, the Rust API, and the CLI — all in the
 - **Density & topology** — HDBSCAN-CF (density over microclusters), **scale-space** Morse-persistence
   density-mode clustering (`method="scale-space"` — no `k`, no bandwidth), and a Mapper topological
   skeleton (`mapper` / `mapper_stability`).
+- **OPTICS reachability plot** (`reachability()` → `ReachabilityPlot`) — the density diagnostic, over
+  the microclusters. Not a lookalike of `method="hdbscan"`: OPTICS with no ε cutoff *is* Prim on the
+  mutual-reachability graph, so the sweep walks that head's own spanning tree and `labels_at(ε)` is
+  its hierarchy cut at ε, exactly. Cost is set by the leaf count, not by `N` — 0.0028 s at both
+  20 000 and 320 000 rows.
 - **X-means** (`method="xmeans"`, Pelleg & Moore 2000) — recursive splitting instead of a `k` sweep:
   `n_clusters` is an upper bound rather than a target, and it is the only auto-`k` head that can
   return more than 20 clusters. Its split test needs a cut capturing `1 − 2^(−2/d)` of a region's

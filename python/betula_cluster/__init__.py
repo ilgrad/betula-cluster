@@ -45,6 +45,7 @@ __all__ = [
     "KPrototypes",
     "KllSketch",
     "MapperGraph",
+    "ReachabilityPlot",
     "ThresholdEstimate",
     "TuneResult",
     "WindowStream",
@@ -57,6 +58,49 @@ __all__ = [
     "mixture_w2",
     "tune",
 ]
+
+
+@dataclass(frozen=True)
+class ReachabilityPlot:
+    """An OPTICS reachability plot over a fitted model's leaf microclusters.
+
+    ``reachability[i]`` belongs to ``order[i]``, and ``order[0]``'s entry is ``inf`` — nothing
+    reached the first leaf. ``core_distances`` and ``weights`` are in the leaves' own indexing, not
+    the sweep's. Plot ``reachability`` against its position and clusters appear as valleys, with a
+    peak at the distance you would have to walk to leave one and enter the next.
+
+    It is not an approximation of what ``method="hdbscan"`` does: OPTICS with no cutoff is Prim's
+    algorithm on the mutual-reachability graph, so this is the *same* spanning tree that head takes
+    its hierarchy from, written in a different order. Every peak is a merge height in that
+    hierarchy, and :meth:`labels_at` reproduces its cut exactly.
+
+    One position per **leaf**, so a valley's width is a leaf count, not a point count. Read
+    ``weights`` before reading the width: three leaves can hold a hundred thousand points.
+    """
+
+    order: np.ndarray  # (n_leaves,) leaf indices in sweep order
+    reachability: np.ndarray  # (n_leaves,) aligned with `order`; [0] is inf
+    core_distances: np.ndarray  # (n_leaves,) per leaf, leaf indexing
+    weights: np.ndarray  # (n_leaves,) mass per leaf, leaf indexing
+
+    def labels_at(self, eps: float) -> np.ndarray:
+        r"""DBSCAN\* at ``eps``, per leaf, read off the plot; ``-1`` is noise.
+
+        Ankerst et al.'s ExtractDBSCAN-Clustering: walk the order and start a segment wherever the
+        reachability rises above ``eps``, then drop every leaf whose core distance exceeds it. The
+        segments are the connected components of the mutual-reachability tree under ``eps``, so this
+        is DBSCAN\* on the summary and not a lookalike — there are no border points, which is the
+        ``*`` in the name.
+        """
+        eps = float(eps)
+        labels = np.full(len(self.order), -1, dtype=np.int64)
+        segment = np.cumsum(np.r_[np.zeros(1, dtype=np.int64), self.reachability[1:] > eps])
+        labels[self.order] = segment
+        labels[self.core_distances > eps] = -1
+        live = np.unique(labels[labels >= 0])
+        remap = np.full(int(segment[-1]) + 1, -1, dtype=np.int64)
+        remap[live] = np.arange(len(live))
+        return np.where(labels >= 0, remap[labels], -1)
 
 
 @dataclass(frozen=True)
@@ -1298,6 +1342,25 @@ class Betula:
             bridges=d["bridges"],
             persistence_overlap=d["persistence_overlap"],
             persistence_lens=d["persistence_lens"],
+        )
+
+    def reachability(self, min_samples=5, graph_degree=0):
+        """Build the OPTICS :class:`ReachabilityPlot` over the fitted microclusters.
+
+        A density *diagnostic*, not a partition: it answers "what does the density structure look
+        like" rather than "which cluster is this in". ``min_samples`` and ``graph_degree`` mean what
+        they do for ``method="hdbscan"`` — pass the values that fit used, or the plot describes a
+        different neighbourhood than the head did. Build the model first.
+
+        Reads the same mutual-reachability spanning tree the density head does, so
+        :meth:`ReachabilityPlot.labels_at` is that head's hierarchy cut at a height, exactly.
+        """
+        d = self._require_fit().reachability(min_samples=min_samples, graph_degree=graph_degree)
+        return ReachabilityPlot(
+            order=d["order"],
+            reachability=d["reachability"],
+            core_distances=d["core_distances"],
+            weights=d["weights"],
         )
 
     def mapper_stability(self, resolutions=None, **mapper_kwargs):
