@@ -14,7 +14,7 @@ authors:
 affiliations:
   - name: Independent Researcher
     index: 1
-date: 5 July 2026
+date: 1 September 2026
 bibliography: paper.bib
 ---
 
@@ -26,10 +26,14 @@ stable *clustering features* (CFs) — the BETULA triple $(n, \mu, S)$
 [@lang2020betula; @lang2022betula] — held in a height-balanced CF-tree, and then runs a clustering
 *head* on the resulting $M \ll N$ microclusters rather than on the raw points, so
 cost scales with the microcluster count and not with the data set size. One
-stable engine backs weighted k-means, Gaussian mixtures (diagonal and full
-covariance, with BIC-based model selection), agglomerative Ward linkage, spectral
-clustering [@ng2002spectral], Leiden community detection [@traag2019leiden], and
-density-based HDBSCAN-style clustering [@mcinnes2017hdbscan], all behind a
+stable engine backs 27 heads: weighted k-means and k-medoids
+[@schubert2021fasterpam], fuzzy c-means, Gaussian mixtures (diagonal, full,
+low-rank subspace [@tipping1999mppca], and Toeplitz-structured for stationary
+signals, with BIC-based model selection), five agglomerative linkages including
+exact Ward, spectral clustering [@ng2002spectral], Leiden community detection
+[@traag2019leiden], density-based HDBSCAN-style clustering
+[@mcinnes2017hdbscan], directional mixtures on the unit sphere
+[@banerjee2005vmf], and k-means on the Lorentz model of hyperbolic space — all behind a
 scikit-learn-compatible API [@pedregosa2011scikit] with streaming `partial_fit`.
 The performance-critical core is written from scratch in Rust and exposed through
 PyO3; at runtime the package depends only on NumPy [@harris2020numpy].
@@ -55,30 +59,47 @@ spectral, graph, and density clustering.
 arithmetic and are positive semidefinite by construction; the CF-tree caps its
 leaves (`max_leaves`, or an explicit `memory_budget_mb`) and rebuilds, so
 streaming memory stays flat in $N$; and one compressed representation feeds every
-head. The closest widely used tool, scikit-learn's `Birch`
-[@pedregosa2011scikit], uses the classic unstable formulation, exposes a single
-downstream head, and offers no bounded-memory streaming interface. Measured
-against scikit-learn on standardized data, `betula-cluster` reaches
+head. Measured against scikit-learn on standardized data, `betula-cluster` reaches
 parity-or-better cluster quality (for example, k-means adjusted Rand index
-$0.793$ vs $0.794$ on Gaussian blobs, median of three seeds) while running
-11–36$\times$ faster at $N = 10^6$, and it clusters a $10^7$-point stream with
-peak memory held near 60 MB, where an in-core k-means requires about 5 GB. These properties make it useful for researchers
-and engineers clustering large embedding corpora, high-throughput tabular
-streams, and data sets that do not fit in memory.
+$0.793$ vs $0.794$ on Gaussian blobs, median of three seeds; full-covariance
+mixtures $0.961$ vs $0.902$ on anisotropic data) while labelling $10^6$ points
+$9\times$ faster than scikit-learn's `KMeans` and $30\times$ faster than its
+`Birch`, and it clusters a $10^7$-point stream with peak memory held near 60 MB,
+where an in-core k-means requires about 5 GB.
+
+Two existing tools are close, in different directions. scikit-learn's `Birch`
+[@pedregosa2011scikit] is the de-facto Python CF-tree, but it implements the
+*classic* unstable formulation, exposes a single downstream head, and offers no
+bounded-memory streaming interface. `betulars`, by a BETULA co-author, is a
+faithful and fast Phase-1 CF-tree builder in Rust, but it produces leaf
+statistics rather than labels and leaves the global clustering step to the user.
+`betula-cluster` occupies the gap: the stable CF *and* the end-to-end pipeline
+that turns it into per-point labels.
 
 # Functionality
 
-Beyond the core heads, the package provides soft assignments and coresets,
-outlier and near-duplicate detection, cluster-geometry inspection, a consensus
-wrapper that quantifies per-point label stability across insertion orders, a
-Mapper topological skeleton, evolving-stream density clustering (DenStream and
-DbStream), mergeable quantile sketches, `scipy.sparse` input with an $O(\mathrm{nnz})$
-sparse-native path, mixed numeric/categorical k-prototypes, must-link/cannot-link
-constrained clustering, and memory-aware hyperparameter tuning. Prebuilt `abi3`
-wheels ship for Linux, macOS, and Windows, and the Rust core is separately
-reusable. Correctness is covered by a 100%-line-coverage Python test suite and an
-extensive Rust test suite, and every benchmark figure — including the honest
-losses — is reproducible from the repository.
+Absorption is a first-class choice: eight criteria are exposed, including the six
+BIRCH distances and a mass-invariant Mahalanobis-$\chi^2$ gate, and the
+benchmark quantifies which of them are immune to the BIRCH size-imbalance
+pathology and which are not. Beyond the heads, the package provides soft
+assignments, sensitivity-sampled $(k,\varepsilon)$-coresets with an explicit
+summarization bound [@feldman2011coresets], outlier and near-duplicate detection,
+cluster-geometry inspection, a consensus wrapper that quantifies per-point label
+stability across insertion orders, a Mapper topological skeleton,
+evolving-stream density clustering with ADWIN drift detection [@bifet2007adwin],
+mergeable quantile sketches, `scipy.sparse` input with an $O(\mathrm{nnz})$
+sparse-native path, mixed numeric/categorical/directional k-prototypes,
+must-link/cannot-link constrained clustering, and memory-aware hyperparameter
+tuning. Prebuilt `abi3` wheels ship for Linux, macOS, and Windows, and the Rust
+core is separately reusable.
+
+Correctness is covered by a 457-case Python test suite held at 100% statement
+coverage of the wrapper, 728 Rust tests, and a mutation-testing baseline in
+which every surviving mutant carries either a killing test or a written
+equivalence argument. Every benchmark figure is the median of three seeds and is
+reproducible from the repository — including the measured **losses**, and
+including research probes that were implemented, measured, refuted, and reverted
+rather than shipped.
 
 # Acknowledgements
 
