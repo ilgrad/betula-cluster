@@ -7,6 +7,24 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Changed
+- **BIRCH's size-imbalance bug is D0's, not the CF-tree's — two published claims corrected, no code
+  changed.** `bench/size_imbalance.py` reproduced scikit-learn [#22854](https://github.com/scikit-learn/scikit-learn/issues/22854)
+  at `absorb="euclidean"` only, and concluded the mis-allocation was "a property of the shared
+  design — one global absorption radius". The sweep now runs **all eight** absorption criteria, and
+  they differ sharply: on `structured` (one core of 20 000 against six minorities of 30, medians of
+  seeds 0/1/2) only **`ward` (D4) and `chi2`** hold ARI **1.0000** at every leaf budget;
+  `manhattan`, `diameter` and `radius` recover at 4 000 leaves and not below; **`euclidean` and
+  `average` never recover** — sixteen times the budget moves neither off 0.4174. `ward` is immune at
+  250 leaves with the *same* realised leaf count as the default (247 against 241), so it is not a
+  larger budget, it is the same budget spent by a criterion that does not measure a radius; `chi2`
+  gets there with **half** the leaves. That makes `absorb=` a second independent fix alongside
+  `balance=`, and the cheaper of the two — a bigger budget is not a third, since it rescues D1/D3/R
+  and leaves the default exactly where it was. `docs/USAGE.md` separately claimed
+  the variance-minimising criteria "inherit BIRCH's size-imbalance bug" — D4 *is* the
+  variance-minimising criterion and it is the best cell in the table; that paragraph now names which
+  criteria are actually affected. `bench/results_imbalance.csv` grows the `absorb` rows so both
+  corrections are reproducible from the shipped harness.
+
 - **The spectral head clusters every leaf instead of 256 k-means landmarks, and it is 2–12× faster
   for it.** Above 256 microclusters `method="spectral"` used to reduce them to 256 weighted landmarks,
   cluster those, and let each leaf inherit its landmark's label — a second lossy summarisation stacked

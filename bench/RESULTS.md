@@ -864,8 +864,10 @@ Sixteen times the budget buys **nothing** on `structured`, and `kmeans` / `ward`
 three decimals — this is not a head choosing badly, it is a summary that no longer contains the
 answer. On `flat` the identical collapse is free. This reproduces the shape of scikit-learn's Birch
 issue #22854 on our own tree, and it is the mechanism behind the `covtype` and MNIST rows above,
-where `top10` reaches 0.61–0.98. Fixing it means a budget that is allocated by mass rather than by
-radius — see `balance`, below.
+where `top10` reaches 0.61–0.98. Two things fix it: a budget allocated by mass rather than by radius
+(`balance`, next section), or an absorption criterion that does not measure a radius in the first
+place (`absorb`, "It is D0, not the CF-tree" below — the cheaper of the two, and the one this table's
+`absorb="euclidean"` rows do not show).
 
 ### The fix, and the honest range over which it is one (`balance`)
 
@@ -940,6 +942,52 @@ which is what mis-allocation looks like when the extra budget goes to the minori
 betula is on the better side of the shared defect at every budget, and on `flat` it recovers the
 answer exactly where Birch loses 15 points. That is worth saying plainly: this row is not a win
 claimed over a fixed rival, it is the same known failure measured in both.
+
+### It is D0, not the CF-tree — the correction (task #65)
+
+The paragraph above says the mis-allocation is "a property of the shared design — one global
+absorption radius". The mechanism is right; the scope was too wide. The rows above all run the
+shipped default `absorb="euclidean"`, which is D0 — a raw centroid radius. Hold the tree, the budget,
+the feature model, the head and the seeds fixed and change **only** the absorption criterion:
+
+`structured`, `kmeans`, medians of seeds 0/1/2, cells are **ARI / realised leaves / `top1`**:
+
+| `absorb=` | @250 | @1000 | @4000 |
+|---|---|---|---|
+| `euclidean` D0 *(default)* | 0.4174 / 241 / 0.80 | 0.4174 / 914 / 0.80 | 0.4174 / 3 767 / 0.80 |
+| `manhattan` D1 | 0.4174 / 239 / 0.80 | 0.4174 / 993 / 0.80 | **1.0000** / 3 996 / 0.40 |
+| `average` D2 | 0.4174 / 240 / 0.80 | 0.4174 / 962 / 0.80 | 0.4174 / 3 797 / 0.80 |
+| `diameter` D3 | 0.4175 / 235 / 0.81 | 0.4174 / 968 / 0.81 | **1.0000** / 3 935 / 0.40 |
+| **`ward` D4** | **1.0000** / 247 / 0.11 | **1.0000** / 937 / 0.03 | **1.0000** / 3 746 / 0.01 |
+| `radius` R | 0.4174 / 250 / 0.81 | 0.4174 / 939 / 0.81 | **1.0000** / 3 622 / 0.40 |
+| **`chi2`** | **1.0000** / 129 / 0.17 | **1.0000** / 129 / 0.17 | **1.0000** / 129 / 0.17 |
+| **`subspace`** | **1.0000** / 129 / 0.17 | **1.0000** / 129 / 0.17 | **1.0000** / 129 / 0.17 |
+
+`flat` stays at 1.0000 for all eight at all three budgets, as the control must. The `gmm` head agrees
+on all 24 verdicts and differs only in the third decimal inside the failing band (0.4174 → 0.4181–
+0.4191), so the criterion, not the head, is what decides this. (`subspace` reads `chi2` unless
+`feature="fd"`, so its row being identical is the expected fallback, not a coincidence.)
+
+**Only D4 and the χ² gate are immune at every budget.** D1, D3 and R recover at 4 000 leaves and not
+below — `top1` 0.81 → 0.40 says the core splits in two rather than being resolved. D0 and D2 never
+recover: sixteen times the budget moves nothing. D4 is immune at 250 with the *same* realised leaf
+count as the default (247 against 241), so this is not a bigger budget, it is the same budget spent
+by a criterion that does not measure a radius. χ² reaches the same answer with **half the leaves**,
+because a mass-invariant gate stops subdividing the diffuse minorities once they are described.
+
+Two corrections fall out. The generalisation above — a property of "the shared design" — is really a
+property of **D0**, and of D2 and (below 4 000 leaves) the radius family; the crate ships one
+criterion that is immune outright and another that is immune and cheaper. And `docs/USAGE.md` used to
+say the variance-minimising criteria "inherit BIRCH's size-imbalance bug": D4 *is* the
+variance-minimising criterion and it is the best cell in this table. Both are now fixed.
+
+So this fixture has two independent fixes, `absorb=` and `balance=`, and `absorb=` is the cheaper.
+A bigger budget is **not** a third: it rescues D1, D3 and R at 4 000 leaves, and under the default D0
+sixteen times the budget still buys nothing. None of this makes the D0 rows wrong — BIRCH's published
+criterion is a radius, scikit-learn implements a radius, and that comparison is the row.
+
+`bench/size_imbalance.py` sweeps all eight criteria, so every cell above is reproducible from the
+shipped harness.
 
 ## Quality against the leaf budget — the knob the tables never varied
 

@@ -1,10 +1,17 @@
 """Size imbalance: what a *geometric* leaf budget costs when the mass is not spread geometrically.
 
 scikit-learn's Birch issue #22854 reports that Birch returns far fewer clusters than asked for when
-one cluster dominates the mass. Both scikit-learn's Birch and this library allocate leaves the same
-way -- a single global absorption radius, raised until the leaf count fits -- so the issue is a
-property of the CF-tree family rather than of one implementation, and it is worth a measured row
-instead of an anecdote.
+one cluster dominates the mass. Both scikit-learn's Birch and this library's *default* allocate
+leaves the same way -- a single global absorption **radius**, raised until the leaf count fits -- so
+the issue reproduces here, and it is worth a measured row instead of an anecdote.
+
+It is the radius, not the CF-tree, and the `absorb` column is what says so. Holding the tree, the
+budget, the feature model and the head fixed and changing only the criterion, `ward` (D4, the
+variance increase) and `chi2` (the mass-invariant Mahalanobis gate) both take `structured` from
+ARI 0.417 to **1.0000** at every budget, with the heaviest leaf's mass share falling from 0.800 to
+0.11-0.17, and `manhattan` / `diameter` / `radius` recover at 4000 leaves but not below. An earlier
+version of this file asserted the failure was a property of the CF-tree family; it is a property of
+D0 absorption, which is one of the eight criteria the crate ships.
 
 Two fixtures, one mass profile: 80% of the points in a tight core, 20% spread across five diffuse
 minorities ten times wider.
@@ -52,6 +59,22 @@ BUDGETS = (250, 1000, 4000)
 SEEDS = (0, 1, 2)
 HEADS = ("kmeans", "ward", "gmm")
 
+# The absorption criterion is the variable this study exists to isolate, so the sweep runs all
+# eight. `euclidean` is the shipped default and the one the #22854 shape was originally reported
+# on. `subspace` is included for completeness even though it falls back to `chi2` unless
+# `feature="fd"` -- an identical row is then the expected result, and a *differing* one would be a
+# bug worth catching here.
+ABSORBERS = (
+    "euclidean",
+    "manhattan",
+    "average",
+    "diameter",
+    "ward",
+    "radius",
+    "chi2",
+    "subspace",
+)
+
 # The `ward` head is O(m^2) in the leaf count; above this it is skipped and the skip is counted.
 WARD_HEAD_MAX_LEAVES = 2000
 
@@ -93,9 +116,14 @@ def fixture(kind: str, seed: int = 0) -> tuple[np.ndarray, np.ndarray, int]:
     return np.ascontiguousarray(x), y, int(y.max()) + 1
 
 
-def betula_cell(x, y, k, head, budget, seed, ari):
+def betula_cell(x, y, k, head, budget, seed, ari, absorb="euclidean"):
     import betula_cluster as bc
 
+    # The two chi-squared gates read their threshold as a chi-squared quantile and need the data's
+    # own variance scale; the geometric criteria take `threshold=0.0` and grow it against the leaf
+    # budget.
+    chi2_gate = absorb in ("chi2", "subspace")
+    extra = {"chi2_scale": float(x.var(0).mean())} if chi2_gate else {}
     est = bc.Betula(
         n_clusters=k,
         feature="spherical",
@@ -103,6 +131,8 @@ def betula_cell(x, y, k, head, budget, seed, ari):
         threshold=0.0,
         max_leaves=budget,
         seed=seed,
+        absorb=absorb,
+        **extra,
     )
     t0 = time.perf_counter()
     labels = np.asarray(est.fit_predict(x))
@@ -256,19 +286,21 @@ def main() -> int:
             )
             for head in HEADS:
                 if head == "ward" and budget > WARD_HEAD_MAX_LEAVES:
-                    skipped += 1
+                    skipped += len(ABSORBERS)
                     continue
-                got = [betula_cell(x, y, k, head, budget, s, ari) for s in SEEDS]
-                rows.append(summarize(name, n, k, f"betula-{head}", budget, got))
-                r = rows[-1]
-                print(
-                    f"  budget {budget:<5} betula-{head:<7} "
-                    f"ARI {r['ari']:.4f} [{r['ari_min']:.4f}, {r['ari_max']:.4f}]  "
-                    f"leaves {r['leaves']:<6} fill {r['fill']:.2f}  thr {r['threshold']:.3f}  "
-                    f"maxw {r['max_leaf_weight']:.0f}  top1 {r['top1_mass']:.3f}  "
-                    f"{r['time_s']:.1f}s",
-                    flush=True,
-                )
+                for absorb in ABSORBERS:
+                    got = [betula_cell(x, y, k, head, budget, s, ari, absorb) for s in SEEDS]
+                    tag = f"betula-{head}" if absorb == "euclidean" else f"betula-{head}/{absorb}"
+                    rows.append(summarize(name, n, k, tag, budget, got))
+                    r = rows[-1]
+                    print(
+                        f"  budget {budget:<5} {tag:<20} "
+                        f"ARI {r['ari']:.4f} [{r['ari_min']:.4f}, {r['ari_max']:.4f}]  "
+                        f"leaves {r['leaves']:<6} fill {r['fill']:.2f}  thr {r['threshold']:.3f}  "
+                        f"maxw {r['max_leaf_weight']:.0f}  top1 {r['top1_mass']:.3f}  "
+                        f"{r['time_s']:.1f}s",
+                        flush=True,
+                    )
 
     out = HERE / "results_imbalance.csv"
     pd.DataFrame(rows).to_csv(out, index=False)

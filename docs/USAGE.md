@@ -81,14 +81,20 @@ transfer to another — retune when you switch. `D2`, `D3` and `R` read the leav
 they grow with a cell's scatter; `D0`, `D1` and `D4` are centroid-only and therefore the most
 numerically stable.
 
-**The default is deliberate, and the alternatives optimise a different objective.** Lang's thesis
-tunes absorption for minimum variance and finds D4 × D2 best on Gaussian data; this crate chose
-mass-invariance instead, because the variance-minimising criteria inherit BIRCH's size-imbalance bug
-(scikit-learn [#22854](https://github.com/scikit-learn/scikit-learn/issues/22854) — a large cluster
-swallows a distant point because its average radius barely moves). The two objectives genuinely
-conflict: our own measurements have the radius criterion over-absorbing exactly where `euclidean` and
-`chi2` correctly reject. Pick `radius` or `diameter` if you want BIRCH's published behaviour, `chi2`
-if your clusters differ wildly in size, and leave the default alone otherwise.
+**On wildly unequal cluster sizes, switch — the default is the criterion that fails.** BIRCH's
+size-imbalance bug (scikit-learn [#22854](https://github.com/scikit-learn/scikit-learn/issues/22854)
+— a large cluster swallows a distant point because one global absorption radius is generous relative
+to a dense core) is a property of the *criterion*, and the eight differ sharply. On the
+[`bench/results_imbalance.csv`](https://github.com/ilgrad/betula-cluster/blob/main/bench/results_imbalance.csv)
+fixture — one dense core of 20 000 against six minorities of 30 — only **`ward` and `chi2`** score
+ARI 1.0000 at every leaf budget; `manhattan`, `diameter` and `radius` recover at 4 000 leaves and
+not below; **`euclidean` (the default) and `average` never recover**, at any budget tried. `ward`
+costs nothing to switch to — same tree, same budget, the same realised leaf count — and `chi2` gets
+there with half the leaves. Lang's thesis tunes absorption for minimum variance and finds D4 × D2
+best on Gaussian data; D4 is `ward`, so on this axis the thesis' choice and ours agree — D0 is the
+outlier. Keep the default for roughly balanced data, where it is the cheapest and most stable
+gate; reach for `ward` or `chi2` the moment your clusters differ wildly in mass, and for `radius` or
+`diameter` only if you want BIRCH's published behaviour specifically.
 
 **`subspace` reads the same χ² gate on the leaf's own basis, and only `feature="fd"` has one.** Every
 other feature model falls back to `chi2`, so the option changes nothing unless you asked for the
