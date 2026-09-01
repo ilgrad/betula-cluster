@@ -2072,6 +2072,30 @@ def mixed():
     return x, y
 
 
+@pytest.fixture(scope="module")
+def mixed3():
+    """Four groups that need all three blocks: numeric splits {0,1} from {2,3}, the direction is the
+    only thing separating 0 from 1, and the category the only thing separating 2 from 3."""
+    rng = np.random.default_rng(7)
+    per = 60
+    rows, truth = [], []
+    for g, (site, angle, code) in enumerate(
+        [(0.0, 0.0, 0.0), (0.0, np.pi, 0.0), (6.0, 0.0, 0.0), (6.0, 0.0, 1.0)]
+    ):
+        a = angle + rng.normal(0.0, 0.15, per)
+        rows.append(
+            np.c_[
+                rng.normal(site, 0.35, per),
+                rng.normal(0.0, 0.35, per),
+                np.full(per, code),
+                np.cos(a),
+                np.sin(a),
+            ]
+        )
+        truth += [g] * per
+    return np.vstack(rows).astype(np.float64), np.array(truth)
+
+
 def test_kprototypes_recovers_mixed_blobs(mixed):
     x, y = mixed
     kp = betula_cluster.KPrototypes(n_clusters=2, categorical=[2], seed=1)
@@ -2080,6 +2104,7 @@ def test_kprototypes_recovers_mixed_blobs(mixed):
     assert kp.n_clusters_ == 2
     assert kp.cluster_centroids_.shape == (2, 2)  # two numeric dims
     assert kp.cluster_modes_.shape == (2, 1)  # one categorical dim
+    assert kp.cluster_directions_.shape == (2, 0)  # no directional block asked for
 
 
 def test_kprototypes_categorical_breaks_numeric_tie():
@@ -2104,18 +2129,23 @@ def test_kprototypes_predict_on_new_points(mixed):
 
 
 def test_kprototypes_get_params_roundtrip():
-    kp = betula_cluster.KPrototypes(n_clusters=3, categorical=[0, 2], gamma=0.7)
+    kp = betula_cluster.KPrototypes(
+        n_clusters=3, categorical=[0, 2], directional=[3, 4], gamma=0.7, gamma_dir=0.2
+    )
     params = kp.get_params()
     assert params["categorical"] == [0, 2]
+    assert params["directional"] == [3, 4]
     assert params["gamma"] == 0.7
+    assert params["gamma_dir"] == 0.2
     clone = betula_cluster.KPrototypes(**params)
     assert clone.get_params()["categorical"] == [0, 2]
+    assert clone.get_params()["directional"] == [3, 4]
     assert clone.set_params(n_clusters=5).get_params()["n_clusters"] == 5
 
 
-def test_kprototypes_requires_categorical(mixed):
+def test_kprototypes_requires_a_non_numeric_block(mixed):
     x, _ = mixed
-    with pytest.raises(ValueError, match="categorical column"):
+    with pytest.raises(ValueError, match="categorical or directional column"):
         betula_cluster.KPrototypes(n_clusters=2, categorical=[]).fit(x)
 
 
@@ -2125,10 +2155,25 @@ def test_kprototypes_requires_numeric():
         betula_cluster.KPrototypes(n_clusters=2, categorical=[0, 1]).fit(x)
 
 
-def test_kprototypes_cat_index_out_of_range(mixed):
+@pytest.mark.parametrize("block", ["categorical", "directional"])
+def test_kprototypes_index_out_of_range(mixed, block):
     x, _ = mixed
-    with pytest.raises(ValueError, match="out of range"):
-        betula_cluster.KPrototypes(n_clusters=2, categorical=[5]).fit(x)
+    with pytest.raises(ValueError, match=f"{block} column index 5 is out of range"):
+        betula_cluster.KPrototypes(n_clusters=2, **{block: [5]}).fit(x)
+
+
+def test_kprototypes_rejects_a_column_claimed_by_two_blocks(mixed):
+    x, _ = mixed
+    with pytest.raises(ValueError, match="listed in more than one block"):
+        betula_cluster.KPrototypes(n_clusters=2, categorical=[2], directional=[1, 2]).fit(x)
+
+
+def test_kprototypes_rejects_a_one_column_directional_block(mixed):
+    # A "direction" in one dimension is a sign, and a sign is a category -- accepting it would
+    # silently give the block a two-point sphere on which every distance is 0 or 4.
+    x, _ = mixed
+    with pytest.raises(ValueError, match="at least two columns"):
+        betula_cluster.KPrototypes(n_clusters=2, categorical=[2], directional=[1]).fit(x)
 
 
 @pytest.mark.parametrize("bad", [-1.0, 0.5])
@@ -2165,6 +2210,86 @@ def test_kprototypes_set_params_invalid():
     kp = betula_cluster.KPrototypes()
     with pytest.raises(ValueError, match="Invalid parameter"):
         kp.set_params(bogus=1)
+
+
+# ── the third block: direction ────────────────────────────────────────────────────────────────────
+
+
+@pytest.fixture(scope="module")
+def directional():
+    """One numeric column that says nothing and a 2-D direction that says everything.
+
+    The two groups sit on top of each other numerically and differ only by pointing in opposite
+    directions, so any labelling above chance is the directional block's doing.
+    """
+    rng = np.random.default_rng(3)
+    n = 120
+    ang = np.concatenate([rng.normal(0.0, 0.15, n), rng.normal(np.pi, 0.15, n)])
+    x = np.c_[rng.normal(0.0, 0.5, 2 * n), np.cos(ang), np.sin(ang)]
+    return x.astype(np.float64), np.array([0] * n + [1] * n)
+
+
+def test_kprototypes_directional_block_splits_a_numeric_tie(directional):
+    x, y = directional
+    kp = betula_cluster.KPrototypes(n_clusters=2, directional=[1, 2], seed=1)
+    assert ari(np.asarray(kp.fit_predict(x)), y) > 0.95
+    # The default gamma_dir is derived from the numeric spread, so switching it off must cost.
+    off = betula_cluster.KPrototypes(n_clusters=2, directional=[1, 2], gamma_dir=0.0, seed=1)
+    assert ari(np.asarray(off.fit_predict(x)), y) < 0.5
+
+
+def test_kprototypes_directional_columns_are_normalised_per_row(directional):
+    # The block reads angle only: scaling each row's directional part by an arbitrary positive
+    # factor must not move a single label. A block left unnormalised would let the magnitude
+    # dominate the dot product and relabel the long rows.
+    x, _ = directional
+    kp = betula_cluster.KPrototypes(n_clusters=2, directional=[1, 2], seed=1)
+    base = np.asarray(kp.fit_predict(x))
+    scaled = x.copy()
+    scaled[:, 1:] *= np.linspace(0.1, 20.0, len(x))[:, None]
+    same = betula_cluster.KPrototypes(n_clusters=2, directional=[1, 2], seed=1)
+    assert ari(np.asarray(same.fit_predict(scaled)), base) == pytest.approx(1.0)
+
+
+def test_kprototypes_cluster_directions_are_unit_resultants(directional):
+    x, _ = directional
+    kp = betula_cluster.KPrototypes(n_clusters=2, directional=[1, 2], seed=1).fit(x)
+    dirs = kp.cluster_directions_
+    assert dirs.shape == (2, 2)
+    assert np.allclose(np.linalg.norm(dirs, axis=1), 1.0)
+    # The two clusters point opposite ways, which is the fixture's whole content.
+    assert float(dirs[0] @ dirs[1]) < -0.9
+
+
+def test_kprototypes_a_zero_direction_row_does_not_vote():
+    # Every micro-cluster here points at exactly +x or -x, so a query direction of (0, 1) is
+    # orthogonal to all of them, and a query with no direction at all scores zero against all of
+    # them: both add the same constant to every prototype, so both must land on the same label.
+    # Dividing a zero row by its zero norm gives NaN; fabricating a unit vector for it gives a vote.
+    rng = np.random.default_rng(11)
+    n = 60
+    x = np.c_[
+        rng.normal(0.0, 1.0, 2 * n),
+        np.r_[np.ones(n), -np.ones(n)],
+        np.zeros(2 * n),
+    ].astype(np.float64)
+    kp = betula_cluster.KPrototypes(n_clusters=2, directional=[1, 2], gamma_dir=10.0, seed=1).fit(x)
+    label = lambda d: int(kp.predict(np.array([[0.0, *d]], dtype=np.float64))[0])  # noqa: E731
+    assert label((0.0, 0.0)) == label((0.0, 1.0))
+    assert label((1.0, 0.0)) != label((-1.0, 0.0))  # a real direction does vote
+
+
+def test_kprototypes_three_blocks_at_once(mixed3):
+    x, y = mixed3
+    kp = betula_cluster.KPrototypes(
+        n_clusters=4, categorical=[2], directional=[3, 4], gamma=4.0, gamma_dir=4.0, seed=5
+    )
+    labels = np.asarray(kp.fit_predict(x))
+    assert ari(labels, y) > 0.9
+    assert kp.cluster_centroids_.shape == (4, 2)
+    assert kp.cluster_modes_.shape == (4, 1)
+    assert kp.cluster_directions_.shape == (4, 2)
+    assert ari(np.asarray(kp.predict(x[::4])), y[::4]) > 0.9
 
 
 # ── error contract ─────────────────────────────────────────────────────────────────────────────

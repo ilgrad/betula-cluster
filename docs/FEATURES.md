@@ -193,11 +193,18 @@ A capability-by-capability reference. For runnable code see [`USAGE.md`](USAGE.m
   at the microcluster granularity (a cannot-link between two points the tree compressed into one leaf
   is reported as infeasible — lower `threshold` to separate them); contradictory or over-constrained
   inputs raise rather than silently violate. `method="kmeans"` only, dense input.
-- **Mixed numeric + categorical** (`KPrototypes`) — **k-prototypes** (Huang, 1997) for data that is
-  part numeric, part categorical. Each cluster is a *mixed CF*: the stable numeric $(n, \mu, S)$ plus a
-  category-count histogram per categorical attribute (its mode is the categorical centroid). Distance
-  is $\|\Delta_\text{numeric}\|^2 + \gamma \cdot (\text{categorical mismatch})$, with $\gamma$ auto-set to Huang's heuristic. Rows are
-  leader-summarized into bounded mixed micro-clusters first, so it scales like the rest of the library.
+- **Mixed numeric + categorical + directional** (`KPrototypes`) — **k-prototypes** (Huang, 1997)
+  with a third block, for data that is part numeric, part categorical and part *angle*. Each cluster
+  is a *mixed CF*: the stable numeric $(n, \mu, S)$, a category-count histogram per categorical
+  attribute (its mode is the categorical centroid), and the resultant $R = \sum_i w_i u_i$ over the
+  L2-normalised directional columns (its unit $R/\|R\|$ is the directional prototype). Distance is
+  $\|\Delta_\text{numeric}\|^2 + \gamma_\text{cat} \cdot (\text{categorical mismatch}) + \gamma_\text{dir}(2 - 2u^\top c)$.
+  Because $\|u\| = 1$, the directional block's cost over a micro-cluster is $2n_i - 2\langle R_i, c\rangle$ —
+  exact from $(n_i, R_i)$ with **no scatter term**. `directional=[3, 4]` names the columns; a
+  one-column directional block is rejected, because a direction in one dimension is a sign. $\gamma$
+  is auto-set to Huang's heuristic and $\gamma_\text{dir}$ to the mean numeric variance, a
+  scale-matching convention with no literature behind it. Rows are leader-summarized into bounded
+  mixed micro-clusters first, so it scales like the rest of the library.
 - **Bregman geometry** (`BregmanBetula`) — the CF-tree and three heads over an arbitrary Bregman
   divergence instead of squared Euclidean: `divergence="kl"` for distributions, `"itakura-saito"` for
   spectra (scale-invariant), `"logistic"` for probabilities, `"euclidean"` for the case that reduces

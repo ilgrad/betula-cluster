@@ -137,6 +137,53 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- **`KPrototypes` grows a third block: `directional=`.** Huang's k-prototypes carries a numeric
+  `(n, μ, S)` and a category-count histogram per attribute. Some columns are neither — a cyclic hour
+  written as `(cos, sin)`, a heading, a normalised embedding — and this release gives them their own
+  block, summarised by the **resultant** `R = Σ w_i u_i` over rows the boundary L2-normalises once
+  each. The dissimilarity becomes
+  `‖Δnum‖² + γ_cat · Σ[x_j ≠ mode_j] + γ_dir · (2 − 2 uᵀc)`, with `c = R/‖R‖`. Unit vectors have no
+  mean — two rows a half-turn apart average to zero rather than to a point between them — so the
+  resultant, not a centroid, is the summary; and because `‖u‖ = 1`, the block's cost over a whole
+  micro-cluster is `2n_i − 2⟨R_i, c⟩`, **affine in the summary with no scatter term**, the same
+  structure the Lorentzian centroid has in `clustering::hyperbolic` and what lets a leaf carry the
+  block in one vector. New accessor `cluster_directions_` (`k × n_directional` unit rows). Rust:
+  `clustering::{MixedSchema, BlockWeights, MixedRows}` join `MixedCf`; `summarize_mixed`,
+  `nearest_micro` and `kprototypes` now take the schema and a `BlockWeights` pair instead of a bare
+  `γ`. Validation moved with it: a numeric column is still always required, but the second block may
+  now be categorical **or** directional; a column may not be claimed by two blocks; and a one-column
+  directional block is rejected outright, because a direction in one dimension is a sign and a sign
+  is a category. A row whose directional part is all zeros keeps the zero vector — its term is then
+  equal for every prototype, so it stops voting instead of voting arbitrarily, and the same holds for
+  a cluster whose members' directions cancel.
+- **What the third block buys, measured: the per-row normalisation, and nothing else.** The honest
+  baseline is not "no direction" — it is `(cos θ, sin θ)` written into two *numeric* columns, and on
+  unit rows `‖u − c‖² = 2 − 2uᵀc` exactly, with column scaling by `s` playing the role of
+  `γ_dir = s²`. Given that same knob on the same grid, the two tie to three digits (0.999 vs 0.999)
+  on unit rows. On rows carrying an amplitude the block reads **0.964** against **0.693** for the
+  naive numeric encoding — and **0.964** again for the user who normalises those two columns by hand.
+  Binning the angle into 8 categories reads 0.509. So `directional=` is that informed user's
+  preprocessing moved to the boundary, plus a named weight and a unit prototype you can read as an
+  angle; it is not a better model, and on unit rows it provably cannot be. The second argument for the
+  block — that a numeric prototype's `+‖μ‖²` makes diffuse clusters cheaper and lets them steal
+  members — **is real and did not pay**: on two adjacent groups at unequal concentration the numeric
+  encoding is 0.011 *ahead* at both `κ = 8` and `κ = 2`, because for two von Mises–Fisher components
+  of unequal concentration the Bayes boundary is not the angular midpoint and `+‖μ‖²` moves towards
+  it. Tables and the fixture in
+  [`bench/RESULTS.md`](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md).
+- **`gamma_dir` has no literature, and the default says so.** `γ_cat` keeps Huang's `½·mean σ`.
+  `γ_dir` defaults to the **mean numeric variance**, so that one unit of `‖u − c‖²` — which runs over
+  `[0, 4]` whatever the data — costs one numeric variance. That is a scale-matching convention, not a
+  result; both weights are exposed and both should be swept.
+- **The k-prototypes++ seeding weight had one mutant nothing could see, and now it has a test.**
+  Re-measuring `src/clustering/kprototypes.rs` whole after the rewrite (162 mutants, 143 caught,
+  15 unviable, 0 timeout) turned up `w[i] * d2[i] → w[i] + d2[i]` as a new survivor. The product is
+  what guarantees that a micro sitting exactly on an already-chosen prototype is never chosen again,
+  whatever its mass; the sum drops that guarantee, and the existing spread-out fixture could not tell
+  them apart because there every weight is 1 against a `D²` of 10⁴. The new fixture puts the mass on
+  the coincident site instead and fails on its first seed under the mutation. The other three entries
+  in `mutants-baseline.txt` carry over at their new line numbers with their arguments intact.
+
 - **`method="hyperbolic"` — k-means on the Lorentz model of hyperbolic space, for embeddings of
   hierarchies (Law, Liao, Snavely & Dhillon, ICML 2019).** Rows are `(d+1)` Lorentz coordinates of
   `H^d = {⟨x,x⟩_L = −1, x₀ > 0}`; the boundary recomputes `x₀ = √(1 + ‖s‖²)` per row before

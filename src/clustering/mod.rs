@@ -48,7 +48,9 @@ pub use hyperbolic::{
     HyperbolicKMeans, f64_working_radius, hyperbolic_kmeans, merge_increase, project_to_sheet,
 };
 pub use kmeans::{ConstraintError, KMeans, cop_kmeans, kmeans, kmeans_auto};
-pub use kprototypes::{MixedCf, kprototypes, nearest_micro, summarize_mixed};
+pub use kprototypes::{
+    BlockWeights, MixedCf, MixedRows, MixedSchema, kprototypes, nearest_micro, summarize_mixed,
+};
 pub use medoid::{MedoidClustering, Pam, dyn_msc, kmedoids};
 pub use mfa::{Mfa, mfa, mfa_auto};
 pub use mppca::{Mppca, mppca, mppca_auto};

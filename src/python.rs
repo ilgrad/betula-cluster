@@ -30,8 +30,9 @@ use crate::clustering::hyperbolic::lorentz_dot;
 use crate::clustering::nmf::{Projection, ProjectionKind, ProjectionSpec};
 use crate::clustering::scalespace::scale_space;
 use crate::clustering::{
-    ConstraintError, Linkage, MixedCf, bregman_agglomerative, bregman_em, bregman_kmeans,
-    cop_kmeans, kprototypes, nearest_micro, project_to_sheet, summarize_mixed,
+    BlockWeights, ConstraintError, Linkage, MixedCf, MixedRows, MixedSchema, bregman_agglomerative,
+    bregman_em, bregman_kmeans, cop_kmeans, kprototypes, nearest_micro, project_to_sheet,
+    summarize_mixed,
 };
 use crate::clustering::{DcObjective, dc_clustering};
 use crate::clustering::{Reachability, optics};
@@ -4221,68 +4222,117 @@ impl PyDbStream {
     }
 }
 
-/// Resolve the categorical column mask: validate indices, derive the ascending categorical column
-/// order (the split order) and the numeric/categorical counts. Requires both kinds to be present.
-fn cat_mask(categorical: &[usize], dim: usize) -> PyResult<(Vec<bool>, Vec<usize>, usize, usize)> {
-    let mut is_cat = vec![false; dim];
-    for &c in categorical {
-        if c >= dim {
-            return Err(PyValueError::new_err(format!(
-                "categorical column index {c} is out of range for {dim} features"
-            )));
+/// Which of the three k-prototypes blocks a column belongs to.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Block {
+    Numeric,
+    Categorical,
+    Directional,
+}
+
+/// Resolve the per-column block assignment: validate indices, reject overlaps, and derive the three
+/// block widths. The split order within a block is ascending column order.
+///
+/// A numeric block is always required — it is what the two other block weights are priced against —
+/// and at least one of the other two must be present, or this is `Betula(method='kmeans')` with extra
+/// steps. A one-column directional block is rejected outright: a "direction" in one dimension is a
+/// sign, and a sign is a category.
+fn block_mask(
+    categorical: &[usize],
+    directional: &[usize],
+    dim: usize,
+) -> PyResult<(Vec<Block>, usize, usize, usize)> {
+    let mut kind = vec![Block::Numeric; dim];
+    for (name, cols, block) in [
+        ("categorical", categorical, Block::Categorical),
+        ("directional", directional, Block::Directional),
+    ] {
+        for &c in cols {
+            if c >= dim {
+                return Err(PyValueError::new_err(format!(
+                    "{name} column index {c} is out of range for {dim} features"
+                )));
+            }
+            if kind[c] != Block::Numeric {
+                return Err(PyValueError::new_err(format!(
+                    "column {c} is listed in more than one block"
+                )));
+            }
+            kind[c] = block;
         }
-        is_cat[c] = true;
     }
-    let cat_cols: Vec<usize> = (0..dim).filter(|&j| is_cat[j]).collect();
-    let n_cat = cat_cols.len();
-    let n_num = dim - n_cat;
-    if n_cat == 0 {
-        return Err(PyValueError::new_err(
-            "KPrototypes needs at least one categorical column (otherwise use Betula(method='kmeans'))",
-        ));
-    }
+    let count = |b: Block| kind.iter().filter(|&&k| k == b).count();
+    let (n_cat, n_dir) = (count(Block::Categorical), count(Block::Directional));
+    let n_num = dim - n_cat - n_dir;
     if n_num == 0 {
         return Err(PyValueError::new_err(
             "KPrototypes needs at least one numeric column (pure k-modes is not supported)",
         ));
     }
-    Ok((is_cat, cat_cols, n_num, n_cat))
+    if n_cat == 0 && n_dir == 0 {
+        return Err(PyValueError::new_err(
+            "KPrototypes needs at least one categorical or directional column (otherwise use Betula(method='kmeans'))",
+        ));
+    }
+    if n_dir == 1 {
+        return Err(PyValueError::new_err(
+            "a directional block needs at least two columns: a direction in one dimension is a sign, which belongs in `categorical`",
+        ));
+    }
+    Ok((kind, n_num, n_cat, n_dir))
 }
 
-/// Split a row-major dense matrix into numeric values and integer category codes by column kind.
-/// Categorical columns must hold non-negative integer codes (finiteness is already validated upstream).
+/// Split a row-major dense matrix into the three blocks by column kind. Categorical columns must hold
+/// non-negative integer codes (finiteness is already validated upstream), and the directional block is
+/// L2-normalised **per row here, once** — the head takes its unit vectors as given rather than
+/// re-checking them at every distance call. A directional row that is all zeros has no direction and
+/// is left at zero, which makes its term equal for every prototype: it stops voting instead of voting
+/// arbitrarily, the same convention as `normalize=True`.
 fn split_mixed(
     flat: &[f64],
     n: usize,
     dim: usize,
-    is_cat: &[bool],
-) -> PyResult<(Vec<f64>, Vec<usize>)> {
-    let n_cat = is_cat.iter().filter(|&&c| c).count();
-    let mut num = Vec::with_capacity(n * (dim - n_cat));
+    kind: &[Block],
+) -> PyResult<(Vec<f64>, Vec<usize>, Vec<f64>)> {
+    let count = |b: Block| kind.iter().filter(|&&k| k == b).count();
+    let (n_cat, n_dir) = (count(Block::Categorical), count(Block::Directional));
+    let mut num = Vec::with_capacity(n * (dim - n_cat - n_dir));
     let mut cat = Vec::with_capacity(n * n_cat);
+    let mut dir = Vec::with_capacity(n * n_dir);
     for i in 0..n {
-        for (j, &cat_col) in is_cat.iter().enumerate() {
+        for (j, &block) in kind.iter().enumerate() {
             let v = flat[i * dim + j];
-            if cat_col {
-                if v < 0.0 || v.fract() != 0.0 {
-                    return Err(PyValueError::new_err(
-                        "categorical columns must hold non-negative integer codes",
-                    ));
+            match block {
+                Block::Numeric => num.push(v),
+                Block::Directional => dir.push(v),
+                Block::Categorical => {
+                    if v < 0.0 || v.fract() != 0.0 {
+                        return Err(PyValueError::new_err(
+                            "categorical columns must hold non-negative integer codes",
+                        ));
+                    }
+                    cat.push(v as usize);
                 }
-                cat.push(v as usize);
-            } else {
-                num.push(v);
+            }
+        }
+        if n_dir > 0 {
+            let row = &mut dir[i * n_dir..(i + 1) * n_dir];
+            let norm = row.iter().map(|v| v * v).sum::<f64>().sqrt();
+            if norm > 0.0 {
+                for v in row {
+                    *v /= norm;
+                }
             }
         }
     }
-    Ok((num, cat))
+    Ok((num, cat, dir))
 }
 
-/// Huang's heuristic default for `γ`: half the mean per-dimension numeric standard deviation (falling
-/// back to 1.0 when the numeric attributes are degenerate, so the categorical term still matters).
-fn default_gamma(num: &[f64], n: usize, n_num: usize) -> f64 {
+/// Per-dimension numeric dispersion as `(mean standard deviation, mean variance)` — the two summaries
+/// the block-weight defaults are priced from.
+fn numeric_dispersion(num: &[f64], n: usize, n_num: usize) -> (f64, f64) {
     if n == 0 || n_num == 0 {
-        return 1.0;
+        return (0.0, 0.0);
     }
     let mut mean = vec![0.0; n_num];
     for i in 0..n {
@@ -4300,45 +4350,70 @@ fn default_gamma(num: &[f64], n: usize, n_num: usize) -> f64 {
             *v += d * d;
         }
     }
-    let avg_std = var.iter().map(|v| (v / n as f64).sqrt()).sum::<f64>() / n_num as f64;
+    let scale = 1.0 / n as f64 / n_num as f64;
+    (
+        var.iter().map(|v| (v / n as f64).sqrt()).sum::<f64>() / n_num as f64,
+        var.iter().sum::<f64>() * scale,
+    )
+}
+
+/// Huang's heuristic default for `γ_cat`: half the mean per-dimension numeric standard deviation
+/// (falling back to 1.0 when the numeric attributes are degenerate, so the categorical term still
+/// matters).
+fn default_gamma(num: &[f64], n: usize, n_num: usize) -> f64 {
+    let avg_std = numeric_dispersion(num, n, n_num).0;
     if avg_std > 0.0 { 0.5 * avg_std } else { 1.0 }
+}
+
+/// Default for `γ_dir`: the mean per-dimension numeric **variance**, so that one unit of
+/// `‖u − c‖²` — which runs over `[0, 4]` whatever the data — costs one numeric variance. There is no
+/// published heuristic for this weight; this is a scale-matching convention, not a result, and it
+/// falls back to 1.0 on degenerate numeric attributes for the same reason `γ_cat` does.
+fn default_gamma_dir(num: &[f64], n: usize, n_num: usize) -> f64 {
+    let avg_var = numeric_dispersion(num, n, n_num).1;
+    if avg_var > 0.0 { avg_var } else { 1.0 }
 }
 
 /// A fitted k-prototypes model: mixed micro-clusters, each one's cluster label, and the split metadata.
 struct KpModel {
     micros: Vec<MixedCf<f64>>,
     micro_labels: Vec<usize>,
-    gamma: f64,
+    weights: BlockWeights<f64>,
     n_clusters: usize,
     dim: usize,
-    cat_cols: Vec<usize>,
+    kind: Vec<Block>,
     n_num: usize,
     n_cat: usize,
+    n_dir: usize,
 }
 
 impl KpModel {
-    /// Per-cluster prototypes: numeric centroids (`rows × n_num`) and modes (`rows × n_cat`), built by
-    /// merging the micro-clusters of each label.
-    fn protos(&self) -> (Vec<f64>, Vec<i64>, usize) {
-        let cards = self
+    /// Per-cluster prototypes: numeric centroids (`rows × n_num`), modes (`rows × n_cat`) and unit
+    /// directions (`rows × n_dir`), built by merging the micro-clusters of each label.
+    fn protos(&self) -> (Vec<f64>, Vec<i64>, Vec<f64>, usize) {
+        let schema = self
             .micros
             .first()
-            .map(|m| m.cardinalities())
-            .unwrap_or_default();
+            .map(MixedCf::schema)
+            .unwrap_or(MixedSchema {
+                numeric: self.n_num,
+                cardinalities: vec![0; self.n_cat],
+                directional: self.n_dir,
+            });
         let rows = self.micro_labels.iter().copied().max().map_or(0, |m| m + 1);
-        let mut acc: Vec<MixedCf<f64>> = (0..rows)
-            .map(|_| MixedCf::new(self.n_num, &cards))
-            .collect();
+        let mut acc: Vec<MixedCf<f64>> = (0..rows).map(|_| MixedCf::new(&schema)).collect();
         for (mi, &lab) in self.micro_labels.iter().enumerate() {
             acc[lab].merge(&self.micros[mi]);
         }
         let mut cent = Vec::with_capacity(rows * self.n_num);
         let mut modes = Vec::with_capacity(rows * self.n_cat);
+        let mut dirs = Vec::with_capacity(rows * self.n_dir);
         for a in &acc {
             cent.extend_from_slice(a.numeric_mean());
             modes.extend(a.mode().iter().map(|&c| c as i64));
+            dirs.extend_from_slice(a.direction());
         }
-        (cent, modes, rows)
+        (cent, modes, dirs, rows)
     }
 }
 
@@ -4618,14 +4693,18 @@ impl PyBregmanBetula {
     }
 }
 
-/// k-prototypes clusterer for **mixed numeric + categorical** data (Huang, 1997). `categorical` lists
-/// the integer-coded categorical column indices; the remaining columns are numeric. Rows are summarised
-/// into bounded mixed micro-clusters by a flat leader pass, then k-prototypes clusters those. `f64`.
+/// k-prototypes clusterer for **mixed numeric + categorical + directional** data (Huang, 1997,
+/// extended by a third block). `categorical` lists the integer-coded categorical column indices and
+/// `directional` the columns that together form one direction (L2-normalised per row here); the
+/// remaining columns are numeric. Rows are summarised into bounded mixed micro-clusters by a flat
+/// leader pass, then k-prototypes clusters those. `f64`.
 #[pyclass(name = "KPrototypes", module = "betula_cluster._core")]
 struct PyKPrototypes {
     n_clusters: usize,
     categorical: Vec<usize>,
+    directional: Vec<usize>,
     gamma: Option<f64>,
+    gamma_dir: Option<f64>,
     threshold: f64,
     max_leaves: usize,
     max_iter: usize,
@@ -4638,14 +4717,16 @@ struct PyKPrototypes {
 impl PyKPrototypes {
     #[new]
     #[pyo3(signature = (
-        n_clusters = 8, categorical = Vec::new(), gamma = None, threshold = 0.0,
-        max_leaves = 2048, max_iter = 100, n_init = 4, seed = 0
+        n_clusters = 8, categorical = Vec::new(), directional = Vec::new(), gamma = None,
+        gamma_dir = None, threshold = 0.0, max_leaves = 2048, max_iter = 100, n_init = 4, seed = 0
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         n_clusters: usize,
         categorical: Vec<usize>,
+        directional: Vec<usize>,
         gamma: Option<f64>,
+        gamma_dir: Option<f64>,
         threshold: f64,
         max_leaves: usize,
         max_iter: usize,
@@ -4655,7 +4736,9 @@ impl PyKPrototypes {
         Self {
             n_clusters,
             categorical,
+            directional,
             gamma,
+            gamma_dir,
             threshold,
             max_leaves,
             max_iter,
@@ -4670,7 +4753,9 @@ impl PyKPrototypes {
         let d = pyo3::types::PyDict::new(py);
         d.set_item("n_clusters", self.n_clusters)?;
         d.set_item("categorical", self.categorical.clone())?;
+        d.set_item("directional", self.directional.clone())?;
         d.set_item("gamma", self.gamma)?;
+        d.set_item("gamma_dir", self.gamma_dir)?;
         d.set_item("threshold", self.threshold)?;
         d.set_item("max_leaves", self.max_leaves)?;
         d.set_item("max_iter", self.max_iter)?;
@@ -4715,16 +4800,13 @@ impl PyKPrototypes {
                 "dimension mismatch with previously fitted data",
             ));
         }
-        let mut is_cat = vec![false; dim];
-        for &c in &m.cat_cols {
-            is_cat[c] = true;
-        }
-        let (num, cat) = split_mixed(&flat, n, dim, &is_cat)?;
+        let (num, cat, dir) = split_mixed(&flat, n, dim, &m.kind)?;
         let labels = py.detach(|| {
             map_rows(n, |i| {
                 let xn = &num[i * m.n_num..(i + 1) * m.n_num];
                 let xc = &cat[i * m.n_cat..(i + 1) * m.n_cat];
-                m.micro_labels[nearest_micro(&m.micros, xn, xc, m.gamma)] as i64
+                let xd = &dir[i * m.n_dir..(i + 1) * m.n_dir];
+                m.micro_labels[nearest_micro(&m.micros, xn, xc, xd, m.weights)] as i64
             })
         });
         Ok(labels.into_pyarray(py))
@@ -4742,7 +4824,7 @@ impl PyKPrototypes {
             .model
             .as_ref()
             .ok_or_else(|| PyValueError::new_err("call fit() or fit_predict() first"))?;
-        let (cent, _modes, rows) = m.protos();
+        let (cent, _modes, _dirs, rows) = m.protos();
         Ok(Array2::from_shape_vec((rows, m.n_num), cent)
             .expect("centroids length is rows*n_num")
             .into_pyarray(py))
@@ -4755,9 +4837,24 @@ impl PyKPrototypes {
             .model
             .as_ref()
             .ok_or_else(|| PyValueError::new_err("call fit() or fit_predict() first"))?;
-        let (_cent, modes, rows) = m.protos();
+        let (_cent, modes, _dirs, rows) = m.protos();
         Ok(Array2::from_shape_vec((rows, m.n_cat), modes)
             .expect("modes length is rows*n_cat")
+            .into_pyarray(py))
+    }
+
+    /// Directional cluster prototypes — `(n_clusters, n_directional)` unit vectors, each the
+    /// normalised resultant `R/‖R‖` of its cluster. A cluster whose directions cancelled to (near)
+    /// zero has no direction and its row is all zeros.
+    #[getter]
+    fn cluster_directions_<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray2<f64>>> {
+        let m = self
+            .model
+            .as_ref()
+            .ok_or_else(|| PyValueError::new_err("call fit() or fit_predict() first"))?;
+        let (_cent, _modes, dirs, rows) = m.protos();
+        Ok(Array2::from_shape_vec((rows, m.n_dir), dirs)
+            .expect("directions length is rows*n_dir")
             .into_pyarray(py))
     }
 }
@@ -4771,9 +4868,9 @@ impl PyKPrototypes {
             ));
         }
         let (flat, n, dim) = flat_as::<f64>(data, RowPrep::None)?;
-        let (is_cat, cat_cols, n_num, n_cat) = cat_mask(&self.categorical, dim)?;
-        let (num, cat) = split_mixed(&flat, n, dim, &is_cat)?;
-        let (k, thr, ml, mi, ni, seed, gpar) = (
+        let (kind, n_num, n_cat, n_dir) = block_mask(&self.categorical, &self.directional, dim)?;
+        let (num, cat, dir) = split_mixed(&flat, n, dim, &kind)?;
+        let (k, thr, ml, mi, ni, seed, gpar, gdpar) = (
             self.n_clusters,
             self.threshold,
             self.max_leaves,
@@ -4781,6 +4878,7 @@ impl PyKPrototypes {
             self.n_init,
             self.seed,
             self.gamma,
+            self.gamma_dir,
         );
         let py = data.py();
         let model = py.detach(|| {
@@ -4790,21 +4888,36 @@ impl PyKPrototypes {
                     *card = (*card).max(cat[i * n_cat + j] + 1);
                 }
             }
-            let gamma = gpar.unwrap_or_else(|| default_gamma(&num, n, n_num));
-            let micros = summarize_mixed(&num, &cat, n, n_num, &cards, gamma, thr, ml);
-            let micro_labels = kprototypes(&micros, k, gamma, mi, ni, seed);
+            let schema = MixedSchema {
+                numeric: n_num,
+                cardinalities: cards,
+                directional: n_dir,
+            };
+            let weights = BlockWeights {
+                categorical: gpar.unwrap_or_else(|| default_gamma(&num, n, n_num)),
+                directional: gdpar.unwrap_or_else(|| default_gamma_dir(&num, n, n_num)),
+            };
+            let rows = MixedRows {
+                numeric: &num,
+                categorical: &cat,
+                directional: &dir,
+                n,
+            };
+            let micros = summarize_mixed(rows, &schema, weights, thr, ml);
+            let micro_labels = kprototypes(&micros, k, weights, mi, ni, seed);
             let mut distinct = micro_labels.clone();
             distinct.sort_unstable();
             distinct.dedup();
             KpModel {
                 micros,
                 micro_labels,
-                gamma,
+                weights,
                 n_clusters: distinct.len(),
                 dim,
-                cat_cols,
+                kind,
                 n_num,
                 n_cat,
+                n_dir,
             }
         });
         warn_leaf_budget(py, model.micros.len(), k, ml)?;

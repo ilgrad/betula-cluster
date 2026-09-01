@@ -30,7 +30,9 @@
 # whole-crate sweep entirely. The entry-by-entry form is sound where the only change to the
 # file was *test* code: adding a test can kill a mutant but can never create one, so nothing outside
 # the recorded set needs re-measuring. It is not sound after a production edit -- re-measure the file
-# whole then, which also renumbers every `line:col` in that section.
+# whole then, which also renumbers every `line:col` in that section. `src/clustering/kprototypes.rs`
+# is the standing example: it was re-measured entry by entry on 2026-08-22 and again
+# (**2026-09-01 whole-file**) once the third, directional block moved every line in it.
 #
 # The entry-by-entry runs used `cargo test --lib`, not the `--test-tool nextest` the CI job uses.
 # The difference is `tests/integration_api.rs`, whose four tests assert label counts and a 4-blob
@@ -185,27 +187,40 @@ src/clustering/vmf.rs:486:33: replace > with >= in movmf_once
 src/clustering/vmf.rs:561:18: replace < with <= in movmf_auto
 
 # ── src/clustering/kprototypes.rs (3) ──
-# Re-measured 2026-08-22. 37 of the 40 are caught: an independent reference for the Lloyd loop,
-# `summarize_mixed` and the mixed distances, plus exact-tie fixtures -- 167:18 closed here by a
-# three-point fixture whose third point is the same distance from both leaders to the bit.
-#   229:19  believed equivalent -- `nd <= *di` writes `*di = nd` when the two are already equal.
-#   305:31  believed equivalent -- the mutated `+` is the *first* one, so the objective becomes
+# Re-measured **2026-09-01 whole-file** after the module grew a third (directional) block: the
+# schema, the block weights and the resultant summary renumbered every line here. 162 mutants,
+# 143 caught / 4 missed / 15 unviable / 0 timeout, `--test-tool nextest`. The three below are the
+# same three the 2026-08-22 run left open, at their new positions; their arguments are unchanged and
+# the directional block does not weaken either of them.
+#
+# The fourth, `403:51: replace * with + in kpp_init`, was a genuine new hole and is **closed** rather
+# than recorded: the D²-weighted seeding weight is a *product*, so a micro sitting exactly on an
+# already-chosen prototype has probability zero however heavy it is, and the `+` mutant loses that
+# guarantee. `kpp_init_spreads_one_prototype_per_far_group` could not see it -- there every weight is
+# 1 against a D² of 10^4, so the sum and the product agree to within a rounding error.
+# `kpp_init_never_reseeds_a_site_it_already_holds` puts the mass on the coincident site instead
+# (twelve micros of weight 100 at the origin against one of weight 0.01 three units away) and fails
+# on its first seed under the mutation.
+#   407:19  believed equivalent -- `nd <= *di` writes `*di = nd` when the two are already equal.
+#   475:31  believed equivalent -- the mutated `+` is the *first* one, so the objective becomes
 #           `-sum ssd_i + sum micro_dist_i`. `sum ssd_i` runs over every micro regardless of the
 #           labelling, so it is the same constant for every restart and the argmin is unchanged.
 #           Measured against the whole library suite, which includes
 #           `more_restarts_never_return_a_worse_partition` -- the test a real sign error would fail.
-#   290:31  Debt, and expensive to reach: an orphaned prototype is observable only if a later pass
-#           runs *and* the collapsed prototype (origin, mode 0) outranks a real one for some micro.
-#           The only route to an orphaned prototype here is a duplicated seed, and `kpp_init`
-#           duplicates only once every remaining candidate has D² = 0 -- that is, once k exceeds the
-#           number of distinct micro sites. But then every cluster is a set of *identical* micros, its
-#           prototype coincides with its members at distance zero, and the origin cannot outrank it.
-#           A killing fixture has to empty a cluster by a prototype *update* rather than by seeding,
-#           while another cluster keeps enough internal spread that one of its micros is closer to the
-#           origin than to its own centroid.
-src/clustering/kprototypes.rs:229:19: replace < with <= in kpp_init
-src/clustering/kprototypes.rs:290:31: replace > with >= in kprototypes
-src/clustering/kprototypes.rs:305:31: replace + with - in kprototypes
+#   464:31  Debt, and expensive to reach: an orphaned prototype is observable only if a later pass
+#           runs *and* the collapsed prototype (origin, mode 0, zero resultant) outranks a real one
+#           for some micro. The only route to an orphaned prototype here is a duplicated seed, and
+#           `kpp_init` duplicates only once every remaining candidate has D² = 0 -- that is, once k
+#           exceeds the number of distinct micro sites. But then every cluster is a set of *identical*
+#           micros, its prototype coincides with its members at distance zero, and the origin cannot
+#           outrank it. A killing fixture has to empty a cluster by a prototype *update* rather than
+#           by seeding, while another cluster keeps enough internal spread that one of its micros is
+#           closer to the origin than to its own centroid. The directional block moves this away from
+#           reach rather than towards it: a collapsed prototype has a cancelled resultant, whose
+#           angular term is the *maximum* `2·mass` against every micro.
+src/clustering/kprototypes.rs:407:19: replace < with <= in kpp_init
+src/clustering/kprototypes.rs:464:31: replace > with >= in kprototypes
+src/clustering/kprototypes.rs:475:31: replace + with - in kprototypes
 
 # ── src/tree.rs (2) ──
 # Re-measured 2026-08-21 against the five fixtures added with it: 130 of 156 mutants

@@ -1231,7 +1231,7 @@ labels = est.fit_predict(
 # groups than n_clusters) raises ValueError — constraints are never silently violated.
 ```
 
-## Mixed numeric + categorical — `KPrototypes`
+## Mixed numeric + categorical + directional — `KPrototypes`
 
 Name the categorical column indices; their values are integer codes:
 
@@ -1244,6 +1244,45 @@ labels = kp.fit_predict(X)
 kp.cluster_centroids_   # numeric centroids (n_clusters × n_numeric)
 kp.cluster_modes_       # categorical modes   (n_clusters × n_categorical)
 ```
+
+### A third block: `directional=`
+
+Some columns are neither a quantity nor a category — they are a *direction*: a cyclic hour encoded
+as `(cos, sin)`, a heading, a normalised embedding. Naming them in `directional=` puts them in their
+own block, L2-normalised per row, priced by its own weight:
+
+```python
+# X columns: [spend, recency, region_code, cos_hour, sin_hour]
+kp = KPrototypes(n_clusters=5, categorical=[2], directional=[3, 4])
+labels = kp.fit_predict(X)
+kp.cluster_directions_  # unit prototypes (n_clusters × n_directional)
+```
+
+The full dissimilarity is
+
+$$
+\|\Delta_\mathrm{num}\|^2 \;+\; \gamma_\mathrm{cat} \sum_j [x_j \ne \mathrm{mode}_j] \;+\; \gamma_\mathrm{dir} \,(2 - 2\,u^\top c).
+$$
+
+A cluster's direction is the normalised **resultant** $R/\|R\|$ — averaging unit vectors leaves the
+sphere, and two rows a half-turn apart average to zero rather than to a point between them. Because
+$\|u\| = 1$, the block's cost over a whole micro-cluster is $2n_i - 2\langle R_i, c\rangle$: exact
+from $(n_i, R_i)$, with no scatter term, so a leaf carries the block in one vector.
+
+Rules and defaults:
+
+- At least one numeric column is always required, plus at least one categorical **or** directional
+  column. A one-column directional block is rejected — a direction in one dimension is a sign, which
+  belongs in `categorical=`.
+- A row whose directional part is all zeros has no direction. It keeps the zero vector, which makes
+  its term equal for every prototype: it stops voting rather than voting arbitrarily. Same for a
+  cluster whose members' directions cancel — its `cluster_directions_` row is all zeros.
+- `gamma_dir` defaults to the **mean numeric variance**, so one unit of $\|u-c\|^2$ costs one numeric
+  variance. There is no published heuristic for this weight; that is a scale-matching convention, not
+  a result. Sweep it.
+
+**When this beats writing the direction as two numeric columns** — and when it does not — is measured
+in [`bench/RESULTS.md`](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md).
 
 ## Evolving streams — `DenStream` & `DbStream`
 

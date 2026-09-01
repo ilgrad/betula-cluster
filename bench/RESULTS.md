@@ -1665,6 +1665,77 @@ A fixed tolerance would pass a broken solver on one fixture and fail a correct o
 
 Harness: `local/scratch/measure_spectral_cheb.py` and `local/scratch/spectral_scale.py`.
 
+## The directional block buys the per-row normalisation, and nothing else (task #49)
+
+`KPrototypes` grew a third block: `directional=` columns are L2-normalised per row and summarised by
+the resultant `R = Σ w_i u_i`, prototype `R/‖R‖`, cost `γ_dir · (2 − 2 uᵀc)`.
+
+**The baseline has to be given the same knob.** A user who has an angle already writes it as
+`(cos θ, sin θ)` in two numeric columns, and on unit rows `‖u − c‖² = 2 − 2 uᵀc` **exactly** — the
+same objective. Scaling those two columns by `s` multiplies their contribution to a numeric distance
+by `s²`, so column scaling *is* `γ_dir`. Every "as numeric" row below is therefore swept over
+`s = √γ` on the same grid the block's own weights use. The first version of this harness was not, and
+reported a 0.630-vs-0.999 gap that was entirely the unscaled columns' units. That number was never
+published; this one replaces it.
+
+**Fixture.** Four groups of 1500: cols 0–1 numeric, col 2 categorical, cols 3–4 the direction. The
+numeric block splits {A,B} from {C,D}, the category is the only thing separating C from D, and the
+direction the only thing separating A from B. `threshold=0`, `max_leaves=2000`, median of seeds
+0/1/2 with the across-seed range, every configuration at its own best `(γ_cat, γ_dir)` over
+`{0.25, 1, 4, 16, 64, 256}²`. Harness: `local/scratch/three_block_bench.py`.
+
+**A. Unit rows, a wide angular gap — the control, where the block should win nothing.**
+
+| configuration | ARI | [min, max] |
+|---|---|---|
+| three-block | 0.999 | [0.999, 1.000] |
+| direction as numeric, scaled | 0.999 | [0.999, 1.000] |
+| direction as numeric, unit + scaled | 0.999 | [0.999, 1.000] |
+| angle binned to 8 categories | 0.509 | [0.502, 0.515] |
+
+It wins nothing, to three digits, which is what the algebra says it should do. The binning row is the
+other thing people reach for and it gives up half the score to quantisation — that part is a real
+loss, and it is the one case where the block's answer is simply better than the obvious alternative.
+
+**B. Non-unit rows — lognormal amplitude `σ = 0.8`, at a narrow gap of 0.5 rad.**
+
+| configuration | ARI | [min, max] |
+|---|---|---|
+| three-block | **0.964** | [0.963, 0.968] |
+| direction as numeric, scaled | 0.693 | [0.689, 0.694] |
+| direction as numeric, unit + scaled | **0.964** | [0.963, 0.968] |
+| angle binned to 8 categories | 0.518 | [0.513, 0.521] |
+
+**This is the whole win, and it is exactly one thing: the per-row normalisation.** Against the naive
+encoding it is +0.271, because the magnitude spread swamps a 0.5 rad gap. Against the user who knows
+to normalise those two columns by hand it is a **tie to three digits**. `directional=` is not a
+better model than that user's — it is that user's preprocessing moved to the boundary, where
+forgetting it stops being possible, plus a named weight instead of an implicit column scale and a
+`cluster_directions_` you can read as an angle.
+
+**C. Where the mechanism said it should also win, and did not.** The other argument for the block is
+that a numeric prototype is the *mean* of unit vectors, whose length shrinks with the cluster's
+spread: `‖u − μ‖² = 1 − 2 uᵀμ + ‖μ‖²`, and the `‖μ‖²` constant makes a diffuse cluster cheaper for
+every point. The directional prototype has `‖c‖ = 1` for every cluster, so the constant cancels — a
+difference no amount of pre-normalising the *rows* can reproduce, because it is the *prototype*. Two
+adjacent groups at 1.0 rad, 1500 points each, rows exactly unit, one held at `κ = 40`:
+
+| other group's `κ` | three-block | direction as numeric, scaled |
+|---|---|---|
+| 40 | 0.999 | 0.999 |
+| 8 | 0.815 | **0.826** |
+| 2 | 0.429 | **0.440** |
+
+At equal concentration they tie, as they must. Where they differ, the **numeric encoding is ahead**,
+by the same 0.011 in both rows. The bias is real but it points the right way: for two von Mises–Fisher
+components of unequal concentration the Bayes boundary is *not* the angular midpoint — the diffuse
+component genuinely should claim the tails — and `+‖μ‖²` moves the boundary towards it. So the
+argument that motivated the block cuts against it here. Recorded as a loss, not filed away.
+
+**What to take.** Use `directional=` because it normalises the rows for you, prices the block
+explicitly, and reports a unit prototype — not because it clusters better than the same columns
+scaled by hand, which on unit rows it provably cannot.
+
 ## The hyperbolic head wins invariance, and loses ARI to a chart change (task #78)
 
 `method="hyperbolic"` clusters points of `H^d` in Lorentz coordinates under the squared Lorentzian

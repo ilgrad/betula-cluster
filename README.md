@@ -20,7 +20,7 @@
 pip install betula-cluster
 ```
 
-**Verified:** a **230-case** Python suite at **100% wrapper coverage** + **408** Rust tests,
+**Verified:** a **457-case** Python suite at **100% wrapper coverage** + **728** Rust tests,
 `clippy -D warnings` + `fmt` clean across all feature sets, CI on CPython 3.11–3.14 (one abi3 wheel).
 
 ## At a glance — honest benchmarks
@@ -146,8 +146,8 @@ res.mean_confidence  # scalar robustness summary
 ```
 
 Memory-aware hyperparameter tuning (`tune`, optional Optuna), Mapper topology (`mapper`),
-semi-supervised constraints (COP-KMeans), mixed numeric+categorical (`KPrototypes`), streaming
-density (`DenStream` / `DbStream`), the `O(nnz)` sparse-native path (`fit_predict_sparse`),
+semi-supervised constraints (COP-KMeans), mixed numeric+categorical+directional (`KPrototypes`),
+streaming density (`DenStream` / `DbStream`), the `O(nnz)` sparse-native path (`fit_predict_sparse`),
 CF-weighted NMF for nonnegative data (`projection="weighted-nmf"`, or `"weighted-nmf-kl"` for counts),
 quantile
 sketches, `scipy.sparse` input, `threshold="auto"`, soft assignment / coresets / diagnostics / drift
@@ -260,8 +260,9 @@ snapshots / active-learning batches, the Rust API, and the CLI — all in the
   of ≈ 18, are in
   [`docs/USAGE.md`](https://github.com/ilgrad/betula-cluster/blob/main/docs/USAGE.md).
 - **More heads & data** — `DenStream` / `DbStream` evolving-stream density, mergeable `KllSketch` /
-  `DdSketch` quantiles, `scipy.sparse` (`O(nnz)`, never densified), mixed numeric+categorical
-  (`KPrototypes`), COP-KMeans constraints, robust (Huber) insertion, drift snapshots, dependency-free CLI.
+  `DdSketch` quantiles, `scipy.sparse` (`O(nnz)`, never densified), mixed
+  numeric+categorical+directional (`KPrototypes`), COP-KMeans constraints, robust (Huber) insertion,
+  drift snapshots, dependency-free CLI.
 
 Full reference: [**`docs/FEATURES.md`**](https://github.com/ilgrad/betula-cluster/blob/main/docs/FEATURES.md).
 
@@ -306,7 +307,7 @@ And six **end-to-end use cases** (each scored against ground truth):
 - [**Benchmarks**](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md) — methodology, every metric, all tables, honest wins & losses.
 - [**Design**](https://github.com/ilgrad/betula-cluster/blob/main/DESIGN.md) — internal design, invariants, and testing strategy.
 
-Verified: **404** Rust unit + 4 integration tests (plus 8 for the CLI binary) + a **230-case**
+Verified: **713** Rust unit + 15 integration tests (plus 8 for the CLI binary) + a **457-case**
 Python suite at **100%** wrapper coverage (Rust ≥95%, CI-enforced), `clippy -D warnings` + `fmt`
 clean across all feature sets, on Python 3.11–3.14 (single abi3 wheel).
 

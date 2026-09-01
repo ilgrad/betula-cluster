@@ -470,7 +470,9 @@ class KPrototypes:
         self,
         n_clusters: int = ...,
         categorical: Sequence[int] = ...,
+        directional: Sequence[int] = ...,
         gamma: float | None = ...,
+        gamma_dir: float | None = ...,
         threshold: float = ...,
         max_leaves: int = ...,
         max_iter: int = ...,
@@ -488,6 +490,8 @@ class KPrototypes:
     def cluster_centroids_(self) -> NDArray[np.float64]: ...
     @property
     def cluster_modes_(self) -> NDArray[np.int64]: ...
+    @property
+    def cluster_directions_(self) -> NDArray[np.float64]: ...
 
 @final
 class KllSketch:

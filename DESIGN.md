@@ -143,8 +143,8 @@ zero dispatch cost; Python/CLI pick variants via enums.
 
 ## Status
 
-**Done & verified** — 404 Rust unit + 4 integration tests (default features; the `cli` binary adds
-8 more, and 402 + 4 run with `--no-default-features`) + a 230-case `pytest` suite (Python wrapper at 100 % line coverage, Rust ≥95 %
+**Done & verified** — 713 Rust unit + 15 integration tests (default features; the `cli` binary adds
+8 more, and 711 + 15 run with `--no-default-features`) + a 457-case `pytest` suite (Python wrapper at 100 % line coverage, Rust ≥95 %
 CI-enforced via `cargo llvm-cov`); `clippy -D warnings` + `fmt` clean (across `parallel`, serial,
 `persistence`, `cli`, and `python` feature sets); GitHub Actions CI (Rust gate
 + Python build/pytest on 3.11–3.14) and a multi-platform wheel-release workflow (`.github/workflows/`);
@@ -197,14 +197,25 @@ Python end-to-end + scikit-learn benchmark (`README.md`, `bench/RESULTS.md`):
   leaf-index constraints at the Python boundary (`fit(X, must_link, cannot_link)`); a within-leaf
   cannot-link and over-/contradictory constraints return a typed `ConstraintError` rather than
   silently violating. Greedy ⇒ infeasibility is conservative (documented).
-- `clustering::kprototypes` — **mixed numeric + categorical** clustering (k-prototypes, Huang 1997).
-  `MixedCf` = numeric $(n, \mu, S)$ (a reused `Diagonal` CF) + one category-count histogram per
-  categorical attribute (mode = categorical centroid), an exact mergeable monoid. Distance is
-  $\|\Delta_\text{num}\|^2 + \gamma \sum [x_\text{cat} \ne \text{mode}]$. A flat leader pass (`summarize_mixed`, bounded `max_leaves`,
+- `clustering::kprototypes` — **mixed numeric + categorical + directional** clustering (k-prototypes,
+  Huang 1997, extended by a third block). `MixedCf` = numeric $(n, \mu, S)$ (a reused `Diagonal` CF)
+  + one category-count histogram per categorical attribute (mode = categorical centroid) + the
+  directional resultant $R = \sum_i w_i u_i$ over L2-normalised rows (prototype $R/\|R\|$), three
+  exact mergeable monoids in one. Distance is
+  $\|\Delta_\text{num}\|^2 + \gamma_\text{cat} \sum [x_\text{cat} \ne \text{mode}] + \gamma_\text{dir}(2 - 2u^\top c)$.
+  The third block is affine in $u$, so a micro-cluster's directional cost is $2n_i - 2\langle R_i, c\rangle$
+  with **no scatter term** — the same structure the Lorentzian centroid has in `hyperbolic.rs`, and
+  for the same reason (the summary enters the cost linearly). Unit vectors have no mean, which is why
+  the block's monoid is the resultant and not a centroid. What the block buys over writing the
+  direction as two numeric columns is **measured and narrow** — the per-row normalisation, and on
+  already-unit rows nothing at all, since the two objectives coincide; the `\|\mu\|^2` shrinkage
+  argument against a numeric prototype is real but did not pay (`bench/RESULTS.md`). A flat leader pass (`summarize_mixed`, bounded `max_leaves`,
   absorb-to-nearest at cap) summarises rows into mixed micro-clusters; k-prototypes then clusters
   those. Standalone `KPrototypes` head (like `DenStream`): the generic CF-tree can't carry a
   categorical schema through `ClusterFeature::new(dim)`, and GMM/Ward are meaningless over categories,
-  so it is a separate module, not a tree feature model.
+  so it is a separate module, not a tree feature model. Both block weights are heuristics and neither
+  is a result — $\gamma_\text{cat}$ is Huang's $\tfrac12 \bar\sigma$, $\gamma_\text{dir}$ has no
+  literature at all and defaults to the mean numeric variance as a scale-matching convention.
 - Phase-3b `clustering::hdbscan` (mutual-reachability + mass-weighted stability + noise).
 - `model` (end-to-end fit/predict); `python` (PyO3 abi3 wheel: one-shot `fit_predict`, float32 or
   float64 with no upcast, + streaming `Betula` estimator (f64 *or* f32 tree, picked at first fit)

@@ -2065,7 +2065,9 @@ class DbStream:
 _KPROTOTYPES_PARAMS = (
     "n_clusters",
     "categorical",
+    "directional",
     "gamma",
+    "gamma_dir",
     "threshold",
     "max_leaves",
     "max_iter",
@@ -2075,20 +2077,38 @@ _KPROTOTYPES_PARAMS = (
 
 
 class KPrototypes:
-    """k-prototypes clustering of **mixed numeric + categorical** data (Huang, 1997).
+    """k-prototypes clustering of **mixed numeric + categorical + directional** data.
 
-    ``categorical`` lists the integer-coded categorical column indices of ``X``; the rest are
-    numeric. Distance is ``||Δnum||² + gamma · (categorical mismatch)``; ``gamma`` defaults to half
-    the mean numeric standard deviation (Huang's heuristic) when ``None``. Rows are summarised into
-    bounded mixed micro-clusters (a flat leader pass capped at ``max_leaves``) before clustering, so
-    memory stays bounded. Both numeric and categorical columns are required; ``float64``.
+    Huang's k-prototypes (1997) with a third block. ``categorical`` lists the integer-coded
+    categorical column indices of ``X`` and ``directional`` the columns that together form one
+    direction; whatever is left is numeric. Distance is::
+
+        ||Δnum||²  +  gamma · (categorical mismatch)  +  gamma_dir · (2 − 2 uᵀc)
+
+    The directional columns are L2-normalised **per row**, so the block reads angle only; a row
+    whose directional part is all zeros has no direction and its term is the same for every
+    prototype, which stops it voting rather than making it vote arbitrarily. A cluster's directional
+    prototype is the normalised *resultant* ``R/||R||``, not a mean — averaging unit vectors leaves
+    the sphere.
+
+    ``gamma`` defaults to half the mean numeric standard deviation (Huang's heuristic).
+    ``gamma_dir`` has no published heuristic at all; it defaults to the mean numeric **variance**,
+    so that one unit of ``||u − c||²`` costs one numeric variance. That is a scale-matching
+    convention, not a result — treat both as parameters to sweep.
+
+    Rows are summarised into bounded mixed micro-clusters (a flat leader pass capped at
+    ``max_leaves``) before clustering, so memory stays bounded. A numeric column is always required,
+    as is at least one categorical or directional column; a one-column directional block is
+    rejected, because a direction in one dimension is a sign. ``float64``.
     """
 
     def __init__(
         self,
         n_clusters=8,
         categorical=(),
+        directional=(),
         gamma=None,
+        gamma_dir=None,
         threshold=0.0,
         max_leaves=2048,
         max_iter=100,
@@ -2097,7 +2117,9 @@ class KPrototypes:
     ):
         self.n_clusters = n_clusters
         self.categorical = categorical
+        self.directional = directional
         self.gamma = gamma
+        self.gamma_dir = gamma_dir
         self.threshold = threshold
         self.max_leaves = max_leaves
         self.max_iter = max_iter
@@ -2121,7 +2143,8 @@ class KPrototypes:
 
     def _build(self):
         params = self.get_params()
-        params["categorical"] = list(params["categorical"])  # the engine expects a list[int]
+        for block in ("categorical", "directional"):  # the engine expects a list[int]
+            params[block] = list(params[block])
         return _CoreKPrototypes(**params)
 
     def _require_fit(self):
@@ -2159,8 +2182,20 @@ class KPrototypes:
         """Categorical cluster modes — ``(n_clusters, n_categorical)`` integer codes."""
         return self._require_fit().cluster_modes_
 
+    @property
+    def cluster_directions_(self):
+        """Directional prototypes — ``(n_clusters, n_directional)`` unit vectors.
+
+        Each row is its cluster's normalised resultant ``R/||R||``. A cluster whose member
+        directions cancelled to (near) zero has no direction, and its row is all zeros.
+        """
+        return self._require_fit().cluster_directions_
+
     def __repr__(self):
-        return f"KPrototypes(n_clusters={self.n_clusters}, categorical={list(self.categorical)})"
+        return (
+            f"KPrototypes(n_clusters={self.n_clusters}, categorical={list(self.categorical)}, "
+            f"directional={list(self.directional)})"
+        )
 
 
 _BREGMAN_PARAMS = (
