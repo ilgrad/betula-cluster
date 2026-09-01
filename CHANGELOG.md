@@ -6,6 +6,38 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- **Two reference values in the Watson head's `GOLDEN` table were computed in double precision and
+  printed as if they had 40 digits.** No shipped behaviour changes; the table is test *input*, and
+  the test's tolerance (`1e-11` relative) is four orders of magnitude looser than the error, so it
+  passed before and passes now. The cause: `local/scratch/watson_kummer.mac` passed the float
+  literals `±0.25` and `1e4` where exact `±1/4` and `10000` belong. A float argument makes Maxima's
+  `hypergeometric` evaluate in float mode and return a double, which `bfloat` then pads out to
+  `fpprec: 40` — 15 real digits followed by 25 of noise. Rounded to `f64` the `d = 3, κ = +1/4` row
+  was **5 ulp** wrong (`8.615403391270196e-2` against `8.615403391270206e-2`) and `κ = −1/4` 1.6 ulp;
+  both are corrected. The same float literal made section 5 — the section that verifies the bounds
+  `g(0) = 1/d`, `g(−∞) = 0`, `g(+∞) = 1` that let the concentration solver pick its branch — abort on
+  a floating-point overflow, so that check had never actually run; with exact arguments it runs and
+  confirms all three to 40 digits.
+- **Six reference values in `stats.rs`'s `CDF_TABLE` were evaluated at the decimal `x` rather than
+  at the `f64` the test passes to `reg_lower_gamma`.** Also test input only, and also below the
+  tolerance that reads it (`5e-13` against the implementation's own worst residual of `1.1e-13`),
+  so nothing was ever red. `P(a, x)` has logarithmic sensitivity `≈ a` in the left tail, so the
+  ~1e-17 gap between the decimal literal and the binary64 nearest it is amplified by `a`: the six
+  affected rows are exactly the two smallest-`x` entries at `a = 12, 50, 200`, and the error runs
+  from 2.3 ulp up to **61 ulp** at `a = 200, x = 10.05`. The predicted amplification (60.5 ulp) and
+  the measured one (61.3) agree, and all six committed values reproduce exactly when the reference
+  is recomputed at the decimal — which is what identified the cause.
+- **A generator that silently drops to double precision leaves the provenance comment true and the
+  numbers wrong, so provenance is no longer accepted as evidence.** All three reference tables in
+  the crate are now recomputed from an engine other than the one that produced them
+  (`local/scratch/recheck_goldens.py`, mpmath at 60 dps against Maxima and against mpmath's own
+  earlier output): `watson.rs` agrees to 1.19 ulp over 48 values, `vmf.rs` to 0.48 over 11, and
+  `stats.rs`'s 234-row quantile table to 0.50. Relatedly, `maxima -b` exits **0 even when the batch
+  aborts mid-file**, which is why the Watson overflow went unseen; `local/scratch/run_maxima.sh`
+  now runs every `.mac` under `-Q`, scans for the abort signature and requires a completion
+  sentinel, and all 13 scripts pass it.
+
 ### Changed
 - **BIRCH's size-imbalance bug is D0's, not the CF-tree's — two published claims corrected, no code
   changed.** `bench/size_imbalance.py` reproduced scikit-learn [#22854](https://github.com/scikit-learn/scikit-learn/issues/22854)

@@ -292,6 +292,12 @@ mod tests {
     /// straddles `x = a + 1` -- where the implementation switches from the series to the
     /// continued fraction -- at 0.999, 1.0 and 1.001 of it, so both branches and the
     /// boundary itself are covered at every `a`.
+    ///
+    /// **Evaluate the reference at `mpf(float(x))`, not at `mpf("x")`.** `P` has logarithmic
+    /// sensitivity `≈ a` in the left tail, so the ~1e-17 gap between the decimal `x` and the
+    /// `f64` this test actually passes to `reg_lower_gamma` is amplified by `a`: at `a = 200,
+    /// x = 10.05` that is 61 ulp, and the reference then answers a question about a number the
+    /// implementation is never given. The six left-tail rows were regenerated for this.
     const CDF_TABLE: &[(f64, f64, f64)] = &[
         (0.1, 0.055, 0.7826178064887638),
         (0.1, 0.44, 0.9336108910947823),
@@ -335,20 +341,20 @@ mod tests {
         (5.0, 6.006, 0.7157458122737057),
         (5.0, 12.0, 0.992399609318933),
         (5.0, 36.0, 0.9999999999818046),
-        (12.0, 0.65, 6.524144682539892e-12),
-        (12.0, 5.2, 0.007310495624981594),
+        (12.0, 0.65, 6.524144682539895e-12),
+        (12.0, 5.2, 0.007310495624981595),
         (12.0, 12.987, 0.645514471643534),
         (12.0, 13.0, 0.6468350671487296),
         (12.0, 13.013, 0.6481530241071783),
         (12.0, 26.0, 0.9992176081886389),
-        (50.0, 2.55, 5.737683314334859e-46),
-        (50.0, 20.4, 2.276141792827711e-08),
+        (50.0, 2.55, 5.73768331433484e-46),
+        (50.0, 20.4, 2.276141792827706e-08),
         (50.0, 50.949, 0.5716034974248363),
         (50.0, 51.0, 0.5743948595168596),
         (50.0, 51.051, 0.5771806445092041),
         (50.0, 102.0, 0.9999999958642293),
-        (200.0, 10.05, 1.562912316399313e-179),
-        (200.0, 80.4, 2.870484422806112e-29),
+        (200.0, 10.05, 1.562912316399334e-179),
+        (200.0, 80.4, 2.8704844228061367e-29),
         (200.0, 200.799, 0.5318765976152702),
         (200.0, 201.0, 0.5375075509172329),
         (200.0, 201.201, 0.5431272539397605),

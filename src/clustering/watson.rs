@@ -567,8 +567,11 @@ mod tests {
     use crate::clustering::vmf::movmf;
     use crate::feature::{ClusterFeature, Full};
 
-    /// `(d, κ, log M(1/2, d/2, κ), g(κ))` at 40 significant digits from Maxima —
-    /// `local/scratch/watson_kummer.mac`, section 4.
+    /// `(d, κ, log M(1/2, d/2, κ), g(κ))` from Maxima at `fpprec: 40`, rounded to `f64` —
+    /// `local/scratch/watson_kummer.mac`, section 4. Every `κ` there is an exact integer or
+    /// rational: a float literal makes `hypergeometric` evaluate in double precision, and `bfloat`
+    /// then pads the result out to 40 digits of which only ~15 are real. That is how the two
+    /// `κ = ±1/4` rows were once up to 5 ulp wrong here.
     const GOLDEN: [(usize, f64, f64, f64); 24] = [
         (
             2,
@@ -589,10 +592,15 @@ mod tests {
         (
             3,
             -0.25,
-            -8.060_068_275_163_104e-2,
-            3.116_565_125_283_537e-1,
+            -8.060_068_275_163_107e-2,
+            3.116_565_125_283_536_4e-1,
         ),
-        (3, 0.25, 8.615_403_391_270_196e-2, 3.560_656_882_169_371e-1),
+        (
+            3,
+            0.25,
+            8.615_403_391_270_206e-2,
+            3.560_656_882_169_370_7e-1,
+        ),
         (3, 5.0, 2.843_289_338_174_84, 7.642_662_212_704_322e-1),
         (3, 500.0, 4.930_932_472_334_403e2, 9.979_979_899_252_858e-1),
         (5, -5.0, -6.250_730_856_407_12e-1, 7.819_741_318_739_432e-2),
@@ -653,16 +661,26 @@ mod tests {
 
     #[test]
     fn the_confluent_hypergeometric_matches_maxima_on_both_signs_of_kappa() {
+        // Measured worst over the whole table on the unmutated code is 3.2e-14 for `log M` and
+        // 1.5e-14 for `g`, both at d = 64, κ = -500 -- the deepest cancellation in the grid. The
+        // bound is three times that, in the style of `stats.rs`. It was 1e-11, which is 300× the
+        // residual and so blind to any regression in the series short of a gross one.
+        //
+        // What it still cannot see: a golden corrupted by a few ulp. The implementation's own
+        // 3.2e-14 error is an order above the ~1e-15 such a corruption moves the target by, so no
+        // tolerance separates the two. That failure has happened here -- two rows sat ~5 ulp wrong
+        // -- and the guard against it is not this test but recomputing the table from an engine
+        // other than the one that produced it (`local/scratch/recheck_goldens.py`, mpmath).
         for (d, kappa, log_m, g) in GOLDEN {
             let got = log_kummer_m(0.5, d as f64 / 2.0, kappa);
             assert!(
-                (got - log_m).abs() <= 1e-11 * log_m.abs().max(1.0),
+                (got - log_m).abs() <= 1e-13 * log_m.abs().max(1.0),
                 "log M(1/2,{}/2,{kappa}) = {got}, Maxima says {log_m}",
                 d
             );
             let gr = kummer_ratio(d, kappa);
             assert!(
-                (gr - g).abs() <= 1e-11 * g,
+                (gr - g).abs() <= 1e-13 * g,
                 "g({d},{kappa}) = {gr}, Maxima says {g}"
             );
         }
