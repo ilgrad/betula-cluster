@@ -57,7 +57,23 @@ jobs:
         with:
           tool: cargo-mutants,cargo-nextest
       - name: cargo mutants (whole crate, scope in .cargo/mutants.toml)
-        run: cargo mutants --shard ${{ matrix.shard }}/96 -j4 --test-tool nextest
+        # Exit 2 is "some mutants survived", which is the expected state, not a failure: this shard
+        # is one 96th of a crate whose `mutants-baseline.txt` records 309 accepted survivors, so
+        # most shards contain at least one. Measured on run 33385956775 -- 77 of 96 shards red, and
+        # the 19 green ones were exactly those whose `missed.txt` was empty (shards 5 and 9 at 0
+        # missed, shards 0 and 1 at 21 and 27). The verdict on survivors belongs to
+        # `mutants-summary`, which compares against the baseline; a shard that reports it here only
+        # makes the whole workflow permanently red and hides that verdict.
+        #
+        # Every other code still fails the job. Measured on cargo-mutants 27.1.0: 0 all caught,
+        # 2 mutants missed, 4 build or check failure -- and a runner shutdown or an exhausted
+        # timeout is none of those.
+        run: |
+          cargo mutants --shard ${{ matrix.shard }}/96 -j4 --test-tool nextest || {
+            rc=$?
+            [ "$rc" -eq 2 ] || exit "$rc"
+            echo "exit 2: this shard has surviving mutants; the summary job scores them"
+          }
       - uses: actions/upload-artifact@v7
         if: always()
         with:
