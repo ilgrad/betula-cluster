@@ -21,6 +21,12 @@ Three pairings, because "did we win" has three different meanings:
 and exits non-zero if any cell got worse (win → tie/loss, tie → loss) or vanished; `--update`
 rewrites it, which is the deliberate act of accepting a new board.
 
+A cell is identified by *what it compares* — axis, table, pairing, dataset slice — and never by who
+won it. The two `vs-*-best` pairings pick a champion per side, and a champion that changes is news
+about the run, not a missing comparison: with the winner's name in the key, `betula-svd` overtaking
+`betula-sparse` as our fastest sparse head reported two VANISHED cells and failed the gate. The
+champions are printed on the rendered line instead.
+
     uv run --with pandas python bench/scoreboard.py            # print the matrix
     uv run --with pandas python bench/scoreboard.py --check    # CI gate
     uv run --with pandas python bench/scoreboard.py --update   # accept the current board
@@ -85,10 +91,16 @@ ORDER = {"win": 0, "tie": 1, "loss": 2}
 class Cell:
     """One comparison: a betula value against a rival's, with whatever spread each side carries."""
 
-    def __init__(self, axis, pairing, table, label, ours, theirs, spreads, higher_is_better):
+    def __init__(
+        self, axis, pairing, table, label, ours, theirs, spreads, higher_is_better, contenders=""
+    ):
         self.axis, self.pairing, self.table, self.label = axis, pairing, table, label
         self.ours, self.theirs = ours, theirs
         self.higher = higher_is_better
+        # Who won the slice, for `vs-best`. Reported, never part of `name()`: a champion that
+        # changes is data about the run, and folding it into the identity made an improvement
+        # ("betula-svd is now our fastest sparse head") indistinguishable from a vanished result.
+        self.contenders = contenders
         self.slack = self._slack(spreads)
 
     def _slack(self, spreads):
@@ -202,11 +214,12 @@ def _best_of_breed(table, keys, column, axis, higher):
                 axis,
                 "vs-best",
                 table,
-                "/".join(str(s) for s in slice_key if s != "") + f"/{bk[at]}-vs-{rk[at]}",
+                "/".join(str(s) for s in slice_key if s != ""),
                 bv,
                 rv,
                 (spread.get(bk), spread.get(rk)),
                 higher,
+                f"{bk[at]}-vs-{rk[at]}",
             )
         )
     return cells
@@ -233,11 +246,12 @@ def _external():
                     axis,
                     "vs-external",
                     "results_external",
-                    f"{dataset}/{n}/{contest}/{bm}-vs-{rm}",
+                    f"{dataset}/{n}/{contest}",
                     float(rows[bm][column]),
                     float(rows[rm][column]),
                     (None, None),
                     higher,
+                    f"{bm}-vs-{rm}",
                 )
             )
     return cells
@@ -269,9 +283,10 @@ def render(cells):
         print(f"\n## {axis} — {tally['win']} win · {tally['tie']} tie · {tally['loss']} loss")
         for c in sorted(group, key=lambda c: (ORDER[c.verdict], c.name())):
             mark = {"win": "WIN ", "tie": "tie ", "loss": "LOSS"}[c.verdict]
+            who = f"  [{c.contenders}]" if c.contenders else ""
             print(
                 f"  {mark} {c.name():<72} {c.ours:>11.4f} vs {c.theirs:>11.4f}"
-                f"  margin {c.margin:+.4f}  slack {c.slack:.4f}"
+                f"  margin {c.margin:+.4f}  slack {c.slack:.4f}{who}"
             )
 
 

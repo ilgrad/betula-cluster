@@ -167,3 +167,18 @@ jobs:
           # installed above ("Failed to spawn: maturin").
           uv run --no-sync maturin develop --release
           uv run --no-sync pytest tests/test_python.py -q --cov=betula_cluster --cov-fail-under=100
+
+  scoreboard:
+    # The benchmark CSVs are committed, so the win/tie/loss board can be re-derived without running
+    # a single benchmark: this job costs seconds and catches the one failure mode the suite cannot,
+    # which is a *result* moving backwards. Four wrong published claims of the 0.2.0 era survived a
+    # month because nothing re-read these files between the run that produced them and the release.
+    # It gates the recorded board only; producing new numbers is still a deliberate local act
+    # (`bench/comprehensive.py`, then `--update` in the commit that explains the move).
+    name: bench (scoreboard ratchet)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.0.1
+      - name: scoreboard --check (no cell may regress)
+        run: uv run --with pandas python bench/scoreboard.py --check

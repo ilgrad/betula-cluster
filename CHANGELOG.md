@@ -39,6 +39,16 @@ All notable changes to this project are documented here. The format follows
   sentinel, and all 13 scripts pass it.
 
 ### Changed
+- **The scoreboard ratchet identified a cell by who won it, so a champion changing read as a result
+  vanishing.** `bench/scoreboard.py --check` is now a CI job, and it could not have been one before:
+  on a clean tree it failed, reporting two `results_sparse` cells as VANISHED. Neither had moved —
+  `betula-svd` had overtaken `betula-sparse` as our fastest sparse head, which renamed the key
+  `…/betula-sparse-vs-sklearn-svd` out of existence while the verdict stayed `loss`. The cause is in
+  the producer, not the check: `vs-best` and `vs-external` pick a champion per side, and folding the
+  winners' names into the cell's identity made an improvement indistinguishable from a missing
+  comparison. A cell is now identified by what it compares — axis, table, pairing, dataset slice —
+  and the champions are printed on the rendered line. `scoreboard.json` is migrated in place; only
+  the 44 `vs-best` / `vs-external` keys change, and no verdict does.
 - **BIRCH's size-imbalance bug is D0's, not the CF-tree's — two published claims corrected, no code
   changed.** `bench/size_imbalance.py` reproduced scikit-learn [#22854](https://github.com/scikit-learn/scikit-learn/issues/22854)
   at `absorb="euclidean"` only, and concluded the mis-allocation was "a property of the shared
