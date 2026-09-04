@@ -171,6 +171,19 @@ All notable changes to this project are documented here. The format follows
   of unequal concentration the Bayes boundary is not the angular midpoint and `+‖μ‖²` moves towards
   it. Tables and the fixture in
   [`bench/RESULTS.md`](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md).
+- **What actually breaks the naive numeric encoding is the amplitude's tail, not its spread.**
+  [`examples/07_mixed_data_kprototypes`](https://github.com/ilgrad/betula-cluster/blob/main/examples/07_mixed_data_kprototypes.ipynb)
+  now carries the third block, on a login-time vector whose angle is the hour of day and whose length
+  is a lognormal session count independent of the segment. Sweeping that length's `σ` over 0.6 / 0.9 /
+  1.2 (ARI against the true segments, median of seeds 7/8/9): the raw-numeric encoding reads 0.997 /
+  0.995 / **0.007** while `directional=[4, 5]` holds 0.995 flat, because normalisation removes `σ`
+  before the distance sees it. The collapse is not a spread threshold — at `σ = 0.9` the login radius
+  already varies more than `monthly_spend` does (48 against 29) and costs nothing. It is the tail: at
+  `σ = 1.2` squared error is dominated by the longest vectors and the fit spends two of its three
+  clusters on 115 outliers, leaving 1085 of 1200 rows in the third. Normalising the rows by hand
+  reproduces the drop-the-columns fit to three decimals (0.953 at every `σ`), because unit columns
+  then weigh 1 against numeric columns whose spread is tens of units — which is the scale `gamma_dir`
+  names and defaults.
 - **`gamma_dir` has no literature, and the default says so.** `γ_cat` keeps Huang's `½·mean σ`.
   `γ_dir` defaults to the **mean numeric variance**, so that one unit of `‖u − c‖²` — which runs over
   `[0, 4]` whatever the data — costs one numeric variance. That is a scale-matching convention, not a

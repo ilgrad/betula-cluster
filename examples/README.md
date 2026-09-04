@@ -5,9 +5,10 @@ Executed Jupyter notebooks (with plots, tables, and graphs) demonstrating **ever
 source (the diff-friendly form); the `.ipynb` is the rendered, executed output you can read on GitHub.
 
 > **Provenance.** The stored outputs were executed on **2026-08-30** against the working tree after
-> 0.7.0 — the same tree [`bench/RESULTS.md`](../bench/RESULTS.md) is measured on. Every notebook
-> prints the build it ran under in its first cell, and every one pins its seeds in code, so
-> re-executing reproduces what you see.
+> 0.7.0 — the same tree [`bench/RESULTS.md`](../bench/RESULTS.md) is measured on — except
+> [`07_mixed_data_kprototypes`](07_mixed_data_kprototypes.ipynb), re-executed on **2026-09-02** when
+> its directional section was added. Every notebook prints the build it ran under in its first cell,
+> and every one pins its seeds in code, so re-executing reproduces what you see.
 >
 > But a quality figure printed here is a **single draw**, and clustering quality is seed-dependent.
 > Where a notebook makes a head-to-head claim it says which seed produced it. The seeded medians of
@@ -24,7 +25,7 @@ source (the diff-friendly form); the `.ipynb` is the rendered, executed output y
 | [`04_method_comparison`](04_method_comparison.ipynb) | every head across six dataset shapes; time-vs-`N` and the memory-vs-`N` headline |
 | [`05_topology_mapper`](05_topology_mapper.ipynb) | the **Mapper** topological skeleton (`mapper()` → `MapperGraph`), bridges/branch points, `to_networkx()` |
 | [`06_streaming_density`](06_streaming_density.ipynb) | **`DenStream`** & **`DbStream`** fading-microcluster streaming; shared-density connectivity vs proximity; the micro-cluster graph |
-| [`07_mixed_data_kprototypes`](07_mixed_data_kprototypes.ipynb) | **`KPrototypes`** — mixed numeric + categorical (k-prototypes); cluster centroids + modes; numeric-only vs mixed |
+| [`07_mixed_data_kprototypes`](07_mixed_data_kprototypes.ipynb) | **`KPrototypes`** — all three cluster-feature blocks: numeric + categorical (k-prototypes) with centroids + modes, numeric-only vs mixed, and `directional=` for columns that are an **angle** rather than a length — where a heavy-tailed magnitude wrecks the raw-numeric encoding and `cluster_directions_` reads back as a clock |
 | [`08_quantile_sketches`](08_quantile_sketches.ipynb) | **`KllSketch`** & **`DdSketch`** streaming quantiles; rank- vs relative-error; mergeable shards; footprint |
 | [`09_semisupervised_constraints`](09_semisupervised_constraints.ipynb) | **must-link / cannot-link** (COP-KMeans) via `fit(X, must_link=, cannot_link=)`; the constraint graph; infeasible → `ValueError` |
 | [`10_sparse_highdim`](10_sparse_highdim.ipynb) | `scipy.sparse` input (dense-tree path) and the `O(nnz)` **`fit_predict_sparse`**; sparsity pattern, speed + memory |
