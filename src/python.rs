@@ -1392,10 +1392,14 @@ fn cluster<R: Real, C: ClusterFeature<R>>(
     nmf_dim: Option<ProjectionSpec>,
     refine: usize,
     balance: Option<R>,
+    leaf_refit: usize,
 ) -> (Vec<i64>, usize) {
-    let tree = build_tree::<R, C>(
+    let mut tree = build_tree::<R, C>(
         dim, branching, leaf_cap, threshold, max_leaves, route, absorb, flat, n, n_jobs, balance,
     );
+    for _ in 0..leaf_refit {
+        tree.refit_leaves(flat, n);
+    }
     let leaves = tree.num_leaves();
     let labels = match kind {
         Kind::Parametric(method) => match nmf_dim {
@@ -1493,6 +1497,7 @@ fn run_oneshot<R: Real + Element>(
     refine: usize,
     balance: Option<f64>,
     auto_k_max: usize,
+    leaf_refit: usize,
 ) -> PyResult<(Vec<i64>, usize)> {
     // Directional heads cluster points on the unit sphere and the hyperbolic head on the Lorentz
     // sheet, so they always operate on prepared rows regardless of the caller's `normalize` flag.
@@ -1514,19 +1519,19 @@ fn run_oneshot<R: Real + Element>(
         match feature {
             "spherical" => Ok(cluster::<R, Spherical<R>>(
                 flat, n, dim, n_clusters, kind, route, gate, thr, branching, leaf_cap, max_leaves,
-                max_iter, seed, auto_k_max, n_jobs, nmf_dim, refine, balance,
+                max_iter, seed, auto_k_max, n_jobs, nmf_dim, refine, balance, leaf_refit,
             )),
             "diagonal" => Ok(cluster::<R, Diagonal<R>>(
                 flat, n, dim, n_clusters, kind, route, gate, thr, branching, leaf_cap, max_leaves,
-                max_iter, seed, auto_k_max, n_jobs, nmf_dim, refine, balance,
+                max_iter, seed, auto_k_max, n_jobs, nmf_dim, refine, balance, leaf_refit,
             )),
             "full" => Ok(cluster::<R, Full<R>>(
                 flat, n, dim, n_clusters, kind, route, gate, thr, branching, leaf_cap, max_leaves,
-                max_iter, seed, auto_k_max, n_jobs, nmf_dim, refine, balance,
+                max_iter, seed, auto_k_max, n_jobs, nmf_dim, refine, balance, leaf_refit,
             )),
             "fd" => Ok(cluster::<R, FdSketch<R>>(
                 flat, n, dim, n_clusters, kind, route, gate, thr, branching, leaf_cap, max_leaves,
-                max_iter, seed, auto_k_max, n_jobs, nmf_dim, refine, balance,
+                max_iter, seed, auto_k_max, n_jobs, nmf_dim, refine, balance, leaf_refit,
             )),
             _ => Err("feature must be 'spherical', 'diagonal', 'full' or 'fd'"),
         }
@@ -1560,7 +1565,7 @@ fn run_oneshot<R: Real + Element>(
     absorb = "euclidean", chi2_p = 0.95, chi2_scale = 0.0, n_jobs = 1, normalize = false,
     resolution = 1.0, covariance_weight = 0.0, tangent_weight = 0.0, tangent_rank = 2,
     projection = "none", projection_dim = 64, projection_max_iter = 100, refine = 0, rank = 2,
-    graph_degree = 0, balance = None, auto_k_max = 0, fuzzifier = 2.0
+    graph_degree = 0, balance = None, auto_k_max = 0, fuzzifier = 2.0, leaf_refit = 0
 ))]
 #[allow(clippy::too_many_arguments)]
 fn fit_predict<'py>(
@@ -1596,6 +1601,7 @@ fn fit_predict<'py>(
     balance: Option<f64>,
     auto_k_max: usize,
     fuzzifier: f64,
+    leaf_refit: usize,
 ) -> PyResult<Bound<'py, PyArray1<i64>>> {
     let kind = parse_method(
         method,
@@ -1614,13 +1620,13 @@ fn fit_predict<'py>(
         run_oneshot::<f64>(
             py, a, n_clusters, feature, kind, distance, absorb, chi2_p, chi2_scale, threshold,
             branching, leaf_cap, max_leaves, max_iter, seed, n_jobs, normalize, nmf_dim, refine,
-            balance, auto_k_max,
+            balance, auto_k_max, leaf_refit,
         )?
     } else if let Ok(a) = data.extract::<PyReadonlyArray2<'py, f32>>() {
         run_oneshot::<f32>(
             py, a, n_clusters, feature, kind, distance, absorb, chi2_p, chi2_scale, threshold,
             branching, leaf_cap, max_leaves, max_iter, seed, n_jobs, normalize, nmf_dim, refine,
-            balance, auto_k_max,
+            balance, auto_k_max, leaf_refit,
         )?
     } else {
         return Err(PyValueError::new_err(
@@ -1750,6 +1756,15 @@ impl<R: Real> TreeState<R> {
             TreeState::Diagonal(t) => t.num_leaves(),
             TreeState::Full(t) => t.num_leaves(),
             TreeState::Fd(t) => t.num_leaves(),
+        }
+    }
+
+    fn refit_leaves(&mut self, flat: &[R], n: usize) {
+        match self {
+            TreeState::Spherical(t) => t.refit_leaves(flat, n),
+            TreeState::Diagonal(t) => t.refit_leaves(flat, n),
+            TreeState::Full(t) => t.refit_leaves(flat, n),
+            TreeState::Fd(t) => t.refit_leaves(flat, n),
         }
     }
 
@@ -2384,6 +2399,10 @@ struct Betula {
     /// BIRCH Phase-4 Lloyd sweeps over the raw rows after the leaf clustering; `0` disables it.
     #[serde(default)]
     refine: usize,
+    /// Lloyd passes at the *micro-cluster* level, before the head runs; `0` disables it. Needs the
+    /// rows, so `fit` / `fit_predict` honour it and a `partial_fit` stream cannot.
+    #[serde(default)]
+    leaf_refit: usize,
 }
 
 /// A 2-D array as flat row-major rows, casting from the other float dtype if needed (lossless
@@ -2630,6 +2649,40 @@ impl Betula {
         // leaf and the cluster helper); reading them in leaf order drops every zero-radius cluster.
         let (centers, _radii, weights, dim) = self.cluster_stats_any().ok()?;
         centers_rule(&centers, &weights, dim, unit)
+    }
+
+    /// `leaf_refit` Lloyd passes at the *micro-cluster* level, between the tree build and the head:
+    /// each pass re-routes every row against the finished tree and rebuilds the leaf CFs from the
+    /// rows they won. See [`CFTree::refit_leaves`] for why that is not the same summary.
+    ///
+    /// Like [`Self::refine_rule`], only the in-memory entry points can run it: a `partial_fit`
+    /// stream keeps a tree, not the rows. It runs in the tree's own dtype, because it rewrites the
+    /// tree's own features rather than a `f64` centre rule.
+    fn refit_tree(&mut self, py: Python<'_>, data: &Bound<'_, PyAny>) -> PyResult<()> {
+        if self.leaf_refit == 0 {
+            return Ok(());
+        }
+        let (prep, passes) = (self.row_prep(), self.leaf_refit);
+        if let Some(t) = self.state64.as_mut() {
+            let (src, n, _) = flat_as::<f64>(data, prep)?;
+            let flat = src.as_slice();
+            py.detach(|| {
+                for _ in 0..passes {
+                    t.refit_leaves(flat, n);
+                }
+            });
+        } else if let Some(t) = self.state32.as_mut() {
+            let (src, n, _) = flat_as::<f32>(data, prep)?;
+            let flat = src.as_slice();
+            py.detach(|| {
+                for _ in 0..passes {
+                    t.refit_leaves(flat, n);
+                }
+            });
+        }
+        self.labels = None;
+        self.proba = None;
+        Ok(())
     }
 
     /// BIRCH Phase 4 on the finalized centre rule: `refine` Lloyd sweeps over the rows just fitted,
@@ -2914,7 +2967,7 @@ impl Betula {
         normalize = false, huber_k = None, resolution = 1.0, covariance_weight = 0.0,
         tangent_weight = 0.0, tangent_rank = 2, projection = "none", projection_dim = 64,
         projection_max_iter = 100, refine = 0, rank = 2, graph_degree = 0, balance = None,
-        auto_k_max = 0, fuzzifier = 2.0
+        auto_k_max = 0, fuzzifier = 2.0, leaf_refit = 0
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -2949,6 +3002,7 @@ impl Betula {
         balance: Option<f64>,
         auto_k_max: usize,
         fuzzifier: f64,
+        leaf_refit: usize,
     ) -> PyResult<Self> {
         let kind = parse_method(
             method,
@@ -3042,6 +3096,7 @@ impl Betula {
             nmf_reconstruction_err: None,
             rule: None,
             refine,
+            leaf_refit,
         })
     }
 
@@ -3076,6 +3131,7 @@ impl Betula {
         slf.reset();
         slf.stream(data)?;
         let py = slf.py();
+        slf.refit_tree(py, data)?;
         slf.finalize(py)?;
         slf.refine_rule(py, data)?;
         Ok(slf)
@@ -3128,6 +3184,7 @@ impl Betula {
     ) -> PyResult<Bound<'py, PyArray1<i64>>> {
         self.reset();
         self.stream(data)?;
+        self.refit_tree(py, data)?;
         self.finalize(py)?;
         self.refine_rule(py, data)?;
         self.route_data(py, data)
@@ -3714,6 +3771,7 @@ impl Betula {
         d.set_item("graph_degree", self.graph_degree)?;
         d.set_item("auto_k_max", self.auto_k_max)?;
         d.set_item("refine", self.refine)?;
+        d.set_item("leaf_refit", self.leaf_refit)?;
         Ok(d)
     }
 

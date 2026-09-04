@@ -194,6 +194,31 @@ arms differing only in the code under test.
 
 ### Added
 
+- **`leaf_refit=` — Lloyd at the micro-cluster level, and an honest account of what it does and does
+  not fix.** A leaf CF in every BIRCH-family tree is an *absorption history*: the rows it swallowed
+  as they arrived, weighted by nothing but arrival order. The tree those rows finished in routes a
+  different partition, and at real compression the two disagree badly enough that row order moves the
+  answer more than the seed does. `leaf_refit=k` runs `k` passes of: route every row through the
+  finished tree, rebuild each leaf CF from exactly the rows it wins, drop the entries that win none.
+  Available on `Betula`, on the free `fit_predict`, and as `CFTree::refit_leaves` in Rust. It needs
+  the rows, so a `partial_fit` stream — which keeps a tree and not the data — ignores it rather than
+  raising.
+
+  **It is a quality lever at heavy compression, not a fix for order dependence, and the measurements
+  say so.** ARI against the labels, medians of seeds 0/1/2: `digits` at `max_leaves=90`, kmeans
+  0.462 → 0.593, ward 0.445 → 0.625, gmm 0.436 → 0.566; MNIST at `max_leaves=200`, kmeans
+  0.251 → 0.342, ward 0.240 → 0.355. But the pairwise ARI between two row *orders* stays at
+  0.4–0.55 while two *seeds* stay near 1.0, with or without the pass — the residual order dependence
+  lives in where the prototypes end up, not in what each one summarises, and moving a prototype needs
+  batched routing against a frozen snapshot rather than a better CF for its current position.
+
+  Default `0`, off, because it relabels: this is a Type-1 door. Two properties are worth knowing
+  before turning it on. Passes are not monotone past 2–3 — each pass re-routes against the tree the
+  previous pass produced, and the worst-leaf gap on the 4000 × 8 fixture runs 2.25 → 1.55 → 0.89 →
+  0.44 → 1.63 over `k = 0..4`. And a leaf budget above `n` is *not* a free no-op: the partition is
+  the one the tree's greedy descent produces, descent is not the inverse of absorption, and 600 rows
+  at one row per leaf come back as 436 leaves carrying the same total weight.
+
 - **`KPrototypes` grows a third block: `directional=`.** Huang's k-prototypes carries a numeric
   `(n, μ, S)` and a category-count histogram per attribute. Some columns are neither — a cyclic hour
   written as `(cos, sin)`, a heading, a normalised embedding — and this release gives them their own

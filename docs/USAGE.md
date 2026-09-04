@@ -55,7 +55,7 @@ most `dim - 1`; `0` makes every `mppca` component spherical and every `mfa` comp
 data only: TF-IDF / counts / spectrograms, dense or CSR. **`"svd"`** gives a CF-weighted PCA, accepts
 signed data, and is the one-call text pipeline — see *Text: reduce and cluster in one call* below.
 After a fit, `components_` gives the `(projection_dim, dim)` parts and `reconstruction_err_` the
-relative fit error), `refine` (BIRCH Phase 4 — see below), `seed`. `n_clusters=0` ⇒ automatic `k` for every parametric head (BIC for
+relative fit error), `refine` (BIRCH Phase 4 — see below), `leaf_refit` (Lloyd on the leaves — see below), `seed`. `n_clusters=0` ⇒ automatic `k` for every parametric head (BIC for
 k-means/GMM, dendrogram cut for Ward). `threshold="auto"` (dense only) drops the one knob users most
 often have to guess: a subsample pilot estimates a warm-start absorption radius, so the full fit
 starts near-converged instead of growing the threshold from zero.
@@ -788,6 +788,41 @@ centres move by 7e-5 relative.
 scores 0.559 at objective 69 749, `n_init=10` scores 0.468 at 69 405. Refinement optimizes the
 objective faithfully; whether that is what you want is a property of your data, so measure it rather
 than assuming.
+
+### Refitting the leaves on the raw points — `leaf_refit`
+
+`refine` is Lloyd on the *macro* clusters, after the head. `leaf_refit=n` is Lloyd on the *micro*
+clusters, before it — and it exists because a leaf CF is not a summary of a region, it is an
+**absorption history**. It holds the rows that happened to arrive while that entry was the nearest
+one, in the order they arrived; the tree those rows finished in routes a different partition
+entirely. Each pass routes every row through the finished tree, rebuilds each leaf CF from exactly
+the rows it wins, and drops the entries that win none. Same restrictions as `refine`: in-memory
+`fit` / `fit_predict` only, since `partial_fit` keeps a tree and not the data. It is **off by
+default** because it relabels.
+
+It is worth the pass where the compression is real. ARI against the labels, medians of seeds 0/1/2:
+
+| | `leaf_refit=0` | `leaf_refit=1` |
+|---|---|---|
+| `digits`, `max_leaves=90`, kmeans | 0.462 | **0.593** |
+| `digits`, `max_leaves=90`, ward | 0.445 | **0.625** |
+| `digits`, `max_leaves=90`, gmm | 0.436 | **0.566** |
+| MNIST, `max_leaves=200`, kmeans | 0.251 | **0.342** |
+| MNIST, `max_leaves=200`, ward | 0.240 | **0.355** |
+
+**It does not make the result order-independent, and it was built hoping it would.** Feed the same
+rows in two different orders and the pairwise ARI between the two answers stays at 0.4–0.55, with the
+pass and without it, while two *seeds* on a fixed order agree at ~1.0. The pass fixes what each
+prototype summarises; it cannot fix where the prototypes are, because it re-routes against the tree
+insertion order already built. That needs batched routing against a frozen snapshot, which is a
+different change.
+
+Two more properties before turning it on. **Passes are not monotone past two or three** — each one
+re-routes against the tree the previous one produced, so the worst leaf's distance from the centroid
+of its rows runs 2.25 → 1.55 → 0.89 → 0.44 → 1.63 over `n = 0..4` on a 4000 × 8 blob fixture. And **a
+leaf budget above `N` is not a free no-op**, unlike `refine`, which is genuinely idempotent there:
+the partition is the one the tree's greedy descent produces, descent is not the inverse of
+absorption, and 600 rows at one row per leaf come back as 436 leaves carrying the same total weight.
 
 ## Streaming / out-of-core — the `Betula` estimator
 

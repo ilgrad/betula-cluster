@@ -3913,6 +3913,82 @@ def test_refine_survives_the_sklearn_parameter_protocol():
     assert est.set_params(refine=3).get_params()["refine"] == 3
 
 
+# ── leaf_refit: Lloyd at the micro-cluster level ─────────────────────────────────────────────────
+
+
+def test_leaf_refit_moves_every_leaf_towards_the_centroid_of_the_rows_it_wins():
+    """The property the pass exists for. A leaf CF is otherwise an absorption *history* — the rows
+    it swallowed on the way past, in arrival order — and at real compression that history is not the
+    cell the finished tree routes. The pass replaces it with the routed partition, which is one
+    Lloyd step over the micro-clusters, so both of Lloyd's monotone quantities have to improve: the
+    mean squared quantisation error of the leaf set as a codebook, and the worst leaf's distance
+    from the centroid of the rows nearest to it.
+
+    Both are checked from outside the engine, against the exact nearest-centre assignment rather
+    than the tree's own descent. Measured over seeds 0-5 of this fixture the quantisation ratio sits
+    in 0.851-0.868 and the gap ratio in 0.348-0.616; the bounds below are those with headroom."""
+    x = _blobs(n=4000, d=8, k=6, seed=3)
+    kw = dict(feature="spherical", method="kmeans", n_clusters=6, max_leaves=40, seed=0)
+    plain = betula_cluster.Betula(leaf_refit=0, **kw).fit(x)
+    refit = betula_cluster.Betula(leaf_refit=2, **kw).fit(x)
+
+    def codebook(est):
+        centres = np.asarray(est.microcluster_centers_)
+        d2 = ((x[:, None, :] - centres[None]) ** 2).sum(-1)
+        owner = d2.argmin(1)
+        gaps = [
+            float(np.linalg.norm(x[owner == c].mean(0) - centres[c]))
+            for c in range(len(centres))
+            if (owner == c).any()
+        ]
+        return float(d2.min(1).mean()), max(gaps)
+
+    quant_plain, gap_plain = codebook(plain)
+    quant_refit, gap_refit = codebook(refit)
+    assert quant_refit < 0.92 * quant_plain
+    assert gap_refit < 0.75 * gap_plain
+
+
+def test_leaf_refit_reroutes_even_at_a_leaf_budget_above_n():
+    """A leaf budget above `n` gives one row per leaf, and it is tempting to call the pass a no-op
+    there — the absorption history *is* the singleton partition. It is not, and the reason is worth
+    pinning: the partition the pass computes is the one the tree's own greedy descent produces, and
+    descent is not the inverse of absorption. The node CFs a row descended past while the tree was
+    still growing are not the ones it descends past at the end, so a row can route to a neighbour's
+    leaf instead of its own. The entry it abandoned wins nothing and is dropped.
+
+    So the observable is a *smaller* leaf set carrying merged weight — measured here at 600 -> 436,
+    and 454 / 455 on two neighbouring fixtures. Total weight is conserved exactly, which is the
+    invariant that would actually be broken by a bug in the drop-and-reinsert path."""
+    x = _blobs(n=600, d=6, k=4, seed=5)
+    kw = dict(feature="spherical", method="kmeans", n_clusters=4, max_leaves=4000, seed=0)
+    plain = betula_cluster.Betula(leaf_refit=0, **kw).fit(x)
+    refit = betula_cluster.Betula(leaf_refit=2, **kw).fit(x)
+
+    assert plain.n_leaves_ == len(x)
+    assert refit.n_leaves_ < plain.n_leaves_
+    weights = np.asarray(refit.microcluster_weights_)
+    assert weights.sum() == pytest.approx(float(len(x)))
+    assert weights.max() > 1.0
+
+
+def test_leaf_refit_needs_the_rows_so_a_partial_fit_stream_ignores_it():
+    """`partial_fit` keeps a tree, not the data, so there is nothing to re-route. The documented
+    behaviour is that the stream finalizes normally rather than raising."""
+    x = _blobs(n=1200, d=6, k=4, seed=6)
+    est = betula_cluster.Betula(n_clusters=4, max_leaves=40, seed=0, leaf_refit=3)
+    est.partial_fit(x[:600])
+    est.partial_fit(x[600:])
+    est.partial_fit()
+    assert est.n_clusters_ == 4
+
+
+def test_leaf_refit_survives_the_sklearn_parameter_protocol():
+    est = betula_cluster.Betula(leaf_refit=4)
+    assert est.get_params()["leaf_refit"] == 4
+    assert est.set_params(leaf_refit=1).get_params()["leaf_refit"] == 1
+
+
 # ── projection="svd": CF-weighted PCA of the leaf summary ─────────────────────────────────────────
 
 
