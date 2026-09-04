@@ -848,13 +848,21 @@ tree — with ties broken on the full row. That tie-break is not a detail: a key
 order, and rows that collide would otherwise keep whatever order the caller passed, which quietly
 destroys the guarantee. Sorting by squared norm fails exactly this way on integer-valued data.
 
-**Read this before enabling it: it buys reproducibility, not accuracy.** Across 16 cells — `digits`,
-`blobs`, `news256`, `mnist20k` × two leaf budgets × `kmeans` and `ward`, eight permutations each —
-the median change against the arrival order's *median* draw is **+0.003 ARI**, with 12 of 16 cells
-non-negative. It replaces a lottery with a fixed draw; it does not move the expectation, and the
-fixed draw is sometimes below the median and sometimes above the best.
+**Read this before enabling it: it buys reproducibility, not accuracy.** The published sweep
+([`bench/RESULTS.md`](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md), 27 cells,
+eight permutations each) puts the change against the arrival order's *median* draw at mean
+**+0.0136**, median **−0.0017**, non-negative in 10 of 27 — and the canonical value lands **inside
+the order arm's own [min, max] in 21 of 27**. It is usually indistinguishable from one of the draws
+you would have got anyway: it fixes *which* draw you get, it does not move the distribution. The
+positive mean comes from two cells where the arrival order was collapsing a `gmm` head and the
+canonical order was not (digits at 360 leaves, 0.1738 → 0.5146; MNIST at 1000, 0.0551 → 0.2457); the
+worst losses are −0.062 and −0.061, and at `mnist-10k` with 200 leaves all three heads read lower.
 
-**Nor is it free.** Measured on the engine itself, A-B-A-B on one build, medians of three:
+A second, separate effect worth knowing: the **realised leaf count** stops varying too. It moved in
+18 of those 27 cells under reordering (327–358, 909–1000, 180–195) and is constant under the
+canonical order, so two runs now summarise at the same resolution and not merely to similar labels.
+
+**Nor is it free.** Measured on the engine, A-B-A-B on one build, medians of three:
 `200k × 20` 1.19×, `200k × 128` 0.83×, `100k × 784` 1.06×, `20k × 784` 1.33× — a wash to modestly
 slower. Spatially coherent inserts really do split less, which is where the one speed-up comes from,
 but the pass pays for the key and for walking `X` through a permutation instead of front to back.

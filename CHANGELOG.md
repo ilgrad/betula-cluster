@@ -218,11 +218,15 @@ arms differing only in the code under test.
   is invariant too, because sharding splits *ranks* of the canonical order rather than rows — see
   the `CFTree::build_parallel` note under **Changed**.
 
-  **It buys reproducibility, not accuracy, and the measurements are what say so.** Over 16 cells —
-  `digits` / `blobs` / `news256` / `mnist20k` × two leaf budgets × `kmeans` and `ward`, eight
-  permutations each — the median change against the arrival order's median draw is **+0.003 ARI**,
-  12 of 16 cells non-negative. It replaces a lottery with a fixed draw rather than moving the
-  expectation. Nor is it free: on the engine itself, A-B-A-B on one build, the fit runs **0.83-1.33x**
+  **It buys reproducibility, not accuracy, and the measurements are what say so.** In the published
+  sweep (`bench/insertion_order.py`, 27 cells, eight permutations each) the change against the
+  arrival order's median draw is mean **+0.0136**, median **−0.0017**, non-negative in 10 of 27, and
+  the canonical value falls inside the order arm's own `[min, max]` in **21 of 27** — usually
+  indistinguishable from a draw you would have got anyway. It fixes *which* draw you get rather than
+  moving the distribution; the positive mean is two cells where arrival order was collapsing a `gmm`
+  head (digits@360 `0.1738 → 0.5146`, MNIST@1000 `0.0551 → 0.2457`), and the worst losses are −0.062
+  and −0.061. The **realised leaf count** stops varying as well — it moved in 18 of the 27 cells and
+  is now constant, so two runs summarise at the same resolution. Nor is it free: on the engine itself, A-B-A-B on one build, the fit runs **0.83-1.33x**
   across four shapes (`200k x 20` 1.19x, `200k x 128` 0.83x, `100k x 784` 1.06x, `20k x 784` 1.33x) —
   a wash to modestly slower. Spatially coherent inserts do split less, but the pass pays for the key
   and for walking `X` through a permutation rather than front to back. A Python prototype read

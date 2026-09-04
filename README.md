@@ -134,9 +134,25 @@ est.partial_fit()                     # finalize the global clustering over ever
 labels = est.predict(X_query)
 ```
 
-Robustness — the CF-tree is insertion-order sensitive, so `consensus` clusters several random
-permutations and votes, returning a consensus labelling **plus** a per-point stability score (any
-partitional head — `kmeans` / `gmm` / `ward` / `spectral`):
+Reproducibility — every BIRCH-family tree builds its prototype set as a greedy threshold-net **in
+arrival order**, so the same rows in a different order give a different answer; at real compression
+that matters more than the seed does (order pairwise ARI 0.55 against the seed arm's 0.75, over 27
+measured cells). `canonical_order=True` sorts the rows by a key derived from the data before the
+first insert, which makes the summary a function of the multiset — and the guarantee is **exact**:
+
+```python
+labels_a = betula_cluster.fit_predict(X, 10, canonical_order=True)
+labels_b = betula_cluster.fit_predict(X[perm], 10, canonical_order=True)
+assert (labels_a == labels_b[np.argsort(perm)]).all()   # equal element for element, in all 27 cells
+```
+
+It buys reproducibility, not accuracy — the median quality change is −0.002 ARI, and the realised
+leaf count stops varying too. Numbers, costs and the two cells where it loses:
+[`bench/RESULTS.md`](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md#the-cure--canonical_ordertrue).
+
+Robustness — with the default arrival order, `consensus` clusters several random permutations and
+votes, returning a consensus labelling **plus** a per-point stability score (any partitional head —
+`kmeans` / `gmm` / `ward` / `spectral`):
 
 ```python
 res = betula_cluster.consensus(X, n_clusters=10, n_runs=5, method="kmeans", n_jobs=-1)  # -1 = all cores
@@ -170,6 +186,9 @@ snapshots / active-learning batches, the Rust API, and the CLI — all in the
 - **Inspection & robustness** — `predict_proba`, coresets, microcluster/cluster geometry, outliers,
   near-duplicates, representatives, diagnostics, and `consensus` (per-point stability across
   insertion-order permutations).
+- **Order-invariant builds** — `canonical_order=True` makes the summary a function of the multiset,
+  so any row permutation returns bit-identical labels. Measured exact in all 27 cells of the
+  published sweep; no other BIRCH-family implementation publishes such a guarantee.
 - **Tuning** — `tune`: memory-aware hyperparameter search with a **quality / memory / speed** Pareto
   mode; NumPy-only, optional Optuna backend (`pip install 'betula-cluster[tune]'`).
 

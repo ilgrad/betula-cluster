@@ -5,12 +5,19 @@ it stands at that moment. Reorder the input and you get a different tree — tha
 the price of a single pass. Every BIRCH-class library inherits it and none of them publish the size
 of the effect, so "betula is order-sensitive" has been an assertion here rather than a number.
 
-The study isolates it with a control. Two groups of `P` runs per cell:
+The study isolates it with a control. Three groups of `P` runs per cell:
 
-    vary="order"  P permutations of the row order, estimator seed held at 0
-    vary="seed"   identity order, estimator seeds 0..P-1
+    vary="order"      P permutations of the row order, estimator seed held at 0
+    vary="seed"       identity order, estimator seeds 0..P-1
+    vary="canonical"  P permutations again, but with `canonical_order=True`
 
-and reports the same statistics for both. Without the seed arm the order spread is unreadable: the
+and reports the same statistics for all three.
+
+The third arm is the cure, and it is why this file is worth re-running. `canonical_order` sorts the
+rows by a key derived from the data before the first insert, so the build is a function of the
+multiset rather than of the sequence: its `pairwise_ari_mean` must read exactly **1.0000** and its
+`ari_spread` exactly **0.0000**, in every cell. Those are not tolerances. If a cell reports anything
+else the guarantee is broken and the number is the bug report. Without the seed arm the order spread is unreadable: the
 k-means and GMM heads are non-convex and would show a spread from restarts alone. `ward` is the
 built-in check on the harness itself — it is deterministic given a leaf set, so its seed arm must
 report exactly zero spread, and any other number means the two arms are not isolating what they
@@ -84,7 +91,7 @@ def load(name: str):
     return np.ascontiguousarray(x), y, spec["k"]
 
 
-def one_fit(x, k, head, budget, seed, perm):
+def one_fit(x, k, head, budget, seed, perm, canonical=False):
     """One full fit under a given row order; labels come back in the *original* row order."""
     import betula_cluster as bc
 
@@ -95,6 +102,7 @@ def one_fit(x, k, head, budget, seed, perm):
         threshold=0.0,
         max_leaves=budget,
         seed=seed,
+        canonical_order=canonical,
     )
     t0 = time.perf_counter()
     permuted = est.fit_predict(x[perm])
@@ -147,12 +155,26 @@ def main() -> int:
         print(f"\n{name}  n={n}  d={x.shape[1]}  k={k}")
         for budget in spec["budgets"]:
             for head in HEADS:
-                for vary in ("order", "seed"):
+                for vary in ("order", "seed", "canonical"):
                     if vary == "order":
                         runs = [one_fit(x, k, head, budget, 0, p) for p in perms]
+                    elif vary == "canonical":
+                        runs = [one_fit(x, k, head, budget, 0, p, True) for p in perms]
                     else:
                         runs = [one_fit(x, k, head, budget, s, identity) for s in range(P)]
                     stat = summarize(runs, y, ari)
+                    if vary == "canonical":
+                        # Not a tolerance. `canonical_order` claims the build is a function of the
+                        # multiset, so every permutation must return the same labels and the same
+                        # leaf count. Assert it here rather than leaving it to a reader of the CSV:
+                        # a broken guarantee that only shows up as a number in a committed file is
+                        # a wrong published claim, which is the failure this whole harness exists
+                        # to prevent.
+                        assert stat["ari_spread"] == 0.0, f"{name}/{budget}/{head}: {stat}"
+                        assert stat["pairwise_ari_min"] == 1.0, f"{name}/{budget}/{head}: {stat}"
+                        assert stat["leaves_min"] == stat["leaves_max"], (
+                            f"{name}/{budget}/{head}: {stat}"
+                        )
                     rows.append(
                         {
                             "dataset": name,

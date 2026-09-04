@@ -2191,25 +2191,27 @@ Rust-only, and `ward_hac_auto` keeps the default: a selector that wins on round 
 elongated data is a choice the caller has to make with the shape in hand, and there is no way to
 express that in a `method=` string.
 
-## Insertion-order sensitivity — the property the whole BIRCH family inherits
+## Insertion-order sensitivity — the property the whole BIRCH family inherits, and the cure
 
-`bench/insertion_order.py`, `bench/results_order.csv` (54 cells). A CF-tree routes each point against
+`bench/insertion_order.py`, `bench/results_order.csv` (81 cells). A CF-tree routes each point against
 the tree as it stands at that moment, so reordering the input changes the tree. Every BIRCH-class
-library inherits this and none of them publish the size of it. Two arms of `P = 8` runs per cell:
-`vary="order"` (8 permutations, estimator seed pinned at 0) and `vary="seed"` (identity order, seeds
-0–7).
+library inherits this and none of them publish the size of it. Three arms of `P = 8` runs per cell:
+`vary="order"` (8 permutations, estimator seed pinned at 0), `vary="seed"` (identity order, seeds
+0–7), and `vary="canonical"` (8 permutations again, with `canonical_order=True`).
 
 **The harness carries its own control.** The `ward` head is deterministic given a leaf set, so its
 seed arm must read exactly zero. It does — spread `0.0000`, pairwise ARI `1.0000`, in all **9** of
 its seed cells. That makes `ward` + `vary="order"` a pure measurement of insertion order with no
 restart term in it.
 
+### The effect
+
 | dataset | `max_leaves` | leaves | head | order spread | order pairwise | seed spread | seed pairwise |
 |---|---|---|---|---|---|---|---|
 | digits | 4000 | 1797 (×1.0) | ward | 0.0159 | 0.9261 | **0.0000** | **1.0000** |
 | digits | 360 | 327–358 | ward | **0.2880** | 0.5454 | **0.0000** | **1.0000** |
 | digits | 90 | 83–90 | ward | 0.1986 | 0.3425 | **0.0000** | **1.0000** |
-| mnist-10k | 10000 | 10000 (×1.0) | ward | 0.0062 | 0.8417 | **0.0000** | **1.0000** |
+| mnist-10k | 10000 | 10000 (×1.0) | ward | 0.0061 | 0.8417 | **0.0000** | **1.0000** |
 | mnist-10k | 1000 | 909–1000 | ward | 0.1129 | 0.3536 | **0.0000** | **1.0000** |
 | mnist-10k | 200 | 180–195 | ward | 0.1635 | 0.3087 | **0.0000** | **1.0000** |
 | covtype-20k | 20000 | 20000 (×1.0) | ward | 0.0005 | 0.9960 | **0.0000** | **1.0000** |
@@ -2219,15 +2221,16 @@ restart term in it.
 Three results:
 
 - **The effect scales with compression, not with the dataset or the head.** `digits` goes 0.0159 →
-  0.2880 → 0.1986 as the budget falls; MNIST goes 0.0062 → 0.1129 → 0.1635. `covtype` stays under
+  0.2880 → 0.1986 as the budget falls; MNIST goes 0.0061 → 0.1129 → 0.1635. `covtype` stays under
   0.0013 everywhere only because its `ward` ARI is pinned at ~0.1416 whatever the leaves are.
 - **At real compression the input order is a bigger lever than the seed.** MNIST at
   `max_leaves=200`, k-means head: order pairwise ARI **0.2949** against seed pairwise **0.7026** —
-  reordering the rows disagrees with itself 2.4× more than reseeding the head does. At
-  `max_leaves=1000` it is 0.3574 against 0.4751. Every published table in this file, and every
-  competitor's, fixes the order and varies the seed.
-- **The realised leaf count is itself order-dependent** (327–358, 909–1000, 180–195) and is constant
-  under reseeding — so the two arms are not even comparing summaries of the same size.
+  reordering the rows disagrees with itself 2.4× more than reseeding the head does. Over all 27
+  cells the order arm averages **0.5465** pairwise against the seed arm's **0.7514**. Every published
+  table in this file, and every competitor's, fixes the order and varies the seed.
+- **The realised leaf count is itself order-dependent** (327–358, 909–1000, 180–195) — it varies in
+  **18 of the 27** cells and is constant under reseeding, so the two arms are not even comparing
+  summaries of the same size.
 
 This closes the loose end from task 27: `ward` on `digits` varied 0.6224–0.6525 across the four
 routing distances at an identical singleton leaf set, which had no explanation while the leaf set was
@@ -2236,9 +2239,49 @@ same identical leaf set. Both are the tie-break order in which equal-distance le
 the budget sweep above shows why it was visible at all: `digits` at ×1.0 is exactly where nothing
 else can differ.
 
-The practical consequence is a caveat, not a fix — a single pass over an ordered stream is what the
-algorithm is for. Shuffle before fitting when the input has structure in its row order, and read any
-single-permutation ARI at high compression as a draw from a distribution roughly 0.15 wide.
+### The cure — `canonical_order=True`
+
+Sorting the rows by a key derived from the data before the first insert makes the build a function of
+the multiset rather than of the sequence. **In all 27 canonical cells the ARI spread is `0.0000`, the
+pairwise ARI is `1.0000` — mean *and* minimum — and the realised leaf count is constant.** The label
+arrays are equal element for element; these are not rounded numbers, and `bench/insertion_order.py`
+asserts them rather than reporting them, so a regression fails the run instead of writing a CSV.
+
+As far as we can find, this is the only order-invariance guarantee published for a BIRCH-family
+implementation.
+
+**What it costs in quality: nothing systematic, in either direction.** Against the order arm's median
+draw, over 27 cells: mean **+0.0136**, median **−0.0017**, non-negative in **10 of 27**, and the
+canonical value lands **inside the order arm's own [min, max] in 21 of 27**. In other words it is
+usually indistinguishable from one of the draws you would have got anyway — it fixes *which* draw you
+get, it does not move the distribution. The mean is positive only because of two cells where it
+rescues a head that the arrival order was collapsing:
+
+| cell | order median [min, max] | canonical | Δ |
+|---|---|---|---|
+| digits, 360, gmm | 0.1738 [0.0086, 0.5702] | **0.5146** | **+0.3408** |
+| mnist-10k, 1000, gmm | 0.0551 [0.0358, 0.1757] | **0.2457** | **+0.1907** |
+| digits, 360, ward | 0.4892 [0.3427, 0.6307] | 0.5758 | +0.0866 |
+| mnist-10k, 200, ward | 0.1102 [0.0275, 0.1909] | 0.0482 | **−0.0620** |
+| digits, 360, kmeans | 0.5379 [0.4886, 0.5880] | 0.4771 | **−0.0608** |
+
+Both rescues are `gmm` at intermediate compression, which is also where the order arm's spread is
+widest (0.5616 and 0.1400) — a head that is unstable under reordering is exactly the one that gains
+most from not being reordered. The two losses are real and are published for the same reason: at
+`mnist-10k, 200` every head reads lower under the canonical order, and a reader choosing the flag at
+heavy compression on high-dimensional data should know that.
+
+**It is not free either.** Measured separately on the extension, A-B-A-B on one build, medians of
+three: `200k × 20` **1.19×**, `200k × 128` **0.83×**, `100k × 784` **1.06×**, `20k × 784` **1.33×**
+the arrival-order fit — a wash to modestly slower. Spatially coherent inserts do split less, which is
+where the one speed-up comes from, but the pass pays for computing the key and for walking `X`
+through a permutation instead of front to back.
+
+The practical reading: `canonical_order=True` when reproducibility matters — the same rows must give
+the same answer however they arrived — and the default arrival order otherwise. The older advice
+still holds for the default: shuffle before fitting when the input has structure in its row order,
+and read any single-permutation ARI at high compression as a draw from a distribution roughly 0.15
+wide.
 
 ## X-means against the BIC sweep, and the BIC bug the cap was hiding (task #96)
 
