@@ -39,6 +39,12 @@ All notable changes to this project are documented here. The format follows
   sentinel, and all 13 scripts pass it.
 
 ### Changed
+- **`CFTree::build_parallel` takes a trailing `order: Option<&[u32]>` — a breaking change for Rust
+  crate users.** Python callers are unaffected. `None` reproduces the previous behaviour exactly, so
+  the migration is one argument. The parameter exists because sharding had to split *ranks* of the
+  canonical order rather than rows: sharding rows would have kept the insertion-order dependence
+  while looking like it removed it, which is a failure mode no test would have caught by accident,
+  so there is one that fails on exactly that mistake.
 - **The scoreboard ratchet identified a cell by who won it, so a champion changing read as a result
   vanishing.** `bench/scoreboard.py --check` is now a CI job, and it could not have been one before:
   on a clean tree it failed, reporting two `results_sparse` cells as VANISHED. Neither had moved —
@@ -208,9 +214,9 @@ arms differing only in the code under test.
   key is a Morton code over eight random projections drawn from a fixed constant — deliberately not
   from `seed`, so varying `seed` re-runs the head over one fixed summary — with ties broken on the
   full row, because a key alone is not a total order and colliding rows would otherwise keep the
-  caller's order and void the whole guarantee. New `betula_cluster::order` module; `CFTree::
-  build_parallel` gains a trailing `order` argument and shards *ranks*, so the sharded path is
-  invariant too.
+  caller's order and void the whole guarantee. New `betula_cluster::order` module; the sharded path
+  is invariant too, because sharding splits *ranks* of the canonical order rather than rows — see
+  the `CFTree::build_parallel` note under **Changed**.
 
   **It buys reproducibility, not accuracy, and the measurements are what say so.** Over 16 cells —
   `digits` / `blobs` / `news256` / `mnist20k` × two leaf budgets × `kmeans` and `ward`, eight
