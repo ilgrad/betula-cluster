@@ -852,8 +852,16 @@ destroys the guarantee. Sorting by squared norm fails exactly this way on intege
 `blobs`, `news256`, `mnist20k` × two leaf budgets × `kmeans` and `ward`, eight permutations each —
 the median change against the arrival order's *median* draw is **+0.003 ARI**, with 12 of 16 cells
 non-negative. It replaces a lottery with a fixed draw; it does not move the expectation, and the
-fixed draw is sometimes below the median and sometimes above the best. What it does reliably improve
-is the build: **0.66–0.96×** the arrival-order fit, because spatially coherent inserts split less.
+fixed draw is sometimes below the median and sometimes above the best.
+
+**Nor is it free.** Measured on the engine itself, A-B-A-B on one build, medians of three:
+`200k × 20` 1.19×, `200k × 128` 0.83×, `100k × 784` 1.06×, `20k × 784` 1.33× — a wash to modestly
+slower. Spatially coherent inserts really do split less, which is where the one speed-up comes from,
+but the pass pays for the key and for walking `X` through a permutation instead of front to back.
+A Python prototype of this measured 0.66–0.96× and was misleading: it materialised the reordered
+rows, buying back sequential access at the cost of a second copy of the input — which is exactly the
+29 GB duplicate the zero-copy ingest exists to avoid, so the engine indexes instead.
+
 Low-discrepancy walks over the sorted order (van der Corput, round-robin stride) were measured and
 rejected — 5/16 and 7/16 cells non-negative against this scheme's 12/16, for an extra constant.
 

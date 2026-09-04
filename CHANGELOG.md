@@ -216,10 +216,14 @@ arms differing only in the code under test.
   `digits` / `blobs` / `news256` / `mnist20k` × two leaf budgets × `kmeans` and `ward`, eight
   permutations each — the median change against the arrival order's median draw is **+0.003 ARI**,
   12 of 16 cells non-negative. It replaces a lottery with a fixed draw rather than moving the
-  expectation. The build does get cheaper, **0.66–0.96×**, because spatially coherent inserts split
-  less. Low-discrepancy walks over the sorted order (van der Corput, round-robin stride) were
-  measured and rejected: 5/16 and 7/16 non-negative against this scheme's 12/16, for an extra magic
-  constant.
+  expectation. Nor is it free: on the engine itself, A-B-A-B on one build, the fit runs **0.83-1.33x**
+  across four shapes (`200k x 20` 1.19x, `200k x 128` 0.83x, `100k x 784` 1.06x, `20k x 784` 1.33x) —
+  a wash to modestly slower. Spatially coherent inserts do split less, but the pass pays for the key
+  and for walking `X` through a permutation rather than front to back. A Python prototype read
+  0.66-0.96x and was misleading, because it materialised the reordered rows and so bought back
+  sequential access at the price of a second copy of the input. Low-discrepancy walks over the sorted
+  order (van der Corput, round-robin stride) were measured and rejected: 5/16 and 7/16 non-negative
+  against this scheme's 12/16, for an extra magic constant.
 
   Default off, because it relabels. Two scoping rules: the guarantee is **per `n_jobs`** (sharding
   splits ranks, so changing `n_jobs` still changes the labels), and it applies to the dense
