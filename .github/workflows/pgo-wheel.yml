@@ -1,0 +1,69 @@
+name: PGO wheel (linux x86_64)
+
+# A profile-guided build of the linux x86_64 wheel, as a two-pass build in the manylinux container:
+# instrument, run `bench/pgo_train.py` against the instrumented wheel, merge the raw profiles, then
+# rebuild with `-Cprofile-use`. Measured locally, 3 alternating repetitions, median: insertion at
+# 1 000 000 x 20 goes 0.948 s -> 0.841 s (1.13x); at 200 000 x 784 it is a wash (2.643 s -> 2.747 s,
+# the ranges overlapping).
+#
+# **Deliberately not part of `release.yml` yet.** A two-pass container build cannot be exercised
+# from a developer machine, and the release path is the one place where an untested step means a
+# missing x86_64 wheel at tag time. Dispatch this once, check the artifact imports and its numbers,
+# and only then move the job into `release.yml` in place of the matrix's `{ubuntu-latest, x86_64}`
+# entry. `PyO3/maturin-action` is not used here on purpose: the flow needs two maturin invocations
+# with a Python run between them, which is a plain container job rather than a single action call.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pgo:
+    name: build + train + rebuild
+    runs-on: ubuntu-latest
+    container: quay.io/pypa/manylinux_2_28_x86_64
+    env:
+      # `RUSTFLAGS` replaces `.cargo/config.toml`'s `[build] rustflags` wholesale, so the inline
+      # threshold the portable wheels are built with has to be repeated in both passes.
+      BASE_FLAGS: -C llvm-args=--inline-threshold=1000
+      PY: /opt/python/cp311-cp311/bin/python
+    steps:
+      - uses: actions/checkout@v7
+      - name: toolchain (rust + llvm-tools for llvm-profdata)
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --default-toolchain stable --component llvm-tools-preview
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          echo "PROFDATA=$HOME/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/bin/llvm-profdata" >> "$GITHUB_ENV"
+      - name: pass 1 — instrumented wheel
+        run: |
+          $PY -m pip install --quiet maturin numpy
+          RUSTFLAGS="$BASE_FLAGS -Cprofile-generate=/tmp/pgo-data" \
+            $PY -m maturin build --release --interpreter $PY --out /tmp/instrumented
+      - name: train
+        run: |
+          $PY -m pip install --quiet --force-reinstall /tmp/instrumented/*.whl
+          $PY bench/pgo_train.py
+          $PY -m pip uninstall -y betula-cluster
+      - name: merge profiles
+        run: |
+          "$PROFDATA" merge -o /tmp/pgo.profdata /tmp/pgo-data
+          ls -l /tmp/pgo.profdata
+      - name: pass 2 — profile-guided wheel
+        run: |
+          RUSTFLAGS="$BASE_FLAGS -Cprofile-use=/tmp/pgo.profdata -Cllvm-args=-pgo-warn-missing-function" \
+            $PY -m maturin build --release --interpreter $PY --out dist
+      - name: the wheel must import and cluster
+        run: |
+          $PY -m pip install --quiet --force-reinstall dist/*.whl
+          $PY -c "
+          import numpy as np, betula_cluster as bc
+          x = np.random.default_rng(0).normal(size=(20000, 32))
+          print('labels', len(set(bc.fit_predict(x, 5, seed=0).tolist())), 'version', bc.__version__)
+          "
+      - uses: actions/upload-artifact@v7
+        with:
+          name: wheel-linux-x86_64-pgo
+          path: dist

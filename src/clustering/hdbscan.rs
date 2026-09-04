@@ -16,6 +16,18 @@
 
 use crate::feature::ClusterFeature;
 use crate::types::Real;
+#[cfg(feature = "parallel")]
+use rayon::prelude::*;
+
+/// Feature count above which the `O(m²)` scans here are split across threads.
+///
+/// Both of them evaluate a `dim`-dimensional distance per candidate, so the honest break-even is on
+/// `m · dim`; `dim` is in scope at neither site (both take a distance *closure*), and 512 candidates
+/// is where the smallest interesting `dim` already clears rayon's fork/join. Every use below is an
+/// exact reduction — an index-ordered `collect`, or disjoint per-index writes — so this threshold
+/// changes speed and nothing else.
+#[cfg(feature = "parallel")]
+const PAR_MIN_FEATURES: usize = 512;
 
 /// Result of an HDBSCAN run.
 pub struct Hdbscan {
@@ -148,25 +160,31 @@ fn core_distances(
     m: usize,
     min_samples: usize,
     mass: &[f64],
-    dist: impl Fn(usize, usize) -> f64,
+    dist: impl Fn(usize, usize) -> f64 + Sync,
 ) -> Vec<f64> {
     let need = min_samples.max(1) as f64;
-    (0..m)
-        .map(|i| {
-            let mut ds: Vec<(f64, f64)> = (0..m).map(|j| (dist(i, j), mass[j])).collect();
-            ds.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
-            let mut enclosed = 0.0;
-            let mut radius = 0.0;
-            for (d, w) in ds {
-                enclosed += w;
-                radius = d;
-                if enclosed >= need {
-                    break;
-                }
+    // `O(m² log m)`, and the dominant term of the complete-graph path: at 7 250 leaves of `d = 784`
+    // the head ran 46 s against a 6.8 s tree build. Each row sorts its own scratch vector and reads
+    // no other row's result, so splitting the rows is exact and `collect` restores index order.
+    let row = |i: usize| {
+        let mut ds: Vec<(f64, f64)> = (0..m).map(|j| (dist(i, j), mass[j])).collect();
+        ds.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+        let mut enclosed = 0.0;
+        let mut radius = 0.0;
+        for (d, w) in ds {
+            enclosed += w;
+            radius = d;
+            if enclosed >= need {
+                break;
             }
-            radius
-        })
-        .collect()
+        }
+        radius
+    };
+    #[cfg(feature = "parallel")]
+    if m >= PAR_MIN_FEATURES {
+        return (0..m).into_par_iter().map(row).collect();
+    }
+    (0..m).map(row).collect()
 }
 
 /// Out-degree the proximity graph actually gets, given the caller's request.
@@ -525,13 +543,19 @@ fn from_mst_persistence(
 }
 
 /// Prim's MST over the complete graph — `O(m²)` edge weights, the exact path.
-fn prim_complete(m: usize, weight: &impl Fn(usize, usize) -> f64) -> Vec<(f64, usize, usize)> {
+fn prim_complete(
+    m: usize,
+    weight: &(impl Fn(usize, usize) -> f64 + Sync),
+) -> Vec<(f64, usize, usize)> {
     let mut in_tree = vec![false; m];
     let mut best = vec![f64::INFINITY; m];
     let mut parent = vec![usize::MAX; m];
     best[0] = 0.0;
     let mut mst: Vec<(f64, usize, usize)> = Vec::with_capacity(m - 1);
     for _ in 0..m {
+        // The argmin is `O(m)` scalar comparisons per step against the relaxation's `O(m · dim)`
+        // distance evaluations, so it stays serial: at `m = 7 250` the whole of it adds ~20 ms to a
+        // 46 s run, less than the fork/join splitting it would cost.
         let mut u = usize::MAX;
         let mut bu = f64::INFINITY;
         for v in 0..m {
@@ -547,14 +571,27 @@ fn prim_complete(m: usize, weight: &impl Fn(usize, usize) -> f64) -> Vec<(f64, u
         if parent[u] != usize::MAX {
             mst.push((best[u], parent[u], u));
         }
-        for v in 0..m {
+        // Relaxation against the vertex just added: every `v` reads and writes only its own two
+        // slots and `weight` is pure, so the pass is exact however the range is divided.
+        let relax = |v: usize, b: &mut f64, p: &mut usize| {
             if !in_tree[v] {
                 let w = weight(u, v);
-                if w < best[v] {
-                    best[v] = w;
-                    parent[v] = u;
+                if w < *b {
+                    *b = w;
+                    *p = u;
                 }
             }
+        };
+        #[cfg(feature = "parallel")]
+        if m >= PAR_MIN_FEATURES {
+            best.par_iter_mut()
+                .zip(parent.par_iter_mut())
+                .enumerate()
+                .for_each(|(v, (b, p))| relax(v, b, p));
+            continue;
+        }
+        for (v, (b, p)) in best.iter_mut().zip(parent.iter_mut()).enumerate() {
+            relax(v, b, p);
         }
     }
     mst

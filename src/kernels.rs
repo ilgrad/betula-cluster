@@ -201,6 +201,142 @@ mod avx2 {
     );
 }
 
+/// The NEON kernels, the same six reductions for `aarch64`.
+///
+/// Two differences from the AVX2 module above, both from the architecture rather than from taste.
+/// **There is no feature detection**: NEON (ASIMD) is architecturally mandatory on AArch64 and the
+/// Rust target enables it, so there is no `is_*_feature_detected!` and no `#[target_feature]` — the
+/// intrinsics are usable from an ordinary `#[inline]` function, which means these bodies can inline
+/// into the caller instead of costing the out-of-line call the x86 path has to pay for. **The
+/// vectors are half as wide**: `float64x2_t` is 2 lanes and `float32x4_t` is 4, against AVX2's 4 and
+/// 8, so the same two-accumulator shape unrolls to 4 and 8 elements per iteration.
+///
+/// `vfmaq_*` is a fused multiply-add, so the rounding matches the x86 path's `_mm256_fmadd_*` in
+/// kind though not in reduction order — as there, values from these kernels are compared and never
+/// accumulated.
+// The intrinsics are `unsafe fn` on the declared MSRV (1.85) and safe from 1.87; the blocks stay
+// and the lint is silenced, exactly as in the `avx2` module.
+#[cfg(target_arch = "aarch64")]
+#[allow(unused_unsafe)]
+mod neon {
+    use std::arch::aarch64::*;
+
+    macro_rules! packed {
+        ($name:ident, $ty:ty, $reg:ty, $lanes:expr,
+         $zero:expr, $load:ident, $add:ident, $hsum:ident, $body:expr, $tail:expr) => {
+            /// # Safety
+            /// `n <= a.len()` and `n <= b.len()`.
+            #[inline]
+            pub(super) unsafe fn $name(a: &[$ty], b: &[$ty], n: usize) -> $ty {
+                let (pa, pb) = (a.as_ptr(), b.as_ptr());
+                let step = 2 * $lanes;
+                let f: fn($reg, $reg, $reg) -> $reg = $body;
+                unsafe {
+                    let mut acc0 = $zero;
+                    let mut acc1 = $zero;
+                    let mut i = 0usize;
+                    while i + step <= n {
+                        acc0 = f($load(pa.add(i)), $load(pb.add(i)), acc0);
+                        acc1 = f($load(pa.add(i + $lanes)), $load(pb.add(i + $lanes)), acc1);
+                        i += step;
+                    }
+                    while i + $lanes <= n {
+                        acc0 = f($load(pa.add(i)), $load(pb.add(i)), acc0);
+                        i += $lanes;
+                    }
+                    let mut t = $hsum($add(acc0, acc1));
+                    let g: fn($ty, $ty) -> $ty = $tail;
+                    while i < n {
+                        t += g(a[i], b[i]);
+                        i += 1;
+                    }
+                    t
+                }
+            }
+        };
+    }
+
+    packed!(
+        sq_euclidean_f64,
+        f64,
+        float64x2_t,
+        2,
+        vdupq_n_f64(0.0),
+        vld1q_f64,
+        vaddq_f64,
+        vaddvq_f64,
+        |x, y, acc| unsafe {
+            let d = vsubq_f64(x, y);
+            vfmaq_f64(acc, d, d)
+        },
+        |x, y| (x - y) * (x - y)
+    );
+    packed!(
+        sq_euclidean_f32,
+        f32,
+        float32x4_t,
+        4,
+        vdupq_n_f32(0.0),
+        vld1q_f32,
+        vaddq_f32,
+        vaddvq_f32,
+        |x, y, acc| unsafe {
+            let d = vsubq_f32(x, y);
+            vfmaq_f32(acc, d, d)
+        },
+        |x, y| (x - y) * (x - y)
+    );
+    packed!(
+        dot_f64,
+        f64,
+        float64x2_t,
+        2,
+        vdupq_n_f64(0.0),
+        vld1q_f64,
+        vaddq_f64,
+        vaddvq_f64,
+        |x, y, acc| unsafe { vfmaq_f64(acc, x, y) },
+        |x, y| x * y
+    );
+    packed!(
+        dot_f32,
+        f32,
+        float32x4_t,
+        4,
+        vdupq_n_f32(0.0),
+        vld1q_f32,
+        vaddq_f32,
+        vaddvq_f32,
+        |x, y, acc| unsafe { vfmaq_f32(acc, x, y) },
+        |x, y| x * y
+    );
+    packed!(
+        manhattan_f64,
+        f64,
+        float64x2_t,
+        2,
+        vdupq_n_f64(0.0),
+        vld1q_f64,
+        vaddq_f64,
+        vaddvq_f64,
+        // `vabsq` is a single instruction here, where x86 needs the `andnot` sign-bit trick.
+        |x, y, acc| unsafe { vaddq_f64(acc, vabsq_f64(vsubq_f64(x, y))) },
+        |x, y| (x - y).abs()
+    );
+    packed!(
+        manhattan_f32,
+        f32,
+        float32x4_t,
+        4,
+        vdupq_n_f32(0.0),
+        vld1q_f32,
+        vaddq_f32,
+        vaddvq_f32,
+        |x, y, acc| unsafe { vaddq_f32(acc, vabsq_f32(vsubq_f32(x, y))) },
+        |x, y| (x - y).abs()
+    );
+}
+
 /// Smallest `d` at which the packed kernel is worth calling, per scalar type.
 ///
 /// A `#[target_feature]` function cannot be inlined into a caller that does not carry the same
@@ -214,8 +350,14 @@ mod avx2 {
 ///
 /// Two-dimensional data is not a corner case here — the published scaling table is measured on
 /// `d = 2` blobs, and geospatial input is a documented use.
-#[cfg(target_arch = "x86_64")]
-const AVX2_MIN: usize = 16;
+///
+/// **On `aarch64` this number is inherited, not measured.** NEON needs no `#[target_feature]`, so
+/// the packed body inlines and the fixed cost the threshold exists to amortise is smaller there;
+/// 16 is therefore a conservative floor rather than a crossover. Lowering it is a change to make
+/// against a benchmark on the hardware (`cargo bench --bench kernels` prints the `d` sweep), not
+/// from this side of a cross-compiler.
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+const SIMD_MIN: usize = 16;
 
 /// The out-of-line half of the dispatch: feature detection, the `TypeId` narrowing and the packed
 /// call, for one operation.
@@ -235,7 +377,7 @@ macro_rules! simd_path {
         #[inline(never)]
         fn $name<R: Real>(a: &[R], b: &[R]) -> Option<R> {
             let n = a.len().min(b.len());
-            if n < AVX2_MIN
+            if n < SIMD_MIN
                 || !(std::arch::is_x86_feature_detected!("avx2")
                     && std::arch::is_x86_feature_detected!("fma"))
             {
@@ -280,13 +422,62 @@ simd_path!(simd_dot, avx2::dot_f64, avx2::dot_f32);
 #[cfg(target_arch = "x86_64")]
 simd_path!(simd_manhattan, avx2::manhattan_f64, avx2::manhattan_f32);
 
+/// The `aarch64` half of the dispatch: the same `TypeId` narrowing, with no feature detection to do
+/// and nothing to keep out of line, since NEON needs no `#[target_feature]` and can therefore inline.
+#[cfg(target_arch = "aarch64")]
+macro_rules! simd_path {
+    ($name:ident, $k64:path, $k32:path) => {
+        #[inline]
+        fn $name<R: Real>(a: &[R], b: &[R]) -> Option<R> {
+            let n = a.len().min(b.len());
+            if n < SIMD_MIN {
+                return None;
+            }
+            if std::any::TypeId::of::<R>() == std::any::TypeId::of::<f64>() {
+                // SAFETY: `TypeId` proved `R == f64`, so the slices are `&[f64]`; `n` bounds both.
+                let v = unsafe {
+                    $k64(
+                        std::slice::from_raw_parts(a.as_ptr().cast::<f64>(), a.len()),
+                        std::slice::from_raw_parts(b.as_ptr().cast::<f64>(), b.len()),
+                        n,
+                    )
+                };
+                return R::from_f64(v);
+            }
+            if std::any::TypeId::of::<R>() == std::any::TypeId::of::<f32>() {
+                // SAFETY: as above, with `R == f32`.
+                let v = unsafe {
+                    $k32(
+                        std::slice::from_raw_parts(a.as_ptr().cast::<f32>(), a.len()),
+                        std::slice::from_raw_parts(b.as_ptr().cast::<f32>(), b.len()),
+                        n,
+                    )
+                };
+                return R::from_f32(v);
+            }
+            None
+        }
+    };
+}
+
+#[cfg(target_arch = "aarch64")]
+simd_path!(
+    simd_sq_euclidean,
+    neon::sq_euclidean_f64,
+    neon::sq_euclidean_f32
+);
+#[cfg(target_arch = "aarch64")]
+simd_path!(simd_dot, neon::dot_f64, neon::dot_f32);
+#[cfg(target_arch = "aarch64")]
+simd_path!(simd_manhattan, neon::manhattan_f64, neon::manhattan_f32);
+
 /// Take the packed path only when the vector is long enough to pay for the out-of-line call.
 macro_rules! dispatch {
     ($a:expr, $b:expr, $simd:ident) => {
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
         // One compare against a constant, and nothing else, on the path a short vector takes: at
         // `d = 2` the scalar body is two multiply-adds, so even computing `min` here was measurable.
-        if $b.len() >= AVX2_MIN {
+        if $b.len() >= SIMD_MIN {
             if let Some(v) = $simd($a, $b) {
                 return v;
             }
@@ -381,9 +572,9 @@ mod tests {
     }
 
     /// The length gate is a performance switch, so it must be invisible in the answer. Below
-    /// `AVX2_MIN_F64` the public function takes the scalar fold, which the sweep above already
-    /// checks; what needs its own test is that the packed kernel the gate *skips* would have agreed
-    /// anyway — otherwise a future change to the constant would silently move results.
+    /// `SIMD_MIN` the public function takes the scalar fold, which the sweep above already checks;
+    /// what needs its own test is that the packed kernel the gate *skips* would have agreed anyway —
+    /// otherwise a future change to the constant would silently move results.
     #[cfg(target_arch = "x86_64")]
     #[test]
     fn the_kernel_the_length_gate_skips_would_have_agreed_with_the_scalar_fold() {
@@ -392,7 +583,7 @@ mod tests {
         {
             return;
         }
-        for d in 0..AVX2_MIN {
+        for d in 0..SIMD_MIN {
             let a: Vec<f64> = (0..d).map(|i| (i as f64 * 0.41).sin() * 2.0).collect();
             let b: Vec<f64> = (0..d).map(|i| (i as f64 * 0.83).cos() * 2.0).collect();
             let want: f64 = a.iter().zip(&b).map(|(x, y)| (x - y) * (x - y)).sum();

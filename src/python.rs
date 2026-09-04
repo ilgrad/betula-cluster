@@ -1113,29 +1113,72 @@ struct CoresetOut {
     n_leaves: usize,
 }
 
-/// Copy the rows of a (non-empty) 2-D array into a flat row-major buffer; returns `(flat, n, dim)`.
-/// Generic over the element type so `f32` inputs are clustered in `f32` (no `f64` upcast).
-fn to_flat<R: Real + Element>(data: &PyReadonlyArray2<'_, R>) -> PyResult<(Vec<R>, usize, usize)> {
-    let arr = data.as_array();
-    let n = arr.shape()[0];
-    let dim = arr.shape()[1];
+/// The rows the compute reads: the caller's own numpy buffer where it can be used as it stands, a
+/// converted copy where it cannot.
+///
+/// Everything downstream reads one flat row-major `&[R]`, which is exactly the memory a C-contiguous
+/// array of the tree's element type already holds — so a copy is needed only when the array is
+/// strided, its dtype is the other float width, or the head prepares rows ([`RowPrep`]) and must not
+/// write into the caller's array. Copying unconditionally doubled the peak: measured on
+/// `200 000 × 784` `f64`, a 1 196 MB input drove resident memory from 1 237 MB to 2 485 MB.
+enum Rows<'py, R: Element> {
+    Borrowed(PyReadonlyArray2<'py, R>),
+    Owned(Vec<R>),
+}
+
+impl<R: Real + Element> Rows<'_, R> {
+    fn as_slice(&self) -> &[R] {
+        match self {
+            // Only ever constructed after `as_slice` succeeded on this array, whose read borrow is
+            // held for as long as `self` is: reaching the panic means that invariant broke.
+            Self::Borrowed(a) => a
+                .as_slice()
+                .expect("Rows::Borrowed holds a contiguous array"),
+            Self::Owned(v) => v,
+        }
+    }
+}
+
+/// Present a (non-empty) 2-D array as a flat row-major `n × dim` buffer prepared for the head;
+/// returns `(rows, n, dim)`. Generic over the element type so `f32` inputs are clustered in `f32`
+/// (no `f64` upcast).
+fn to_rows<R: Real + Element>(
+    data: PyReadonlyArray2<'_, R>,
+    prep: RowPrep,
+) -> PyResult<(Rows<'_, R>, usize, usize)> {
+    let (n, dim) = {
+        let arr = data.as_array();
+        (arr.shape()[0], arr.shape()[1])
+    };
     if n == 0 || dim == 0 {
         return Err(PyValueError::new_err("data must be a non-empty 2-D array"));
     }
+    // Validate at the boundary: a NaN/Inf would silently corrupt the tree (mean/scatter become NaN
+    // and every downstream label is garbage), so reject it loudly here.
+    fn finite<R: Real>(s: &[R]) -> PyResult<()> {
+        if s.iter().any(|v| !v.is_finite()) {
+            return Err(PyValueError::new_err(
+                "data contains NaN or infinite values",
+            ));
+        }
+        Ok(())
+    }
+    if prep == RowPrep::None {
+        if let Ok(s) = data.as_slice() {
+            finite(s)?;
+            return Ok((Rows::Borrowed(data), n, dim));
+        }
+    }
+    let arr = data.as_array();
     // A C-contiguous array exposes its backing slice, so the copy is a single memcpy and the
     // finiteness check one tight auto-vectorized pass — strided `arr[[i, j]]` indexing is neither.
-    let flat: Vec<R> = match arr.as_slice() {
+    let mut flat: Vec<R> = match arr.as_slice() {
         Some(s) => s.to_vec(),
         None => arr.iter().copied().collect(), // non-contiguous (e.g. a transposed view)
     };
-    // Validate at the boundary: a NaN/Inf would silently corrupt the tree (mean/scatter become NaN
-    // and every downstream label is garbage), so reject it loudly here.
-    if flat.iter().any(|v| !v.is_finite()) {
-        return Err(PyValueError::new_err(
-            "data contains NaN or infinite values",
-        ));
-    }
-    Ok((flat, n, dim))
+    finite(&flat)?;
+    prepare_rows(&mut flat, n, dim, prep);
+    Ok((Rows::Owned(flat), n, dim))
 }
 
 /// Map each row index `0..n` to one value, in parallel above a size threshold (with the `parallel`
@@ -1451,10 +1494,6 @@ fn run_oneshot<R: Real + Element>(
     balance: Option<f64>,
     auto_k_max: usize,
 ) -> PyResult<(Vec<i64>, usize)> {
-    let (mut flat, n, dim) = to_flat(&data)?;
-    if matches!(nmf_dim.map(|s| s.kind), Some(ProjectionKind::Nmf { .. })) {
-        require_nonnegative(&flat)?;
-    }
     // Directional heads cluster points on the unit sphere and the hyperbolic head on the Lorentz
     // sheet, so they always operate on prepared rows regardless of the caller's `normalize` flag.
     let prep = match kind {
@@ -1463,26 +1502,30 @@ fn run_oneshot<R: Real + Element>(
         _ if normalize => RowPrep::Unit,
         _ => RowPrep::None,
     };
-    prepare_rows(&mut flat, n, dim, prep);
+    let (rows, n, dim) = to_rows(data, prep)?;
+    let flat = rows.as_slice();
+    if matches!(nmf_dim.map(|s| s.kind), Some(ProjectionKind::Nmf { .. })) {
+        require_nonnegative(flat)?;
+    }
     let route = parse_route(distance)?;
     let balance = balance.and_then(R::from_f64);
     py.detach(|| {
         let (gate, thr) = resolve_gate::<R>(absorb, dim, chi2_p, chi2_scale, threshold)?;
         match feature {
             "spherical" => Ok(cluster::<R, Spherical<R>>(
-                &flat, n, dim, n_clusters, kind, route, gate, thr, branching, leaf_cap, max_leaves,
+                flat, n, dim, n_clusters, kind, route, gate, thr, branching, leaf_cap, max_leaves,
                 max_iter, seed, auto_k_max, n_jobs, nmf_dim, refine, balance,
             )),
             "diagonal" => Ok(cluster::<R, Diagonal<R>>(
-                &flat, n, dim, n_clusters, kind, route, gate, thr, branching, leaf_cap, max_leaves,
+                flat, n, dim, n_clusters, kind, route, gate, thr, branching, leaf_cap, max_leaves,
                 max_iter, seed, auto_k_max, n_jobs, nmf_dim, refine, balance,
             )),
             "full" => Ok(cluster::<R, Full<R>>(
-                &flat, n, dim, n_clusters, kind, route, gate, thr, branching, leaf_cap, max_leaves,
+                flat, n, dim, n_clusters, kind, route, gate, thr, branching, leaf_cap, max_leaves,
                 max_iter, seed, auto_k_max, n_jobs, nmf_dim, refine, balance,
             )),
             "fd" => Ok(cluster::<R, FdSketch<R>>(
-                &flat, n, dim, n_clusters, kind, route, gate, thr, branching, leaf_cap, max_leaves,
+                flat, n, dim, n_clusters, kind, route, gate, thr, branching, leaf_cap, max_leaves,
                 max_iter, seed, auto_k_max, n_jobs, nmf_dim, refine, balance,
             )),
             _ => Err("feature must be 'spherical', 'diagonal', 'full' or 'fd'"),
@@ -2343,15 +2386,17 @@ struct Betula {
     refine: usize,
 }
 
-/// Copy a 2-D array into a flat row-major `Vec<R>`, casting from the other float dtype if needed
-/// (lossless `f32→f64`; the deliberate `f64→f32` narrowing matches the f32 tree).
-fn flat_as<R: Real + Element>(
-    data: &Bound<'_, PyAny>,
+/// A 2-D array as flat row-major rows, casting from the other float dtype if needed (lossless
+/// `f32→f64`; the deliberate `f64→f32` narrowing matches the f32 tree). Matching dtype is the one
+/// case that can borrow, so it goes through [`to_rows`]; a cast has to build the buffer anyway.
+fn flat_as<'py, R: Real + Element>(
+    data: &Bound<'py, PyAny>,
     prep: RowPrep,
-) -> PyResult<(Vec<R>, usize, usize)> {
-    let (mut flat, n, dim) = if let Ok(a) = data.extract::<PyReadonlyArray2<R>>() {
-        to_flat(&a)?
-    } else if let Ok(a) = data.extract::<PyReadonlyArray2<f64>>() {
+) -> PyResult<(Rows<'py, R>, usize, usize)> {
+    if let Ok(a) = data.extract::<PyReadonlyArray2<'py, R>>() {
+        return to_rows(a, prep);
+    }
+    let (mut flat, n, dim) = if let Ok(a) = data.extract::<PyReadonlyArray2<f64>>() {
         cast_flat::<f64, R>(&a)?
     } else if let Ok(a) = data.extract::<PyReadonlyArray2<f32>>() {
         cast_flat::<f32, R>(&a)?
@@ -2361,7 +2406,7 @@ fn flat_as<R: Real + Element>(
         ));
     };
     prepare_rows(&mut flat, n, dim, prep);
-    Ok((flat, n, dim))
+    Ok((Rows::Owned(flat), n, dim))
 }
 
 fn cast_flat<S: Real + Element, R: Real>(
@@ -2425,23 +2470,25 @@ impl Betula {
             balance: self.balance,
         };
         if use_f32 {
-            let (flat, n, dim) = flat_as::<f32>(data, self.row_prep())?;
+            let (src, n, dim) = flat_as::<f32>(data, self.row_prep())?;
+            let flat = src.as_slice();
             if self.dim != 0 && self.dim != dim {
                 return Err(PyValueError::new_err(
                     "dimension mismatch with previously fitted data",
                 ));
             }
-            TreeState::stream_chunk(&mut self.state32, &cfg, &flat, n, dim)
+            TreeState::stream_chunk(&mut self.state32, &cfg, flat, n, dim)
                 .map_err(PyValueError::new_err)?;
             self.dim = dim;
         } else {
-            let (flat, n, dim) = flat_as::<f64>(data, self.row_prep())?;
+            let (src, n, dim) = flat_as::<f64>(data, self.row_prep())?;
+            let flat = src.as_slice();
             if self.dim != 0 && self.dim != dim {
                 return Err(PyValueError::new_err(
                     "dimension mismatch with previously fitted data",
                 ));
             }
-            TreeState::stream_chunk(&mut self.state64, &cfg, &flat, n, dim)
+            TreeState::stream_chunk(&mut self.state64, &cfg, flat, n, dim)
                 .map_err(PyValueError::new_err)?;
             self.dim = dim;
         }
@@ -2609,11 +2656,12 @@ impl Betula {
         if self.refine == 0 || !matches!(self.rule, Some(PointRule::Centers { .. })) {
             return Ok(());
         }
-        let (flat, n, dim) = flat_as::<f64>(data, self.row_prep())?;
+        let (src, n, dim) = flat_as::<f64>(data, self.row_prep())?;
+        let flat = src.as_slice();
         self.check_dim(dim)?;
         let iters = self.refine;
         if let Some(PointRule::Centers { rows, .. }) = self.rule.as_mut() {
-            py.detach(|| refine_centers(rows, &flat, n, dim, unit, iters));
+            py.detach(|| refine_centers(rows, flat, n, dim, unit, iters));
         }
         Ok(())
     }
@@ -2686,11 +2734,13 @@ impl Betula {
     ) -> PyResult<()> {
         let (k, mi, seed, norm) = (self.n_clusters, self.max_iter, self.seed, self.row_prep());
         let labels = if let Some(t) = self.state64.as_ref() {
-            let (flat, n, dim) = flat_as::<f64>(data, norm)?;
-            constrained_labels(t, &flat, n, dim, must, cannot, k, mi, seed)?
+            let (src, n, dim) = flat_as::<f64>(data, norm)?;
+            let flat = src.as_slice();
+            constrained_labels(t, flat, n, dim, must, cannot, k, mi, seed)?
         } else if let Some(t) = self.state32.as_ref() {
-            let (flat, n, dim) = flat_as::<f32>(data, norm)?;
-            constrained_labels(t, &flat, n, dim, must, cannot, k, mi, seed)?
+            let (src, n, dim) = flat_as::<f32>(data, norm)?;
+            let flat = src.as_slice();
+            constrained_labels(t, flat, n, dim, must, cannot, k, mi, seed)?
         } else {
             return Err(PyValueError::new_err("no data was fitted"));
         };
@@ -2712,21 +2762,23 @@ impl Betula {
         })?;
         let rule = self.rule.as_ref();
         if let Some(t) = &self.state64 {
-            let (flat, n, dim) = flat_as::<f64>(data, self.row_prep())?;
+            let (src, n, dim) = flat_as::<f64>(data, self.row_prep())?;
+            let flat = src.as_slice();
             self.check_dim(dim)?;
             Ok(py
                 .detach(|| match rule {
-                    Some(r) => r.label_rows(&flat, n, dim),
-                    None => t.route(labels, &flat, n, dim),
+                    Some(r) => r.label_rows(flat, n, dim),
+                    None => t.route(labels, flat, n, dim),
                 })
                 .into_pyarray(py))
         } else if let Some(t) = &self.state32 {
-            let (flat, n, dim) = flat_as::<f32>(data, self.row_prep())?;
+            let (src, n, dim) = flat_as::<f32>(data, self.row_prep())?;
+            let flat = src.as_slice();
             self.check_dim(dim)?;
             Ok(py
                 .detach(|| match rule {
-                    Some(r) => r.label_rows(&flat, n, dim),
-                    None => t.route(labels, &flat, n, dim),
+                    Some(r) => r.label_rows(flat, n, dim),
+                    None => t.route(labels, flat, n, dim),
                 })
                 .into_pyarray(py))
         } else {
@@ -3048,13 +3100,15 @@ impl Betula {
         data: &Bound<'py, PyAny>,
     ) -> PyResult<Bound<'py, PyArray2<f64>>> {
         let (flat, k) = if let Some(t) = &self.state64 {
-            let (rows, n, dim) = flat_as::<f64>(data, self.row_prep())?;
+            let (src, n, dim) = flat_as::<f64>(data, self.row_prep())?;
+            let rows = src.as_slice();
             self.check_dim(dim)?;
-            self.proba_of(py, t, &rows, n, dim)?
+            self.proba_of(py, t, rows, n, dim)?
         } else if let Some(t) = &self.state32 {
-            let (rows, n, dim) = flat_as::<f32>(data, self.row_prep())?;
+            let (src, n, dim) = flat_as::<f32>(data, self.row_prep())?;
+            let rows = src.as_slice();
             self.check_dim(dim)?;
-            self.proba_of(py, t, &rows, n, dim)?
+            self.proba_of(py, t, rows, n, dim)?
         } else {
             return Err(PyValueError::new_err(
                 "call fit() or fit_predict() before predict_proba()",
@@ -3325,8 +3379,8 @@ impl Betula {
         sample: PyReadonlyArray2<'_, f64>,
         bandwidth: Option<f64>,
     ) -> PyResult<f64> {
-        let (flat, _n, dim) = to_flat(&sample)?;
-        self.summary_mmd_any(&flat, dim, bandwidth)
+        let (src, _n, dim) = to_rows(sample, RowPrep::None)?;
+        self.summary_mmd_any(src.as_slice(), dim, bandwidth)
     }
 
     /// `(points, weights, offset, reference_cost, total_sensitivity, n_leaves, radii)` for a
@@ -3391,10 +3445,11 @@ impl Betula {
             } else {
                 OutlierScale::Radius(&radii)
             };
-            let (flat, n, dim) = flat_as::<f64>(data, self.row_prep())?;
+            let (src, n, dim) = flat_as::<f64>(data, self.row_prep())?;
+            let flat = src.as_slice();
             self.check_dim(dim)?;
             Ok(py
-                .detach(|| t.outlier_scores(labels, &centers, scale, &flat, n, dim))
+                .detach(|| t.outlier_scores(labels, &centers, scale, flat, n, dim))
                 .into_pyarray(py))
         } else if let Some(t) = &self.state32 {
             let (centers, radii, _w, _d) = t.cluster_stats(labels, k);
@@ -3408,10 +3463,11 @@ impl Betula {
             } else {
                 OutlierScale::Radius(&radii)
             };
-            let (flat, n, dim) = flat_as::<f32>(data, self.row_prep())?;
+            let (src, n, dim) = flat_as::<f32>(data, self.row_prep())?;
+            let flat = src.as_slice();
             self.check_dim(dim)?;
             Ok(py
-                .detach(|| t.outlier_scores(labels, &centers, scale, &flat, n, dim))
+                .detach(|| t.outlier_scores(labels, &centers, scale, flat, n, dim))
                 .into_pyarray(py))
         } else {
             Err(PyValueError::new_err("call fit() before outlier_scores()"))
@@ -3425,16 +3481,18 @@ impl Betula {
         data: &Bound<'py, PyAny>,
     ) -> PyResult<Bound<'py, PyArray1<i64>>> {
         if let Some(t) = &self.state64 {
-            let (flat, n, dim) = flat_as::<f64>(data, self.row_prep())?;
+            let (src, n, dim) = flat_as::<f64>(data, self.row_prep())?;
+            let flat = src.as_slice();
             self.check_dim(dim)?;
             Ok(py
-                .detach(|| t.assign_microclusters(&flat, n, dim))
+                .detach(|| t.assign_microclusters(flat, n, dim))
                 .into_pyarray(py))
         } else if let Some(t) = &self.state32 {
-            let (flat, n, dim) = flat_as::<f32>(data, self.row_prep())?;
+            let (src, n, dim) = flat_as::<f32>(data, self.row_prep())?;
+            let flat = src.as_slice();
             self.check_dim(dim)?;
             Ok(py
-                .detach(|| t.assign_microclusters(&flat, n, dim))
+                .detach(|| t.assign_microclusters(flat, n, dim))
                 .into_pyarray(py))
         } else {
             Err(PyValueError::new_err(
@@ -3782,7 +3840,8 @@ impl PyWindowStream {
         data: &Bound<'_, PyAny>,
         times: Vec<f64>,
     ) -> PyResult<()> {
-        let (flat, n, dim) = flat_as::<f64>(data, RowPrep::None)?;
+        let (src, n, dim) = flat_as::<f64>(data, RowPrep::None)?;
+        let flat = src.as_slice();
         if times.len() != n {
             return Err(PyValueError::new_err(
                 "times must carry one timestamp per row of data",
@@ -3932,7 +3991,8 @@ impl PyDenStream {
 
     /// Stream a chunk (2-D float32/float64) of points into the fading micro-clusters.
     fn partial_fit(&mut self, py: Python<'_>, data: &Bound<'_, PyAny>) -> PyResult<()> {
-        let (flat, n, dim) = flat_as::<f64>(data, RowPrep::None)?;
+        let (src, n, dim) = flat_as::<f64>(data, RowPrep::None)?;
+        let flat = src.as_slice();
         self.dim_check(dim)?;
         if self.inner.is_none() {
             self.inner = Some(
@@ -3978,7 +4038,8 @@ impl PyDenStream {
         let ds = self.inner.as_ref().ok_or_else(|| {
             PyValueError::new_err("call fit() (or partial_fit() + cluster()) first")
         })?;
-        let (flat, n, dim) = flat_as::<f64>(data, RowPrep::None)?;
+        let (src, n, dim) = flat_as::<f64>(data, RowPrep::None)?;
+        let flat = src.as_slice();
         self.dim_check(dim)?;
         let labels = py.detach(|| map_rows(n, |i| ds.predict(&flat[i * dim..(i + 1) * dim])));
         Ok(labels.into_pyarray(py))
@@ -4101,7 +4162,8 @@ impl PyDbStream {
 
     /// Stream a chunk (2-D float32/float64) of points into the fading micro-clusters.
     fn partial_fit(&mut self, py: Python<'_>, data: &Bound<'_, PyAny>) -> PyResult<()> {
-        let (flat, n, dim) = flat_as::<f64>(data, RowPrep::None)?;
+        let (src, n, dim) = flat_as::<f64>(data, RowPrep::None)?;
+        let flat = src.as_slice();
         self.dim_check(dim)?;
         if self.inner.is_none() {
             self.inner = Some(
@@ -4147,7 +4209,8 @@ impl PyDbStream {
         let ds = self.inner.as_ref().ok_or_else(|| {
             PyValueError::new_err("call fit() (or partial_fit() + cluster()) first")
         })?;
-        let (flat, n, dim) = flat_as::<f64>(data, RowPrep::None)?;
+        let (src, n, dim) = flat_as::<f64>(data, RowPrep::None)?;
+        let flat = src.as_slice();
         self.dim_check(dim)?;
         let labels = py.detach(|| map_rows(n, |i| ds.predict(&flat[i * dim..(i + 1) * dim])));
         Ok(labels.into_pyarray(py))
@@ -4645,13 +4708,14 @@ impl PyBregmanBetula {
         if !(self.beta > 0.0 && self.beta.is_finite()) {
             return Err(PyValueError::new_err("beta must be positive and finite"));
         }
-        let (flat, n, dim) = flat_as::<f64>(data, RowPrep::None)?;
+        let (src, n, dim) = flat_as::<f64>(data, RowPrep::None)?;
+        let flat = src.as_slice();
         if n < self.n_clusters {
             return Err(PyValueError::new_err(
                 "need at least n_clusters rows to fit",
             ));
         }
-        div.validate(&flat, dim)?;
+        div.validate(flat, dim)?;
         let (k, thr, br, lc, ml, mi, ni, beta, seed) = (
             self.n_clusters,
             self.threshold,
@@ -4665,16 +4729,16 @@ impl PyBregmanBetula {
         );
         let (labels, leaves) = py.detach(|| match div {
             DivKind::Euclidean => bregman_run::<SquaredEuclidean>(
-                &flat, n, dim, k, head, thr, br, lc, ml, mi, ni, beta, seed,
+                flat, n, dim, k, head, thr, br, lc, ml, mi, ni, beta, seed,
             ),
             DivKind::Kl => bregman_run::<KullbackLeibler>(
-                &flat, n, dim, k, head, thr, br, lc, ml, mi, ni, beta, seed,
+                flat, n, dim, k, head, thr, br, lc, ml, mi, ni, beta, seed,
             ),
             DivKind::ItakuraSaito => bregman_run::<ItakuraSaito>(
-                &flat, n, dim, k, head, thr, br, lc, ml, mi, ni, beta, seed,
+                flat, n, dim, k, head, thr, br, lc, ml, mi, ni, beta, seed,
             ),
             DivKind::Logistic => {
-                bregman_run::<Logistic>(&flat, n, dim, k, head, thr, br, lc, ml, mi, ni, beta, seed)
+                bregman_run::<Logistic>(flat, n, dim, k, head, thr, br, lc, ml, mi, ni, beta, seed)
             }
         });
         self.leaves = leaves;
@@ -4794,13 +4858,14 @@ impl PyKPrototypes {
             .model
             .as_ref()
             .ok_or_else(|| PyValueError::new_err("call fit() or fit_predict() first"))?;
-        let (flat, n, dim) = flat_as::<f64>(data, RowPrep::None)?;
+        let (src, n, dim) = flat_as::<f64>(data, RowPrep::None)?;
+        let flat = src.as_slice();
         if dim != m.dim {
             return Err(PyValueError::new_err(
                 "dimension mismatch with previously fitted data",
             ));
         }
-        let (num, cat, dir) = split_mixed(&flat, n, dim, &m.kind)?;
+        let (num, cat, dir) = split_mixed(flat, n, dim, &m.kind)?;
         let labels = py.detach(|| {
             map_rows(n, |i| {
                 let xn = &num[i * m.n_num..(i + 1) * m.n_num];
@@ -4867,9 +4932,10 @@ impl PyKPrototypes {
                 "KPrototypes requires n_clusters >= 1",
             ));
         }
-        let (flat, n, dim) = flat_as::<f64>(data, RowPrep::None)?;
+        let (src, n, dim) = flat_as::<f64>(data, RowPrep::None)?;
+        let flat = src.as_slice();
         let (kind, n_num, n_cat, n_dir) = block_mask(&self.categorical, &self.directional, dim)?;
-        let (num, cat, dir) = split_mixed(&flat, n, dim, &kind)?;
+        let (num, cat, dir) = split_mixed(flat, n, dim, &kind)?;
         let (k, thr, ml, mi, ni, seed, gpar, gdpar) = (
             self.n_clusters,
             self.threshold,

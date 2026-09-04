@@ -145,6 +145,53 @@ All notable changes to this project are documented here. The format follows
   the head documents and costs nothing, not because it measures better. Envelope and tables in
   [`bench/RESULTS.md`](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md).
 
+### Performance
+
+Three ceilings the measurements themselves named, each attacked with the label digest as the gate:
+a `fit` that is 90–99 % insertion, Phase-3 heads that were all single-threaded `O(m²)`, and an
+ingest that duplicated the input. Every number below is a median of three alternating (A-B-A-B)
+repetitions on one machine (Zen 3, 8C/16T, AVX2, no AVX-512), `OMP_NUM_THREADS=1`, with the two
+arms differing only in the code under test.
+
+- **The input is no longer copied when it does not have to be.** `fit` / `fit_predict` /
+  `partial_fit` / `predict` read a C-contiguous array of the tree's own dtype in place; a copy is
+  made only for a strided view, the other float width, or a head that prepares rows
+  (`normalize=True`, the directional heads, `method="hyperbolic"`) and so must not write into the
+  caller's array. On `200 000 × 784` `f64` — a 1 196 MB input — peak resident memory falls from
+  **2 485 MB to 1 357 MB**, i.e. the duplicate is gone rather than reduced; on `1 000 000 × 20`,
+  from 350 MB to 197 MB. Label digests are unchanged on every shape measured.
+- **Ward and HDBSCAN\* use every core.** Both heads were exactly `O(m²)` on one thread, and at
+  large `max_leaves` that made the head, not the tree, what a fit waits on: at 7 250 leaves of
+  `d = 784`, Ward took 67 s against a 6.8 s build. Ward's nearest-neighbour scan, HDBSCAN\*'s core
+  distances and Prim's relaxation now split across threads. At 3 631 leaves of `d = 784`, median of
+  3: Ward **9.76 s → 2.74 s (3.6×)** and HDBSCAN\* **9.09 s → 1.93 s (4.7×)** on 8 threads.
+  Every reduction is exact — an index-ordered `collect`, disjoint per-index writes, or a min whose
+  tie-break is a total order on `(value, index)` — so the labels are **bit-identical at 1, 8 and 16
+  threads and identical to the serial release**. The argmin inside Prim stays serial deliberately:
+  it is `O(m)` scalar compares against `O(m · dim)` distance evaluations, about 20 ms of a 46 s run.
+  Ward's scan also walks a dense list of surviving clusters instead of a mask over all `m`; the
+  first shape of the parallel scan forked on every scan whatever its length and returned only 1.21×.
+- **`aarch64` gets the SIMD kernels it never had.** The packed `sq_euclidean` / `dot` / `manhattan`
+  reductions existed for AVX2 only, so the macOS-arm64 and linux-aarch64 wheels ran the scalar fold.
+  There is now a NEON path, and it needs no runtime detection — ASIMD is mandatory on AArch64 — so
+  unlike the x86 path it can inline into the caller. Verified under `qemu-aarch64` against the
+  scalar fold at every width and tail length; the length threshold is inherited from the measured
+  x86 crossover and is **not** measured on ARM hardware, which is stated where the constant is.
+- **A profile-guided build of the linux x86\_64 wheel, measured but not yet on the release path.**
+  `bench/pgo_train.py` is the training workload and
+  [`.github/workflows/pgo-wheel.yml`](https://github.com/ilgrad/betula-cluster/blob/main/.github/workflows/pgo-wheel.yml)
+  the two-pass container build, dispatch-only for now. Insertion at `1 000 000 × 20` runs
+  **0.948 s → 0.841 s (1.13×)** with the profile, with no overlap between the arms across three
+  repetitions; at `200 000 × 784` it is a wash (2.643 s → 2.747 s, ranges overlapping) — the win is
+  where the time is branches and pointer chasing rather than kernel arithmetic.
+- **`benches/`, with no benchmark framework.** `cargo bench --bench kernels` sweeps the three
+  kernels over `d ∈ {8 … 1024}` in both widths, and `--bench tree_insert` times the insert path
+  through the Rust API, so a layout change can be measured without a `maturin develop` in between.
+  `harness = false` and `std::time` throughout: a dependency in `[dev-dependencies]` still has to be
+  justified, and the numbers that matter here (rows/s, GB/s at a given `d`) are not the ones a
+  framework reports. What the first run says is the shape of ceiling 1 — the kernels reach
+  ~70 GB/s at `d = 64…128`, where a pair fits in cache, and fall to **17–20 GB/s at `d = 784`**.
+
 ### Added
 
 - **`KPrototypes` grows a third block: `directional=`.** Huang's k-prototypes carries a numeric

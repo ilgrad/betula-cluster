@@ -11,6 +11,62 @@
 use crate::distance::{CFDistance, VarianceIncrease};
 use crate::feature::ClusterFeature;
 use crate::types::Real;
+#[cfg(feature = "parallel")]
+use rayon::prelude::*;
+
+/// Keep the shorter of two `(height, index)` candidates, ties going to the smaller index.
+///
+/// Associative and commutative, and it reproduces the sequential scan's rule exactly — which is why
+/// splitting the scan across threads cannot change a single merge. `<` on the height and `<` on the
+/// index give a total order on the pair, so no chunking of the range can prefer a different `j`.
+fn nearer<R: Real>(a: (R, usize), b: (R, usize)) -> (R, usize) {
+    if b.0 < a.0 || (b.0 == a.0 && b.1 < a.1) {
+        b
+    } else {
+        a
+    }
+}
+
+/// Scalar reads below which the parallel scan's fork/join costs more than it saves.
+///
+/// The unit is `candidates × dim`, because one candidate costs a `dim`-vector read: gating on the
+/// candidate count alone would fork on a 20-dimensional scan that is over before the threads start.
+/// The chain shrinks the active set towards 1, so late scans fall back to the serial fold on their
+/// own — which is the point, and what the first shape of this (fork on every scan, whatever its
+/// length) got wrong: it returned **1.21×** on 8 threads.
+#[cfg(feature = "parallel")]
+const PAR_MIN_READS: usize = 1 << 15;
+
+/// Nearest active cluster to `a`, excluding `a` itself: `(Ward height, index)`.
+///
+/// This scan is the whole of Ward's `O(m²)`: `m − 1` merges, each preceded by at least one pass over
+/// the active set, each evaluation reading a `dim`-vector. At `m = 7250` leaves of `d = 784` it was
+/// measured at **67 s** against a 6.8 s tree build — the head, not the build, is what a large
+/// `max_leaves` fit waits on.
+///
+/// `active` is the *dense* list of surviving clusters, not a mask over all `m`: a chain that is
+/// 90 % through its merges would otherwise pay a full `m`-length pass to find the 10 % still alive,
+/// and rayon would split that pass into chunks that are mostly holes.
+fn nearest_active<R: Real, C: ClusterFeature<R>>(
+    cf: &[C],
+    active: &[usize],
+    a: usize,
+) -> (R, usize) {
+    let eval = |&j: &usize| (VarianceIncrease.between(&cf[a], &cf[j]), j);
+    #[cfg(feature = "parallel")]
+    if active.len().saturating_mul(cf[a].dim()) >= PAR_MIN_READS {
+        return active
+            .par_iter()
+            .filter(|&&j| j != a)
+            .map(eval)
+            .reduce(|| (R::infinity(), usize::MAX), nearer);
+    }
+    active
+        .iter()
+        .filter(|&&j| j != a)
+        .map(eval)
+        .fold((R::infinity(), usize::MAX), nearer)
+}
 
 /// Result of a Ward-HAC run over features.
 pub struct WardHac {
@@ -29,37 +85,30 @@ struct Merge<R> {
 fn dendrogram<R: Real, C: ClusterFeature<R>>(features: &[C]) -> Vec<Merge<R>> {
     let m = features.len();
     let mut cf: Vec<C> = features.to_vec();
-    let mut active = vec![true; m];
-    let mut n_active = m;
+    // Kept ascending, and `remove` rather than `swap_remove` is what keeps it so. A chain that
+    // restarts takes the smallest surviving index, as the mask scan it replaces did; restarting
+    // somewhere else would reorder the merge list, and the height sort that follows is not a total
+    // order, so equal heights would come out cut differently.
+    let mut active: Vec<usize> = (0..m).collect();
     let mut chain: Vec<usize> = Vec::new();
     let mut merges: Vec<Merge<R>> = Vec::with_capacity(m.saturating_sub(1));
 
-    while n_active > 1 {
+    while active.len() > 1 {
         if chain.is_empty() {
-            chain.push(active.iter().position(|&x| x).unwrap());
+            chain.push(active[0]);
         }
         loop {
             let a = *chain.last().unwrap();
-            // Nearest active cluster to `a` (excluding `a`); ties broken by smallest index.
-            let mut b = usize::MAX;
-            let mut best_d = R::infinity();
-            for (j, &act) in active.iter().enumerate() {
-                if act && j != a {
-                    let d = VarianceIncrease.between(&cf[a], &cf[j]);
-                    if d < best_d {
-                        best_d = d;
-                        b = j;
-                    }
-                }
-            }
+            let (best_d, b) = nearest_active(&cf, &active, a);
             if chain.len() >= 2 && chain[chain.len() - 2] == b {
                 // a and b are reciprocal nearest neighbours → merge b into a.
                 chain.pop();
                 chain.pop();
                 let other = cf[b].clone();
                 cf[a].merge(&other);
-                active[b] = false;
-                n_active -= 1;
+                if let Ok(at) = active.binary_search(&b) {
+                    active.remove(at);
+                }
                 merges.push(Merge {
                     into: a,
                     from: b,

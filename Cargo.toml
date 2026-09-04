@@ -43,6 +43,17 @@ numpy = { version = "0.29", optional = true }
 [dev-dependencies]
 proptest = "1"
 
+# `harness = false`: these are plain `main()` programs timing with `std::time`. A benchmark
+# framework would be a dependency the library does not otherwise need, and the numbers that matter
+# here (rows/s, GB/s at a given `d`) are not the ones a framework reports.
+[[bench]]
+name = "kernels"
+harness = false
+
+[[bench]]
+name = "tree_insert"
+harness = false
+
 [features]
 default = ["parallel"]
 parallel = ["dep:rayon"]
