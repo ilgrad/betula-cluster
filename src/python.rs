@@ -46,6 +46,7 @@ use crate::mixture::{Mixture, SparseAssigner};
 use crate::model::{
     Method, Model, Rule, assignment_rule, auto_k_ceiling, fit_head, refinable, refine_centers,
 };
+use crate::order::canonical_permutation;
 use crate::sparse::{SparseCentroids, normalize_csr_rows, summarize_sparse};
 use crate::stats::chi2_quantile;
 use crate::stream::{DbStream, DenStream, DriftReport};
@@ -1214,6 +1215,21 @@ enum RowPrep {
     Sheet,
 }
 
+/// How much of the dataset one `stream` call is handing over.
+///
+/// The distinction exists for `canonical_order`, which is only meaningful over the whole dataset:
+/// sorting a chunk canonically would produce an order that is canonical for the wrong set, and
+/// leave the result as dependent on the chunk boundaries as it ever was on the row order. A named
+/// pair rather than a bare `bool`, because `stream(data, true)` at the call site says nothing about
+/// what is true.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Arrival {
+    /// Every row at once — `fit`, `fit_predict`.
+    Whole,
+    /// One chunk of an open-ended stream — `partial_fit`.
+    Chunk,
+}
+
 /// Apply a [`RowPrep`] to a flat `n × dim` buffer in place.
 fn prepare_rows<R: Real>(flat: &mut [R], n: usize, dim: usize, prep: RowPrep) {
     match prep {
@@ -1353,12 +1369,24 @@ fn build_tree<R: Real, C: ClusterFeature<R>>(
     n: usize,
     n_jobs: usize,
     balance: Option<R>,
+    canonical_order: bool,
 ) -> CFTree<R, C, RouteKind, AbsorbKind<R>> {
+    let order = canonical_order.then(|| canonical_permutation(flat, n, dim));
     #[cfg(feature = "parallel")]
     if n_jobs > 1 {
         return CFTree::build_parallel(
-            dim, branching, leaf_cap, threshold, max_leaves, route, absorb, flat, n, n_jobs,
+            dim,
+            branching,
+            leaf_cap,
+            threshold,
+            max_leaves,
+            route,
+            absorb,
+            flat,
+            n,
+            n_jobs,
             balance,
+            order.as_deref(),
         );
     }
     let _ = n_jobs;
@@ -1366,7 +1394,8 @@ fn build_tree<R: Real, C: ClusterFeature<R>>(
         dim, branching, leaf_cap, threshold, max_leaves, route, absorb,
     );
     tree.set_balance(balance);
-    for i in 0..n {
+    for rank in 0..n {
+        let i = order.as_ref().map_or(rank, |o| o[rank] as usize);
         tree.insert(&flat[i * dim..(i + 1) * dim]);
     }
     tree
@@ -1393,9 +1422,21 @@ fn cluster<R: Real, C: ClusterFeature<R>>(
     refine: usize,
     balance: Option<R>,
     leaf_refit: usize,
+    canonical_order: bool,
 ) -> (Vec<i64>, usize) {
     let mut tree = build_tree::<R, C>(
-        dim, branching, leaf_cap, threshold, max_leaves, route, absorb, flat, n, n_jobs, balance,
+        dim,
+        branching,
+        leaf_cap,
+        threshold,
+        max_leaves,
+        route,
+        absorb,
+        flat,
+        n,
+        n_jobs,
+        balance,
+        canonical_order,
     );
     for _ in 0..leaf_refit {
         tree.refit_leaves(flat, n);
@@ -1498,6 +1539,7 @@ fn run_oneshot<R: Real + Element>(
     balance: Option<f64>,
     auto_k_max: usize,
     leaf_refit: usize,
+    canonical_order: bool,
 ) -> PyResult<(Vec<i64>, usize)> {
     // Directional heads cluster points on the unit sphere and the hyperbolic head on the Lorentz
     // sheet, so they always operate on prepared rows regardless of the caller's `normalize` flag.
@@ -1518,20 +1560,92 @@ fn run_oneshot<R: Real + Element>(
         let (gate, thr) = resolve_gate::<R>(absorb, dim, chi2_p, chi2_scale, threshold)?;
         match feature {
             "spherical" => Ok(cluster::<R, Spherical<R>>(
-                flat, n, dim, n_clusters, kind, route, gate, thr, branching, leaf_cap, max_leaves,
-                max_iter, seed, auto_k_max, n_jobs, nmf_dim, refine, balance, leaf_refit,
+                flat,
+                n,
+                dim,
+                n_clusters,
+                kind,
+                route,
+                gate,
+                thr,
+                branching,
+                leaf_cap,
+                max_leaves,
+                max_iter,
+                seed,
+                auto_k_max,
+                n_jobs,
+                nmf_dim,
+                refine,
+                balance,
+                leaf_refit,
+                canonical_order,
             )),
             "diagonal" => Ok(cluster::<R, Diagonal<R>>(
-                flat, n, dim, n_clusters, kind, route, gate, thr, branching, leaf_cap, max_leaves,
-                max_iter, seed, auto_k_max, n_jobs, nmf_dim, refine, balance, leaf_refit,
+                flat,
+                n,
+                dim,
+                n_clusters,
+                kind,
+                route,
+                gate,
+                thr,
+                branching,
+                leaf_cap,
+                max_leaves,
+                max_iter,
+                seed,
+                auto_k_max,
+                n_jobs,
+                nmf_dim,
+                refine,
+                balance,
+                leaf_refit,
+                canonical_order,
             )),
             "full" => Ok(cluster::<R, Full<R>>(
-                flat, n, dim, n_clusters, kind, route, gate, thr, branching, leaf_cap, max_leaves,
-                max_iter, seed, auto_k_max, n_jobs, nmf_dim, refine, balance, leaf_refit,
+                flat,
+                n,
+                dim,
+                n_clusters,
+                kind,
+                route,
+                gate,
+                thr,
+                branching,
+                leaf_cap,
+                max_leaves,
+                max_iter,
+                seed,
+                auto_k_max,
+                n_jobs,
+                nmf_dim,
+                refine,
+                balance,
+                leaf_refit,
+                canonical_order,
             )),
             "fd" => Ok(cluster::<R, FdSketch<R>>(
-                flat, n, dim, n_clusters, kind, route, gate, thr, branching, leaf_cap, max_leaves,
-                max_iter, seed, auto_k_max, n_jobs, nmf_dim, refine, balance, leaf_refit,
+                flat,
+                n,
+                dim,
+                n_clusters,
+                kind,
+                route,
+                gate,
+                thr,
+                branching,
+                leaf_cap,
+                max_leaves,
+                max_iter,
+                seed,
+                auto_k_max,
+                n_jobs,
+                nmf_dim,
+                refine,
+                balance,
+                leaf_refit,
+                canonical_order,
             )),
             _ => Err("feature must be 'spherical', 'diagonal', 'full' or 'fd'"),
         }
@@ -1565,7 +1679,8 @@ fn run_oneshot<R: Real + Element>(
     absorb = "euclidean", chi2_p = 0.95, chi2_scale = 0.0, n_jobs = 1, normalize = false,
     resolution = 1.0, covariance_weight = 0.0, tangent_weight = 0.0, tangent_rank = 2,
     projection = "none", projection_dim = 64, projection_max_iter = 100, refine = 0, rank = 2,
-    graph_degree = 0, balance = None, auto_k_max = 0, fuzzifier = 2.0, leaf_refit = 0
+    graph_degree = 0, balance = None, auto_k_max = 0, fuzzifier = 2.0, leaf_refit = 0,
+    canonical_order = false
 ))]
 #[allow(clippy::too_many_arguments)]
 fn fit_predict<'py>(
@@ -1602,6 +1717,7 @@ fn fit_predict<'py>(
     auto_k_max: usize,
     fuzzifier: f64,
     leaf_refit: usize,
+    canonical_order: bool,
 ) -> PyResult<Bound<'py, PyArray1<i64>>> {
     let kind = parse_method(
         method,
@@ -1618,15 +1734,55 @@ fn fit_predict<'py>(
     let nmf_dim = parse_projection(projection, projection_dim, projection_max_iter)?;
     let (labels, leaves) = if let Ok(a) = data.extract::<PyReadonlyArray2<'py, f64>>() {
         run_oneshot::<f64>(
-            py, a, n_clusters, feature, kind, distance, absorb, chi2_p, chi2_scale, threshold,
-            branching, leaf_cap, max_leaves, max_iter, seed, n_jobs, normalize, nmf_dim, refine,
-            balance, auto_k_max, leaf_refit,
+            py,
+            a,
+            n_clusters,
+            feature,
+            kind,
+            distance,
+            absorb,
+            chi2_p,
+            chi2_scale,
+            threshold,
+            branching,
+            leaf_cap,
+            max_leaves,
+            max_iter,
+            seed,
+            n_jobs,
+            normalize,
+            nmf_dim,
+            refine,
+            balance,
+            auto_k_max,
+            leaf_refit,
+            canonical_order,
         )?
     } else if let Ok(a) = data.extract::<PyReadonlyArray2<'py, f32>>() {
         run_oneshot::<f32>(
-            py, a, n_clusters, feature, kind, distance, absorb, chi2_p, chi2_scale, threshold,
-            branching, leaf_cap, max_leaves, max_iter, seed, n_jobs, normalize, nmf_dim, refine,
-            balance, auto_k_max, leaf_refit,
+            py,
+            a,
+            n_clusters,
+            feature,
+            kind,
+            distance,
+            absorb,
+            chi2_p,
+            chi2_scale,
+            threshold,
+            branching,
+            leaf_cap,
+            max_leaves,
+            max_iter,
+            seed,
+            n_jobs,
+            normalize,
+            nmf_dim,
+            refine,
+            balance,
+            auto_k_max,
+            leaf_refit,
+            canonical_order,
         )?
     } else {
         return Err(PyValueError::new_err(
@@ -1887,6 +2043,7 @@ impl<R: Real> TreeState<R> {
         flat: &[R],
         n: usize,
         dim: usize,
+        order: Option<&[u32]>,
     ) -> Result<(), &'static str> {
         if cfg.decay < 1.0 {
             if let Some(tree) = slot.as_mut() {
@@ -1910,7 +2067,8 @@ impl<R: Real> TreeState<R> {
             )?);
         }
         let tree = slot.as_mut().unwrap();
-        for i in 0..n {
+        for rank in 0..n {
+            let i = order.map_or(rank, |o| o[rank] as usize);
             tree.insert(&flat[i * dim..(i + 1) * dim]);
         }
         Ok(())
@@ -2403,6 +2561,11 @@ struct Betula {
     /// rows, so `fit` / `fit_predict` honour it and a `partial_fit` stream cannot.
     #[serde(default)]
     leaf_refit: usize,
+    /// Sort the rows by a key derived from the data before inserting them, so the summary is a
+    /// function of the multiset rather than of the arrival sequence. Needs all the rows at once, so
+    /// like `leaf_refit` a `partial_fit` stream cannot honour it.
+    #[serde(default)]
+    canonical_order: bool,
 }
 
 /// A 2-D array as flat row-major rows, casting from the other float dtype if needed (lossless
@@ -2468,7 +2631,24 @@ impl Betula {
     /// Stream a chunk into the matching-dtype tree (dtype is the existing tree's, or the input's at
     /// first fit). Invalidates the cached labels. The config is built inline (not via a `&self`
     /// method) so the borrow checker keeps `&self.feature` disjoint from `&mut self.state*`.
-    fn stream(&mut self, data: &Bound<'_, PyAny>) -> PyResult<()> {
+    /// The permutation to insert `n` rows through, or `None` for arrival order.
+    ///
+    /// `Arrival::Chunk` always gets `None`: a `partial_fit` stream never has the whole dataset, so
+    /// the guarantee `canonical_order` offers cannot be given and pretending otherwise would order
+    /// each chunk canonically within itself and leave the answer dependent on where the chunks were
+    /// cut. The estimator documents the asymmetry, exactly as it does for `leaf_refit`.
+    fn insertion_order<R: Real>(
+        &self,
+        flat: &[R],
+        n: usize,
+        dim: usize,
+        arrival: Arrival,
+    ) -> Option<Vec<u32>> {
+        (self.canonical_order && arrival == Arrival::Whole)
+            .then(|| canonical_permutation(flat, n, dim))
+    }
+
+    fn stream(&mut self, data: &Bound<'_, PyAny>, arrival: Arrival) -> PyResult<()> {
         let use_f32 = match (&self.state64, &self.state32) {
             (Some(_), _) => false,
             (_, Some(_)) => true,
@@ -2496,7 +2676,8 @@ impl Betula {
                     "dimension mismatch with previously fitted data",
                 ));
             }
-            TreeState::stream_chunk(&mut self.state32, &cfg, flat, n, dim)
+            let order = self.insertion_order(flat, n, dim, arrival);
+            TreeState::stream_chunk(&mut self.state32, &cfg, flat, n, dim, order.as_deref())
                 .map_err(PyValueError::new_err)?;
             self.dim = dim;
         } else {
@@ -2507,7 +2688,8 @@ impl Betula {
                     "dimension mismatch with previously fitted data",
                 ));
             }
-            TreeState::stream_chunk(&mut self.state64, &cfg, flat, n, dim)
+            let order = self.insertion_order(flat, n, dim, arrival);
+            TreeState::stream_chunk(&mut self.state64, &cfg, flat, n, dim, order.as_deref())
                 .map_err(PyValueError::new_err)?;
             self.dim = dim;
         }
@@ -2967,7 +3149,7 @@ impl Betula {
         normalize = false, huber_k = None, resolution = 1.0, covariance_weight = 0.0,
         tangent_weight = 0.0, tangent_rank = 2, projection = "none", projection_dim = 64,
         projection_max_iter = 100, refine = 0, rank = 2, graph_degree = 0, balance = None,
-        auto_k_max = 0, fuzzifier = 2.0, leaf_refit = 0
+        auto_k_max = 0, fuzzifier = 2.0, leaf_refit = 0, canonical_order = false
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -3003,6 +3185,7 @@ impl Betula {
         auto_k_max: usize,
         fuzzifier: f64,
         leaf_refit: usize,
+        canonical_order: bool,
     ) -> PyResult<Self> {
         let kind = parse_method(
             method,
@@ -3097,6 +3280,7 @@ impl Betula {
             rule: None,
             refine,
             leaf_refit,
+            canonical_order,
         })
     }
 
@@ -3109,7 +3293,7 @@ impl Betula {
         data: Option<&Bound<'py, PyAny>>,
     ) -> PyResult<PyRefMut<'py, Self>> {
         match data {
-            Some(data) => slf.stream(data)?,
+            Some(data) => slf.stream(data, Arrival::Chunk)?,
             None => {
                 if slf.state64.is_none() && slf.state32.is_none() {
                     return Err(PyValueError::new_err(
@@ -3129,7 +3313,7 @@ impl Betula {
         data: &Bound<'py, PyAny>,
     ) -> PyResult<PyRefMut<'py, Self>> {
         slf.reset();
-        slf.stream(data)?;
+        slf.stream(data, Arrival::Whole)?;
         let py = slf.py();
         slf.refit_tree(py, data)?;
         slf.finalize(py)?;
@@ -3183,7 +3367,7 @@ impl Betula {
         data: &Bound<'py, PyAny>,
     ) -> PyResult<Bound<'py, PyArray1<i64>>> {
         self.reset();
-        self.stream(data)?;
+        self.stream(data, Arrival::Whole)?;
         self.refit_tree(py, data)?;
         self.finalize(py)?;
         self.refine_rule(py, data)?;
@@ -3212,7 +3396,7 @@ impl Betula {
         let must = pairs_from(&must_link)?;
         let cannot = pairs_from(&cannot_link)?;
         slf.reset();
-        slf.stream(data)?;
+        slf.stream(data, Arrival::Whole)?;
         slf.finalize_constrained(data, &must, &cannot)?;
         Ok(slf)
     }
@@ -3772,6 +3956,7 @@ impl Betula {
         d.set_item("auto_k_max", self.auto_k_max)?;
         d.set_item("refine", self.refine)?;
         d.set_item("leaf_refit", self.leaf_refit)?;
+        d.set_item("canonical_order", self.canonical_order)?;
         Ok(d)
     }
 

@@ -21,8 +21,7 @@ impl SplitMix64 {
         (self.next_u64() >> 11) as f64 / ((1u64 << 53) as f64)
     }
 
-    /// Standard normal via Box–Muller. Used by tests; reserved for stochastic methods.
-    #[allow(dead_code)]
+    /// Standard normal via Box–Muller.
     pub fn gauss(&mut self) -> f64 {
         let u1 = self.next_f64().max(1e-300);
         let u2 = self.next_f64();

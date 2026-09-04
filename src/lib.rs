@@ -16,6 +16,7 @@ pub mod kernels;
 pub mod linalg;
 pub mod mixture;
 pub mod model;
+pub mod order;
 pub mod sketch;
 pub mod sparse;
 pub mod stats;

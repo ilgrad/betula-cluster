@@ -3989,6 +3989,81 @@ def test_leaf_refit_survives_the_sklearn_parameter_protocol():
     assert est.set_params(leaf_refit=1).get_params()["leaf_refit"] == 1
 
 
+# ── canonical_order: the summary as a function of the multiset ───────────────────────────────────
+
+
+def _shuffled(x, seed):
+    perm = np.random.default_rng(seed).permutation(len(x))
+    return x[perm], perm
+
+
+def test_canonical_order_makes_the_labels_identical_under_any_row_permutation():
+    """The defect this closes is structural to every BIRCH-family tree: the prototype set is a
+    greedy threshold-net built in arrival order, so which regions get a prototype depends on who
+    arrived first. Sorting the rows by a key derived from the data makes the build a function of the
+    multiset, and the guarantee is exact — the label arrays are equal element for element, not
+    merely similar. The arrival-order arm is in the same test because a permutation that the engine
+    ignores would satisfy the assertion for the wrong reason."""
+    x = _blobs(n=3000, d=10, k=6, seed=4)
+    kw = dict(feature="spherical", method="kmeans", max_leaves=80, seed=0, n_jobs=1)
+
+    def labels(canonical):
+        out = []
+        for seed in (1, 2, 3):
+            xs, perm = _shuffled(x, seed)
+            lab = betula_cluster.fit_predict(xs, 6, canonical_order=canonical, **kw)
+            back = np.empty(len(x), dtype=lab.dtype)
+            back[perm] = lab
+            out.append(back)
+        return out
+
+    canonical = labels(True)
+    assert all(np.array_equal(canonical[0], lb) for lb in canonical[1:])
+    arrival = labels(False)
+    assert not all(np.array_equal(arrival[0], lb) for lb in arrival[1:])
+
+
+def test_canonical_order_holds_across_the_sharded_parallel_build():
+    """`n_jobs > 1` shards the insertion sequence, and the naive wiring shards *rows* — which keeps
+    the order dependence while looking like it removed it. Sharding ranks of the canonical order is
+    what makes this pass. The guarantee is per `n_jobs`, not across values of it."""
+    x = _blobs(n=3000, d=10, k=6, seed=5)
+    kw = dict(feature="spherical", method="kmeans", max_leaves=80, seed=0, canonical_order=True)
+    first = None
+    for seed in (1, 2, 3):
+        xs, perm = _shuffled(x, seed)
+        lab = betula_cluster.fit_predict(xs, 6, n_jobs=4, **kw)
+        back = np.empty(len(x), dtype=lab.dtype)
+        back[perm] = lab
+        first = back if first is None else first
+        assert np.array_equal(first, back)
+
+
+def test_canonical_order_is_honoured_by_fit_and_ignored_by_a_partial_fit_stream():
+    """`partial_fit` never holds the whole dataset, so the guarantee cannot be given: ordering a
+    chunk would be canonical for the wrong set and leave the answer dependent on where the chunks
+    were cut. The documented behaviour is that the stream finalizes normally rather than raising,
+    and the asymmetry mirrors `leaf_refit`."""
+    x = _blobs(n=2000, d=8, k=5, seed=6)
+    kw = dict(n_clusters=5, max_leaves=60, seed=0, canonical_order=True)
+
+    whole = betula_cluster.Betula(**kw).fit_predict(x)
+    reversed_ = betula_cluster.Betula(**kw).fit_predict(x[::-1])
+    assert np.array_equal(whole, reversed_[::-1])
+
+    est = betula_cluster.Betula(**kw)
+    est.partial_fit(x[:1000])
+    est.partial_fit(x[1000:])
+    est.partial_fit()
+    assert est.n_clusters_ == 5
+
+
+def test_canonical_order_survives_the_sklearn_parameter_protocol():
+    est = betula_cluster.Betula(canonical_order=True)
+    assert est.get_params()["canonical_order"] is True
+    assert est.set_params(canonical_order=False).get_params()["canonical_order"] is False
+
+
 # ── projection="svd": CF-weighted PCA of the leaf summary ─────────────────────────────────────────
 
 

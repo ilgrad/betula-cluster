@@ -1,0 +1,252 @@
+//! A canonical insertion order, so a CF-tree summarises a *multiset* rather than a *sequence*.
+//!
+//! Every BIRCH-family tree has the same defect, and it is structural rather than a bug: the
+//! prototype set is a greedy `T`-net built in arrival order. Row `i` is absorbed when it falls
+//! within the threshold of an entry that rows `0..i` created, and starts a new entry otherwise, so
+//! which regions get a prototype — and how many — is a function of the order the rows arrived in.
+//! Two permutations of the same data give two different trees, and at real compression the gap
+//! between them is wider than the gap between two random seeds. [`crate::tree::CFTree::refit_leaves`]
+//! moves each prototype onto the centroid of its cell but never changes which cells exist, which is
+//! exactly why it improved quality and left the order gap alone.
+//!
+//! The cure is to stop letting the caller choose the order. If the rows are sorted by a key computed
+//! from the data itself, the build is a pure function of the multiset and any permutation produces
+//! **bit-identical** labels.
+//!
+//! # Choosing the key
+//!
+//! Two properties are required and a third is wanted.
+//!
+//! 1. *A total order.* A key alone is not enough: distinct rows that share a key are left in
+//!    whatever order the caller passed, and the result stops being canonical. Sorting by squared
+//!    norm fails exactly this way on integer-valued data, where distinct rows collide constantly.
+//!    Ties are therefore broken on the full row.
+//! 2. *Order independence.* The key may be computed from the data, but only through statistics that
+//!    do not depend on the row order — here a per-column min/max, and a projection matrix drawn from
+//!    a fixed constant rather than from the caller's `seed`. Using the caller's seed would tie the
+//!    tree's shape to a knob that exists to vary the *head*, and destroy the one workflow this
+//!    enables: averaging several head seeds over one fixed summary.
+//! 3. *Spatial locality*, so that nearby rows arrive together and the net is built by sweeping the
+//!    space rather than hopping around it. This is what a Morton (Z-order) code over a handful of
+//!    random projections buys, and it is why the projection is worth its one GEMM: sorting raw
+//!    coordinates lexicographically is a valid canonical order but a poor one, because in high
+//!    dimension the leading coordinates are arbitrary (on MNIST they are corner pixels that are zero
+//!    for every image).
+//!
+//! # What it does and does not buy
+//!
+//! Measured over 16 cells — `digits` / `blobs` / `news256` / `mnist20k`, two leaf budgets, `kmeans`
+//! and `ward`, eight permutations each (`local/scratch/canonical_choice.py`):
+//!
+//! - **Order invariance is exact**, not approximate. Pairwise ARI between permutations goes from
+//!   0.22-0.68 to 1.0000, and the label arrays are equal element for element.
+//! - **The build gets slightly cheaper**, 0.66-0.96x the arrival-order fit, because a spatially
+//!   coherent insertion sequence descends more consistently and splits less.
+//! - **Quality is a wash.** The median change against the arrival order's *median* draw is +0.003
+//!   ARI, and 12 of 16 cells are non-negative. This removes the lottery; it does not improve the
+//!   expected result, and no honest reading of the numbers says otherwise. Low-discrepancy walks
+//!   over the sorted order (van der Corput, round-robin stride) were measured too and do not earn
+//!   their extra constant: 5/16 and 7/16 cells non-negative against this scheme's 12/16.
+
+use crate::clustering::rng::SplitMix64;
+use crate::types::Real;
+
+/// Projections mixed into the code. `PROJECTIONS * BITS` is exactly 64, so a code is one `u64`.
+const PROJECTIONS: usize = 8;
+/// Quantisation levels per projection, as a bit count.
+const BITS: u32 = 8;
+/// Fixed, so the order is a function of the data alone. Not the caller's `seed` — see the module
+/// docs for why tying the two together would be the wrong coupling.
+const PROJECTION_SEED: u64 = 0x0BE7_014A_C0DE_0117;
+
+/// The permutation that puts `n` row-major rows of `flat` into canonical order.
+///
+/// `O(n · dim)` for the projections plus `O(n log n)` for the sort, against the build's
+/// `O(n · dim · depth)` distance evaluations — a few percent of a fit. Returns row indices, never a
+/// reordered copy of the data: at 10 M × 784 a copy is 29 GB, which is the duplicate the zero-copy
+/// ingest exists to avoid.
+pub fn canonical_permutation<R: Real>(flat: &[R], n: usize, dim: usize) -> Vec<u32> {
+    let mut idx: Vec<u32> = (0..n as u32).collect();
+    if n <= 1 || dim == 0 {
+        return idx;
+    }
+    let codes = morton_codes(flat, n, dim);
+    idx.sort_unstable_by(|&a, &b| {
+        let (a, b) = (a as usize, b as usize);
+        codes[a].cmp(&codes[b]).then_with(|| {
+            // Only reached on a code collision, which the quantisation makes common enough to
+            // matter and rare enough not to cost: without this the order inside a collision is the
+            // caller's, and the whole guarantee evaporates.
+            let (ra, rb) = (&flat[a * dim..(a + 1) * dim], &flat[b * dim..(b + 1) * dim]);
+            ra.iter()
+                .zip(rb)
+                .find_map(|(x, y)| match x.partial_cmp(y) {
+                    Some(std::cmp::Ordering::Equal) | None => None,
+                    Some(ord) => Some(ord),
+                })
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+    });
+    idx
+}
+
+/// One `u64` Morton code per row: project onto [`PROJECTIONS`] fixed random directions, quantise
+/// each to [`BITS`] levels over the column's own observed range, then interleave the bits so that
+/// the most significant bit of every projection leads. Interleaving is what gives the code locality
+/// at every scale — a prefix of the code is a coarse cell of the whole space, not a fine slice of
+/// one axis.
+fn morton_codes<R: Real>(flat: &[R], n: usize, dim: usize) -> Vec<u64> {
+    let mut rng = SplitMix64::new(PROJECTION_SEED);
+    // Row-major `dim × PROJECTIONS`; the 1/sqrt(dim) scale keeps the projections comparable in
+    // magnitude across dimensions, which matters only for readability since each is ranged
+    // independently below.
+    let scale = 1.0 / (dim as f64).sqrt();
+    let proj: Vec<f64> = (0..dim * PROJECTIONS)
+        .map(|_| rng.gauss() * scale)
+        .collect();
+
+    let mut z = vec![0.0f64; n * PROJECTIONS];
+    for i in 0..n {
+        let row = &flat[i * dim..(i + 1) * dim];
+        for (d, x) in row.iter().enumerate() {
+            let x = x.to_f64().unwrap_or(0.0);
+            let p = &proj[d * PROJECTIONS..(d + 1) * PROJECTIONS];
+            for j in 0..PROJECTIONS {
+                z[i * PROJECTIONS + j] += x * p[j];
+            }
+        }
+    }
+
+    let levels = ((1u64 << BITS) - 1) as f64;
+    let mut codes = vec![0u64; n];
+    for j in 0..PROJECTIONS {
+        let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+        for i in 0..n {
+            let v = z[i * PROJECTIONS + j];
+            lo = lo.min(v);
+            hi = hi.max(v);
+        }
+        // A constant projection contributes nothing rather than a division by zero.
+        let span = if hi > lo { hi - lo } else { 1.0 };
+        for i in 0..n {
+            let q = ((z[i * PROJECTIONS + j] - lo) / span * levels).round();
+            let q = (q.clamp(0.0, levels) as u64) & ((1 << BITS) - 1);
+            for b in 0..BITS {
+                let bit = (q >> b) & 1;
+                codes[i] |= bit << (b as usize * PROJECTIONS + j);
+            }
+        }
+    }
+    codes
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rows(n: usize, dim: usize, seed: u64) -> Vec<f64> {
+        let mut rng = SplitMix64::new(seed);
+        (0..n * dim).map(|_| rng.gauss()).collect()
+    }
+
+    fn permute(flat: &[f64], dim: usize, perm: &[usize]) -> Vec<f64> {
+        perm.iter()
+            .flat_map(|&i| flat[i * dim..(i + 1) * dim].to_vec())
+            .collect()
+    }
+
+    /// The property the module exists for: the *sequence* of rows the permutation yields is the same
+    /// whichever order the rows were handed over in.
+    #[test]
+    fn the_canonical_sequence_is_the_same_for_every_input_permutation() {
+        let (n, dim) = (400, 6);
+        let flat = rows(n, dim, 11);
+        let canonical = |data: &[f64]| -> Vec<Vec<f64>> {
+            canonical_permutation(data, n, dim)
+                .into_iter()
+                .map(|i| data[i as usize * dim..(i as usize + 1) * dim].to_vec())
+                .collect()
+        };
+        let reference = canonical(&flat);
+        let mut rng = SplitMix64::new(99);
+        for _ in 0..4 {
+            let mut perm: Vec<usize> = (0..n).collect();
+            for i in (1..n).rev() {
+                perm.swap(i, (rng.next_u64() % (i as u64 + 1)) as usize);
+            }
+            assert_eq!(canonical(&permute(&flat, dim, &perm)), reference);
+        }
+    }
+
+    /// A key alone is not a total order. Rows that collide in the code must still be ordered by
+    /// their contents, or the caller's order leaks back in — which is how sorting by norm fails.
+    #[test]
+    fn colliding_codes_are_broken_by_the_row_so_duplicates_cannot_leak_the_input_order() {
+        // Two distinct rows one quantisation step apart, plus an exact duplicate of each.
+        let dim = 2;
+        let a = [0.0, 0.0];
+        let b = [1e-12, 0.0];
+        let forward: Vec<f64> = [a, b, a, b].concat();
+        let backward: Vec<f64> = [b, a, b, a].concat();
+        let seq = |data: &[f64]| -> Vec<Vec<f64>> {
+            canonical_permutation(data, 4, dim)
+                .into_iter()
+                .map(|i| data[i as usize * dim..(i as usize + 1) * dim].to_vec())
+                .collect()
+        };
+        assert_eq!(seq(&forward), seq(&backward));
+    }
+
+    #[test]
+    fn the_permutation_is_a_permutation() {
+        let (n, dim) = (257, 5);
+        let flat = rows(n, dim, 3);
+        let mut seen = canonical_permutation(&flat, n, dim);
+        assert_eq!(seen.len(), n);
+        seen.sort_unstable();
+        assert_eq!(seen, (0..n as u32).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn degenerate_shapes_return_the_identity_rather_than_failing() {
+        assert_eq!(canonical_permutation::<f64>(&[], 0, 4), Vec::<u32>::new());
+        assert_eq!(canonical_permutation(&[1.0, 2.0], 1, 2), vec![0]);
+        assert_eq!(canonical_permutation::<f64>(&[], 3, 0), vec![0, 1, 2]);
+    }
+
+    /// A constant column contributes a zero-span projection; ranging it must not divide by zero.
+    #[test]
+    fn a_constant_column_does_not_produce_a_nan_code() {
+        let (n, dim) = (64, 3);
+        let mut rng = SplitMix64::new(5);
+        let flat: Vec<f64> = (0..n * dim)
+            .map(|i| if i % dim == 1 { 2.5 } else { rng.gauss() })
+            .collect();
+        let perm = canonical_permutation(&flat, n, dim);
+        let mut seen = perm.clone();
+        seen.sort_unstable();
+        assert_eq!(seen, (0..n as u32).collect::<Vec<_>>());
+    }
+
+    /// Locality is the reason for the projection: consecutive rows in canonical order should be
+    /// closer together than consecutive rows in arrival order.
+    #[test]
+    fn the_canonical_order_places_neighbours_next_to_each_other() {
+        let (n, dim) = (2000, 4);
+        let flat = rows(n, dim, 7);
+        let step = |seq: &[u32]| -> f64 {
+            seq.windows(2)
+                .map(|w| {
+                    let (a, b) = (w[0] as usize * dim, w[1] as usize * dim);
+                    (0..dim)
+                        .map(|d| (flat[a + d] - flat[b + d]).powi(2))
+                        .sum::<f64>()
+                        .sqrt()
+                })
+                .sum::<f64>()
+                / (n - 1) as f64
+        };
+        let arrival: Vec<u32> = (0..n as u32).collect();
+        assert!(step(&canonical_permutation(&flat, n, dim)) < 0.5 * step(&arrival));
+    }
+}

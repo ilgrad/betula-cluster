@@ -169,6 +169,12 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> CF
     /// exact moments (CF is a commutative monoid), but its leaf structure — and hence the labels —
     /// differs from the sequential build, exactly as a different BIRCH insertion order would. Use
     /// the sequential path when bit-exact reproducibility matters.
+    ///
+    /// `order`, when given, is the sequence of row indices to feed instead of `0..n` — see
+    /// [`crate::order::canonical_permutation`]. Sharding then splits *ranks* rather than rows, so
+    /// the shard a row lands in is a function of the data and the result is invariant to the input
+    /// order at a fixed `shards`. It is not invariant across different `shards`, and cannot be:
+    /// the merge sees a different set of sub-summaries.
     #[cfg(feature = "parallel")]
     #[allow(clippy::too_many_arguments)]
     pub fn build_parallel(
@@ -183,6 +189,7 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> CF
         n: usize,
         shards: usize,
         balance: Option<R>,
+        order: Option<&[u32]>,
     ) -> Self
     where
         D: Clone,
@@ -211,7 +218,8 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> CF
                     abs.clone(),
                 );
                 t.set_balance(balance);
-                for i in lo..hi {
+                for rank in lo..hi {
+                    let i = order.map_or(rank, |o| o[rank] as usize);
                     t.insert(&flat[i * dim..(i + 1) * dim]);
                 }
                 t
@@ -1830,12 +1838,59 @@ mod tests {
             n,
             8,
             None,
+            None,
         );
         assert!(
             close(par.summary().weight(), n as f64),
             "exact total weight"
         );
         assert!(par.num_leaves() >= 1 && par.num_leaves() <= 200);
+    }
+
+    /// Sharding splits *ranks*, not rows, so which shard a row lands in is a function of the data.
+    /// Get that wrong -- shard by row index and then feed the order inside each shard -- and the
+    /// parallel path silently keeps the order dependence the canonical order exists to remove.
+    #[cfg(feature = "parallel")]
+    #[test]
+    fn a_sharded_build_through_a_canonical_order_is_invariant_to_the_input_order() {
+        use crate::order::canonical_permutation;
+        let pts = pseudo(2000, 3);
+        let n = pts.len();
+        let flat: Vec<f64> = pts.iter().flatten().copied().collect();
+        // Reverse is a permutation the arrival-order build does react to, so the assertion below
+        // cannot pass by the two builds simply being insensitive to this particular shuffle.
+        let reversed: Vec<f64> = pts.iter().rev().flatten().copied().collect();
+
+        let build = |data: &[f64], order: Option<&[u32]>| {
+            CFTree::<f64, Spherical<f64>, _, _>::build_parallel(
+                3,
+                16,
+                16,
+                0.0,
+                200,
+                CentroidEuclidean,
+                CentroidEuclidean,
+                data,
+                n,
+                4,
+                None,
+                order,
+            )
+        };
+        let centres = |t: &CFTree<f64, Spherical<f64>, _, _>| {
+            let mut c: Vec<Vec<f64>> = t
+                .leaf_features()
+                .iter()
+                .map(|f| f.mean().to_vec())
+                .collect();
+            c.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            c
+        };
+
+        let a = build(&flat, Some(&canonical_permutation(&flat, n, 3)));
+        let b = build(&reversed, Some(&canonical_permutation(&reversed, n, 3)));
+        assert_eq!(centres(&a), centres(&b));
+        assert!(centres(&build(&flat, None)) != centres(&build(&reversed, None)));
     }
 
     #[cfg(feature = "parallel")]
@@ -1863,6 +1918,7 @@ mod tests {
             &flat,
             n,
             SHARDS,
+            None,
             None,
         );
         assert!(

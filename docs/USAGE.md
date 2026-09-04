@@ -55,7 +55,7 @@ most `dim - 1`; `0` makes every `mppca` component spherical and every `mfa` comp
 data only: TF-IDF / counts / spectrograms, dense or CSR. **`"svd"`** gives a CF-weighted PCA, accepts
 signed data, and is the one-call text pipeline — see *Text: reduce and cluster in one call* below.
 After a fit, `components_` gives the `(projection_dim, dim)` parts and `reconstruction_err_` the
-relative fit error), `refine` (BIRCH Phase 4 — see below), `leaf_refit` (Lloyd on the leaves — see below), `seed`. `n_clusters=0` ⇒ automatic `k` for every parametric head (BIC for
+relative fit error), `refine` (BIRCH Phase 4 — see below), `leaf_refit` (Lloyd on the leaves — see below), `canonical_order` (order-independent build — see below), `seed`. `n_clusters=0` ⇒ automatic `k` for every parametric head (BIC for
 k-means/GMM, dendrogram cut for Ward). `threshold="auto"` (dense only) drops the one knob users most
 often have to guess: a subsample pilot estimates a warm-start absorption radius, so the full fit
 starts near-converged instead of growing the threshold from zero.
@@ -823,6 +823,45 @@ of its rows runs 2.25 → 1.55 → 0.89 → 0.44 → 1.63 over `n = 0..4` on a 4
 leaf budget above `N` is not a free no-op**, unlike `refine`, which is genuinely idempotent there:
 the partition is the one the tree's greedy descent produces, descent is not the inverse of
 absorption, and 600 rows at one row per leaf come back as 436 leaves carrying the same total weight.
+
+### Making the answer independent of the row order — `canonical_order`
+
+Every BIRCH-family tree has the same defect, and it is structural rather than a bug. The prototype
+set is a greedy threshold-net built **in arrival order**: a row is absorbed when it falls within the
+threshold of an entry that earlier rows created, and starts a new entry otherwise, so *which* regions
+get a prototype is a function of the sequence. Two permutations of the same rows give two different
+trees, and at real compression they disagree more than two random seeds do. `leaf_refit` above cannot
+fix it — it moves each prototype onto the centroid of its cell but never changes which cells exist.
+
+`canonical_order=True` sorts the rows by a key computed from the data before the first insert, so the
+build is a function of the multiset. **The guarantee is exact**: the label arrays are equal element
+for element, not merely similar.
+
+| | pairwise ARI between two row orders |
+|---|---|
+| `canonical_order=False` | 0.22 – 0.68, depending on data and budget |
+| `canonical_order=True` | **1.0000**, labels bit-identical |
+
+The key is a Morton (Z-order) code over eight random projections drawn from a *fixed* constant — not
+from `seed`, so that varying `seed` re-runs the head over one fixed summary rather than reshaping the
+tree — with ties broken on the full row. That tie-break is not a detail: a key alone is not a total
+order, and rows that collide would otherwise keep whatever order the caller passed, which quietly
+destroys the guarantee. Sorting by squared norm fails exactly this way on integer-valued data.
+
+**Read this before enabling it: it buys reproducibility, not accuracy.** Across 16 cells — `digits`,
+`blobs`, `news256`, `mnist20k` × two leaf budgets × `kmeans` and `ward`, eight permutations each —
+the median change against the arrival order's *median* draw is **+0.003 ARI**, with 12 of 16 cells
+non-negative. It replaces a lottery with a fixed draw; it does not move the expectation, and the
+fixed draw is sometimes below the median and sometimes above the best. What it does reliably improve
+is the build: **0.66–0.96×** the arrival-order fit, because spatially coherent inserts split less.
+Low-discrepancy walks over the sorted order (van der Corput, round-robin stride) were measured and
+rejected — 5/16 and 7/16 cells non-negative against this scheme's 12/16, for an extra constant.
+
+Two scoping rules. The guarantee is **per `n_jobs`**: sharding splits ranks of the canonical order,
+so a fixed `n_jobs` is invariant to the row order, but changing `n_jobs` changes the shards and
+therefore the labels. And it applies to the dense in-memory `fit` / `fit_predict` only — a
+`partial_fit` stream never holds the whole dataset, and ordering a chunk would be canonical for the
+wrong set, so the stream ignores the flag rather than raising, exactly as it does for `leaf_refit`.
 
 ## Streaming / out-of-core — the `Betula` estimator
 

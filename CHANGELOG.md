@@ -194,6 +194,38 @@ arms differing only in the code under test.
 
 ### Added
 
+- **`canonical_order=` — the CF-tree summarises a multiset instead of a sequence, and the row order
+  stops mattering entirely.** This is the defect the `leaf_refit` entry below could not close, and it
+  is structural to every BIRCH-family tree rather than a bug in this one: the prototype set is a
+  greedy threshold-net built **in arrival order**, so which regions get a prototype — and how many —
+  is a function of the sequence. `leaf_refit` moves each prototype onto the centroid of its cell but
+  never changes which cells exist, which is exactly why it improved quality and left the order gap
+  intact.
+
+  With `canonical_order=True` the rows are sorted by a key derived from the data before the first
+  insert, and **the guarantee is exact**: two permutations of the same rows produce label arrays that
+  are equal element for element. Pairwise ARI between orders goes from 0.22–0.68 to **1.0000**. The
+  key is a Morton code over eight random projections drawn from a fixed constant — deliberately not
+  from `seed`, so varying `seed` re-runs the head over one fixed summary — with ties broken on the
+  full row, because a key alone is not a total order and colliding rows would otherwise keep the
+  caller's order and void the whole guarantee. New `betula_cluster::order` module; `CFTree::
+  build_parallel` gains a trailing `order` argument and shards *ranks*, so the sharded path is
+  invariant too.
+
+  **It buys reproducibility, not accuracy, and the measurements are what say so.** Over 16 cells —
+  `digits` / `blobs` / `news256` / `mnist20k` × two leaf budgets × `kmeans` and `ward`, eight
+  permutations each — the median change against the arrival order's median draw is **+0.003 ARI**,
+  12 of 16 cells non-negative. It replaces a lottery with a fixed draw rather than moving the
+  expectation. The build does get cheaper, **0.66–0.96×**, because spatially coherent inserts split
+  less. Low-discrepancy walks over the sorted order (van der Corput, round-robin stride) were
+  measured and rejected: 5/16 and 7/16 non-negative against this scheme's 12/16, for an extra magic
+  constant.
+
+  Default off, because it relabels. Two scoping rules: the guarantee is **per `n_jobs`** (sharding
+  splits ranks, so changing `n_jobs` still changes the labels), and it applies to the dense
+  in-memory `fit` / `fit_predict` only — a `partial_fit` stream never holds the whole dataset, so it
+  ignores the flag rather than raising, the same asymmetry as `leaf_refit`.
+
 - **`leaf_refit=` — Lloyd at the micro-cluster level, and an honest account of what it does and does
   not fix.** A leaf CF in every BIRCH-family tree is an *absorption history*: the rows it swallowed
   as they arrived, weighted by nothing but arrival order. The tree those rows finished in routes a
