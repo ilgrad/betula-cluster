@@ -905,6 +905,29 @@ def test_a_column_major_array_is_read_as_rows_and_not_as_its_transpose(blobs, dt
     assert np.array_equal(a.weights, b.weights)
 
 
+def test_the_answer_depends_on_the_values_and_not_on_how_numpy_stores_them(blobs):
+    """The column-major defect above was one member of a class: an input numpy accepts, that the
+    boundary reads through the wrong stride assumption, and that fails by returning a plausible wrong
+    answer instead of an error. The benchmark harness could never catch it — every dataset in
+    `bench/` arrives C-contiguous, so one layout was all that was ever exercised. This pins the rest
+    of the class in one place, and the last case is here because the honest response to a
+    representation the engine cannot read is a refusal, not a reinterpretation."""
+    x, _ = blobs
+    kw = dict(method="kmeans", max_leaves=200, seed=0)
+    base = betula_cluster.fit_predict(np.ascontiguousarray(x), 4, **kw)
+    for tag, arr in (
+        ("column-major", np.asfortranarray(x)),
+        ("strided view", np.repeat(x, 2, axis=0)[::2]),
+        ("non-owning slice", np.vstack([x, x])[: len(x)]),
+        ("double transpose", x.T.T),
+        ("explicit little-endian", x.astype("<f8")),
+    ):
+        assert np.array_equal(base, betula_cluster.fit_predict(arr, 4, **kw)), tag
+
+    with pytest.raises(ValueError, match="float32 or float64"):
+        betula_cluster.fit_predict(x.astype(">f8"), 4, **kw)
+
+
 def test_float32_reproduces_float64_on_normal_range(blobs):
     x, y = blobs
     kw = dict(feature="diagonal", method="gmm", threshold=0.05, max_leaves=300, seed=1)
