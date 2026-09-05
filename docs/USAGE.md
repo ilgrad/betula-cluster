@@ -864,11 +864,28 @@ canonical order, so two runs now summarise at the same resolution and not merely
 
 **Nor is it free.** Measured on the engine, A-B-A-B on one build, medians of three:
 `200k × 20` 1.19×, `200k × 128` 0.83×, `100k × 784` 1.06×, `20k × 784` 1.33× — a wash to modestly
-slower. Spatially coherent inserts really do split less, which is where the one speed-up comes from,
-but the pass pays for the key and for walking `X` through a permutation instead of front to back.
-A Python prototype of this measured 0.66–0.96× and was misleading: it materialised the reordered
-rows, buying back sequential access at the cost of a second copy of the input — which is exactly the
-29 GB duplicate the zero-copy ingest exists to avoid, so the engine indexes instead.
+slower. A Python prototype of this measured 0.66–0.96× and was misleading: it materialised the
+reordered rows, buying back sequential access at the cost of a second copy of the input — which is
+exactly the 29 GB duplicate the zero-copy ingest exists to avoid, so the engine indexes instead.
+
+`cargo bench --bench canonical_order` splits that number into the three things it pays for, and the
+mechanism is **two effects pulling opposite ways** rather than the "coherent inserts split less" this
+page claimed before it was measured:
+
+| shape | `max_leaves` | key | insert | total | rebuilds |
+|---|---|---|---|---|---|
+| 200k × 20 | 2000 | 20.5 % | 1.11× | 1.32× | 67 → 60 |
+| 200k × 20 | 8000 | 9.6 % | 0.95× | 1.05× | 43 → 42 |
+| 200k × 128 | 2000 | 11.4 % | 0.77× | 0.88× | 4 → 16 |
+| 200k × 128 | 8000 | 5.3 % | **0.58×** | **0.63×** | 6 → 10 |
+| 50k × 784 | 2000 | 6.9 % | 0.83× | 0.90× | 3 → 14 |
+| 50k × 784 | 8000 | 3.3 % | **1.56×** | **1.59×** | 3 → 30 |
+
+A coherent stream re-descends the same subtree, which is cache-friendly and is where the 0.58× comes
+from. But it also fills the leaf budget with fine leaves in one region before the next region
+arrives, so the tree has to **rebuild** more often — 3 → 30 at the worst shape, and that is what makes
+it 1.56× there. The key itself is 3–20 % and runs through the same SIMD `dot` the distance path uses;
+as an unvectorised rank-1 accumulate it was roughly twice that.
 
 Low-discrepancy walks over the sorted order (van der Corput, round-robin stride) were measured and
 rejected — 5/16 and 7/16 cells non-negative against this scheme's 12/16, for an extra constant.

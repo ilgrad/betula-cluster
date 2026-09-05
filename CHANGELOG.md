@@ -228,10 +228,14 @@ arms differing only in the code under test.
   and −0.061. The **realised leaf count** stops varying as well — it moved in 18 of the 27 cells and
   is now constant, so two runs summarise at the same resolution. Nor is it free: on the engine itself, A-B-A-B on one build, the fit runs **0.83-1.33x**
   across four shapes (`200k x 20` 1.19x, `200k x 128` 0.83x, `100k x 784` 1.06x, `20k x 784` 1.33x) —
-  a wash to modestly slower. Spatially coherent inserts do split less, but the pass pays for the key
-  and for walking `X` through a permutation rather than front to back. A Python prototype read
-  0.66-0.96x and was misleading, because it materialised the reordered rows and so bought back
-  sequential access at the price of a second copy of the input. Low-discrepancy walks over the sorted
+  a wash to modestly slower. A Python prototype read 0.66-0.96x and was misleading, because it
+  materialised the reordered rows and so bought back sequential access at the price of a second copy
+  of the input. `benches/canonical_order.rs` splits the cost three ways and shows the mechanism is
+  two opposing effects, not the "coherent inserts split less" first published here: a coherent stream
+  re-descends the same subtree (cache-friendly, down to 0.58x) but fills the leaf budget in one
+  region before the next arrives, so it *rebuilds* more often -- 3 -> 30 at `50k x 784`,
+  `max_leaves=8000`, which is what makes that shape 1.56x. The key is 3-20 % of the fit and now runs
+  through the SIMD `dot` kernel; unvectorised it was about twice that. Low-discrepancy walks over the sorted
   order (van der Corput, round-robin stride) were measured and rejected: 5/16 and 7/16 non-negative
   against this scheme's 12/16, for an extra magic constant.
 

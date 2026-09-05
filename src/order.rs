@@ -35,18 +35,28 @@
 //!
 //! # What it does and does not buy
 //!
-//! Measured over 16 cells — `digits` / `blobs` / `news256` / `mnist20k`, two leaf budgets, `kmeans`
-//! and `ward`, eight permutations each (`local/scratch/canonical_choice.py`):
+//! The published sweep is `bench/insertion_order.py` — `digits` / `covtype-20k` / `mnist-10k`, three
+//! leaf budgets, `kmeans` / `gmm` / `ward`, eight permutations per arm, 27 canonical cells:
 //!
-//! - **Order invariance is exact**, not approximate. Pairwise ARI between permutations goes from
-//!   0.22-0.68 to 1.0000, and the label arrays are equal element for element.
-//! - **The build gets slightly cheaper**, 0.66-0.96x the arrival-order fit, because a spatially
-//!   coherent insertion sequence descends more consistently and splits less.
-//! - **Quality is a wash.** The median change against the arrival order's *median* draw is +0.003
-//!   ARI, and 12 of 16 cells are non-negative. This removes the lottery; it does not improve the
-//!   expected result, and no honest reading of the numbers says otherwise. Low-discrepancy walks
-//!   over the sorted order (van der Corput, round-robin stride) were measured too and do not earn
-//!   their extra constant: 5/16 and 7/16 cells non-negative against this scheme's 12/16.
+//! - **Order invariance is exact**, not approximate. In every one of the 27 cells the ARI spread is
+//!   `0.0000`, the pairwise ARI is `1.0000` as both mean and minimum, and the realised leaf count is
+//!   constant — the label arrays are equal element for element. The benchmark asserts this rather
+//!   than reporting it.
+//! - **The build cost moves both ways and the mechanism is two opposing effects**, decomposed in
+//!   `benches/canonical_order.rs`: a coherent stream re-descends the same subtree, which is
+//!   cache-friendly, but it also fills the leaf budget with fine leaves in one region and then has
+//!   to *rebuild* when the next region arrives. Rebuild counts go 67 -> 60 at `d = 20` and 3 -> 30 at
+//!   `d = 784, max_leaves = 8000`, where the second effect wins and the insert costs 1.56x.
+//! - **Quality is a wash.** Against the arrival order's *median* draw: mean +0.0136, median
+//!   **-0.0017**, non-negative in 10 of 27, and inside the order arm's own `[min, max]` in 21 of 27.
+//!   This removes the lottery; it does not improve the expected result, and no honest reading of the
+//!   numbers says otherwise. The positive mean is two cells where arrival order was collapsing a
+//!   `gmm` head.
+//!
+//! The *scheme* was chosen on a separate 16-cell study (`local/scratch/canonical_choice.py`) that
+//! scored four candidate keys against the same yardstick: this one was non-negative in 12/16 cells
+//! against `lex`'s 8/16, and low-discrepancy walks over the sorted order (van der Corput,
+//! round-robin stride) came in at 5/16 and 7/16, so they do not earn their extra constant.
 
 use crate::clustering::rng::SplitMix64;
 use crate::types::Real;
@@ -97,23 +107,32 @@ pub fn canonical_permutation<R: Real>(flat: &[R], n: usize, dim: usize) -> Vec<u
 /// one axis.
 fn morton_codes<R: Real>(flat: &[R], n: usize, dim: usize) -> Vec<u64> {
     let mut rng = SplitMix64::new(PROJECTION_SEED);
-    // Row-major `dim × PROJECTIONS`; the 1/sqrt(dim) scale keeps the projections comparable in
-    // magnitude across dimensions, which matters only for readability since each is ranged
-    // independently below.
+    // Projection-major (`PROJECTIONS × dim`), not row-major, so each projection is a contiguous
+    // `dim`-length slice and the pass below is [`kernels::dot`] — the same SIMD kernel the distance
+    // path uses. As a row-major `dim × PROJECTIONS` rank-1 accumulate it did not vectorise and cost
+    // 7-21 % of the fit (`benches/canonical_order.rs`). The row is re-read once per projection
+    // instead of once in total, which is free: it is in L1 by the second pass at every `dim` this
+    // sees. The `1/sqrt(dim)` scale only keeps the values readable — each projection is ranged
+    // independently below, so it cancels.
     let scale = 1.0 / (dim as f64).sqrt();
-    let proj: Vec<f64> = (0..dim * PROJECTIONS)
-        .map(|_| rng.gauss() * scale)
-        .collect();
+    let mut proj: Vec<R> = vec![R::zero(); dim * PROJECTIONS];
+    for d in 0..dim {
+        for j in 0..PROJECTIONS {
+            // Drawn in `(d, j)` order and *stored* at `(j, d)`. Transposing the layout without
+            // transposing the draw keeps every projection vector bit-identical to the row-major
+            // version this replaced, so the published order-invariance sweep still describes the
+            // shipped key.
+            proj[j * dim + d] = R::from_f64(rng.gauss() * scale).unwrap_or_else(R::zero);
+        }
+    }
 
     let mut z = vec![0.0f64; n * PROJECTIONS];
     for i in 0..n {
         let row = &flat[i * dim..(i + 1) * dim];
-        for (d, x) in row.iter().enumerate() {
-            let x = x.to_f64().unwrap_or(0.0);
-            let p = &proj[d * PROJECTIONS..(d + 1) * PROJECTIONS];
-            for j in 0..PROJECTIONS {
-                z[i * PROJECTIONS + j] += x * p[j];
-            }
+        for j in 0..PROJECTIONS {
+            z[i * PROJECTIONS + j] = crate::kernels::dot(row, &proj[j * dim..(j + 1) * dim])
+                .to_f64()
+                .unwrap_or(0.0);
         }
     }
 

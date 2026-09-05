@@ -2273,9 +2273,11 @@ heavy compression on high-dimensional data should know that.
 
 **It is not free either.** Measured separately on the extension, A-B-A-B on one build, medians of
 three: `200k × 20` **1.19×**, `200k × 128` **0.83×**, `100k × 784` **1.06×**, `20k × 784` **1.33×**
-the arrival-order fit — a wash to modestly slower. Spatially coherent inserts do split less, which is
-where the one speed-up comes from, but the pass pays for computing the key and for walking `X`
-through a permutation instead of front to back.
+the arrival-order fit — a wash to modestly slower. `benches/canonical_order.rs` splits that into the
+key (3–20 % of the fit), the sort, and the insert, and shows the mechanism is two opposing effects: a
+coherent stream re-descends the same subtree, which is cache-friendly and takes the insert down to
+0.58×, but it also fills the leaf budget in one region before the next arrives, so the tree rebuilds
+more often — 3 → 30 at `50k × 784`, `max_leaves = 8000`, which is what makes that shape 1.56×.
 
 The practical reading: `canonical_order=True` when reproducibility matters — the same rows must give
 the same answer however they arrived — and the default arrival order otherwise. The older advice

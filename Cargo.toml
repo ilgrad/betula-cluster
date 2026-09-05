@@ -54,6 +54,10 @@ harness = false
 name = "tree_insert"
 harness = false
 
+[[bench]]
+name = "canonical_order"
+harness = false
+
 [features]
 default = ["parallel"]
 parallel = ["dep:rayon"]
