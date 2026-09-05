@@ -559,6 +559,47 @@ mod tests {
         }
     }
 
+    /// The walk has to keep going when one column list is exhausted and the other is not, and this
+    /// is the smallest fixture that proves it. The seven-row case above contains the same pair, but
+    /// cannot decide it: a guard that stops early answers `Equal`, and where several rows are tied
+    /// the order of any one of them is settled by the sort's internals rather than by the
+    /// comparison — which is how that pair came out right for the wrong reason.
+    ///
+    /// Two rows in the collision and nothing else, so the comparison is the only thing that can
+    /// order them. Both the sign of the deciding column and the arrival order are load-bearing: the
+    /// sort is stable, so an early `Equal` leaves the pair as it arrived, and only a verdict that
+    /// moves the *later* row forward is distinguishable from that. Hence the tail is negative and
+    /// the longer row arrives second — and both orders are run, since the mirrored one exhausts the
+    /// other list and would pass either way.
+    #[test]
+    fn a_row_that_runs_out_of_columns_first_is_still_compared_to_the_end() {
+        let dim = 4;
+        let rows: Vec<(Vec<i64>, Vec<f64>)> = vec![
+            (vec![0], vec![1.0]),
+            // The column that decides it — reachable only after the short row is spent.
+            (vec![0, 2], vec![1.0, -3.0]),
+            (vec![0, 1, 2, 3], vec![1e6; 4]),
+        ];
+        let n = rows.len();
+        for order in [vec![0, 1, 2], vec![1, 0, 2]] {
+            let (mut d, mut ix, mut ip) = (vec![], vec![], vec![0i64]);
+            let mut flat = vec![0.0; n * dim];
+            for (r, &i) in order.iter().enumerate() {
+                ix.extend_from_slice(&rows[i].0);
+                d.extend_from_slice(&rows[i].1);
+                ip.push(d.len() as i64);
+                for (&c, &v) in rows[i].0.iter().zip(&rows[i].1) {
+                    flat[r * dim + c as usize] = v;
+                }
+            }
+            assert_eq!(
+                canonical_permutation_csr(&d, &ix, &ip, dim).unwrap(),
+                canonical_permutation(&flat, n, dim),
+                "arrival order {order:?}"
+            );
+        }
+    }
+
     /// The shard count has to be a function of `n` and nothing else — a rule that consulted the
     /// thread count, the core count or `max_leaves` would put a machine or a knob back into the
     /// summary. The cases below are the three that carry that: small inputs stay on the sequential
@@ -668,6 +709,26 @@ mod tests {
         assert!(canonical_permutation_csr(&data, &[1i64, 0, 0, 1], &indptr, 4).is_err());
         assert!(canonical_permutation_csr(&data, &[0i64, 0, 0, 1], &indptr, 4).is_err());
         assert!(canonical_permutation_csr(&data, &[0i64, 1, 0, 1], &indptr, 4).is_ok());
+    }
+
+    /// The degenerate shapes short-circuit *before* the index check, and that ordering is the
+    /// contract: with one row or no columns there is no walk to mis-compare, so refusing would be
+    /// gratuitous. Fewer than two rows, and two rows over no columns, both return the identity —
+    /// the single unsorted row is the case that pins which of the two guards fires.
+    #[test]
+    fn degenerate_csr_shapes_return_the_identity_without_checking_the_indices() {
+        assert_eq!(
+            canonical_permutation_csr::<f64>(&[], &[], &[0], 4).unwrap(),
+            Vec::<u32>::new()
+        );
+        assert_eq!(
+            canonical_permutation_csr(&[1.0, 2.0], &[1i64, 0], &[0, 2], 4).unwrap(),
+            vec![0]
+        );
+        assert_eq!(
+            canonical_permutation_csr::<f64>(&[], &[], &[0, 0, 0], 0).unwrap(),
+            vec![0, 1]
+        );
     }
 
     /// Locality is the reason for the projection: consecutive rows in canonical order should be
