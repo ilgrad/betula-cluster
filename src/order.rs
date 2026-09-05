@@ -364,6 +364,82 @@ mod tests {
         assert_eq!(seq(&forward), seq(&backward));
     }
 
+    /// What the quantiser does to three collinear rows, derived rather than recorded.
+    ///
+    /// Each projection is ranged over its own observed span, so on `{-1, 0, +1}` scaled by the
+    /// projection's own weight sum, one antipode minimises every projection and the other maximises
+    /// it. Which of the two is which flips with the sign of that weight sum — so the codes are not
+    /// `0` and `u64::MAX`, they are **bitwise complements**, and the sign pattern is what decides
+    /// the halves. The centre row sits at exactly half of every span, level `round(0.5 · 255) = 128`
+    /// in all eight projections; level 128 is bit 7 alone, and the interleaving puts projection `j`'s
+    /// bit `b` at position `b · PROJECTIONS + j`, so its code is bits 56–63 and nothing else.
+    ///
+    /// It is here because the invariance tests cannot see the arithmetic at all: they hold for *any*
+    /// deterministic key, so a quantiser that clamps to the wrong width, masks with the wrong
+    /// operator or ranges against the wrong origin satisfies every one of them. The centre row is
+    /// what catches an inverted mask specifically — at levels 0 and 255 an inversion maps the code
+    /// set onto itself, and only an interior level can tell the two apart.
+    #[test]
+    fn three_collinear_rows_quantise_to_the_levels_the_ranging_implies() {
+        let dim = 6;
+        let flat: Vec<f64> = [vec![-1.0; dim], vec![0.0; dim], vec![1.0; dim]].concat();
+        let codes = morton_codes(&flat, 3, dim);
+        assert_eq!(codes[0] ^ codes[2], u64::MAX, "antipodes are complements");
+        assert_eq!(
+            codes[1], 0xFF00_0000_0000_0000,
+            "the centre is level 128 in all 8"
+        );
+    }
+
+    /// A change to the key is a change to every label the library has ever published, so it must not
+    /// be possible to make one by accident. Nothing else in this module can catch it: the key's only
+    /// requirement is determinism, and every property test here is satisfied by any deterministic
+    /// key at all. This pins one fixture's answer so that a changed projection draw, a changed seed
+    /// or a changed bit layout shows up as a failing test rather than as a silent relabelling.
+    ///
+    /// It is change-detection, not correctness — if it fails, the question is whether the change was
+    /// intended, and the answer belongs in `CHANGELOG.md` under a version bump.
+    #[test]
+    fn the_key_is_pinned_so_a_change_to_it_cannot_pass_unnoticed() {
+        let (n, dim) = (12, 5);
+        let flat = rows(n, dim, 7);
+        assert_eq!(
+            canonical_permutation(&flat, n, dim),
+            vec![4, 9, 11, 8, 5, 6, 1, 0, 3, 2, 7, 10],
+        );
+    }
+
+    /// The tie-break decides the order of every row inside a collision, and on the sparse path it is
+    /// a merge walk over two column lists — twenty of its mutants survived the first mutation run
+    /// because no test ever reached it. Collisions are not rare on real data but they are hard to
+    /// arrange on a small fixture, so this one forces them: a single far-away row stretches every
+    /// projection's span so wide that the whole cluster quantises to level 0, and the comparator
+    /// alone decides its order.
+    ///
+    /// Comparing against the dense path is what makes this a test rather than a snapshot — the two
+    /// comparators are written independently (dense walks one slice, sparse merges two column
+    /// lists), so agreement is evidence and not a recording.
+    #[test]
+    fn a_code_collision_is_broken_the_same_way_on_csr_as_on_dense() {
+        let (n, dim) = (17, 4);
+        let mut flat = rows(n - 1, dim, 21);
+        flat.extend(std::iter::repeat_n(1e6, dim));
+
+        let codes = morton_codes(&flat, n, dim);
+        let distinct: std::collections::HashSet<u64> = codes.iter().copied().collect();
+        assert!(
+            distinct.len() < n,
+            "the fixture must collide or it exercises nothing: {} distinct codes for {n} rows",
+            distinct.len()
+        );
+
+        let (data, indices, indptr) = to_csr(&flat, n, dim);
+        assert_eq!(
+            canonical_permutation_csr(&data, &indices, &indptr, dim).unwrap(),
+            canonical_permutation(&flat, n, dim),
+        );
+    }
+
     /// The shard count has to be a function of `n` and nothing else — a rule that consulted the
     /// thread count, the core count or `max_leaves` would put a machine or a knob back into the
     /// summary. The cases below are the three that carry that: small inputs stay on the sequential
