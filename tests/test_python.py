@@ -907,8 +907,8 @@ def test_a_column_major_array_is_read_as_rows_and_not_as_its_transpose(blobs, dt
 
 def test_the_answer_depends_on_the_values_and_not_on_how_numpy_stores_them(blobs):
     """The column-major defect above was one member of a class: an input numpy accepts, that the
-    boundary reads through the wrong stride assumption, and that fails by returning a plausible wrong
-    answer instead of an error. The benchmark harness could never catch it — every dataset in
+    boundary reads through the wrong stride assumption, and that fails by returning a plausible
+    wrong answer instead of an error. The benchmark harness could never catch it — every dataset in
     `bench/` arrives C-contiguous, so one layout was all that was ever exercised. This pins the rest
     of the class in one place, and the last case is here because the honest response to a
     representation the engine cannot read is a refusal, not a reinterpretation."""
