@@ -805,7 +805,8 @@ It is worth the pass where the compression is real. ARI against the labels, medi
 on **raw features** (`sklearn.datasets.load_digits().data` and the first 10 000 rows of
 `fetch_openml("mnist_784")`) with every other parameter left at its default — the setup is stated
 because an earlier version of this table did not state one, and turned out to have been measured
-under two different ones:
+under two different ones. The harness is
+[`bench/leaf_refit.py`](https://github.com/ilgrad/betula-cluster/blob/main/bench/leaf_refit.py):
 
 | | arrival, `leaf_refit=0` | arrival, `=1` | canonical, `=0` | canonical, `=1` |
 |---|---|---|---|---|
