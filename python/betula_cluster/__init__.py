@@ -702,12 +702,14 @@ class Betula:
         # function of the multiset and not of the arrival sequence. Every BIRCH-family tree builds
         # its prototype set as a greedy threshold-net in arrival order, which is why two orders of
         # the same rows disagree more than two seeds do; with this on, they agree exactly -- the
-        # label arrays are equal element for element, at a fixed `n_jobs`. Dense in-memory
-        # `fit` / `fit_predict` only, for the same reason as `leaf_refit`: a `partial_fit` stream
-        # never holds the whole dataset, and ordering a chunk would be canonical for the wrong set.
-        # It buys reproducibility, not accuracy -- over 16 dataset x budget x head cells the median
-        # change against the arrival order's median draw is +0.003 ARI. The build is slightly
-        # cheaper (0.66-0.96x), because spatially coherent inserts split less.
+        # label arrays are equal element for element. Dense or CSR `fit` / `fit_predict`, but not a
+        # `partial_fit` stream, for the same reason as `leaf_refit`: a stream never holds the whole
+        # dataset, and ordering a chunk would be canonical for the wrong set.
+        # It also takes `n_jobs` out of the answer -- the shard count is derived from `n` instead,
+        # since shards are the partition and two counts summarise differently (0.46 pairwise ARI
+        # between `n_jobs=1` and `n_jobs=8` under compression). It buys reproducibility, not
+        # accuracy: over 27 dataset x budget x head cells the median change against the arrival
+        # order's median draw is -0.002 ARI, and the fit runs 0.83-1.33x.
         self.canonical_order = canonical_order
         # Subspace rank q of the two subspace heads: each component's covariance is W Wᵀ + σ²I
         # (method="mppca") or W Wᵀ + diag(ψ) (method="mfa") with W of rank q, clamped to at most

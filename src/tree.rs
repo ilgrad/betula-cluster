@@ -162,22 +162,30 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> CF
         }
     }
 
-    /// Build a tree from `n` row-major points in `flat` using `shards` parallel workers: each worker
-    /// builds an independent sub-tree over a contiguous slice, then their leaf CFs are merged into a
-    /// final tree. Phase-1 insertion is otherwise serial (each insert depends on the tree state), so
-    /// this is the main lever for large `N`. The result is a *valid* summary of all points with
-    /// exact moments (CF is a commutative monoid), but its leaf structure — and hence the labels —
-    /// differs from the sequential build, exactly as a different BIRCH insertion order would. Use
-    /// the sequential path when bit-exact reproducibility matters.
+    /// Build a tree from `n` row-major points in `flat` as `shards` independent sub-trees over
+    /// contiguous slices, whose leaf CFs are then merged into a final tree. Phase-1 insertion is
+    /// otherwise serial (each insert depends on the tree state), so this is the main lever for large
+    /// `N`. The result is a *valid* summary of all points with exact moments (CF is a commutative
+    /// monoid), but its leaf structure — and hence the labels — differs from the sequential build,
+    /// exactly as a different BIRCH insertion order would.
+    ///
+    /// **`shards` is part of the answer, the thread count is not.** The `parallel` feature decides
+    /// only whether the sub-trees are built on one core or many; the partition, the per-shard budget
+    /// and the merge order are the same either way, so a build with the feature off produces the
+    /// same tree as one with it on. Trading a thread-count dependence for a build-configuration
+    /// dependence would be no improvement, which is why this is not two functions.
     ///
     /// `order`, when given, is the sequence of row indices to feed instead of `0..n` — see
     /// [`crate::order::canonical_permutation`]. Sharding then splits *ranks* rather than rows, so
     /// the shard a row lands in is a function of the data and the result is invariant to the input
-    /// order at a fixed `shards`. It is not invariant across different `shards`, and cannot be:
-    /// the merge sees a different set of sub-summaries.
-    #[cfg(feature = "parallel")]
+    /// order at a fixed `shards`. It is not invariant across different `shards`, and cannot be: the
+    /// merge sees a different set of sub-summaries. Callers who need that invariance derive `shards`
+    /// from the data — [`crate::order::canonical_shards`].
+    ///
+    /// `shards = 1` is *not* the sequential build: the single sub-tree's leaf CFs are still
+    /// re-inserted into a fresh tree, and descent is not the inverse of absorption.
     #[allow(clippy::too_many_arguments)]
-    pub fn build_parallel(
+    pub fn build_sharded(
         dim: usize,
         branching: usize,
         leaf_cap: usize,
@@ -195,7 +203,6 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> CF
         D: Clone,
         A: Clone,
     {
-        use rayon::prelude::*;
         let shards = shards.max(1).min(n.max(1));
         let chunk = n.div_ceil(shards);
         // Each shard summarises its slice to `max_leaves / shards` leaves — the same points-per-leaf
@@ -203,28 +210,35 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> CF
         // merge handles only ~`max_leaves` CFs total instead of `shards · max_leaves` (which would
         // make the sequential merge dominate and erase the parallel gain).
         let sub_max = (max_leaves / shards).max(leaf_cap.max(branching));
-        let subtrees: Vec<Self> = (0..shards)
-            .into_par_iter()
-            .map(|s| {
-                let lo = s * chunk;
-                let hi = ((s + 1) * chunk).min(n);
-                let mut t = Self::new(
-                    dim,
-                    branching,
-                    leaf_cap,
-                    threshold,
-                    sub_max,
-                    dist.clone(),
-                    abs.clone(),
-                );
-                t.set_balance(balance);
-                for rank in lo..hi {
-                    let i = order.map_or(rank, |o| o[rank] as usize);
-                    t.insert(&flat[i * dim..(i + 1) * dim]);
-                }
-                t
-            })
-            .collect();
+        let shard = |s: usize| {
+            let lo = s * chunk;
+            let hi = ((s + 1) * chunk).min(n);
+            let mut t = Self::new(
+                dim,
+                branching,
+                leaf_cap,
+                threshold,
+                sub_max,
+                dist.clone(),
+                abs.clone(),
+            );
+            t.set_balance(balance);
+            for rank in lo..hi {
+                let i = order.map_or(rank, |o| o[rank] as usize);
+                t.insert(&flat[i * dim..(i + 1) * dim]);
+            }
+            t
+        };
+        // Indexed `collect` preserves shard order in both arms, which is what keeps the merge — and
+        // therefore the labels — the same under either feature setting.
+        #[cfg(feature = "parallel")]
+        let subtrees: Vec<Self> = {
+            use rayon::prelude::*;
+            (0..shards).into_par_iter().map(shard).collect()
+        };
+        #[cfg(not(feature = "parallel"))]
+        let subtrees: Vec<Self> = (0..shards).map(shard).collect();
+
         let mut tree = Self::new(dim, branching, leaf_cap, threshold, max_leaves, dist, abs);
         tree.set_balance(balance);
         for sub in &subtrees {
@@ -1819,14 +1833,13 @@ mod tests {
         assert!((tree.leaf_features()[near].mean()[0] - 10.0).abs() < 1e-9);
     }
 
-    #[cfg(feature = "parallel")]
     #[test]
-    fn parallel_build_is_exact_and_bounded() {
+    fn a_sharded_build_is_exact_and_bounded() {
         // Shard+merge summarizes every point (exact total weight) and respects the leaf bound.
         let pts = pseudo(3000, 3);
         let n = pts.len();
         let flat: Vec<f64> = pts.iter().flatten().copied().collect();
-        let par = CFTree::<f64, Spherical<f64>, _, _>::build_parallel(
+        let par = CFTree::<f64, Spherical<f64>, _, _>::build_sharded(
             3,
             16,
             16,
@@ -1850,7 +1863,6 @@ mod tests {
     /// Sharding splits *ranks*, not rows, so which shard a row lands in is a function of the data.
     /// Get that wrong -- shard by row index and then feed the order inside each shard -- and the
     /// parallel path silently keeps the order dependence the canonical order exists to remove.
-    #[cfg(feature = "parallel")]
     #[test]
     fn a_sharded_build_through_a_canonical_order_is_invariant_to_the_input_order() {
         use crate::order::canonical_permutation;
@@ -1862,7 +1874,7 @@ mod tests {
         let reversed: Vec<f64> = pts.iter().rev().flatten().copied().collect();
 
         let build = |data: &[f64], order: Option<&[u32]>| {
-            CFTree::<f64, Spherical<f64>, _, _>::build_parallel(
+            CFTree::<f64, Spherical<f64>, _, _>::build_sharded(
                 3,
                 16,
                 16,
@@ -1893,7 +1905,45 @@ mod tests {
         assert!(centres(&build(&flat, None)) != centres(&build(&reversed, None)));
     }
 
-    #[cfg(feature = "parallel")]
+    /// The shard count is part of the answer, so a build that promises invariance must not take it
+    /// from a thread count. This pins the *mechanism* that forces the choice — two counts hold
+    /// different point sets and no merge order repairs that — so that anyone tempted to hand
+    /// `n_jobs` back to `build_sharded` sees the cost first.
+    #[test]
+    fn two_shard_counts_summarise_the_same_canonical_order_differently() {
+        use crate::order::canonical_permutation;
+        let pts = pseudo(4000, 3);
+        let n = pts.len();
+        let flat: Vec<f64> = pts.iter().flatten().copied().collect();
+        let perm = canonical_permutation(&flat, n, 3);
+        let build = |shards: usize| {
+            CFTree::<f64, Spherical<f64>, _, _>::build_sharded(
+                3,
+                16,
+                16,
+                0.0,
+                200,
+                CentroidEuclidean,
+                CentroidEuclidean,
+                &flat,
+                n,
+                shards,
+                None,
+                Some(&perm),
+            )
+        };
+        let means = |t: &CFTree<f64, Spherical<f64>, _, _>| {
+            t.leaf_features()
+                .iter()
+                .map(|f| f.mean().to_vec())
+                .collect::<Vec<_>>()
+        };
+        assert_ne!(means(&build(2)), means(&build(8)));
+        // ...while the count itself is all that decides it: the same count twice is bit-identical,
+        // which is the half of the property `canonical_shards` turns into a promise.
+        assert_eq!(means(&build(8)), means(&build(8)));
+    }
+
     #[test]
     fn a_shard_gets_its_own_slice_of_the_leaf_budget() {
         // Each shard summarises to `max_leaves / shards`, which is the same points-per-leaf resolution
@@ -1907,7 +1957,7 @@ mod tests {
         let pts = pseudo(4000, 3);
         let n = pts.len();
         let flat: Vec<f64> = pts.iter().flatten().copied().collect();
-        let par = CFTree::<f64, Spherical<f64>, _, _>::build_parallel(
+        let par = CFTree::<f64, Spherical<f64>, _, _>::build_sharded(
             3,
             LEAF_CAP,
             LEAF_CAP,

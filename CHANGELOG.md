@@ -39,12 +39,41 @@ All notable changes to this project are documented here. The format follows
   sentinel, and all 13 scripts pass it.
 
 ### Changed
-- **`CFTree::build_parallel` takes a trailing `order: Option<&[u32]>` — a breaking change for Rust
-  crate users.** Python callers are unaffected. `None` reproduces the previous behaviour exactly, so
-  the migration is one argument. The parameter exists because sharding had to split *ranks* of the
-  canonical order rather than rows: sharding rows would have kept the insertion-order dependence
-  while looking like it removed it, which is a failure mode no test would have caught by accident,
-  so there is one that fails on exactly that mistake.
+- **`CFTree::build_parallel` is now `CFTree::build_sharded`, is compiled without the `parallel`
+  feature, and takes a trailing `order: Option<&[u32]>` — a breaking change for Rust crate users.**
+  Python callers are unaffected; the migration is a rename plus one argument, and `None` reproduces
+  the previous behaviour exactly.
+
+  The `order` parameter exists because sharding had to split *ranks* of the canonical order rather
+  than rows: sharding rows would have kept the insertion-order dependence while looking like it
+  removed it, which is a failure mode no test would have caught by accident, so there is one that
+  fails on exactly that mistake.
+
+  The rename and the un-gating go together, and both come from the same rule — **the thread count
+  and the build configuration are not allowed into the answer, only the shard count is.** The old
+  name said "parallel" for something whose observable effect is a partition, and the old `#[cfg]`
+  meant a crate built without `parallel` silently produced a *different summary* for the same
+  `n_jobs`. rayon now supplies the schedule and nothing else: the partition, the per-shard budget and
+  the merge order are identical either way, and the tests that cover them run in both
+  configurations rather than only under `--features parallel`.
+
+- **`n_jobs` no longer reaches the summary when `canonical_order=True`.** It was the shard count, and
+  shards are the partition: two counts hold different point sets and build different sub-summaries,
+  which no merge order repairs. Measured over the 27 published cells at `n_jobs ∈ {1, 2, 4, 8}`,
+  labels at `n_jobs=8` agreed with `n_jobs=1` at pairwise ARI **0.46 on average, 0.098 at worst**
+  wherever compression was real — as wide as the row-order gap `canonical_order` exists to close, and
+  a straight violation of sklearn's contract that `n_jobs` does not change results. A guarantee that
+  survives a reshuffle but not a `n_jobs=8` is not a guarantee.
+
+  With the flag on, the shard count is `clamp(n / 25000, 1, 64)` — a function of the data — and
+  `n_jobs` is ignored for the tree build; parallelism comes from `RAYON_NUM_THREADS`, as it already
+  does for the kernels and the Phase-3 heads. The constant is the measured knee rather than a round
+  number: at `n = 200k, max_leaves = 2000` a `kmeans` fit reads 1.00 / 1.90 / 2.66 / **3.42** / 3.71
+  / 3.91× for 1 / 2 / 4 / 8 / 16 / 32 shards, so 25 000 rows per shard buys 87 % of the available
+  speed-up and leaves the partition four times coarser than the alternative. Sharding's quality cost
+  was measured *before* the constant was picked and is a wash (`n_jobs=8` minus `n_jobs=1`, mean
+  **+0.004** ARI). Inputs under 25 000 rows return one shard and keep the plain sequential build, so
+  every published cell is unchanged. With the flag off nothing changes at all.
 - **The scoreboard ratchet identified a cell by who won it, so a champion changing read as a result
   vanishing.** `bench/scoreboard.py --check` is now a CI job, and it could not have been one before:
   on a clean tree it failed, reporting two `results_sparse` cells as VANISHED. Neither had moved —
@@ -216,7 +245,7 @@ arms differing only in the code under test.
   full row, because a key alone is not a total order and colliding rows would otherwise keep the
   caller's order and void the whole guarantee. New `betula_cluster::order` module; the sharded path
   is invariant too, because sharding splits *ranks* of the canonical order rather than rows — see
-  the `CFTree::build_parallel` note under **Changed**.
+  the `CFTree::build_sharded` note under **Changed**.
 
   **It buys reproducibility, not accuracy, and the measurements are what say so.** In the published
   sweep (`bench/insertion_order.py`, 27 cells, eight permutations each) the change against the
@@ -239,8 +268,7 @@ arms differing only in the code under test.
   order (van der Corput, round-robin stride) were measured and rejected: 5/16 and 7/16 non-negative
   against this scheme's 12/16, for an extra magic constant.
 
-  Default off, because it relabels. Two scoping rules: the guarantee is **per `n_jobs`** (sharding
-  splits ranks, so changing `n_jobs` still changes the labels), and it applies to a `fit` /
+  Default off, because it relabels. One scoping rule: it applies to a `fit` /
   `fit_predict` that sees the whole dataset — a `partial_fit` stream never does, so it ignores the
   flag rather than raising, the same asymmetry as `leaf_refit`.
 

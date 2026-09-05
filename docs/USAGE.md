@@ -31,7 +31,8 @@ it is now a wash — 0.307 → 0.346, inside the seed spread and sign-flipping b
 tree-rebuild fix removed most of the Euclidean collapse it used to compensate for. Leave it off for
 tabular data where magnitude is signal: it takes covtype ward to **−0.049**, worse than random),
 `n_jobs` (parallel shard+merge tree build — `>1` gives ~4–5× on large
-`N`), `threshold`, `branching`, `leaf_cap`, `max_leaves` (an integer is an absolute leaf cap; a
+`N`, and **changes the labels**, since the shards are the partition; `canonical_order=True` derives
+the shard count from `n` instead and takes it back out of the answer), `threshold`, `branching`, `leaf_cap`, `max_leaves` (an integer is an absolute leaf cap; a
 float in `(0, 1)` is a **fraction of the row count**, resolved as `ceil(frac·N)` at `fit` time —
 ELKI's `-cftree.maxleaves` convention, whose own default is `0.05`. A fraction is undefined for
 `partial_fit`, which never sees a final `N`, and raises there rather than guessing a batch size;
@@ -890,9 +891,26 @@ as an unvectorised rank-1 accumulate it was roughly twice that.
 Low-discrepancy walks over the sorted order (van der Corput, round-robin stride) were measured and
 rejected — 5/16 and 7/16 cells non-negative against this scheme's 12/16, for an extra constant.
 
-Two scoping rules. The guarantee is **per `n_jobs`**: sharding splits ranks of the canonical order,
-so a fixed `n_jobs` is invariant to the row order, but changing `n_jobs` changes the shards and
-therefore the labels. And it applies to a `fit` / `fit_predict` that sees the whole dataset — a
+**`n_jobs` is a model parameter on the arrival-order path, and `canonical_order` takes it out of the
+answer.** The parallel build shards the insertion sequence, so the shard count *is* the partition:
+two counts hold different point sets and build different sub-summaries, which no merge order can
+repair. Measured over the 27 cells above at `n_jobs ∈ {1, 2, 4, 8}`, the labels at `n_jobs=8` agree
+with those at `n_jobs=1` at pairwise ARI **0.46 on average and 0.098 at worst** wherever compression
+is real (exactly 1.0000 where `max_leaves ≥ n`, which is the control) — as far apart as two row
+orders were. That is sklearn's `n_jobs` contract broken: the parameter is documented there as not
+changing results.
+
+With `canonical_order=True` the shard count is derived from `n` instead (`n / 25000`, capped at 64),
+so the summary no longer moves with the thread count and **`n_jobs` is ignored for the tree build** —
+parallelism then comes from `RAYON_NUM_THREADS`, as it already does for the kernels and the Phase-3
+heads. That constant is the measured knee, not a guess: at `n = 200k, max_leaves = 2000` a `kmeans`
+fit reads 1.00 / 1.90 / 2.66 / **3.42** / 3.71 / 3.91× for 1 / 2 / 4 / 8 / 16 / 32 shards, so eight
+shards buy 87 % of the available speed-up. The quality cost of sharding is a wash and was measured
+before the constant was chosen: `n_jobs=8` minus `n_jobs=1` is mean **+0.004** ARI over those 27
+cells. Inputs under 25 000 rows return one shard and keep the plain sequential build, so nothing in
+the table above is affected.
+
+The remaining scoping rule: it applies to a `fit` / `fit_predict` that sees the whole dataset — a
 `partial_fit` stream never does, and ordering a chunk would be canonical for the wrong set, so the
 stream ignores the flag rather than raising, exactly as it does for `leaf_refit`.
 

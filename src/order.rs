@@ -69,6 +69,30 @@ const BITS: u32 = 8;
 /// docs for why tying the two together would be the wrong coupling.
 const PROJECTION_SEED: u64 = 0x0BE7_014A_C0DE_0117;
 
+/// Rows per shard in a canonical build. Chosen from the measured knee, not from taste: at
+/// `n = 200 000, max_leaves = 2000` the shard sweep reads 1.00 / 1.90 / 2.66 / **3.42** / 3.71 /
+/// 3.91× for 1 / 2 / 4 / 8 / 16 / 32 shards on a `kmeans` fit, so eight shards — 25 000 rows each —
+/// buy 87 % of the available speed-up, and the rest costs a four-fold finer partition.
+const ROWS_PER_SHARD: usize = 25_000;
+/// Ceiling on that count. Past the knee the curve is flat, and every extra shard is one more
+/// sub-summary the serial merge has to absorb.
+const MAX_SHARDS: usize = 64;
+
+/// How many shards a canonical build splits into — a function of `n` alone.
+///
+/// The shard count *is* part of the answer: two counts hold different point sets, build different
+/// sub-summaries, and the merge cannot repair that. So a build that promises invariance cannot take
+/// its shard count from the thread count, or the promise holds only while nobody re-tunes `n_jobs`.
+/// Measured, the gap is not academic — at real compression, labels from `n_jobs = 1` and `n_jobs = 8`
+/// agree at pairwise ARI 0.46 on average and 0.098 at worst, which is as far apart as two row orders
+/// were before any of this.
+///
+/// Deriving it from `n` costs the parallelism above the returned count and buys a summary that does
+/// not move when the machine does. Small inputs return 1, so they keep the plain sequential build.
+pub fn canonical_shards(n: usize) -> usize {
+    (n / ROWS_PER_SHARD).clamp(1, MAX_SHARDS)
+}
+
 /// The permutation that puts `n` row-major rows of `flat` into canonical order.
 ///
 /// `O(n · dim)` for the projections plus `O(n log n)` for the sort, against the build's
@@ -338,6 +362,19 @@ mod tests {
                 .collect()
         };
         assert_eq!(seq(&forward), seq(&backward));
+    }
+
+    /// The shard count has to be a function of `n` and nothing else — a rule that consulted the
+    /// thread count, the core count or `max_leaves` would put a machine or a knob back into the
+    /// summary. The cases below are the three that carry that: small inputs stay on the sequential
+    /// build, the count grows with `n`, and it stops growing before the merge does.
+    #[test]
+    fn the_shard_count_is_a_function_of_n_alone() {
+        assert_eq!(canonical_shards(0), 1);
+        assert_eq!(canonical_shards(ROWS_PER_SHARD - 1), 1);
+        assert_eq!(canonical_shards(8 * ROWS_PER_SHARD), 8);
+        assert_eq!(canonical_shards(usize::MAX), MAX_SHARDS);
+        assert!(canonical_shards(1_000_000) >= canonical_shards(500_000));
     }
 
     #[test]

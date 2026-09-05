@@ -46,7 +46,7 @@ use crate::mixture::{Mixture, SparseAssigner};
 use crate::model::{
     Method, Model, Rule, assignment_rule, auto_k_ceiling, fit_head, refinable, refine_centers,
 };
-use crate::order::{canonical_permutation, canonical_permutation_csr};
+use crate::order::{canonical_permutation, canonical_permutation_csr, canonical_shards};
 use crate::sparse::{SparseCentroids, normalize_csr_rows, summarize_sparse};
 use crate::stats::chi2_quantile;
 use crate::stream::{DbStream, DenStream, DriftReport};
@@ -1372,9 +1372,15 @@ fn build_tree<R: Real, C: ClusterFeature<R>>(
     canonical_order: bool,
 ) -> CFTree<R, C, RouteKind, AbsorbKind<R>> {
     let order = canonical_order.then(|| canonical_permutation(flat, n, dim));
-    #[cfg(feature = "parallel")]
-    if n_jobs > 1 {
-        return CFTree::build_parallel(
+    // Under `canonical_order` the shard count comes from the data, not from `n_jobs`: the shards are
+    // the partition, so taking them from a thread count would leave the guarantee holding only until
+    // somebody re-tuned `n_jobs`.
+    let shards = match order {
+        Some(_) => canonical_shards(n),
+        None => n_jobs,
+    };
+    if shards > 1 {
+        return CFTree::build_sharded(
             dim,
             branching,
             leaf_cap,
@@ -1384,12 +1390,11 @@ fn build_tree<R: Real, C: ClusterFeature<R>>(
             absorb,
             flat,
             n,
-            n_jobs,
+            shards,
             balance,
             order.as_deref(),
         );
     }
-    let _ = n_jobs;
     let mut tree = CFTree::new(
         dim, branching, leaf_cap, threshold, max_leaves, route, absorb,
     );

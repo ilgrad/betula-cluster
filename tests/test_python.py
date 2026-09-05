@@ -4026,7 +4026,7 @@ def test_canonical_order_makes_the_labels_identical_under_any_row_permutation():
 def test_canonical_order_holds_across_the_sharded_parallel_build():
     """`n_jobs > 1` shards the insertion sequence, and the naive wiring shards *rows* — which keeps
     the order dependence while looking like it removed it. Sharding ranks of the canonical order is
-    what makes this pass. The guarantee is per `n_jobs`, not across values of it."""
+    what makes this pass."""
     x = _blobs(n=3000, d=10, k=6, seed=5)
     kw = dict(feature="spherical", method="kmeans", max_leaves=80, seed=0, canonical_order=True)
     first = None
@@ -4037,6 +4037,25 @@ def test_canonical_order_holds_across_the_sharded_parallel_build():
         back[perm] = lab
         first = back if first is None else first
         assert np.array_equal(first, back)
+
+
+def test_canonical_order_does_not_let_the_thread_count_into_the_answer():
+    """`n_jobs` is the shard count, and shards are the partition — two counts hold different point
+    sets, so no merge order repairs the difference. Measured at real compression, `n_jobs=1` and
+    `n_jobs=8` agreed at pairwise ARI 0.46 on average, which is as far apart as two row orders were.
+    Under `canonical_order` the count is derived from `n` instead and `n_jobs` stops entering the
+    summary; the arrival-order arm is here because it must keep the old behaviour, or the assertion
+    above it would pass on a build that had simply stopped sharding."""
+    n = 60_000
+    x = _blobs(n=n, d=6, k=6, seed=9)
+    kw = dict(method="kmeans", max_leaves=120, seed=0)
+    canonical = [
+        betula_cluster.fit_predict(x, 6, n_jobs=j, canonical_order=True, **kw) for j in (1, 2, 4, 8)
+    ]
+    assert all(np.array_equal(canonical[0], lb) for lb in canonical[1:])
+
+    arrival = [betula_cluster.fit_predict(x, 6, n_jobs=j, **kw) for j in (1, 8)]
+    assert not np.array_equal(arrival[0], arrival[1])
 
 
 def test_canonical_order_is_honoured_by_fit_and_ignored_by_a_partial_fit_stream():
