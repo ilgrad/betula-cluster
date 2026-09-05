@@ -7,6 +7,32 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Fixed
+- **A column-major (Fortran-order) input array was read as its transpose — silently, with no error,
+  producing a clustering of scrambled data.** Every array-taking entry point was affected: `fit`,
+  `fit_predict`, `predict`, `partial_fit`, and the `mixture_w2` parameter readers. It is not an
+  exotic input — `sklearn.datasets.fetch_openml` returns one, as do `np.asfortranarray`, several
+  pandas `.values` paths, and interop with R or Julia.
+
+  The cause is one word in the zero-copy ingest (`06ad6b5`): `PyReadonlyArray::as_slice` succeeds on
+  any array that is **contiguous**, and a column-major array is contiguous. Its buffer is then the
+  transpose of what a row-major read expects, so the borrow handed the tree the right numbers in the
+  wrong shape. Nothing downstream can notice: the values are finite, the moments are well-formed,
+  the tree builds, and the labels come back. On MNIST (`fetch_openml`, 10 000 × 784) it read as one
+  leaf holding 2381 "identical" rows, a summary no data row was within 2273 of, and an ARI against
+  the digit labels of **−0.0001** where scikit-learn's k-means reads 0.34. After the fix the same
+  call reads **0.344** at `max_leaves = n`, with a lower k-means objective than scikit-learn's
+  (2.5238e10 against 2.5284e10).
+
+  The borrow is now gated on `ndarray`'s standard layout — the row-major condition the module
+  actually indexes by — rather than on contiguity, and a column-major array falls through to the
+  existing copy path, which iterates in logical order and was always correct. `mixture_means` and
+  `mixture_covs` had the same defect and now read logically too. The regression test asserts label
+  *equality* between the two layouts rather than similarity, and fails on revert.
+
+  No published number moves: every dataset in `bench/` arrives C-contiguous (fancy indexing and
+  `StandardScaler` both produce one), which is also why this survived so long — the benchmark record
+  could not see it.
+
 - **Two reference values in the Watson head's `GOLDEN` table were computed in double precision and
   printed as if they had 40 digits.** No shipped behaviour changes; the table is test *input*, and
   the test's tolerance (`1e-11` relative) is four orders of magnitude looser than the error, so it

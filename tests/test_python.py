@@ -879,6 +879,32 @@ def test_leiden_tangent_aware_recovers_blobs(blobs):
     assert ari(labels, y) > 0.85
 
 
+@pytest.mark.parametrize("dtype", [np.float64, np.float32])
+def test_a_column_major_array_is_read_as_rows_and_not_as_its_transpose(blobs, dtype):
+    """A column-major array is *contiguous*, so the zero-copy ingest could borrow its buffer and
+    then index it row-major — which reads the transpose and clusters a scrambled dataset with no
+    error anywhere. It is not an exotic input: `fetch_openml`, `np.asfortranarray`, and interop with
+    R or Julia all produce one. The assertion is equality, not similarity: the same values in a
+    different memory layout are the same data, so anything short of identical labels is the bug."""
+    x, _ = blobs
+    x = x.astype(dtype)
+    kw = dict(method="kmeans", max_leaves=200, seed=0)
+    c = betula_cluster.fit_predict(np.ascontiguousarray(x), 4, **kw)
+    f = betula_cluster.fit_predict(np.asfortranarray(x), 4, **kw)
+    assert np.array_equal(c, f)
+
+    # `predict` re-enters through the same boundary, and on a fitted model rather than a fresh one.
+    est = betula_cluster.Betula(n_clusters=4, **kw).fit(np.ascontiguousarray(x))
+    assert np.array_equal(est.predict(np.ascontiguousarray(x)), est.predict(np.asfortranarray(x)))
+
+    # The summary itself, not only the labels: a transposed read shows up as leaves that no row is
+    # anywhere near, which is what made the wrong answer look like a clustering rather than a crash.
+    a = betula_cluster.Betula(n_clusters=4, **kw).fit(np.ascontiguousarray(x)).export_coreset()
+    b = betula_cluster.Betula(n_clusters=4, **kw).fit(np.asfortranarray(x)).export_coreset()
+    assert np.allclose(a.centers, b.centers)
+    assert np.array_equal(a.weights, b.weights)
+
+
 def test_float32_reproduces_float64_on_normal_range(blobs):
     x, y = blobs
     kw = dict(feature="diagonal", method="gmm", threshold=0.05, max_leaves=300, seed=1)

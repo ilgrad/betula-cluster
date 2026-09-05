@@ -1164,7 +1164,12 @@ fn to_rows<R: Real + Element>(
         }
         Ok(())
     }
-    if prep == RowPrep::None {
+    // `PyReadonlyArray::as_slice` succeeds on any *contiguous* array, and a column-major one is
+    // contiguous — its buffer is then the transpose of what a row-major read expects, so borrowing
+    // it would hand the tree a scrambled dataset with no error anywhere. Row-major is the layout
+    // this whole module indexes by, so the borrow is gated on it explicitly rather than on
+    // contiguity; `ndarray`'s standard layout is exactly that condition.
+    if prep == RowPrep::None && data.as_array().is_standard_layout() {
         if let Ok(s) = data.as_slice() {
             finite(s)?;
             return Ok((Rows::Borrowed(data), n, dim));
@@ -5605,7 +5610,9 @@ fn mixture_means(
             shape[0], shape[1]
         )));
     }
-    let flat = means.as_slice()?;
+    // Logical order, not buffer order: `as_slice` would also accept a column-major array and hand
+    // back its transpose, which is the same trap `to_rows` gates against.
+    let flat: Vec<f64> = means.as_array().iter().copied().collect();
     Ok(flat.chunks_exact(dim).map(<[f64]>::to_vec).collect())
 }
 
@@ -5617,7 +5624,7 @@ type Covariances = (Vec<Vec<f64>>, Vec<Vec<Vec<f64>>>);
 
 fn mixture_covs(covs: &PyReadonlyArrayDyn<'_, f64>, k: usize, dim: usize) -> PyResult<Covariances> {
     let shape = covs.shape();
-    let flat = covs.as_slice()?;
+    let flat: Vec<f64> = covs.as_array().iter().copied().collect();
     match *shape {
         [rows, cols] if rows == k && cols == dim => Ok((
             flat.chunks_exact(dim).map(<[f64]>::to_vec).collect(),
