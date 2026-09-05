@@ -34,3 +34,8 @@ __pycache__/
 # medians (results_*.csv) and their min/median/max (results_*_spread.csv) are committed; regenerate
 # these with `comprehensive.py --seed S --tag _sS` if you want to audit the reduction.
 bench/results_*_s[0-9].csv
+
+# cargo-mutants run artefacts (hundreds of MB; the accepted survivors live in
+# mutants-baseline.txt, which is tracked)
+mutants.out/
+mutants.out.old/
