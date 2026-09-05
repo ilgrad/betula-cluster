@@ -16,23 +16,25 @@
 # Since re-measured locally, and those sections replaced: `src/tree.rs` (2026-08-20 after the
 # rebuild-cost fix, and again 2026-08-21 whole-file), `src/clustering/gmm.rs` and
 # `src/clustering/nmf.rs` (2026-08-21, entry by entry), `src/clustering/kprototypes.rs` (2026-08-22,
-# entry by entry), `src/clustering/vmf.rs` (2026-08-22 entry by entry, then **2026-08-23 whole-file**
-# after the `log_iv` asymptotic branch), `src/clustering/nmf.rs` + `src/clustering/pca.rs`
-# together (**2026-08-24 whole-file**, after `NmfSpec` became `ProjectionSpec` and `project_pca` was
-# added), `src/clustering/kmeans.rs` (**2026-08-24 whole-file**, after the k-means++ sampling
-# weight gained the leaf variance term), `src/clustering/hdbscan.rs` (**2026-08-24 whole-file**,
-# after the point-count and dendrogram-walk fixes -- see that section for why its count rose from 17
-# to 21 without a regression), and `src/clustering/kmeans.rs` again (**2026-08-27 whole-file**, in
-# one run with `src/clustering/xmeans.rs` and `src/model.rs`, after #96 moved the BIC out of this
-# file and #101 lifted the auto-`k` ceiling). `src/clustering/medoid.rs` (**2026-08-25 whole-file**),
+# entry by entry), `src/clustering/vmf.rs` (2026-08-22 entry by entry, then **2026-08-23
+# whole-file** after the `log_iv` asymptotic branch), `src/clustering/nmf.rs` +
+# `src/clustering/pca.rs` together (**2026-08-24 whole-file**, after `NmfSpec` became
+# `ProjectionSpec` and `project_pca` was added), `src/clustering/kmeans.rs` (**2026-08-24
+# whole-file**, after the k-means++ sampling weight gained the leaf variance term),
+# `src/clustering/hdbscan.rs` (**2026-08-24 whole-file**, after the point-count and dendrogram-walk
+# fixes -- see that section for why its count rose from 17 to 21 without a regression), and
+# `src/clustering/kmeans.rs` again (**2026-08-27 whole-file**, in one run with
+# `src/clustering/xmeans.rs` and `src/model.rs`, after #96 moved the BIC out of this file and #101
+# lifted the auto-`k` ceiling). `src/clustering/medoid.rs` (**2026-08-25 whole-file**),
 # `src/wasserstein.rs` (**2026-08-26 whole-file**), `src/clustering/xmeans.rs` + `src/model.rs`
 # (**2026-08-27**) and `src/order.rs` (**2026-09-05 whole-file**) are first measurements rather than
 # replacements -- those modules postdate the whole-crate sweep entirely. The entry-by-entry form is
 # sound where the only change to the file was *test* code: adding a test can kill a mutant but can
 # never create one, so nothing outside the recorded set needs re-measuring. It is not sound after a
 # production edit -- re-measure the file whole then, which also renumbers every `line:col` in that
-# section. `src/clustering/kprototypes.rs` is the standing example: it was re-measured entry by entry on 2026-08-22 and again
-# (**2026-09-01 whole-file**) once the third, directional block moved every line in it.
+# section. `src/clustering/kprototypes.rs` is the standing example: it was re-measured entry by
+# entry on 2026-08-22 and again (**2026-09-01 whole-file**) once the third, directional block moved
+# every line in it.
 #
 # The entry-by-entry runs used `cargo test --lib`, not the `--test-tool nextest` the CI job uses.
 # The difference is `tests/integration_api.rs`, whose four tests assert label counts and a 4-blob
