@@ -29,8 +29,8 @@
 # (**2026-08-27**) and `src/order.rs` (**2026-09-05 whole-file**) are first measurements rather than
 # replacements -- those modules postdate the whole-crate sweep entirely. The entry-by-entry form is
 # sound where the only change to the file was *test* code: adding a test can kill a mutant but can
-# never create one, so nothing outside the recorded set needs re-measuring. It is not sound after a production edit -- re-measure the file
-# whole then, which also renumbers every `line:col` in that section. `src/clustering/kprototypes.rs`
+# never create one, so nothing outside the recorded set needs re-measuring. It is not sound after a
+# production edit -- re-measure the file whole then, which also renumbers every `line:col` in that section. `src/clustering/kprototypes.rs`
 # is the standing example: it was re-measured entry by entry on 2026-08-22 and again
 # (**2026-09-01 whole-file**) once the third, directional block moved every line in it.
 #
