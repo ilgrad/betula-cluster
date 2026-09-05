@@ -410,27 +410,46 @@ mod tests {
     }
 
     /// The tie-break decides the order of every row inside a collision, and on the sparse path it is
-    /// a merge walk over two column lists — twenty of its mutants survived the first mutation run
-    /// because no test ever reached it. Collisions are not rare on real data but they are hard to
-    /// arrange on a small fixture, so this one forces them: a single far-away row stretches every
-    /// projection's span so wide that the whole cluster quantises to level 0, and the comparator
-    /// alone decides its order.
+    /// a merge walk over two column lists — the part of this module no test reached until the first
+    /// mutation run said so. Two things have to be arranged for it to be exercised at all, and the
+    /// first draft of this test arranged only one.
+    ///
+    /// **Collisions**, which are common on real data and hard to get on a small fixture: one
+    /// far-away row stretches every projection's span until the whole cluster quantises to a single
+    /// level, and the comparator alone decides its order.
+    ///
+    /// **Differing sparsity patterns**, which the first draft missed by building the cluster from
+    /// dense gaussians — after `to_csr` every row then holds the same columns, so `i < j`, `i > j`
+    /// and every cursor advance are unreachable and fifteen of their mutants survived. The rows
+    /// below are hand-built for the cases: a strict subset (`r1 ⊂ r0`, so one list exhausts while
+    /// the other has columns left, in both argument orders), disjoint columns in both directions
+    /// (`r0` vs `r2`), a row missing the leading column (`r3`), and two rows that agree for two
+    /// matched columns before differing (`r4`, `r5`) so resolution needs the cursors to have moved.
     ///
     /// Comparing against the dense path is what makes this a test rather than a snapshot — the two
     /// comparators are written independently (dense walks one slice, sparse merges two column
     /// lists), so agreement is evidence and not a recording.
     #[test]
     fn a_code_collision_is_broken_the_same_way_on_csr_as_on_dense() {
-        let (n, dim) = (17, 4);
-        let mut flat = rows(n - 1, dim, 21);
+        let dim = 6;
+        let cluster = [
+            [1.0, 0.0, 0.0, 2.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            [1.0, 0.0, 3.0, 0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 2.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0, 2.0, 0.0, 5.0],
+            [1.0, 0.0, 0.0, 2.0, 4.0, 0.0],
+        ];
+        let n = cluster.len() + 1;
+        let mut flat: Vec<f64> = cluster.concat();
         flat.extend(std::iter::repeat_n(1e6, dim));
 
         let codes = morton_codes(&flat, n, dim);
         let distinct: std::collections::HashSet<u64> = codes.iter().copied().collect();
-        assert!(
-            distinct.len() < n,
-            "the fixture must collide or it exercises nothing: {} distinct codes for {n} rows",
-            distinct.len()
+        assert_eq!(
+            distinct.len(),
+            2,
+            "the cluster must collapse to one code against the outlier's, or this tests nothing"
         );
 
         let (data, indices, indptr) = to_csr(&flat, n, dim);
