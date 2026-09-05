@@ -1,0 +1,1335 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Numerically stable, memory-bounded BETULA clustering with a Rust core">
+      
+      
+      
+        <link rel="canonical" href="https://ilgrad.github.io/betula-cluster/MATH/">
+      
+      
+        <link rel="prev" href="../FEATURES/">
+      
+      
+        <link rel="next" href="../api/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>The math - betula-cluster</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/_mkdocstrings.css">
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="teal" data-md-color-accent="teal">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#mathematical-foundation-improvements" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="betula-cluster" class="md-header__button md-logo" aria-label="betula-cluster" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            betula-cluster
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              The math
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="teal" data-md-color-accent="teal"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m17.75 4.09-2.53 1.94.91 3.06-2.63-1.81-2.63 1.81.91-3.06-2.53-1.94L12.44 4l1.06-3 1.06 3zm3.5 6.91-1.64 1.25.59 1.98-1.7-1.17-1.7 1.17.59-1.98L15.75 11l2.06-.05L18.5 9l.69 1.95zm-2.28 4.95c.83-.08 1.72 1.1 1.19 1.85-.32.45-.66.87-1.08 1.27C15.17 23 8.84 23 4.94 19.07c-3.91-3.9-3.91-10.24 0-14.14.4-.4.82-.76 1.27-1.08.75-.53 1.93.36 1.85 1.19-.27 2.86.69 5.83 2.89 8.02a9.96 9.96 0 0 0 8.02 2.89m-1.64 2.02a12.08 12.08 0 0 1-7.8-3.47c-2.17-2.19-3.33-5-3.49-7.82-2.81 3.14-2.7 7.96.31 10.98 3.02 3.01 7.84 3.12 10.98.31"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="teal" data-md-color-accent="teal"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 7a5 5 0 0 1 5 5 5 5 0 0 1-5 5 5 5 0 0 1-5-5 5 5 0 0 1 5-5m0 2a3 3 0 0 0-3 3 3 3 0 0 0 3 3 3 3 0 0 0 3-3 3 3 0 0 0-3-3m0-7 2.39 3.42C13.65 5.15 12.84 5 12 5s-1.65.15-2.39.42zM3.34 7l4.16-.35A7.2 7.2 0 0 0 5.94 8.5c-.44.74-.69 1.5-.83 2.29zm.02 10 1.76-3.77a7.131 7.131 0 0 0 2.38 4.14zM20.65 7l-1.77 3.79a7.02 7.02 0 0 0-2.38-4.15zm-.01 10-4.14.36c.59-.51 1.12-1.14 1.54-1.86.42-.73.69-1.5.83-2.29zM12 22l-2.41-3.44c.74.27 1.55.44 2.41.44.82 0 1.63-.17 2.37-.44z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/ilgrad/betula-cluster" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    ilgrad/betula-cluster
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="betula-cluster" class="md-nav__button md-logo" aria-label="betula-cluster" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    betula-cluster
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/ilgrad/betula-cluster" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    ilgrad/betula-cluster
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../USAGE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Usage guide
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../FEATURES/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Features
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    The math
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    The math
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#numerically-stable-cluster-features-n-s" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Numerically stable cluster features (n, μ, S)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#gmm-e-step-expected-log-variant-c-not-the-papers-convolution" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GMM E-step: expected-log (variant C), not the paper's convolution
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#toeplitz-ar-covariance-for-stationary-signals" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Toeplitz / AR covariance for stationary signals
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#cf-weighted-nmf-for-nonnegative-data" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        CF-weighted NMF for nonnegative data
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#directional-clustering-spherical-k-means-von-misesfisher" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Directional clustering: spherical k-means &amp; von Mises–Fisher
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#labelling-a-raw-point" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Labelling a raw point
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#geometry-aware-graph-geobetula-and-scale-space-modes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Geometry-aware graph (GeoBETULA) and scale-space modes
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#other-verified-improvements" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Other verified improvements
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#symmetries-of-a-feature-head-pair" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Symmetries of a (feature, head) pair
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#relation-to-birch-and-betula" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Relation to BIRCH and BETULA
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../changelog/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Changelog
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#numerically-stable-cluster-features-n-s" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Numerically stable cluster features (n, μ, S)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#gmm-e-step-expected-log-variant-c-not-the-papers-convolution" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GMM E-step: expected-log (variant C), not the paper's convolution
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#toeplitz-ar-covariance-for-stationary-signals" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Toeplitz / AR covariance for stationary signals
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#cf-weighted-nmf-for-nonnegative-data" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        CF-weighted NMF for nonnegative data
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#directional-clustering-spherical-k-means-von-misesfisher" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Directional clustering: spherical k-means &amp; von Mises–Fisher
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#labelling-a-raw-point" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Labelling a raw point
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#geometry-aware-graph-geobetula-and-scale-space-modes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Geometry-aware graph (GeoBETULA) and scale-space modes
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#other-verified-improvements" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Other verified improvements
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#symmetries-of-a-feature-head-pair" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Symmetries of a (feature, head) pair
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#relation-to-birch-and-betula" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Relation to BIRCH and BETULA
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="mathematical-foundation-improvements">Mathematical foundation &amp; improvements<a class="headerlink" href="#mathematical-foundation-improvements" title="Permanent link">&para;</a></h1>
+<p>Every formula below is verified symbolically (Maxima) and/or numerically (mpmath/Julia ground
+truth) — see <a href="https://github.com/ilgrad/betula-cluster/blob/main/DESIGN.md"><code>DESIGN.md</code></a> and <code>research/</code>.</p>
+<h2 id="numerically-stable-cluster-features-n-s">Numerically stable cluster features <code>(n, μ, S)</code><a class="headerlink" href="#numerically-stable-cluster-features-n-s" title="Permanent link">&para;</a></h2>
+<p>Classic BIRCH stores <span class="arithmatex">\((N,\ LS = \sum x,\ SS = \sum x^2)\)</span> and recovers variance as <span class="arithmatex">\(SS/N - (LS/N)^2\)</span> — a
+<strong>difference of two large, nearly-equal numbers</strong>. On real data with an offset (timestamps, money,
+geo-coordinates, un-centered embeddings) this <strong>catastrophically cancels</strong>: in <code>f64</code> the variance
+collapses to noise — and can go <em>negative</em> — around coordinate magnitude <code>1e7</code>, silently corrupting
+every downstream radius, covariance, and label.</p>
+<p>betula-cluster stores <span class="arithmatex">\((n, \mu, S)\)</span> — weight, mean, and the sum of squared deviations
+<span class="arithmatex">\(S = \sum w\,(x - \mu)(x - \mu)^\top\)</span>. <span class="arithmatex">\(S\)</span> is a <strong>sum of non-negative terms</strong>, so the variance <span class="arithmatex">\(S/n \ge 0\)</span> and the
+covariance is <strong>positive-semidefinite by construction</strong> — there is nothing to cancel. The updates are
+algebraically exact (not approximations):</p>
+<div class="arithmatex">\[
+\begin{aligned}
+\text{add (Welford/West):}\quad &amp; W' = W + w, \quad \mu \leftarrow \mu + \tfrac{w}{W'}\,\delta, \quad S \leftarrow S + w\Bigl(1 - \tfrac{w}{W'}\Bigr)(\delta \odot \delta), \quad \delta = x - \mu_\text{old} \\
+\text{merge (Chan):}\quad &amp; W = W_A + W_B, \quad \mu = \mu_A + \tfrac{W_B}{W}\,\Delta, \quad S = S_A + S_B + \tfrac{W_A W_B}{W}(\Delta \odot \Delta), \quad \Delta = \mu_B - \mu_A
+\end{aligned}
+\]</div>
+<p>(full covariance: <span class="arithmatex">\(\delta \odot \delta \to \delta\delta^\top\)</span>, <span class="arithmatex">\(\Delta \odot \Delta \to \Delta\Delta^\top\)</span>). Tested bit-stable at offset <code>1e7–1e8</code> against an
+mpmath reference, where the classic <span class="arithmatex">\((N, LS, SS)\)</span> form loses all significant digits.</p>
+<h2 id="gmm-e-step-expected-log-variant-c-not-the-papers-convolution">GMM E-step: expected-log (variant C), not the paper's convolution<a class="headerlink" href="#gmm-e-step-expected-log-variant-c-not-the-papers-convolution" title="Permanent link">&para;</a></h2>
+<p>Running EM on the leaf CFs, each leaf is a mini-Gaussian <span class="arithmatex">\(\mathcal{N}(\mu_i, \Sigma_i)\)</span>. The textbook / paper move
+treats it by <strong>convolution</strong> — <span class="arithmatex">\(\mathcal{N}(\mu_i \mid \mu_k, \Sigma_k + \Sigma_i)\)</span> — which inflates each component by the
+leaf's own spread and <strong>washes out components on a coarse CF-tree</strong>. betula-cluster instead uses the
+<strong>expected log-likelihood</strong> responsibility, which is measured to beat the convolution on ARI and is
+the correct expected log-likelihood under the leaf model; against the simpler plug-in that drops the
+trace it is a wash outside coarse, overlapping summaries (<code>research/RESULTS-estep.md</code>, three seeds):</p>
+<div class="arithmatex">\[
+\log r_{ik} = \log \pi_k + \log \mathcal{N}(\mu_i \mid \mu_k, \Sigma_k) - \tfrac{1}{2}\mathrm{tr}(\Sigma_k^{-1}\Sigma_i) \qquad \text{(then log-sum-exp normalized)}
+\]</div>
+<p>The M-step folds the within-leaf scatter back in, so the fitted components stay exact:</p>
+<div class="arithmatex">\[
+\Sigma_k = \frac{1}{N_k}\sum_i w_{ik}\bigl(\Sigma_i + (\mu_i - \mu_k)(\mu_i - \mu_k)^\top\bigr), \qquad w_{ik} = n_i\,r_{ik}
+\]</div>
+<p>with NIW/MAP regularization <span class="arithmatex">\(\Sigma_k = (\Psi + \dots)/(\nu + N_k + d + 1)\)</span> so a 1-point leaf never yields a
+singular covariance.</p>
+<p><strong>Why this is the right bound, and not merely the winning one.</strong> <span class="arithmatex">\(\log\mathcal{N}(x \mid \mu_k, \Sigma_k)\)</span>
+is a quadratic form in <span class="arithmatex">\(x\)</span>, so its expectation under any distribution supported on leaf <span class="arithmatex">\(i\)</span> depends on
+that distribution <em>only</em> through its first two moments — which are exactly what the cluster feature
+stores. <span class="arithmatex">\(\mathbb{E}_{x \sim i}[\log \mathcal{N}]\)</span> is therefore <strong>exact</strong> given <span class="arithmatex">\((n_i, \mu_i, \Sigma_i)\)</span>,
+with no error contributed by the unknown within-leaf shape. Running EM on that quantity is exact
+<strong>variational EM</strong> on the point-level likelihood under the constraint that all points in a leaf share
+one responsibility vector: a genuine ELBO whose only slack is the tying. The two alternatives are not
+bounds of that kind. The convolution form <span class="arithmatex">\(\mathcal{N}(\mu_i \mid \mu_k, \Sigma_k + \Sigma_i)\)</span> computes
+<span class="arithmatex">\(\log \mathbb{E}[p] \ge \mathbb{E}[\log p]\)</span> by Jensen — the wrong side, and a different functional —
+which is why it washes out components once the summary is coarse. The plug-in form is the zeroth-order
+truncation of the same expansion, dropping precisely the
+<span class="arithmatex">\(-\tfrac{1}{2}\mathrm{tr}(\Sigma_k^{-1}\Sigma_i)\)</span> term above, so it agrees wherever <span class="arithmatex">\(\Sigma_i\)</span> is
+negligible against <span class="arithmatex">\(\Sigma_k\)</span> — which is what the measurement shows (<code>research/RESULTS-estep.md</code>: 33/36
+cells against 32/36 for the plug-in and 22/36 for the convolution). The same theorem in its Bregman
+generalization — <span class="arithmatex">\(\mathbb{E}_{x \in i}[d_\varphi(x, \mu_k)] = S_i/n_i + d_\varphi(\mu_i, \mu_k)\)</span>, exact
+for every <span class="arithmatex">\(\varphi\)</span> — is what the <code>BregmanBetula</code> head's monotone <code>elbo</code> reports.</p>
+<p><strong>High-dimensional floor.</strong> With few effective leaves per component, <span class="arithmatex">\(\Sigma_k\)</span> can still go
+near-singular along a low-variance direction, which makes the <span class="arithmatex">\(-\tfrac12\mathrm{tr}(\Sigma_k^{-1}\Sigma_i)\)</span>
+correction over-confident and <em>starves</em> the component — its responsibility collapses to zero and the
+recovered count drops below <code>k</code>. A per-dimension floor on each component's covariance <strong>diagonal</strong> at
+<span class="arithmatex">\(10^{-3}\,(\Sigma_\text{global})_{dd}\)</span> — relative to the global <em>per-dimension</em> variance (not the mean
+scale, which between-cluster separation inflates), with off-diagonals / orientation left untouched —
+keeps every <span class="arithmatex">\(\Sigma_k\)</span> well-conditioned. On 64-dimensional <code>digits</code> it holds all 10 components (an
+unfloored fit starves one to 9) and the floored full-covariance head reaches ARI <strong>0.575</strong> against
+scikit-learn's <code>GaussianMixture</code> at <strong>0.463</strong> (median of seeds 0/1/2), while low-dimensional and
+rotated-anisotropic fits are unchanged. The unfloored figure of 0.39 that this pair was first measured
+against dates from a 0.2.0 build and has not been re-taken; the floored-vs-scikit-learn gap has. The
+diagonal GMM floors its per-dimension variance the same way (<span class="arithmatex">\(10^{-3}\,(\Sigma_\text{global})_{dd}\)</span>).</p>
+<h2 id="toeplitz-ar-covariance-for-stationary-signals">Toeplitz / AR covariance for stationary signals<a class="headerlink" href="#toeplitz-ar-covariance-for-stationary-signals" title="Permanent link">&para;</a></h2>
+<p>For an ordered <strong>wide-sense-stationary</strong> signal the covariance is Toeplitz, <span class="arithmatex">\(\Sigma_{ts} = c(|t-s|)\)</span>, so
+it is fixed by an autocovariance sequence rather than a dense <span class="arithmatex">\(d\times d\)</span> matrix. <code>method="gmm-toeplitz"</code>
+models each component covariance as an <strong>AR(w)</strong> process. The pooled biased autocovariance</p>
+<div class="arithmatex">\[
+r_c(\tau) = \frac{1}{N_c\,d}\sum_i w_{ic}\Bigl[\textstyle\sum_t \delta_{it}\,\delta_{i,t+\tau} + [\tau=0]\mathrm{tr}\Sigma_i\Bigr],
+\qquad \delta_i = \mu_i - \mu_c,
+\]</div>
+<p>(from the leaf mean deviations, with the within-leaf variance folded into the zero lag) is mapped by the
+<strong>Levinson-Durbin</strong> recursion, kept at <em>every</em> intermediate order <span class="arithmatex">\(m = 0..w\)</span> (predictor <span class="arithmatex">\(\phi_m\)</span>, error
+variance <span class="arithmatex">\(v_m\)</span>). The precision is the <strong>exact Gohberg-Semencul</strong> form <span class="arithmatex">\(\Gamma = (1/\sigma^2)(BB^\top - ZZ^\top)\)</span>
+(<span class="arithmatex">\(B\)</span> lower-triangular Toeplitz from the AR coefficients; <span class="arithmatex">\(Z\)</span> the corner correction), evaluated by the
+<strong>prediction-error decomposition</strong>
+<span class="arithmatex">\(\log p(\delta) = -\tfrac12\sum_{t=0}^{d-1}\bigl[\ln(2\pi v_{m_t}) + (\delta_t - \phi_{m_t}\!\cdot\delta_{t-1:t-m_t})^2/v_{m_t}\bigr]\)</span>,
+<span class="arithmatex">\(m_t = \min(t, w)\)</span> — so the first <span class="arithmatex">\(w\)</span> boundary positions are modelled <em>exactly</em> (the <span class="arithmatex">\(-ZZ^\top\)</span> term)
+rather than dropped by a conditional likelihood (measured <span class="arithmatex">\(+0.04\)</span> ARI at short windows). It is
+<strong>positive-definite by construction</strong> — the reflection-coefficient clamp <span class="arithmatex">\(|k_m| \le 0.999\)</span> (<span class="arithmatex">\(\Rightarrow v_m &gt; 0\)</span>)
+is the GS box constraint — with <span class="arithmatex">\(O(w)\)</span> parameters and <span class="arithmatex">\(O(d\,w)\)</span> cost per leaf. The order <span class="arithmatex">\(w\)</span> is chosen
+per component by BIC, and the mean is a single stationary scalar (one parameter,
+not <span class="arithmatex">\(d\)</span>). This is well-posed at <span class="arithmatex">\(N_k \ll d\)</span>, where full covariance is singular and a diagonal model is
+blind to the neighbour correlation. Ordered coordinates only — a permutation destroys the structure.
+(Gohberg-Semencul Toeplitz-precision estimation, arXiv:2311.14995; see
+<a href="../adr/001-gmm-toeplitz/"><code>docs/adr/001-gmm-toeplitz.md</code></a>.)</p>
+<p><strong>General (non-AR) Toeplitz covariance</strong> (<code>method="gmm-toeplitz-full"</code>). AR(w) has a <em>banded</em> precision,
+so it cannot represent an autocovariance whose support exceeds order <span class="arithmatex">\(w\)</span> (e.g. a single echo at lag
+<span class="arithmatex">\(K &gt; w\)</span>). The general head drops the banded assumption: it forms the dense Toeplitz covariance
+<span class="arithmatex">\(\Sigma_{ts} = r^{\mathrm b}_c(|t-s|)\)</span> directly from the <strong>biased</strong> (<span class="arithmatex">\(\div d\)</span>) autocovariance <span class="arithmatex">\(r^{\mathrm b}_c\)</span>.
+The biased sequence is periodogram-consistent, so <span class="arithmatex">\(\Sigma\)</span> is <strong>positive-semidefinite by construction</strong>
+(each leaf contributes the autocorrelation of its zero-padded deviation, a nonnegative spectrum; a
+nonnegative-weighted sum stays PSD), and the <span class="arithmatex">\(\div d\)</span> bias shrinks high-lag terms — a free regularization
+exactly where <span class="arithmatex">\(N_k \ll d\)</span>. A ridge (the within-leaf variance plus <span class="arithmatex">\(10^{-6}\,r^{\mathrm b}_c(0)\)</span>) makes it
+strictly PD; a Cholesky factor gives the exact multivariate-Gaussian log-density
+<span class="arithmatex">\(-\tfrac12(d\ln 2\pi + \ln|\Sigma| + \delta^\top\Sigma^{-1}\delta)\)</span>. Cost is <span class="arithmatex">\(O(d^2)\)</span> parameters and <span class="arithmatex">\(O(d^3)\)</span>
+per component (vs AR's <span class="arithmatex">\(O(d\,w)\)</span>), so it is the opt-in rung for signals a low-order AR cannot fit: on a
+long-lag-echo mixture (<span class="arithmatex">\(K\in\{16,28,40\}&gt;w_{\max}=10\)</span>) it reaches ARI <span class="arithmatex">\(0.73\!\to\!1.00\)</span> as the window grows
+where the AR head sits at chance, and it matches the AR head on AR-generated signals
+(<code>bench/toeplitz_ar_mixture.py</code>).</p>
+<p>A third route, <code>method="gmm-toeplitz-gs"</code>, estimates the general Toeplitz <strong>precision</strong> by the paper's
+<strong>Gohberg-Semencul MLE</strong>: a full-order (<code>≤ 16</code>) Yule-Walker (Levinson) fit refined by coordinate ascent of
+the exact log-likelihood over the reflection coefficients <span class="arithmatex">\(k_m\)</span>, positive-definite by <span class="arithmatex">\(|k_m| &lt; 1\)</span> and
+deterministic. The reflection-coefficient parameterization makes the constraint free — the step-up
+recursion maps any <span class="arithmatex">\(|k| &lt; 1\)</span> to a stable predictor with <span class="arithmatex">\(v_m &gt; 0\)</span> — so the MLE refines the moment
+estimator toward the likelihood optimum without leaving the PD cone. Its <span class="arithmatex">\(O(m \cdot d \cdot p)\)</span> E-step is
+cheaper than the dense <span class="arithmatex">\(O(d^3)\)</span> covariance route at large <span class="arithmatex">\(d\)</span>; it captures structure up to its order cap
+(mid-lag echoes the banded head misses), while the covariance route covers arbitrarily long lags.</p>
+<h2 id="cf-weighted-nmf-for-nonnegative-data">CF-weighted NMF for nonnegative data<a class="headerlink" href="#cf-weighted-nmf-for-nonnegative-data" title="Permanent link">&para;</a></h2>
+<p>For <strong>nonnegative</strong> features (TF-IDF, bag-of-words, event counts, spectrogram magnitudes, histograms) a
+nonnegative low-rank factorization <span class="arithmatex">\(X \approx W H\)</span>, <span class="arithmatex">\(W, H \ge 0\)</span>, is often the natural representation — its
+parts <span class="arithmatex">\(H\)</span> are interpretable and additive. Factorizing the raw <span class="arithmatex">\(N \times d\)</span> matrix is <span class="arithmatex">\(O(N d r)\)</span> per
+iteration and holds an <span class="arithmatex">\(N \times r\)</span> code matrix, defeating BETULA's compression. <code>projection="weighted-nmf"</code>
+factorizes the <span class="arithmatex">\(M \ll N\)</span> leaf <strong>centroids</strong> instead. Assigning every point in leaf <span class="arithmatex">\(C_j\)</span> the same code
+<span class="arithmatex">\(z_j\)</span> (the hard-leaf approximation every Phase-3 head already makes), König-Huygens gives</p>
+<div class="arithmatex">\[
+\sum_{x_i \in C_j} \lVert x_i - z_j H \rVert^2 = \underbrace{\sum_{x_i \in C_j} \lVert x_i - \mu_j \rVert^2}_{\text{within-leaf scatter (const in } z,H)} + n_j \lVert \mu_j - z_j H \rVert^2 ,
+\]</div>
+<p>so minimizing the full-data objective is equivalent — up to that constant — to the <strong>weighted centroid</strong>
+problem <span class="arithmatex">\(\min_{Z,H \ge 0} \sum_j n_j \lVert \mu_j - z_j H \rVert^2 = \lVert \tilde X - \tilde Z H \rVert_F^2\)</span>
+with <span class="arithmatex">\(\tilde X_j = \sqrt{n_j}\,\mu_j\)</span>, <span class="arithmatex">\(\tilde Z_j = \sqrt{n_j}\,z_j\)</span>. The factorization runs over the
+microclusters (<span class="arithmatex">\(O(M d r)\)</span> per sweep, memory-bounded) and any head then clusters the nonnegative codes
+<span class="arithmatex">\(z_j\)</span>. The solver is a dependency-free weighted <strong>HALS</strong> (coordinate descent, reusing the Gram /
+cross-product matrices <span class="arithmatex">\(HH^\top\)</span>, <span class="arithmatex">\(\tilde X H^\top\)</span>, <span class="arithmatex">\(W^\top W\)</span>, <span class="arithmatex">\(W^\top \tilde X\)</span> across sweeps); because
+<span class="arithmatex">\(M\)</span> is small the matrices are tiny, so <strong>no BLAS is needed</strong> — the compression is what removes the
+dependency and the memory growth, not a fast NMF kernel. The wall-clock effect is a <strong>crossover, not a
+uniform win</strong>: measured against <code>sklearn.decomposition.NMF</code> → k-means the CF-weighted path is <em>slower</em>
+at small <span class="arithmatex">\(N\)</span> and faster once <span class="arithmatex">\(N\)</span> passes roughly <span class="arithmatex">\(10^5\)</span> (0.2× / 0.7× / 1.3× at <span class="arithmatex">\(N\)</span> = 8 k / 40 k / 160 k,
+<code>bench/RESULTS.md</code>), because its factorization cost is set by the leaf count while scikit-learn's grows
+with <span class="arithmatex">\(N\)</span>. What it buys unconditionally is a code
+matrix that stops growing (<span class="arithmatex">\(M \times r\)</span>, not <span class="arithmatex">\(N \times r\)</span>) and a <strong>canonical</strong> factorization — unit-L2
+parts, energy-ordered — whose ARI spread across seeds is 0.000 where scikit-learn's is 0.37.
+Nonnegative input only; signed data is rejected rather than shifted (a shift would destroy
+angles). For signed embeddings use the directional heads or reduce with PCA / TruncatedSVD first.</p>
+<p>For <strong>count</strong> data (word counts, event tallies) the Frobenius objective assumes Gaussian noise, which is
+mis-specified — counts are Poisson. <code>projection="weighted-nmf-kl"</code> minimizes the generalized-KL
+(I-divergence) <span class="arithmatex">\(\sum_{ij} [X_{ij}\ln(X_{ij}/(WH)_{ij}) - X_{ij} + (WH)_{ij}]\)</span> by Lee-Seung multiplicative
+updates over the raw centroids, with the shared components <span class="arithmatex">\(H\)</span> weighted by leaf mass <span class="arithmatex">\(n_j\)</span> (the per-row
+<span class="arithmatex">\(W\)</span> update is weight-invariant, each row minimized independently) — the Poisson maximum-likelihood fit.
+The gain is rate-dependent and, on the current tree, <strong>small</strong>: largest at <strong>sparse</strong> counts (+0.04 ARI
+over Frobenius on a Poisson-count mixture at mean rate 0.2 — 0.892 against 0.850) and zero to three
+decimals once the mean count passes <span class="arithmatex">\(\sim0.4\)</span>, where the central-limit theorem pulls Poisson toward
+Gaussian (<code>examples/17_nmf_topics.ipynb</code>). <strong>Correction to the previous edition, which reported up to
++0.5 ARI (0.83 against 0.24).</strong> That gap did not close because KL got worse — it closed because
+Frobenius went from 0.24 to 0.85 at the same setting, once 0.6.0 moved the k-means head that consumes
+the codes to its own partition and the mixture heads to maximum-posterior labelling. Most of what the
+KL objective appeared to be buying was a labelling defect downstream of the factorization. The
+objective remains the correct likelihood for Poisson counts; the measured margin over Frobenius is now
+worth about four hundredths at the sparsest rate.</p>
+<p><strong>Initialization and the scale gauge.</strong> Both solvers start from <strong>NNDSVDar</strong> (Boutsidis &amp; Gallopoulos,
+2008): a rank-<span class="arithmatex">\(r\)</span> truncated SVD — obtained from a randomized range finder (Halko-Martinsson-Tropp:
+Gaussian sketch, two power iterations, then a small eigendecomposition of <span class="arithmatex">\(BB^\top\)</span>, so no LAPACK is
+needed) — whose <span class="arithmatex">\(k\)</span>-th singular triplet yields a nonnegative pair by keeping whichever of its positive
+/ negative parts carries more energy. The resulting zeros must be filled: zero is a fixed point of both
+HALS and the multiplicative updates, so an entry left at zero could never recover.</p>
+<p>Two details of that fill decide whether the factorization is usable at all, because <strong>zero is absorbing</strong>
+— a component driven to zero on one sweep is gone permanently:</p>
+<ul>
+<li><em>Rank-deficient triplets.</em> The right vector is recovered as <span class="arithmatex">\(v = B^\top u / \sigma\)</span>, so once <span class="arithmatex">\(\sigma\)</span>
+  falls to the noise floor the division amplifies round-off into a vector of arbitrary magnitude. Such
+  triplets are cut at the LAPACK numerical-rank threshold <span class="arithmatex">\(\sigma \le \sigma_{\max}\,\max(M,d)\,\varepsilon\)</span>
+  and reported as exact zeros, to be seeded by the fill instead.</li>
+<li><em>Fill scale.</em> A filled component is a rank-1 block of constant magnitude <span class="arithmatex">\(f^2\)</span> per entry, and <span class="arithmatex">\(r\)</span> of
+  them add up against data entries of size <span class="arithmatex">\(\operatorname{mean}(X)\)</span>. The plain <code>a</code> variant's
+  <span class="arithmatex">\(f = \operatorname{mean}(X)\)</span> therefore swamps the data as <span class="arithmatex">\(r\)</span> grows — measured on a rank-12 matrix at
+  <span class="arithmatex">\(r = 32\)</span>: initial relative residual <strong>13.5</strong>, and the first sweep annihilated <strong>28 of 32</strong> components.
+  The <code>ar</code> variant's <span class="arithmatex">\(f = \operatorname{mean}(X)\cdot U(0,1)/100\)</span> keeps the fill a perturbation, and the
+  randomness breaks the degeneracy a constant fill would create (identical, linearly dependent columns
+  that no coordinate descent can separate). Measured effect: 0 components dead, converged residual
+  <strong>270×</strong> lower, and on <code>digits</code> at <span class="arithmatex">\(r = 24\)</span> the reconstruction error drops <strong>0.33 → 0.20</strong> — matching
+  <code>scikit-learn</code>'s own NMF to three decimals at every rank tested (<span class="arithmatex">\(r = 10, 16, 24, 32\)</span>).</li>
+</ul>
+<p>Both objectives are invariant to <span class="arithmatex">\((WD, D^{-1}H)\)</span> for any positive diagonal <span class="arithmatex">\(D\)</span> — the optimizer therefore
+leaves an arbitrary per-component scale (measured spreads of <span class="arithmatex">\(70\times\)</span> between components on a converged
+fit). That gauge freedom is harmless for the reconstruction but not for us: <span class="arithmatex">\(W\)</span> leaves the factorizer as a
+<strong>Euclidean feature vector</strong> for the Phase-3 head, where a per-component scale is a per-dimension weight,
+so the head silently clusters along whichever component drew the largest number. The returned
+factorization is therefore canonical — <span class="arithmatex">\(\lVert H_k \rVert_2 = 1\)</span> with the scale absorbed into <span class="arithmatex">\(W\)</span>, and
+components ordered by descending energy. Measured on a 4-topic nonnegative mixture over 8 seeds, at
+<span class="arithmatex">\(N = 8\,000 / 40\,000 / 160\,000\)</span>: median ARI <strong>0.81 / 0.99 / 0.97 → 1.00</strong> and seed spread
+<strong>±0.37 → ±0.00</strong>. The gain is determinism, not accuracy in the mean. Convergence is tested on the <strong>size of the update</strong> — the total coordinate movement of a sweep, against
+the first sweep's — not on the size of the objective. A relative test on the residual never fires here:
+HALS converges sublinearly, so it keeps buying more than <span class="arithmatex">\(\texttt{tol}\)</span> of relative improvement for
+hundreds of sweeps and the iteration budget ends up the only brake. The movement is scale-free, does
+converge, and falls out of the sweep at no extra cost.</p>
+<h2 id="directional-clustering-spherical-k-means-von-misesfisher">Directional clustering: spherical k-means &amp; von Mises–Fisher<a class="headerlink" href="#directional-clustering-spherical-k-means-von-misesfisher" title="Permanent link">&para;</a></h2>
+<p>On L2-normalized data every point lies on the unit sphere <code>S^{d-1}</code>, where cosine — not Euclidean —
+similarity is the meaningful geometry (CLIP / face / sentence / speaker embeddings). Two heads cluster
+by direction: <strong>spherical k-means</strong> (hard) and a <strong>mixture of von Mises–Fisher</strong> distributions (soft).</p>
+<p><strong>Exact merge on the sphere.</strong> A leaf summarizing points <code>{xₚ}</code> on the sphere is reduced to its
+weighted mean <code>μ_i = (Σ xₚ)/n_i</code>, whose length <code>‖μ_i‖ = R̄_i ∈ [0, 1]</code> is the leaf's <em>mean resultant
+length</em> — a direct measure of within-leaf angular concentration. The cluster resultant is
+<code>R_c = Σ_{i∈c} n_i μ_i = Σ_{p∈c} xₚ</code>, additive across leaves and independent of how points were
+grouped: the BETULA exact-merge property carries through unchanged. The MLE mean direction is
+<code>μ̂_c = R_c / ‖R_c‖</code> and <code>R̄_c = ‖R_c‖ / N_c</code>. Keeping <code>μ_i</code> <strong>un-normalized</strong> is essential —
+re-normalizing each leaf to a unit direction discards <code>R̄_i</code>, makes the compression look artificially
+concentrated, over-estimates <code>κ</code>, and fragments the mixture.</p>
+<p><strong>Concentration.</strong> The vMF concentration uses the Banerjee et al. (2005) closed form
+<code>κ̂ ≈ R̄(d − R̄²)/(1 − R̄²)</code>, which avoids inverting the Bessel ratio. The normalizer
+<code>C_d(κ) = κ^{d/2−1} / ((2π)^{d/2} I_{d/2−1}(κ))</code> still needs <code>log I_ν(κ)</code>, and no Bessel library is
+pulled in for it (the crate stays NumPy-only) — two evaluators are split at <code>κ = 10⁴</code>:</p>
+<ul>
+<li><strong>below</strong>, the all-positive power series in log-space — pull out <code>(κ/2)^ν</code>, accumulate the term
+  ratio <code>(κ/2)² / (m(ν+m))</code> with an online log-sum-exp. Nothing overflows, but the peak term sits at
+  <code>m ≈ κ/2</code>, so the cost is <code>O(κ)</code> and the loop's own stop truncates <em>before</em> the peak above
+  <code>κ ≈ 4·10⁵</code>. Large <code>κ</code> is not a stability problem for this series; it is a cost problem that turns
+  into a correctness problem.</li>
+<li><strong>above</strong>, DLMF 10.41.3, the uniform asymptotic expansion for large order, in <code>O(1)</code>:
+  <code>I_ν(νz) ~ e^{νη}/(√(2πν)·(1+z²)^{1/4}) · Σₖ Uₖ(p)/ν^k</code> with <code>η = √(1+z²) + ln(z/(1+√(1+z²)))</code> and
+  <code>p = 1/√(1+z²)</code>. Three terms (<code>U₀..U₂</code>) are exactly what f64 needs from <code>κ = 10⁴</code> up: measured
+  against 50-digit arithmetic over <code>ν ∈ [1, 2047]</code>, the f64 result lands within <strong>0.8 ulp</strong>, while
+  stopping at <code>U₁</code> costs some 300 ulps and a fourth term changes nothing.</li>
+</ul>
+<p>The expansion is written in <code>z = κ/ν</code> and divides by <code>ν = d/2 − 1</code>, so it exists only for <code>d ≥ 4</code>.
+Below that the series is the sole evaluator, and the concentration cap is what keeps it in range:
+<strong>10⁶ for <code>d ≥ 4</code>, 10⁴ for <code>d ≤ 3</code></strong>. The cap is a limit of the normalizer, not of the model — a
+cluster tighter than it is already effectively a point. Extending <code>d ≤ 3</code> would need a separate
+small-order expansion and its own validation.</p>
+<p>The EM E-step is the exact expected log-likelihood of a leaf's points under component <code>c</code>,
+<code>n_i·[ln π_c + log C_d(κ_c)] + κ_c · μ_c · R_i</code> with <code>R_i = n_i μ_i</code> the raw resultant, so a
+spread-out leaf contributes proportionally weaker evidence — the directional analogue of the
+full-covariance GMM's within-leaf <code>−½ tr(Σ_c⁻¹ Σ_i)</code> correction. <code>predict_proba</code> returns this true
+posterior; <code>n_clusters=0</code> selects the component count by BIC.</p>
+<h2 id="labelling-a-raw-point">Labelling a raw point<a class="headerlink" href="#labelling-a-raw-point" title="Permanent link">&para;</a></h2>
+<p>The CF-tree is a <em>summary</em>, not the model. A head fits its parameters to the leaves, and the label of
+a new point follows from that head's own objective — not from where the tree happens to route it:</p>
+<table>
+<thead>
+<tr>
+<th>head</th>
+<th>rule</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>kmeans</code>, <code>spherical-kmeans</code></td>
+<td><span class="arithmatex">\(\arg\min_c \lVert x - c \rVert^2\)</span> over the cluster centres (spherical compares unit-normalized centres, where the Euclidean argmin and the cosine argmax agree)</td>
+</tr>
+<tr>
+<td><code>gmm</code>, <code>gmm-full</code>, <code>vmf</code>, <code>watson</code>, <code>gmm-toeplitz{,-full,-gs}</code></td>
+<td><span class="arithmatex">\(\arg\max_c\ \ln \pi_c + \ln p(x \mid \theta_c)\)</span></td>
+</tr>
+<tr>
+<td><code>ward</code>, <code>spectral</code>, <code>leiden</code>, <code>hdbscan</code>, <code>scale-space</code></td>
+<td>nearest leaf entry, then that entry's label</td>
+</tr>
+</tbody>
+</table>
+<p>The third row is not a fallback but the only defined answer: those clusters need not be convex, so any
+centre or density rule would impose a partition the head exists to avoid. The first two rows <em>were</em>
+computed that way until they were fixed, and the tree descent is greedy — an approximate
+nearest-microcluster search that disagreed with the model on 3–28% of points.</p>
+<p>The mixture densities are the plain component log-densities: the E-step's within-leaf correction
+<span class="arithmatex">\(-\tfrac{1}{2}\operatorname{tr}(\Sigma_c^{-1}\Sigma_i)\)</span> exists because a <em>leaf</em> has scatter, and a single
+observation has none. Each head keeps the exact numbers its own EM converged to — the floored diagonal
+variances, the ridge-regularized Cholesky, the AR predictor bank or Toeplitz factor — so the point rule
+cannot drift from the fit. <code>predict_proba</code> normalizes the same scores, which makes
+<code>predict_proba(X).argmax(1)</code> equal to <code>predict(X)</code> by construction. A component that ends up claiming
+no leaf is silenced, so <code>predict</code> can only name a label the fitted partition actually uses.</p>
+<p><strong>Where the diagonal head is weak.</strong> Being the model's own rule is not the same as being the most
+accurate one, and the gap shows up wherever the model is a poor fit. <code>method="gmm"</code> treats every
+dimension as independent, so scoring a raw point sums <code>d</code> separate penalties and a per-dimension
+modelling error accumulates across all of them; the leaf-level score damps this through the
+<span class="arithmatex">\(-\tfrac{1}{2}\operatorname{tr}(\Sigma_c^{-1}\Sigma_i)\)</span> term, which a single observation does not have.
+On raw image pixels — strongly correlated, and exactly what a diagonal covariance cannot represent —
+that costs accuracy: MNIST-20k ARI <strong>0.340</strong> by leaf descent against <strong>0.185</strong> by posterior, where
+TF-IDF text gains (20-newsgroups <code>gmm</code> <strong>0.027 → 0.054</strong>) and so does <code>digits</code> (<strong>0.489 → 0.507</strong>). The
+fitted covariance is what costs it: on the same fit a nearest-centre rule, which ignores the covariance
+entirely, scores <strong>0.378</strong> — above both. The loss is specific to a fine leaf budget, not to the head:
+at <code>max_leaves=300</code> the posterior wins for <code>gmm</code> (<strong>0.206 → 0.239</strong>) and for <code>gmm-full</code>
+(<strong>0.207 → 0.212</strong>) alike. For raw images prefer <code>kmeans</code> or a <code>projection</code>.</p>
+<h2 id="geometry-aware-graph-geobetula-and-scale-space-modes">Geometry-aware graph (GeoBETULA) and scale-space modes<a class="headerlink" href="#geometry-aware-graph-geobetula-and-scale-space-modes" title="Permanent link">&para;</a></h2>
+<p>Two heads exploit the geometry <em>within</em> each microcluster, on the <code>M ≪ N</code> leaves.</p>
+<p><strong>GeoBETULA (<code>method="leiden"</code>).</strong> The self-tuning k-NN affinity graph normally uses the centroid
+distance <code>‖μ_i − μ_j‖²</code>. Two optional terms make it geometry-aware: a <strong>log-Euclidean</strong> covariance
+term <code>β·‖logΣ_i − logΣ_j‖²_F</code> (the SPD-manifold metric, <code>covariance_weight</code>) so neighbours agree in
+<em>shape</em>, and a <strong>Grassmann</strong> term <code>γ·d²_Gr(U_i, U_j)</code> with <code>d²_Gr = r − ‖U_iᵀ U_j‖²_F</code> — the
+projection distance between the two rank-<code>r</code> principal subspaces <code>U_i</code> (top-<code>r</code> eigenvectors of <code>Σ_i</code>),
+<code>tangent_weight</code> — so neighbours agree in <em>manifold orientation</em>. This separates crossing or adjacent
+manifolds that share a centroid neighbourhood but differ in local tangent. Both reuse the in-house
+Jacobi eigensolver; both default to <code>0</code> (plain centroid affinity).</p>
+<p><strong>Scale-space modes (<code>method="scale-space"</code>).</strong> Treat the leaves as a weighted sample of <strong>Gaussians,
+not points</strong> — a leaf is a cloud, and convolving that cloud with the kernel is what the data's own
+kernel density is, <span class="arithmatex">\(N(\mu_j, \Sigma_j) * N(0, h^2 I) = N(\mu_j, \Sigma_j + h^2 I)\)</span>. With
+<span class="arithmatex">\(\sigma_j^2 = S_j/(n_j d)\)</span> from the summary, every leaf carries its own width <span class="arithmatex">\(s_j^2 = h^2 + \sigma_j^2\)</span>:</p>
+<div class="arithmatex">\[\rho_h(x) = \sum_j n_j\, s_j^{-d}\, \exp\bigl(-\|x - \mu_j\|^2 / 2 s_j^2\bigr)\]</div>
+<p>The <span class="arithmatex">\(s_j^{-d}\)</span> amplitude is what stops a fat leaf peaking as high as a tight one, and the mean-shift
+fixed point becomes <span class="arithmatex">\(x = \sum_j (w_j/s_j^2)\mu_j / \sum_j (w_j/s_j^2)\)</span> (Comaniciu, Ramesh &amp; Meer 2001);
+at zero leaf scatter both collapse to the point-kernel form exactly. Take the
+modes of this KDE (found by mean-shift) as clusters. Increasing
+the bandwidth <code>h</code> merges modes — a one-parameter Morse filtration. Rather than fix <code>h</code> (or <code>k</code>), the
+head sweeps <code>h</code> log-spaced and reports the labelling at the <strong>most persistent</strong> mode count: the widest
+plateau of the "number of modes vs <code>log h</code>" curve. At each scale, raw mean-shift modes separated by
+only a <strong>shallow density valley</strong> (<code>ρ</code> along the connecting segment stays ≥ <code>VALLEY_RATIO = 0.8</code> of the
+lower peak) are merged by prominence — this collapses the spurious sub-peaks a single cluster produces
+at fine bandwidths, cleaning the curve so the persistent plateau is unambiguous.</p>
+<p>Persistence is only a usable selector on the part of the curve that carries the merge cascade. The
+swept range is <span class="arithmatex">\([\tfrac12 \operatorname{med}_j \delta_j,\ \tfrac12 \operatorname{diam}]\)</span> with <span class="arithmatex">\(\delta_j\)</span>
+the nearest-leaf gap, and the last two clusters join far below that ceiling, so a single grid spends
+most of its points on a trivial <span class="arithmatex">\(k=1\)</span> tail — always the longest flat run of a decreasing curve, hence
+the winner whenever the cascade above it is strictly decreasing. Two things fix that: the sweep
+<strong>stops at the first single-mode scale</strong>, leaving the trivial run one point long, and the range is then
+<strong>narrowed onto the cascade and re-swept</strong>, so a plateau inside it has grid points to be measured on.
+Narrowing is guarded on having seen at least two multi-mode scales, because refining below the merge
+scale manufactures structure — a single Gaussian blob's refined curve reads <code>[3,3,3,2,2,…]</code> over a 3 %
+span of <code>h</code>. Measured over 52 <code>(PCA dimension × leaf budget)</code> cells on <code>digits</code>, the single grid
+answered <span class="arithmatex">\(k=1\)</span> in 42; the two-pass sweep does so in 3, at 2.45× the cost. This is parameter-free and
+non-convex-aware, but still the weakest head on <code>covtype</code>, where every cell scores a negative ARI. See
+<code>bench/RESULTS.md</code> before relying on it.</p>
+<h2 id="other-verified-improvements">Other verified improvements<a class="headerlink" href="#other-verified-improvements" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>Distances <code>D0</code>–<code>D4</code></strong> are the BIRCH measures re-derived on <span class="arithmatex">\((n, \mu, S)\)</span> (Maxima-verified
+  <em>equivalent</em>, computed stably). Variance-increase / Ward is <span class="arithmatex">\(D_4 = \tfrac{n_A n_B}{n_{AB}}\,\|\Delta\mu\|^2\)</span> — the <span class="arithmatex">\(S\)</span>
+  terms cancel by König–Huygens, so it is an exact centroid measure (no Lance-Williams approximation).</li>
+<li><strong>k-means on CFs</strong> minimizes the true point objective, not the leaf-centroid proxy:
+  <span class="arithmatex">\(\text{SSE} = \sum_i \bigl[S_i + n_i\|\mu_i - c\|^2\bigr]\)</span> folds each leaf's own scatter <span class="arithmatex">\(S_i\)</span> back in, so compressing to a
+  CF-tree first does not change what is being optimized.</li>
+<li><strong>The boundary of the summary.</strong> A cluster feature is a sum-decomposition
+  <span class="arithmatex">\(f(X) = \varphi\bigl(\sum_u \psi(x_u)\bigr)\)</span> (Deep Sets, Zaheer et al. 2017), so it carries the
+  permutation-invariant polynomials of degree <span class="arithmatex">\(\le 2\)</span> and nothing else. WCSS, Ward, Calinski–Harabasz,
+  RMS Davies–Bouldin, <span class="arithmatex">\(D_{4,\varphi}\)</span> and both Gaussian E-steps are therefore <em>exact</em> on the summary;
+  the exact silhouette, a single-linkage dendrogram and a DBSCAN labelling provably are not — two
+  four-point sets with <strong>bitwise-identical</strong> features have different pairwise distance sets. The
+  counterexample, the exactness residuals and the leaf-budget error rate are in
+  <code>research/RESULTS-cf-boundary.md</code>.</li>
+<li><strong>Full covariance</strong> uses a matrix Welford (PSD) with on-demand Cholesky for <code>logdet</code> /
+  <code>mahalanobis</code>; the packed upper-triangular index is the tested <span class="arithmatex">\((j-1)j/2\)</span> form — a reference
+  implementation shipped a <span class="arithmatex">\((j-1)\cdot\mathrm{dim}/2\)</span> variant that silently corrupts <span class="arithmatex">\(\mathrm{dim} \ge 4\)</span>.</li>
+<li><strong><span class="arithmatex">\(\chi^2\)</span> absorption gate</strong> (<code>absorb="chi2"</code>): a mass-invariant Mahalanobis-<span class="arithmatex">\(\chi^2\)</span> threshold with a
+  Normal-Inverse-Gamma prior <span class="arithmatex">\(\text{var}_\text{eff} = (S + \kappa s_0)/(n + \kappa)\)</span>, finite at <span class="arithmatex">\(n = 1\)</span>. Fixes the
+  size-imbalance failure where a 12-point vs a <span class="arithmatex">\(10^4\)</span>-point cluster decide differently (sklearn #22854).</li>
+<li><strong>Frequent-Directions sketch</strong> (high <span class="arithmatex">\(d\)</span>): the full-cov GMM consumes it in <strong>low-rank</strong> form —
+  <span class="arithmatex">\(\mathrm{tr}(\Sigma_k^{-1}\Sigma_i) = \sum_r \|L_k^{-1} f_r\|^2\)</span> — so it never materializes a <span class="arithmatex">\(d \times d\)</span> matrix per leaf and keeps
+  <span class="arithmatex">\(O(\ell d)\)</span> memory through clustering. Identical math to the dense path. The shrink step subtracts
+  the lower-median <span class="arithmatex">\(\sigma^2\)</span> from every direction; that trace is banked rather than discarded, so
+  <span class="arithmatex">\(S = \mathrm{tr}(B^\mathsf{T}B) + \text{lost}\)</span> is the leaf's <em>exact</em> scatter, and the covariance is
+  reported as <span class="arithmatex">\(\Sigma = \frac{S}{\mathrm{tr}(B^\mathsf{T}B)}\cdot\frac{B^\mathsf{T}B}{n}\)</span> — the retained
+  directions scaled to carry the missing mass. Measured against the isotropic alternative in
+  <code>bench/RESULTS.md</code>; without either, the sketch reports as little as 66 % of its own scatter.</li>
+<li><strong>Height-bounded exact HAC</strong> (<code>clustering::dendrogram_below</code>, Rust API): every merge below a chosen
+  height <span class="arithmatex">\(h_{\max}\)</span>, computed over a candidate graph instead of all pairs, and <strong>exact</strong> rather than
+  approximate. The whole argument is one inequality — the minimum over cross pairs is at most their
+  (mass-weighted) mean, and that mean is
+  <span class="arithmatex">\(\|\Delta\mu\|^2 + S_A/n_A + S_B/n_B\)</span> for <em>any</em> pair of clusters. What differs per linkage is how
+  the linkage value bounds it:</li>
+<li><strong>average / weighted</strong>: the value <em>is</em> that mean, so <span class="arithmatex">\(\min \le h\)</span> and the radius is <span class="arithmatex">\(r^2 = h\)</span>;</li>
+<li><strong>Ward</strong>: the value is <span class="arithmatex">\(2\frac{n_A n_B}{n_A + n_B}\|\Delta\mu\|^2\)</span> and a cluster's own scatter is
+    the sum of the <span class="arithmatex">\(D_4\)</span> of the merges inside it, <span class="arithmatex">\(S_A \le (m_A - 1)h/2\)</span>, so
+    <span class="arithmatex">\(\min \le \frac{h}{2}\bigl(\frac{m_A}{n_A} + \frac{m_B}{n_B}\bigr) \le h/w_{\min}\)</span> with <span class="arithmatex">\(w_{\min}\)</span>
+    the lightest leaf;</li>
+<li><strong>centroid / median</strong>: the value is <span class="arithmatex">\(\|\Delta\mu\|^2\)</span> alone, which bounds neither spread — two
+    concentric shells have coincident centroids and no close cross pair at all. <strong>No radius exists</strong>,
+    at any height, and the call returns an error rather than a silently wrong dendrogram.</li>
+</ul>
+<p>Exactness then follows in two lines: the candidate set is a subset of the pairs, so the candidate
+  minimum is <span class="arithmatex">\(\ge\)</span> the true minimum; and if the true minimum is <span class="arithmatex">\(\le h_{\max}\)</span> the radius puts its
+  edge in the graph, so the candidate minimum is <span class="arithmatex">\(\le\)</span> it. Equality at every step below <span class="arithmatex">\(h_{\max}\)</span> —
+  and the moment the candidate minimum exceeds <span class="arithmatex">\(h_{\max}\)</span> the same argument says the true one does
+  too, so stopping there is right rather than heuristic. The graph must therefore be the <strong>exact</strong>
+  radius graph: an approximate k-NN index may omit the one edge the certificate depends on, which
+  costs the guarantee and leaves an approximation indistinguishable from an exact answer. See
+  <code>bench/RESULTS.md</code> for where this pays and where it does not.
+- <strong>Rebuild</strong> merges the <span class="arithmatex">\(k\)</span> closest within-leaf sibling pairs, where <span class="arithmatex">\(k\)</span> is what the leaf budget asks
+  for, and raises the threshold to the widest gap it took (monotone, <span class="arithmatex">\(O(M \cdot \text{capacity})\)</span> scan,
+  no global all-pairs). Two consequences. <em>In place</em>: merging two entries inside one leaf node leaves
+  every node CF exactly equal to the merge of its subtree, so no ancestor is touched; the reinsertion
+  that follows merges nothing and only re-routes, which is the one thing compaction cannot do (shrink a
+  mixed leaf, yes; split it, no). <em>Cliff-safe</em>: in high dimension distances
+  concentrate, so the leaf count is near-discontinuous in the threshold (measured on 3000-d TF-IDF:
+  7755 leaves at <span class="arithmatex">\(\tau = 1.0\)</span>, 12 at <span class="arithmatex">\(\tau = 1.3\)</span>) and any threshold-first policy either fails to reduce
+  or collapses the tree; choosing <span class="arithmatex">\(k\)</span> instead caps a rebuild at one merge per entry.
+- <strong>Mass-balanced budget</strong> (<code>balance = b</code>, optional): the absorption gate above is purely geometric,
+  so nothing bounds how much <em>mass</em> one leaf accumulates. With <code>balance</code> set, a leaf entry is a
+  candidate for absorption or for a compaction merge only while its weight stays under</p>
+<p><span class="arithmatex">\(w_{\max} = \max\bigl(b \cdot W / M,\ 2\bigr), \qquad W = \text{total mass seen so far},\ M = \texttt{max\_leaves}\)</span></p>
+<p>so <span class="arithmatex">\(W/M\)</span> is the perfectly balanced ideal and <span class="arithmatex">\(b\)</span> the slack allowed above it. Reading <span class="arithmatex">\(W\)</span> from the
+  root CF makes the cap self-tuning on a stream — it tightens as data arrives — and the floor of 2
+  keeps it from forbidding the merge of two singletons during warm-up. The cap is enforced at both
+  sites because either one alone undoes the other: absorption refuses a full entry and starts a new
+  one, and the rebuild skips a pair that would overflow. It is <strong>soft</strong> and <span class="arithmatex">\(M\)</span> is <strong>hard</strong>: a rebuild
+  that cannot reach its target under the cap merges over it rather than leave the tree over budget.
+- <strong>Robust insertion</strong> (<code>huber_k = k</code>, optional): before a point <span class="arithmatex">\(x\)</span> is folded into its target
+  microcluster <span class="arithmatex">\((n, \mu, S)\)</span>, each coordinate is winsorized to the cluster's own scale,</p>
+<p><span class="arithmatex">\(\tilde{x}_j = \mathrm{clip}\bigl(x_j,\ \mu_j - k\sigma_j,\ \mu_j + k\sigma_j\bigr), \quad \sigma_j = \sqrt{S_j / n}\)</span></p>
+<p>and the stable Welford update runs on <span class="arithmatex">\(\tilde{x}\)</span> instead of <span class="arithmatex">\(x\)</span>. A coordinate with <span class="arithmatex">\(\sigma_j = 0\)</span> (no scale
+  yet) passes through unchanged, and the clip is skipped until the target holds ≥ 5 points (so the
+  scale estimate is trustworthy). This bounds any single point's pull on the centroid to <span class="arithmatex">\(O(k\sigma/n)\)</span>
+  — outliers can no longer drag a centroid or inflate a radius — while leaving the CF a valid
+  <span class="arithmatex">\((n, \mu, S)\)</span> triple, so every downstream head is unchanged. The clipped value flows identically
+  into the leaf entry and its ancestors, preserving the "each node = merge of its subtree" invariant.</p>
+<h2 id="symmetries-of-a-feature-head-pair">Symmetries of a (feature, head) pair<a class="headerlink" href="#symmetries-of-a-feature-head-pair" title="Permanent link">&para;</a></h2>
+<p>A clustering head answers a question about the <em>data</em>, not about the coordinates it arrived in.
+Which change of frame it is allowed to ignore is a property of its model — and one that is easy to
+lose by accident, to a bandwidth in absolute data units, a covariance floor added before whitening,
+or an initialisation that reads coordinate 0. The groups the crate claims, and enforces in
+<code>tests/equivariance.rs</code>:</p>
+<table>
+<thead>
+<tr>
+<th>head</th>
+<th>translate</th>
+<th>rotate</th>
+<th>uniform scale</th>
+<th>swap axes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>kmeans</code>, <code>xmeans</code>, <code>ward_hac</code>, <code>agglomerative</code>, <code>dyn_msc</code>, <code>kmedoids</code>, <code>fuzzy_cmeans</code>, <code>hdbscan</code></td>
+<td>yes</td>
+<td>yes</td>
+<td>yes</td>
+<td>yes</td>
+</tr>
+<tr>
+<td><code>gmm_full</code>, <code>mppca</code>, <code>spectral</code>, <code>scale_space</code></td>
+<td>yes</td>
+<td>yes</td>
+<td>yes</td>
+<td>yes</td>
+</tr>
+<tr>
+<td><code>gmm_diagonal</code></td>
+<td>yes</td>
+<td><strong>no</strong></td>
+<td>yes</td>
+<td>yes</td>
+</tr>
+<tr>
+<td><code>spherical_kmeans</code>, <code>movmf</code>, <code>watson</code></td>
+<td><strong>no</strong></td>
+<td>yes</td>
+<td>yes</td>
+<td>yes</td>
+</tr>
+<tr>
+<td><code>gmm_toeplitz</code></td>
+<td>yes</td>
+<td><strong>no</strong></td>
+<td>yes</td>
+<td><strong>no</strong></td>
+</tr>
+</tbody>
+</table>
+<p>Three rows are exceptions by construction, not defects. An axis-aligned covariance is a claim <em>about
+the axes</em>, so rotation is not a symmetry of <code>gmm_diagonal</code>'s model; rotating a diagonal fit and
+expecting the same answer is the error. The directional heads read a direction from the origin, so
+translating the data moves it relative to the very thing they measure. And <code>gmm_toeplitz</code> is neither
+Euclidean nor directional: an AR(<span class="arithmatex">\(w\)</span>) covariance says the coordinates are an evenly spaced
+<em>sequence</em>, so shifting or rescaling the whole sequence leaves the model alone while reordering the
+axes is a different model. The audit exhibits that on two AR processes that differ in <em>nothing but</em>
+their autocovariance — each window standardised, so the marginal mean and variance carry no signal —
+which the head separates exactly; sending lag-1 neighbours 64 apart then destroys the band structure
+and the answer with it.</p>
+<p>The head is only half of the pair. A symmetry the <strong>leaf summary</strong> has already discarded cannot be
+recovered by any head reading it, so the group of a <code>(feature, head)</code> pair is the <em>intersection</em> of
+the two:</p>
+<table>
+<thead>
+<tr>
+<th>feature</th>
+<th>what it keeps of the scatter</th>
+<th>rotate</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>Spherical</code></td>
+<td>its trace only</td>
+<td>yes — nothing anisotropic is left to rotate</td>
+</tr>
+<tr>
+<td><code>Diagonal</code></td>
+<td>its axis-aligned part</td>
+<td><strong>no</strong> — the off-diagonal scatter is gone</td>
+</tr>
+<tr>
+<td><code>Full</code>, <code>FdSketch</code></td>
+<td>all of it (<code>FdSketch</code> up to sketch error)</td>
+<td>yes</td>
+</tr>
+</tbody>
+</table>
+<p>So <code>gmm_full</code> — a rotation-invariant model — has three different symmetry groups depending on what
+it is handed: invariant on <code>Full</code> leaves, <em>not</em> invariant on <code>Diagonal</code> ones, and invariant again on
+<code>Spherical</code> ones for the trivial reason that an isotropic summary has nothing a rotation can change.
+Choosing <code>feature="diagonal"</code> for memory is therefore also a choice about which frames the answer is
+allowed to depend on.</p>
+<p>The audit found no head violating its claimed group. That is only worth reporting because the tests
+carry their own controls: each exception is asserted to <em>differ</em> rather than quietly skipped, and a
+fixture check confirms the comparison can tell two answers apart at all — blobs separated far enough
+that every head finds them in any frame would pass an invariance suite without exercising a single
+symmetry.</p>
+<h2 id="relation-to-birch-and-betula">Relation to BIRCH and BETULA<a class="headerlink" href="#relation-to-birch-and-betula" title="Permanent link">&para;</a></h2>
+<p>This library is a from-scratch Rust implementation of the <strong>BETULA</strong> cluster feature — the
+numerically stable <span class="arithmatex">\((n, \mu, S)\)</span> summary introduced by Lang &amp; Schubert to replace classic BIRCH's
+cancellation-prone <span class="arithmatex">\((N, LS, SS)\)</span>:</p>
+<ul>
+<li><strong>BETULA: Numerically Stable CF-Trees for BIRCH Clustering</strong> — Andreas Lang &amp; Erich Schubert,
+  <em>SISAP 2020</em> (<a href="https://arxiv.org/abs/2006.12881">arXiv:2006.12881</a> ·
+  <a href="https://link.springer.com/chapter/10.1007/978-3-030-60936-8_22">Springer</a>); extended journal
+  version, <em>Information Systems</em> 2022
+  (<a href="https://www.sciencedirect.com/science/article/abs/pii/S0306437921001253">ScienceDirect</a>).</li>
+<li><strong>BIRCH</strong> — Zhang, Ramakrishnan &amp; Livny, <em>SIGMOD 1996</em>.</li>
+</ul>
+<p>Reference implementations: <a href="https://elki-project.github.io/">ELKI</a> (Java), and
+<a href="https://pypi.org/project/betulars/"><strong>betulars</strong></a> (<a href="https://github.com/andiwg/betula">source</a>) — a
+Rust+PyO3 package by paper co-author <strong>Andreas Lang</strong>. betulars is a faithful, highly optimised
+<strong>Phase-1 CF-tree builder</strong>: it builds the tree and exposes leaf cluster statistics, but (as of
+v0.1.0) produces <strong>no cluster labels</strong> and <strong>no global clustering</strong> — k-means / GMM / hierarchical are
+listed as planned. If you need <em>just</em> the canonical BETULA CF-tree primitive, fast, use betulars.</p>
+<p><strong>betula-cluster is a different thing: an end-to-end clustering library.</strong> It re-derives the same
+stable CF from scratch and then adds everything betulars leaves to the user:</p>
+<ul>
+<li>the full Phase-2 pipeline — k-means / GMM / <strong>full-covariance</strong> GMM / Ward / HDBSCAN with
+  automatic <code>k</code> — producing <strong>per-point labels</strong> and <code>predict</code>, behind a real <strong>scikit-learn API</strong>
+  (the de-facto Python BIRCH, <code>sklearn.cluster.Birch</code>, is <em>classic</em> BIRCH: the unstable CF);</li>
+<li><code>f32</code> trees, streaming <code>partial_fit</code>, a mass-invariant <strong>χ² absorption gate</strong>, a
+  Frequent-Directions sketch for high <code>d</code>, <code>normalize=True</code> for embeddings, an inspection API
+  (outliers / near-duplicates / representatives / geometry), and serde persistence;</li>
+<li>AVX2/FMA distance kernels with a scalar fallback, and rayon-parallel build + labeling.</li>
+</ul>
+<p>The concrete, reproducible quality/speed/memory comparison is against the labeled scikit-learn
+clusterers practitioners actually reach for: at <strong>matching ARI</strong>, betula labels 1 M points <strong>30×
+faster</strong> than <code>sklearn.cluster.Birch</code> (8.01 s → 0.26 s) and <strong>9×</strong> faster than <code>KMeans</code>, while
+streaming memory stays flat at ~60 MB; see <a href="https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md"><code>bench/RESULTS.md</code></a> and the
+<a href="https://github.com/ilgrad/betula-cluster/blob/main/examples/04_method_comparison.ipynb">method-comparison notebook</a>. (betulars produces no labels, so
+it is not in that comparison; on the raw Phase-1 <em>build</em> the two are at parity — betula-cluster builds
+an <strong>identical tree</strong> at every <code>N</code> and, with matched <code>target-cpu=native</code> flags, matches betulars'
+wall-clock to within ~2 %.)</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+    <div class="md-copyright__highlight">
+      MIT-licensed · a Rust core with a scikit-learn API
+    </div>
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.sections", "navigation.top", "content.code.copy", "toc.follow"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+        <script src="../javascripts/mathjax.js"></script>
+      
+        <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+      
+    
+  </body>
+</html>
