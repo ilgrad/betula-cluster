@@ -25,11 +25,11 @@
 # to 21 without a regression), and `src/clustering/kmeans.rs` again (**2026-08-27 whole-file**, in
 # one run with `src/clustering/xmeans.rs` and `src/model.rs`, after #96 moved the BIC out of this
 # file and #101 lifted the auto-`k` ceiling). `src/clustering/medoid.rs` (**2026-08-25 whole-file**),
-# `src/wasserstein.rs` (**2026-08-26 whole-file**) and `src/clustering/xmeans.rs` + `src/model.rs`
-# (**2026-08-27**) are first measurements rather than replacements -- those modules postdate the
-# whole-crate sweep entirely. The entry-by-entry form is sound where the only change to the
-# file was *test* code: adding a test can kill a mutant but can never create one, so nothing outside
-# the recorded set needs re-measuring. It is not sound after a production edit -- re-measure the file
+# `src/wasserstein.rs` (**2026-08-26 whole-file**), `src/clustering/xmeans.rs` + `src/model.rs`
+# (**2026-08-27**) and `src/order.rs` (**2026-09-05 whole-file**) are first measurements rather than
+# replacements -- those modules postdate the whole-crate sweep entirely. The entry-by-entry form is
+# sound where the only change to the file was *test* code: adding a test can kill a mutant but can
+# never create one, so nothing outside the recorded set needs re-measuring. It is not sound after a production edit -- re-measure the file
 # whole then, which also renumbers every `line:col` in that section. `src/clustering/kprototypes.rs`
 # is the standing example: it was re-measured entry by entry on 2026-08-22 and again
 # (**2026-09-01 whole-file**) once the third, directional block moved every line in it.
@@ -835,3 +835,56 @@ src/clustering/ward.rs:49:26: replace < with <= in dendrogram
 # ulp is not constructible through the public path.
 src/clustering/medoid.rs:168:18: replace < with <= in seed_medoids
 src/clustering/medoid.rs:232:21: replace < with <= in best_swap
+
+# ── src/order.rs (6) ──
+# First measurement of this file; the module postdates the whole-crate sweep. 143 mutants,
+# 130 caught / 6 missed / 3 unviable / 4 timeouts, whole file in 2h at -j4 under a 12G cap, at
+# 68580c5:
+#   systemd-run --user --scope -p MemoryMax=12G -p MemorySwapMax=0 \
+#     -- env TMPDIR=/home/ilgrad/.cache/mutants-tmp \
+#          cargo mutants -f src/order.rs -j4 --test-tool nextest
+# `TMPDIR` has to point outside both the repo and `/tmp`: the repo makes the worker's copy recursive,
+# and `/tmp` is tmpfs here, whose pages count against the cgroup's `MemoryMax`.
+#
+# All four timeouts are detections, not survivors, and are not listed: `185:27`, `190:27`, `195:27`
+# and `200:27` turn a merge-walk cursor's `p += 1` into `p *= 1`, which pins it at zero, so the walk
+# never reaches the end of either column list. An infinite loop is what a mutation of a loop counter
+# should be.
+#
+# Two are *provably* equivalent.
+# `183:47`: the preceding match arm is guarded on `i == j`, so this arm is only reached with
+# `i != j`, where `i <= j` and `i < j` are the same predicate.
+# `282:26`: `hi > lo` and `hi >= lo` differ only at `hi == lo` -- `hi < lo` requires `n == 0`, and
+# then the loop the span feeds does not run. At `hi == lo` the mutant takes `span = 0.0`, so
+# `(v - lo) / span` is `0.0 / 0.0 = NaN`; `NaN.round()` is NaN, `f64::clamp` propagates NaN, and a
+# saturating `NaN as u64` is 0 -- exactly the `q` the clean branch computes from
+# `(v - lo) / 1.0 * levels == 0.0`. The constant projection contributes no bits either way.
+#
+# `104:15` is believed equivalent. `n <= 1 || dim == 0` -> `&&` differs in two shapes. With `n <= 1`
+# and `dim > 0` the mutant reaches a sort of at most one element, which is the identity whatever the
+# comparator does. With `n > 1` and `dim == 0` every row slice is empty, so every projection dots to
+# zero, `quantise` sees a constant projection and emits code 0 for every row, and the tie-break
+# compares two empty slices and returns `Equal` -- the sort runs on an all-equal key. Swept
+# `n = 0..600` at `dim = 0` against the mutated build: the identity at every `n`, so no fixture in
+# that family separates it.
+#
+# The last three are believed equivalent for the reason [`projections`] already documents: `scale` is
+# a positive constant common to every entry of the matrix, and [`quantise`] ranges each projection
+# over its own observed span, so a positive rescaling cancels before any bit is emitted.
+# `254:21` (`/` -> `*`) and `258:57` (`*` -> `/`) both rescale by `sqrt(dim)` rather than its
+# reciprocal. What survives the argument is float rounding -- the ranged value differs in the last
+# bits and could in principle cross a level boundary -- which is not constructible on demand.
+# `254:21` (`/` -> `%`) needed measuring rather than arguing. For `dim >= 2`, `sqrt(dim) > 1` and
+# `1.0 % sqrt(dim) == 1.0`, which is the positive constant above. At `dim == 1` it is
+# `1.0 % 1.0 == 0.0`, which zeroes the whole matrix: every code is then 0 and the order falls
+# entirely to the value tie-break, i.e. ascending in the single column. Measured on 12 distinct
+# values at `dim = 1`, the clean key produces that same ascending order, so the two coincide. That
+# coincidence is a property of `PROJECTION_SEED` -- the sign of the projection carrying the leading
+# bit -- and not a law; `the_key_is_pinned_so_a_change_to_it_cannot_pass_unnoticed` is what goes red
+# if the seed moves.
+src/order.rs:104:15: replace || with && in canonical_permutation
+src/order.rs:183:47: replace < with <= in canonical_permutation_csr
+src/order.rs:254:21: replace / with % in projections
+src/order.rs:254:21: replace / with * in projections
+src/order.rs:258:57: replace * with / in projections
+src/order.rs:282:26: replace > with >= in quantise
