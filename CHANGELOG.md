@@ -240,9 +240,18 @@ arms differing only in the code under test.
   against this scheme's 12/16, for an extra magic constant.
 
   Default off, because it relabels. Two scoping rules: the guarantee is **per `n_jobs`** (sharding
-  splits ranks, so changing `n_jobs` still changes the labels), and it applies to the dense
-  in-memory `fit` / `fit_predict` only — a `partial_fit` stream never holds the whole dataset, so it
-  ignores the flag rather than raising, the same asymmetry as `leaf_refit`.
+  splits ranks, so changing `n_jobs` still changes the labels), and it applies to a `fit` /
+  `fit_predict` that sees the whole dataset — a `partial_fit` stream never does, so it ignores the
+  flag rather than raising, the same asymmetry as `leaf_refit`.
+
+  **Sparse CSR input honours it on the same terms.** The key is computed over the CSR rows without
+  densifying, treating a missing column as an explicit zero, so a `scipy.sparse` matrix and its dense
+  equivalent are sorted into the same order and give the same labels. The merge walk that breaks a
+  key collision needs sorted, unique column indices — scipy's canonical form, but not an invariant of
+  the format — so a matrix that is not in canonical form now raises `ValueError` naming
+  `X.sort_indices()`. Silently ordering by a key computed from mis-read rows was the alternative, and
+  it would have looked like a working guarantee. The `sparse=` leader path (`fit_predict_sparse`) is
+  a different algorithm and takes no `canonical_order`.
 
 - **`leaf_refit=` — Lloyd at the micro-cluster level, and an honest account of what it does and does
   not fix.** A leaf CF in every BIRCH-family tree is an *absorption history*: the rows it swallowed

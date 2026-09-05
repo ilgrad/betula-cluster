@@ -4058,6 +4058,44 @@ def test_canonical_order_is_honoured_by_fit_and_ignored_by_a_partial_fit_stream(
     assert est.n_clusters_ == 5
 
 
+def test_canonical_order_holds_on_csr_input_and_agrees_with_the_dense_matrix():
+    """The CSR path takes its own ingest route, so honouring the flag there is a separate wiring and
+    not a consequence of the dense one. The key is computed over the sparse rows without densifying,
+    which is only correct if a missing column reads as an explicit zero — the dense comparison is
+    what tests that, since any other convention would put the two matrices in different orders."""
+    sp = pytest.importorskip("scipy.sparse")
+    x = _blobs(n=2000, d=12, k=5, seed=7)
+    x[np.abs(x) < 0.5] = 0.0
+    csr = sp.csr_matrix(x)
+    kw = dict(n_clusters=5, max_leaves=60, seed=0, canonical_order=True)
+
+    first = None
+    for seed in (1, 2, 3):
+        perm = np.random.default_rng(seed).permutation(len(x))
+        lab = betula_cluster.Betula(**kw).fit_predict(csr[perm])
+        back = np.empty(len(x), dtype=lab.dtype)
+        back[perm] = lab
+        first = back if first is None else first
+        assert np.array_equal(first, back)
+
+    assert np.array_equal(first, betula_cluster.Betula(**kw).fit_predict(x))
+
+
+def test_canonical_order_refuses_csr_indices_that_are_not_in_canonical_form():
+    """Sorted, unique column indices are scipy's canonical form but not an invariant of the format,
+    and the merge walk that compares two sparse rows needs them. Accepting an unsorted matrix would
+    order the rows by a key that is wrong for the data, so the failure has to be loud."""
+    sp = pytest.importorskip("scipy.sparse")
+    x = _blobs(n=200, d=8, k=3, seed=8)
+    x[np.abs(x) < 0.5] = 0.0
+    csr = sp.csr_matrix(x)
+    csr.indices[csr.indptr[0] : csr.indptr[1]] = csr.indices[csr.indptr[0] : csr.indptr[1]][::-1]
+    csr.has_sorted_indices = False
+
+    with pytest.raises(ValueError, match="sort_indices"):
+        betula_cluster.Betula(n_clusters=3, max_leaves=40, canonical_order=True).fit(csr)
+
+
 def test_canonical_order_survives_the_sklearn_parameter_protocol():
     est = betula_cluster.Betula(canonical_order=True)
     assert est.get_params()["canonical_order"] is True

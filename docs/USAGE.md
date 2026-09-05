@@ -892,9 +892,16 @@ rejected — 5/16 and 7/16 cells non-negative against this scheme's 12/16, for a
 
 Two scoping rules. The guarantee is **per `n_jobs`**: sharding splits ranks of the canonical order,
 so a fixed `n_jobs` is invariant to the row order, but changing `n_jobs` changes the shards and
-therefore the labels. And it applies to the dense in-memory `fit` / `fit_predict` only — a
-`partial_fit` stream never holds the whole dataset, and ordering a chunk would be canonical for the
-wrong set, so the stream ignores the flag rather than raising, exactly as it does for `leaf_refit`.
+therefore the labels. And it applies to a `fit` / `fit_predict` that sees the whole dataset — a
+`partial_fit` stream never does, and ordering a chunk would be canonical for the wrong set, so the
+stream ignores the flag rather than raising, exactly as it does for `leaf_refit`.
+
+**Sparse CSR input honours it too**, on the same terms: the key is computed over the CSR rows
+directly, without densifying, and a `scipy.sparse` matrix gives the same labels as its dense
+equivalent. That requires the column indices to be sorted and unique within each row — which is the
+scipy canonical form, but not an invariant of the format — so a matrix that is not in canonical form
+raises `ValueError` naming `X.sort_indices()` rather than being silently mis-ordered. The `sparse=`
+leader path (`fit_predict_sparse`) is a different algorithm and takes no `canonical_order`.
 
 ## Streaming / out-of-core — the `Betula` estimator
 

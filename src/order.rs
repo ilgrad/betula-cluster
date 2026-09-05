@@ -100,42 +100,151 @@ pub fn canonical_permutation<R: Real>(flat: &[R], n: usize, dim: usize) -> Vec<u
     idx
 }
 
-/// One `u64` Morton code per row: project onto [`PROJECTIONS`] fixed random directions, quantise
-/// each to [`BITS`] levels over the column's own observed range, then interleave the bits so that
-/// the most significant bit of every projection leads. Interleaving is what gives the code locality
-/// at every scale — a prefix of the code is a coarse cell of the whole space, not a fine slice of
-/// one axis.
-fn morton_codes<R: Real>(flat: &[R], n: usize, dim: usize) -> Vec<u64> {
+/// The canonical permutation for CSR rows — the sparse twin of [`canonical_permutation`].
+///
+/// The key is the same construction reading the non-zeros only, so it costs `O(nnz · PROJECTIONS)`
+/// rather than `O(n · dim · PROJECTIONS)`: an implicit zero contributes nothing to a projection, so
+/// a sparse row and its dense expansion produce the same code by construction, and a row with no
+/// non-zeros lands where the zero vector belongs rather than in a special case.
+///
+/// # Errors
+///
+/// The tie-break walks two rows in column order, so it needs each row's indices ascending. CSR from
+/// `scipy` normally satisfies this and `validate_csr` does not check it, so this is the one place
+/// that must: with unsorted indices the merge-walk would compare the wrong columns and silently
+/// return a *nearly* canonical order, which is worse than no order at all — the guarantee would hold
+/// on most inputs and fail on some, which is the shape of bug that survives a test suite.
+pub fn canonical_permutation_csr<R: Real>(
+    data: &[R],
+    indices: &[i64],
+    indptr: &[i64],
+    dim: usize,
+) -> Result<Vec<u32>, &'static str> {
+    let n = indptr.len().saturating_sub(1);
+    let mut idx: Vec<u32> = (0..n as u32).collect();
+    if n <= 1 || dim == 0 {
+        return Ok(idx);
+    }
+    let row = |i: usize| {
+        let (lo, hi) = (indptr[i] as usize, indptr[i + 1] as usize);
+        (&indices[lo..hi], &data[lo..hi])
+    };
+    for i in 0..n {
+        let (cols, _) = row(i);
+        if cols.windows(2).any(|w| w[1] <= w[0]) {
+            return Err(
+                "canonical_order needs CSR indices sorted and unique within each row; call                  X.sort_indices() (or pass X.sorted_indices()) before fitting",
+            );
+        }
+    }
+
+    let codes = morton_codes_csr(data, indices, indptr, dim, n);
+    idx.sort_unstable_by(|&a, &b| {
+        let (a, b) = (a as usize, b as usize);
+        codes[a].cmp(&codes[b]).then_with(|| {
+            // Dense-lexicographic order over two sparse rows: walk both column lists together and
+            // stop at the first column where they differ, treating a missing column as an explicit
+            // zero. Comparing the stored values pairwise instead would order `[(0, 1.0)]` against
+            // `[(5, 1.0)]` by value and call them equal.
+            let ((ca, va), (cb, vb)) = (row(a), row(b));
+            let (mut p, mut q) = (0usize, 0usize);
+            while p < ca.len() || q < cb.len() {
+                let (x, y) = match (ca.get(p), cb.get(q)) {
+                    (Some(&i), Some(&j)) if i == j => {
+                        let r = (va[p], vb[q]);
+                        p += 1;
+                        q += 1;
+                        r
+                    }
+                    (Some(&i), Some(&j)) if i < j => {
+                        let r = (va[p], R::zero());
+                        p += 1;
+                        r
+                    }
+                    (Some(_), Some(_)) => {
+                        let r = (R::zero(), vb[q]);
+                        q += 1;
+                        r
+                    }
+                    (Some(_), None) => {
+                        let r = (va[p], R::zero());
+                        p += 1;
+                        r
+                    }
+                    (None, Some(_)) => {
+                        let r = (R::zero(), vb[q]);
+                        q += 1;
+                        r
+                    }
+                    (None, None) => unreachable!("the loop guard excludes both being exhausted"),
+                };
+                match x.partial_cmp(&y) {
+                    Some(std::cmp::Ordering::Equal) | None => {}
+                    Some(ord) => return ord,
+                }
+            }
+            std::cmp::Ordering::Equal
+        })
+    });
+    Ok(idx)
+}
+
+/// [`morton_codes`] reading CSR rows. Shares the projection draw and the quantisation, so a CSR
+/// matrix and its dense expansion sort the same way.
+fn morton_codes_csr<R: Real>(
+    data: &[R],
+    indices: &[i64],
+    indptr: &[i64],
+    dim: usize,
+    n: usize,
+) -> Vec<u64> {
+    let proj = projections::<R>(dim);
+    let mut z = vec![0.0f64; n * PROJECTIONS];
+    for i in 0..n {
+        let (lo, hi) = (indptr[i] as usize, indptr[i + 1] as usize);
+        for k in lo..hi {
+            let (c, v) = (indices[k] as usize, data[k].to_f64().unwrap_or(0.0));
+            for j in 0..PROJECTIONS {
+                z[i * PROJECTIONS + j] += v * proj[j * dim + c].to_f64().unwrap_or(0.0);
+            }
+        }
+    }
+    quantise(z, n)
+}
+
+/// The fixed projection matrix, projection-major (`PROJECTIONS × dim`).
+///
+/// Projection-major, not row-major, so each projection is a contiguous `dim`-length slice and the
+/// dense pass can be [`crate::kernels::dot`] — the same SIMD kernel the distance path uses. As a
+/// row-major `dim × PROJECTIONS` rank-1 accumulate it did not vectorise and cost 7–21 % of the fit
+/// (`benches/canonical_order.rs`). The row is re-read once per projection rather than once in total,
+/// which is free: it is in L1 by the second pass at every `dim` this sees.
+///
+/// The draw is deliberately *not* transposed with the layout — the `k`-th gaussian still lands at
+/// `(d, j)` exactly as it did row-major, so every projection vector is bit-identical to the version
+/// this replaced and the published order-invariance sweep still describes the shipped key. The
+/// `1/sqrt(dim)` scale only keeps the values readable; each projection is ranged independently in
+/// [`quantise`], so it cancels.
+fn projections<R: Real>(dim: usize) -> Vec<R> {
     let mut rng = SplitMix64::new(PROJECTION_SEED);
-    // Projection-major (`PROJECTIONS × dim`), not row-major, so each projection is a contiguous
-    // `dim`-length slice and the pass below is [`kernels::dot`] — the same SIMD kernel the distance
-    // path uses. As a row-major `dim × PROJECTIONS` rank-1 accumulate it did not vectorise and cost
-    // 7-21 % of the fit (`benches/canonical_order.rs`). The row is re-read once per projection
-    // instead of once in total, which is free: it is in L1 by the second pass at every `dim` this
-    // sees. The `1/sqrt(dim)` scale only keeps the values readable — each projection is ranged
-    // independently below, so it cancels.
     let scale = 1.0 / (dim as f64).sqrt();
     let mut proj: Vec<R> = vec![R::zero(); dim * PROJECTIONS];
     for d in 0..dim {
         for j in 0..PROJECTIONS {
-            // Drawn in `(d, j)` order and *stored* at `(j, d)`. Transposing the layout without
-            // transposing the draw keeps every projection vector bit-identical to the row-major
-            // version this replaced, so the published order-invariance sweep still describes the
-            // shipped key.
             proj[j * dim + d] = R::from_f64(rng.gauss() * scale).unwrap_or_else(R::zero);
         }
     }
+    proj
+}
 
-    let mut z = vec![0.0f64; n * PROJECTIONS];
-    for i in 0..n {
-        let row = &flat[i * dim..(i + 1) * dim];
-        for j in 0..PROJECTIONS {
-            z[i * PROJECTIONS + j] = crate::kernels::dot(row, &proj[j * dim..(j + 1) * dim])
-                .to_f64()
-                .unwrap_or(0.0);
-        }
-    }
-
+/// Range each projection over its own observed span, quantise to [`BITS`] levels, and interleave the
+/// bits so the most significant bit of every projection leads.
+///
+/// Interleaving is what gives the code locality at every scale: a prefix of the code is a coarse cell
+/// of the whole space, not a fine slice of one axis. Ranging per projection rather than globally is
+/// what makes the code scale-free — and it is also why the `1/sqrt(dim)` in [`projections`] does not
+/// matter.
+fn quantise(z: Vec<f64>, n: usize) -> Vec<u64> {
     let levels = ((1u64 << BITS) - 1) as f64;
     let mut codes = vec![0u64; n];
     for j in 0..PROJECTIONS {
@@ -157,6 +266,21 @@ fn morton_codes<R: Real>(flat: &[R], n: usize, dim: usize) -> Vec<u64> {
         }
     }
     codes
+}
+
+/// One `u64` Morton code per dense row.
+fn morton_codes<R: Real>(flat: &[R], n: usize, dim: usize) -> Vec<u64> {
+    let proj = projections::<R>(dim);
+    let mut z = vec![0.0f64; n * PROJECTIONS];
+    for i in 0..n {
+        let row = &flat[i * dim..(i + 1) * dim];
+        for j in 0..PROJECTIONS {
+            z[i * PROJECTIONS + j] = crate::kernels::dot(row, &proj[j * dim..(j + 1) * dim])
+                .to_f64()
+                .unwrap_or(0.0);
+        }
+    }
+    quantise(z, n)
 }
 
 #[cfg(test)]
@@ -245,6 +369,73 @@ mod tests {
         let mut seen = perm.clone();
         seen.sort_unstable();
         assert_eq!(seen, (0..n as u32).collect::<Vec<_>>());
+    }
+
+    fn to_csr(flat: &[f64], n: usize, dim: usize) -> (Vec<f64>, Vec<i64>, Vec<i64>) {
+        let (mut data, mut indices, mut indptr) = (vec![], vec![], vec![0i64]);
+        for i in 0..n {
+            for d in 0..dim {
+                let v = flat[i * dim + d];
+                if v != 0.0 {
+                    data.push(v);
+                    indices.push(d as i64);
+                }
+            }
+            indptr.push(data.len() as i64);
+        }
+        (data, indices, indptr)
+    }
+
+    /// The sparse key reads only the non-zeros, so it has to land on the same order the dense key
+    /// does — otherwise a CSR matrix and its own `.toarray()` would cluster differently, which is a
+    /// bug a user would find before any test did.
+    #[test]
+    fn the_csr_order_matches_the_dense_order_on_the_same_matrix() {
+        let (n, dim) = (300, 12);
+        let mut rng = SplitMix64::new(21);
+        // Genuinely sparse: about a fifth of the entries are non-zero, so implicit zeros dominate.
+        let flat: Vec<f64> = (0..n * dim)
+            .map(|_| {
+                if rng.next_f64() < 0.2 {
+                    rng.gauss()
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+        let (data, indices, indptr) = to_csr(&flat, n, dim);
+        assert_eq!(
+            canonical_permutation_csr(&data, &indices, &indptr, dim).unwrap(),
+            canonical_permutation(&flat, n, dim)
+        );
+    }
+
+    /// An all-zero row is the zero vector, not a special case, and must sort where the zero vector
+    /// belongs rather than wherever the caller left it.
+    #[test]
+    fn an_empty_csr_row_sorts_as_the_zero_vector() {
+        let dim = 4;
+        let flat = vec![
+            0.0, 0.0, 0.0, 0.0, // an empty row
+            1.0, 0.0, 0.0, 2.0, //
+            0.0, 3.0, 0.0, 0.0, //
+        ];
+        let (data, indices, indptr) = to_csr(&flat, 3, dim);
+        assert_eq!(
+            canonical_permutation_csr(&data, &indices, &indptr, dim).unwrap(),
+            canonical_permutation(&flat, 3, dim)
+        );
+    }
+
+    /// Unsorted column indices would make the merge-walk compare the wrong columns and return a
+    /// *nearly* canonical order — right on most inputs, wrong on some. Refuse instead.
+    #[test]
+    fn unsorted_csr_indices_are_refused_rather_than_silently_mis_ordered() {
+        let data = vec![1.0, 2.0, 3.0, 4.0];
+        let indptr = vec![0i64, 2, 4];
+        assert!(canonical_permutation_csr(&data, &[1i64, 0, 0, 1], &indptr, 4).is_err());
+        assert!(canonical_permutation_csr(&data, &[0i64, 0, 0, 1], &indptr, 4).is_err());
+        assert!(canonical_permutation_csr(&data, &[0i64, 1, 0, 1], &indptr, 4).is_ok());
     }
 
     /// Locality is the reason for the projection: consecutive rows in canonical order should be

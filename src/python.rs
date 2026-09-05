@@ -46,7 +46,7 @@ use crate::mixture::{Mixture, SparseAssigner};
 use crate::model::{
     Method, Model, Rule, assignment_rule, auto_k_ceiling, fit_head, refinable, refine_centers,
 };
-use crate::order::canonical_permutation;
+use crate::order::{canonical_permutation, canonical_permutation_csr};
 use crate::sparse::{SparseCentroids, normalize_csr_rows, summarize_sparse};
 use crate::stats::chi2_quantile;
 use crate::stream::{DbStream, DenStream, DriftReport};
@@ -2090,6 +2090,7 @@ impl<R: Real> TreeState<R> {
         indices: &[i64],
         indptr: &[i64],
         dim: usize,
+        order: Option<&[u32]>,
     ) -> Result<(), &'static str> {
         if cfg.decay < 1.0 {
             if let Some(tree) = slot.as_mut() {
@@ -2114,8 +2115,10 @@ impl<R: Real> TreeState<R> {
         }
         let tree = slot.as_mut().unwrap();
         let mut buf = vec![R::zero(); dim];
-        for w in indptr.windows(2) {
-            let (lo, hi) = (w[0] as usize, w[1] as usize);
+        let rows = indptr.len().saturating_sub(1);
+        for rank in 0..rows {
+            let i = order.map_or(rank, |o| o[rank] as usize);
+            let (lo, hi) = (indptr[i] as usize, indptr[i + 1] as usize);
             for k in lo..hi {
                 buf[indices[k] as usize] = data[k];
             }
@@ -2706,6 +2709,7 @@ impl Betula {
         indices: &[i64],
         indptr: &[i64],
         n_features: usize,
+        arrival: Arrival,
     ) -> PyResult<()> {
         if self.state32.is_some() {
             return Err(PyValueError::new_err(
@@ -2735,8 +2739,21 @@ impl Betula {
             huber_k: self.huber_k,
             balance: self.balance,
         };
-        TreeState::stream_chunk_csr(&mut self.state64, &cfg, data, indices, indptr, n_features)
+        // Same rule as the dense path: only a call that holds the whole matrix can order it.
+        let order = (self.canonical_order && arrival == Arrival::Whole)
+            .then(|| canonical_permutation_csr(data, indices, indptr, n_features))
+            .transpose()
             .map_err(PyValueError::new_err)?;
+        TreeState::stream_chunk_csr(
+            &mut self.state64,
+            &cfg,
+            data,
+            indices,
+            indptr,
+            n_features,
+            order.as_deref(),
+        )
+        .map_err(PyValueError::new_err)?;
         self.dim = n_features;
         self.labels = None;
         self.proba = None;
@@ -3414,6 +3431,7 @@ impl Betula {
             indices.as_slice()?,
             indptr.as_slice()?,
             n_features,
+            Arrival::Chunk,
         )
     }
 
@@ -3431,6 +3449,7 @@ impl Betula {
             indices.as_slice()?,
             indptr.as_slice()?,
             n_features,
+            Arrival::Whole,
         )?;
         self.finalize(py)
     }
@@ -3445,7 +3464,7 @@ impl Betula {
     ) -> PyResult<Bound<'py, PyArray1<i64>>> {
         let (d, idx, ip) = (data.as_slice()?, indices.as_slice()?, indptr.as_slice()?);
         self.reset();
-        self.stream_csr(d, idx, ip, n_features)?;
+        self.stream_csr(d, idx, ip, n_features, Arrival::Whole)?;
         self.finalize(py)?;
         Ok(self
             .route_csr_labels(d, idx, ip, n_features)?
