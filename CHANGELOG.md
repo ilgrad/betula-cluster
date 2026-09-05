@@ -318,9 +318,12 @@ arms differing only in the code under test.
   raising.
 
   **It is a quality lever at heavy compression, not a fix for order dependence, and the measurements
-  say so.** ARI against the labels, medians of seeds 0/1/2: `digits` at `max_leaves=90`, kmeans
-  0.462 → 0.593, ward 0.445 → 0.625, gmm 0.436 → 0.566; MNIST at `max_leaves=200`, kmeans
-  0.251 → 0.342, ward 0.240 → 0.355. But the pairwise ARI between two row *orders* stays at
+  say so.** ARI against the labels, medians of seeds 0/1/2, on raw features with everything else at
+  its default: `digits` at `max_leaves=90`, kmeans 0.583 → 0.607, ward 0.533 → 0.530, gmm
+  0.594 → 0.610; MNIST at `max_leaves=200`, kmeans 0.233 → 0.290, ward 0.216 → 0.258, gmm
+  0.156 → 0.211. (Re-measured 2026-09-05, replacing numbers that had no single stated setup and one
+  dataset that had been read through the column-major bug above; `docs/USAGE.md` carries the full
+  table, including what the pass is worth on top of `canonical_order`.) But the pairwise ARI between two row *orders* stays at
   0.4–0.55 while two *seeds* stay near 1.0, with or without the pass — the residual order dependence
   lives in where the prototypes end up, not in what each one summarises, and moving a prototype needs
   batched routing against a frozen snapshot rather than a better CF for its current position.

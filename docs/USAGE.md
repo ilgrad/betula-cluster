@@ -801,22 +801,35 @@ the rows it wins, and drops the entries that win none. Same restrictions as `ref
 `fit` / `fit_predict` only, since `partial_fit` keeps a tree and not the data. It is **off by
 default** because it relabels.
 
-It is worth the pass where the compression is real. ARI against the labels, medians of seeds 0/1/2:
+It is worth the pass where the compression is real. ARI against the labels, medians of seeds 0/1/2,
+on **raw features** (`sklearn.datasets.load_digits().data` and the first 10 000 rows of
+`fetch_openml("mnist_784")`) with every other parameter left at its default — the setup is stated
+because an earlier version of this table did not state one, and turned out to have been measured
+under two different ones:
 
-| | `leaf_refit=0` | `leaf_refit=1` |
-|---|---|---|
-| `digits`, `max_leaves=90`, kmeans | 0.462 | **0.593** |
-| `digits`, `max_leaves=90`, ward | 0.445 | **0.625** |
-| `digits`, `max_leaves=90`, gmm | 0.436 | **0.566** |
-| MNIST, `max_leaves=200`, kmeans | 0.251 | **0.342** |
-| MNIST, `max_leaves=200`, ward | 0.240 | **0.355** |
+| | arrival, `leaf_refit=0` | arrival, `=1` | canonical, `=0` | canonical, `=1` |
+|---|---|---|---|---|
+| `digits`, `max_leaves=90`, kmeans | 0.583 | 0.607 | 0.443 | 0.561 |
+| `digits`, `max_leaves=90`, ward | 0.533 | 0.530 | 0.455 | **0.582** |
+| `digits`, `max_leaves=90`, gmm | 0.594 | 0.610 | 0.393 | 0.524 |
+| MNIST, `max_leaves=200`, kmeans | 0.233 | 0.290 | 0.280 | **0.334** |
+| MNIST, `max_leaves=200`, ward | 0.216 | 0.258 | 0.248 | **0.301** |
+| MNIST, `max_leaves=200`, gmm | 0.156 | 0.211 | 0.243 | **0.251** |
+
+The pass pays in 11 of those 12 columns-pairs, and the two knobs **compose rather than overlap** —
+which is the opposite of what was expected. The hypothesis was that a net built by sweeping the space
+would already sit close to its own routed partition, so `canonical_order` should shrink what
+`leaf_refit` is worth. It does the reverse on `digits`, where the canonical order gives up quality
+(0.583 → 0.443 on kmeans) and the pass buys most of it back (+0.118 against +0.024 on the arrival
+order); and it leaves the gain unchanged on MNIST, where the canonical order *raises* both arms. The
+best cell in every row is the two together.
 
 **It does not make the result order-independent, and it was built hoping it would.** Feed the same
 rows in two different orders and the pairwise ARI between the two answers stays at 0.4–0.55, with the
 pass and without it, while two *seeds* on a fixed order agree at ~1.0. The pass fixes what each
 prototype summarises; it cannot fix where the prototypes are, because it re-routes against the tree
-insertion order already built. That needs batched routing against a frozen snapshot, which is a
-different change.
+insertion order already built. That is what `canonical_order` below does instead, by choosing the
+order rather than by routing more cleverly against it.
 
 Two more properties before turning it on. **Passes are not monotone past two or three** — each one
 re-routes against the tree the previous one produced, so the worst leaf's distance from the centroid

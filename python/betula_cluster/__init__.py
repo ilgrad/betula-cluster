@@ -693,10 +693,11 @@ class Betula:
         # re-routes every row against the finished tree and rebuilds the leaf features from the rows
         # they won, so the head reads the partition rather than the absorption history. Dense
         # in-memory `fit` / `fit_predict` only — a `partial_fit` stream keeps a tree, not the rows.
-        # It pays where compression is real and is a wash where it is not: on `digits` at
-        # max_leaves=90 (1797 rows into ~85 leaves), median ARI over 8 row permutations goes
-        # kmeans 0.462 -> 0.593, ward 0.445 -> 0.625, gmm 0.436 -> 0.566 at leaf_refit=3; at
-        # max_leaves=360 every head moves by less than the permutation spread. 0 = off.
+        # It pays where compression is real and is a wash where it is not: on MNIST at
+        # max_leaves=200, median ARI over seeds 0/1/2 goes kmeans 0.233 -> 0.290, ward
+        # 0.216 -> 0.258, gmm 0.156 -> 0.211 at leaf_refit=1, and it composes with
+        # canonical_order rather than overlapping it (0.280 -> 0.334 on kmeans there). On digits
+        # at max_leaves=360 every head moves by less than the permutation spread. 0 = off.
         self.leaf_refit = leaf_refit
         # Sort the rows by a key derived from the data before the first insert, so the summary is a
         # function of the multiset and not of the arrival sequence. Every BIRCH-family tree builds
