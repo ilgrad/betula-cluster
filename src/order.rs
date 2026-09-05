@@ -457,6 +457,69 @@ mod tests {
             canonical_permutation_csr(&data, &indices, &indptr, dim).unwrap(),
             canonical_permutation(&flat, n, dim),
         );
+
+        // Agreeing with the dense path is not enough on its own: a comparator that answers `Equal`
+        // for two distinct rows still agrees whenever the sort happens to leave them as they
+        // arrived. Requiring the same sequence from several input orders is what makes a
+        // non-total comparator visible, because that is exactly when the caller's order leaks back.
+        let sequence = |order: &[usize]| -> Vec<Vec<f64>> {
+            let permuted: Vec<f64> = order
+                .iter()
+                .flat_map(|&i| flat[i * dim..(i + 1) * dim].to_vec())
+                .collect();
+            let (d, ix, ip) = to_csr(&permuted, n, dim);
+            canonical_permutation_csr(&d, &ix, &ip, dim)
+                .unwrap()
+                .into_iter()
+                .map(|i| permuted[i as usize * dim..(i as usize + 1) * dim].to_vec())
+                .collect()
+        };
+        let reference = sequence(&(0..n).collect::<Vec<_>>());
+        for order in [
+            vec![6, 5, 4, 3, 2, 1, 0],
+            vec![1, 0, 3, 2, 5, 4, 6],
+            vec![3, 6, 0, 5, 2, 4, 1],
+        ] {
+            assert_eq!(sequence(&order), reference);
+        }
+    }
+
+    /// A CSR matrix may store an explicit zero — scipy only drops them on `eliminate_zeros()`, so
+    /// arriving with them is normal, not malformed. The merge walk has to treat a stored zero and an
+    /// absent column as the same value, which means walking *past* it and resolving later.
+    ///
+    /// That path is unreachable from any fixture built by dropping zeros, which is what
+    /// `to_csr` does and what left four cursor-advance mutants alive: in every other branch the
+    /// stored value is non-zero, so the comparison returns before the cursor is ever read again and
+    /// the advance is dead code. Here it is load-bearing — `r0` and `r1` are decided only after the
+    /// walk steps over `r0`'s explicit zero.
+    #[test]
+    fn an_explicitly_stored_zero_compares_as_an_absent_column() {
+        let dim = 4;
+        let dense: Vec<f64> = [
+            [1.0, 0.0, 5.0, 0.0],
+            [1.0, 0.0, 7.0, 0.0],
+            [1.0, 0.0, 5.0, 3.0],
+            [2.0, 0.0, 0.0, 0.0],
+            [1e6, 1e6, 1e6, 1e6],
+        ]
+        .concat();
+        let n = 5;
+        // Hand-built so the zero at `r0[1]` is *stored*; `to_csr` would drop it.
+        let data = vec![
+            1.0, 0.0, 5.0, // r0, with the explicit zero
+            1.0, 7.0, // r1
+            1.0, 5.0, 3.0, // r2
+            2.0, // r3
+            1e6, 1e6, 1e6, 1e6,
+        ];
+        let indices = vec![0, 1, 2, 0, 2, 0, 2, 3, 0, 0, 1, 2, 3];
+        let indptr = vec![0, 3, 5, 8, 9, 13];
+
+        assert_eq!(
+            canonical_permutation_csr(&data, &indices, &indptr, dim).unwrap(),
+            canonical_permutation(&dense, n, dim),
+        );
     }
 
     /// The shard count has to be a function of `n` and nothing else — a rule that consulted the
