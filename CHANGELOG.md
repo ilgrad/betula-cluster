@@ -87,9 +87,11 @@ All notable changes to this project are documented here. The format follows
   shards are the partition: two counts hold different point sets and build different sub-summaries,
   which no merge order repairs. Measured over the 27 published cells at `n_jobs ∈ {1, 2, 4, 8}`,
   labels at `n_jobs=8` agreed with `n_jobs=1` at pairwise ARI **0.46 on average, 0.098 at worst**
-  wherever compression was real — as wide as the row-order gap `canonical_order` exists to close, and
-  a straight violation of sklearn's contract that `n_jobs` does not change results. A guarantee that
-  survives a reshuffle but not a `n_jobs=8` is not a guarantee.
+  wherever compression was real — as wide as the row-order gap `canonical_order` exists to close.
+  scikit-learn documents `n_jobs` as a worker count and no more, so this broke a convention rather
+  than a written contract — but the convention is real (no scikit-learn estimator moves with it) and
+  it is what the name buys. A guarantee that survives a reshuffle but not an `n_jobs=8` is not a
+  guarantee.
 
   With the flag on, the shard count is `clamp(n / 25000, 1, 64)` — a function of the data — and
   `n_jobs` is ignored for the tree build; parallelism comes from `RAYON_NUM_THREADS`, as it already
