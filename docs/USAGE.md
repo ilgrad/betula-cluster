@@ -806,7 +806,10 @@ on **raw features** (`sklearn.datasets.load_digits().data` and the first 10 000 
 `fetch_openml("mnist_784")`) with every other parameter left at its default — the setup is stated
 because an earlier version of this table did not state one, and turned out to have been measured
 under two different ones. The harness is
-[`bench/leaf_refit.py`](https://github.com/ilgrad/betula-cluster/blob/main/bench/leaf_refit.py):
+[`bench/leaf_refit.py`](https://github.com/ilgrad/betula-cluster/blob/main/bench/leaf_refit.py) and
+its output is committed as
+[`bench/results_refit.csv`](https://github.com/ilgrad/betula-cluster/blob/main/bench/results_refit.csv),
+so every cell below can be checked without re-running anything:
 
 | | arrival, `leaf_refit=0` | arrival, `=1` | canonical, `=0` | canonical, `=1` |
 |---|---|---|---|---|
@@ -911,8 +914,9 @@ two counts hold different point sets and build different sub-summaries, which no
 repair. Measured over the 27 cells above at `n_jobs ∈ {1, 2, 4, 8}`, the labels at `n_jobs=8` agree
 with those at `n_jobs=1` at pairwise ARI **0.46 on average and 0.098 at worst** wherever compression
 is real (exactly 1.0000 where `max_leaves ≥ n`, which is the control) — as far apart as two row
-orders were. That is sklearn's `n_jobs` contract broken: the parameter is documented there as not
-changing results.
+orders were. scikit-learn's own documentation defines `n_jobs` only as a worker count and stops
+short of promising the output does not move with it; what makes ours a defect anyway is that no
+scikit-learn estimator *does* move, so the name carries a convention every caller reads it by.
 
 With `canonical_order=True` the shard count is derived from `n` instead (`n / 25000`, capped at 64),
 so the summary no longer moves with the thread count and **`n_jobs` is ignored for the tree build** —
