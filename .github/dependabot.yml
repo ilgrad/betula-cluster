@@ -14,6 +14,13 @@ updates:
     groups:
       actions:
         patterns: ["*"]
+    ignore:
+      # `dtolnay/rust-toolchain@1.85.0` pins the *Rust toolchain* the MSRV job installs, not a
+      # version of the action. Dependabot reads the ref as a version and proposes 1.120.0, which
+      # would delete the MSRV gate silently -- the job stays green while checking nothing the
+      # declared floor guarantees. The other seven jobs pin `@stable`, which has no updates either,
+      # so this ignore costs nothing.
+      - dependency-name: "dtolnay/rust-toolchain"
   - package-ecosystem: pip
     directory: "/"
     schedule:

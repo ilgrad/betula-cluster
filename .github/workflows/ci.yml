@@ -62,6 +62,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      # The ref is the Rust toolchain this job installs -- the MSRV under test -- not a version of
+      # the action. Bumping it does not update a dependency, it deletes the gate and leaves the job
+      # green while testing nothing the declared floor guarantees. `.github/dependabot.yml` ignores
+      # this action for exactly that reason; raise the floor here only together with `rust-version`
+      # in `Cargo.toml` and a CHANGELOG entry.
       - uses: dtolnay/rust-toolchain@1.85.0
       - uses: Swatinem/rust-cache@v2
       - name: check on the declared minimum supported Rust version
