@@ -8,6 +8,8 @@
 [![Rust core · PyO3](https://img.shields.io/badge/Rust%20core-PyO3-orange.svg)](https://github.com/ilgrad/betula-cluster)
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21427331.svg)](https://doi.org/10.5281/zenodo.21427331)
 
+[Documentation](https://ilgrad.github.io/betula-cluster/) · [API reference](https://ilgrad.github.io/betula-cluster/api/)
+
 > **Rust-powered, memory-bounded clustering for large embeddings & tabular streams.** It compresses raw
 > data into numerically stable **BETULA** microclusters, then runs the clustering head on the
 > *compressed* representation — k-means · GMM (diagonal & full) · Ward · **spectral** · **Leiden**
