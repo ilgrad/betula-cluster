@@ -33,6 +33,10 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
+    # Beta, not Stable: the suite passes on 3.14t and the GIL stays disabled on import, both gated in
+    # CI, but that is one interpreter on one platform and no test yet drives the extension from
+    # several Python threads at once.
+    "Programming Language :: Python :: Free Threading :: 2 - Beta",
     "Operating System :: OS Independent",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Topic :: Scientific/Engineering :: Information Analysis",

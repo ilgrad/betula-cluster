@@ -45,6 +45,51 @@ jobs:
           name: wheels-${{ matrix.platform.runner }}-${{ matrix.platform.target }}
           path: dist
 
+  wheels-freethreaded:
+    # abi3 cannot serve a free-threaded interpreter, by construction: `Py_GIL_DISABLED=1` builds
+    # expose SOABI `cpython-314t` and no abi3 tag at all, so the `cp311-abi3` wheels above match
+    # nothing on 3.14t and `pip install betula-cluster` there falls back to building from source --
+    # which needs a Rust toolchain the user did not ask for. maturin drops abi3 on its own for these
+    # ("abi3 does not yet support CPython 3.14t ... artifacts will be version-specific"), so the only
+    # thing missing was the build arm. One wheel per minor version from here on; 3.15t needs a new
+    # entry rather than inheriting this one.
+    #
+    # Measured locally on cpython-3.14.7+freethreaded before adding this: the module imports without
+    # re-enabling the GIL (`sys._is_gil_enabled()` stays False, and pyo3 0.29 emits no
+    # `Py_MOD_GIL_USED` warning), labels are correct, and four Python threads each running a full
+    # `fit_predict` over 6000x8 finish in 0.26 s against 0.22 s for one -- 4x the work for 1.2x the
+    # time, alternated A-B-A-B. So the extension really does run concurrently there; this arm ships a
+    # capability, not just an install convenience.
+    name: wheels ${{ matrix.platform.runner }} ${{ matrix.platform.target }} (free-threaded)
+    runs-on: ${{ matrix.platform.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - { runner: ubuntu-latest, target: x86_64 }
+          - { runner: ubuntu-latest, target: aarch64 }
+          # No macOS x86_64 here. The abi3 arm above cross-builds it on macos-14 precisely because
+          # abi3 needs no interpreter at build time; a version-specific build does, and there is no
+          # x86_64 3.14t to point `--interpreter` at on an arm64 runner.
+          - { runner: macos-14, target: aarch64 }
+          - { runner: windows-latest, target: x64 }
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14t"
+      - name: Build wheels
+        uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.platform.target }}
+          args: --release --out dist --interpreter 3.14t
+          manylinux: auto
+          sccache: "true"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: wheels-ft-${{ matrix.platform.runner }}-${{ matrix.platform.target }}
+          path: dist
+
   sdist:
     name: sdist
     runs-on: ubuntu-latest
@@ -63,7 +108,7 @@ jobs:
   publish:
     name: publish to PyPI
     runs-on: ubuntu-latest
-    needs: [wheels, sdist]
+    needs: [wheels, wheels-freethreaded, sdist]
     if: startsWith(github.ref, 'refs/tags/')
     environment: pypi
     permissions:

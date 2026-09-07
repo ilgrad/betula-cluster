@@ -6,6 +6,25 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- **A wheel for free-threaded CPython (3.14t), and a CI gate on what it claims.** abi3 cannot express
+  a `Py_GIL_DISABLED` build — such an interpreter exposes SOABI `cpython-314t` and no abi3 tag at all
+  — so the single `cp311-abi3` wheel matched nothing on 3.14t and `pip install betula-cluster` there
+  fell back to compiling from source, which needs a Rust toolchain the user did not ask for. maturin
+  drops abi3 for these on its own ("abi3 does not yet support CPython 3.14t … artifacts will be
+  version-specific"), so all that was missing was the build arm: Linux x86-64 + aarch64, macOS arm64
+  and Windows x64. macOS x86-64 is deliberately absent — the abi3 arm cross-builds it on an arm64
+  runner precisely because abi3 needs no interpreter at build time, and a version-specific build does.
+
+  Measured on cpython-3.14.7+freethreaded before adding any of it: the module imports without
+  re-enabling the GIL, labels are correct, and four Python threads each running a full `fit_predict`
+  over 6000×8 finish in **0.26 s** against **0.22 s** for one — 4× the work for 1.2× the time,
+  alternated A-B-A-B. The GIL check is now a CI assertion rather than a note, because a `#[pymodule]`
+  declaring `Py_MOD_GIL_USED` turns free threading back off for the *whole process* on import and
+  does it with a warning rather than an error; a wheel that did that would be worse than no wheel.
+  The `Free Threading :: 2 - Beta` classifier is deliberately not `3 - Stable`: this is one
+  interpreter on one platform, and no test yet drives the extension from several threads at once.
+
 ### Fixed
 - **The weekly mutation run was sharded 96 ways on a mutant count that has since grown 2.1×, and
   more than half of its shards are being cancelled at the timeout.** Found by

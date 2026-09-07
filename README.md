@@ -23,7 +23,8 @@ pip install betula-cluster
 ```
 
 **Verified:** a **457-case** Python suite at **100% wrapper coverage** + **728** Rust tests,
-`clippy -D warnings` + `fmt` clean across all feature sets, CI on CPython 3.11–3.14 (one abi3 wheel).
+`clippy -D warnings` + `fmt` clean across all feature sets, CI on CPython 3.11–3.14 (one abi3 wheel)
+plus free-threaded 3.14t.
 
 ## At a glance — honest benchmarks
 
@@ -101,7 +102,7 @@ scale and bounded memory — if you need neither, a plain in-core clusterer is s
 ## Installation
 
 ```bash
-pip install betula-cluster            # prebuilt abi3 wheels, CPython 3.11–3.14
+pip install betula-cluster            # prebuilt wheels, CPython 3.11–3.14 and free-threaded 3.14t
 pip install 'betula-cluster[tune]'    # + Optuna backend for memory-aware tuning
 ```
 
@@ -109,6 +110,11 @@ NumPy is the only runtime dependency — no SciPy, LAPACK, or BLAS. Prebuilt whe
 (x86-64 + aarch64), macOS (Intel + Apple Silicon), and Windows (x64); one abi3 wheel covers every
 supported Python. Building from source needs a Rust toolchain — `maturin develop --release` (or
 `pip install .`) in a clone.
+
+**Free-threaded CPython** (3.14t) gets its own wheel on Linux, macOS arm64 and Windows: abi3 cannot
+express a `Py_GIL_DISABLED` build, so the wheel above matches nothing there. Importing does *not*
+re-enable the GIL — CI asserts that on every push, because a module that quietly turns free threading
+back off for the whole process would be worse than no wheel at all.
 
 ## Quick start
 
@@ -331,7 +337,7 @@ And six **end-to-end use cases** (each scored against ground truth):
 
 Verified: **713** Rust unit + 15 integration tests (plus 8 for the CLI binary) + a **457-case**
 Python suite at **100%** wrapper coverage (Rust ≥95%, CI-enforced), `clippy -D warnings` + `fmt`
-clean across all feature sets, on Python 3.11–3.14 (single abi3 wheel).
+clean across all feature sets, on Python 3.11–3.14 (single abi3 wheel) and free-threaded 3.14t.
 
 ## Known limitations
 

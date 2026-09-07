@@ -146,6 +146,38 @@ jobs:
           uv run --python ${{ matrix.python-version }} --with mypy --with numpy --with "$wheel" \
             python -m mypy.stubtest betula_cluster
 
+  python-test-freethreaded:
+    # The abi3 wheel cannot serve a free-threaded interpreter: `Py_GIL_DISABLED=1` exposes SOABI
+    # `cpython-314t` and no abi3 tag at all, so `python-test` above cannot reach 3.14t and
+    # release.yml builds it a version-specific wheel of its own. Build from source here and check
+    # the two things that wheel claims. The GIL assertion is the load-bearing one: a `#[pymodule]`
+    # that declares `Py_MOD_GIL_USED` turns free threading back off for the *whole process* on
+    # import, which makes shipping the wheel worse than shipping none -- and it does that with a
+    # warning, not an error, so only an assertion catches it.
+    #
+    # NumPy and pytest only, as in `python-test`: SciPy and scikit-learn wheels lag on a new
+    # free-threaded interpreter, and the tests that need them skip cleanly.
+    name: python (pytest · 3.14t free-threaded)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: astral-sh/setup-uv@v10.0.1
+      - name: build (maturin develop) + GIL check + pytest
+        run: |
+          uv venv --python 3.14t
+          uv pip install maturin numpy pytest
+          # --no-sync: the repo pins .python-version=3.14, so a plain `uv run` rejects this
+          # deliberately-3.14t venv, recreates it, and discards the tools installed above.
+          uv run --no-sync maturin develop --release
+          uv run --no-sync python -c "
+          import sys, betula_cluster
+          assert not sys._is_gil_enabled(), 'importing betula_cluster re-enabled the GIL'
+          print('GIL stays disabled on import; betula_cluster', betula_cluster.__version__)
+          "
+          uv run --no-sync pytest tests/test_python.py -q
+
   python-test-os:
     name: python (pytest · ${{ matrix.os }})
     runs-on: ${{ matrix.os }}
