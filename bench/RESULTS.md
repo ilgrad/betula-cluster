@@ -36,9 +36,18 @@ Reproduce: `python bench/comprehensive.py --quality-only --seed S --tag _sS` for
 `results_{scaling,memory,real_scale,sparse}.csv`), then `python bench/median_of_seeds.py --seeds 0 1 2`
 and finally `python bench/comprehensive.py --plots-only`. Order matters: `--plots-only` reads the
 canonical CSVs, so run before the median step it draws one seed instead of the published medians.
-Export `OMP/OPENBLAS/MKL/NUMEXPR_NUM_THREADS=1` explicitly — `comprehensive.py` uses
-`os.environ.setdefault`, so an exported `OMP_NUM_THREADS=8` wins and silently un-pins BLAS. The
-harness needs `scikit-learn pandas matplotlib scipy seaborn`; `seaborn` is imported only inside
+**Do not export `OMP_NUM_THREADS=1`** — an earlier edition of this line said to, and it is wrong.
+betula's own parallelism is rayon's, which `OMP_NUM_THREADS` does not reach, so pinning OpenMP gags
+scikit-learn's Lloyd loop and leaves betula on every core. Every table here was in fact taken with
+`OMP_NUM_THREADS=8`, inherited from the shell, which makes `comprehensive.py`'s
+`os.environ.setdefault` a no-op for that one variable and leaves it pinning only
+`OPENBLAS`/`MKL`/`NUMEXPR` — BLAS inside the harness rather than either library's own parallel loop.
+Following the old instruction changes exactly one variable and slows *scikit-learn alone* by
+2.2–2.7× wherever `d` is large enough for the Lloyd loop to matter: 1.03 s → 2.80 s on the memory
+suite at `n = 500 000, d = 20`, 4.92 s → 10.86 s on full covtype, 1.03 s → 1.80 s on 20-newsgroups,
+and — the control — no change at all on `results_scaling.csv`, whose blobs are two-dimensional.
+Leave `OMP_NUM_THREADS` at the machine's value and `RAYON_NUM_THREADS` unset: both sides get the
+machine, which is the only configuration in which a speed row means anything. The harness needs `scikit-learn pandas matplotlib scipy seaborn`; `seaborn` is imported only inside
 `make_plots`, which runs *last*, so without it every CSV is still written and only the plot step
 raises — check `plots/*.png` mtimes rather than trusting a run that printed its tables. The
 supplementary studies are separate scripts: `bench/spectral_nonconvex.py` (spectral timing),
