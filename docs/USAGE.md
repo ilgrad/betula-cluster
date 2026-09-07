@@ -905,6 +905,15 @@ arrives, so the tree has to **rebuild** more often — 3 → 30 at the worst sha
 it 1.56× there. The key itself is 3–20 % and runs through the same SIMD `dot` the distance path uses;
 as an unvectorised rank-1 accumulate it was roughly twice that.
 
+**Read that 3 → 30 as a tail, not as the cost of high dimension.** It is a property of the pairing
+between one projection draw and one dataset: over 24 draws at that shape the rebuild count reads
+min 3, **median 4**, max 31, and the shipped constant sits at 4. Re-rolling the constant only moves
+which shapes land in the tail — a seven-candidate screen over six shapes found one 25 % better, and a
+held-out re-measure on shapes it had not been chosen on erased the margin and inverted it on one
+cell. No cheap statistic of the codes predicts the tail either (Spearman |ρ| ≤ 0.48 over those draws),
+so it cannot be selected away at fit time. The constant is therefore fixed and not a tuning target;
+the evidence is in [`docs/adr/005`](adr/005-canonical-order-projection-seed.md).
+
 Low-discrepancy walks over the sorted order (van der Corput, round-robin stride) were measured and
 rejected — 5/16 and 7/16 cells non-negative against this scheme's 12/16, for an extra constant.
 

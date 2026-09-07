@@ -2277,7 +2277,10 @@ the arrival-order fit — a wash to modestly slower. `benches/canonical_order.rs
 key (3–20 % of the fit), the sort, and the insert, and shows the mechanism is two opposing effects: a
 coherent stream re-descends the same subtree, which is cache-friendly and takes the insert down to
 0.58×, but it also fills the leaf budget in one region before the next arrives, so the tree rebuilds
-more often — 3 → 30 at `50k × 784`, `max_leaves = 8000`, which is what makes that shape 1.56×.
+more often — 3 → 30 at `50k × 784`, `max_leaves = 8000`, which is what makes that shape 1.56×. That
+cell is the tail of a distribution over the projection draw, not the cost of high dimension: 24 draws
+at the same shape read min 3, median 4, max 31, and changing the fixed constant only moves which
+shapes land there — [ADR 005](../docs/adr/005-canonical-order-projection-seed.md).
 
 The practical reading: `canonical_order=True` when reproducibility matters — the same rows must give
 the same answer however they arrived — and the default arrival order otherwise. The older advice

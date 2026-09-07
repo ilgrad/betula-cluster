@@ -46,7 +46,12 @@
 //!   `benches/canonical_order.rs`: a coherent stream re-descends the same subtree, which is
 //!   cache-friendly, but it also fills the leaf budget with fine leaves in one region and then has
 //!   to *rebuild* when the next region arrives. Rebuild counts go 67 -> 60 at `d = 20` and 3 -> 30 at
-//!   `d = 784, max_leaves = 8000`, where the second effect wins and the insert costs 1.56x.
+//!   `d = 784, max_leaves = 8000`, where the second effect wins and the insert is the slower arm.
+//! - **That 3 -> 30 is a tail, not the typical case**, and it belongs to the pairing of one
+//!   projection draw with one dataset rather than to the scheme. Over 24 draws at that shape the
+//!   count reads min 3, median 4, max 31; re-rolling `PROJECTION_SEED` only moves which shapes land
+//!   in the tail, and no cheap statistic of the codes predicts which will. That is why the constant
+//!   is fixed rather than tuned -- `docs/adr/005-canonical-order-projection-seed.md`.
 //! - **Quality is a wash.** Against the arrival order's *median* draw: mean +0.0136, median
 //!   **-0.0017**, non-negative in 10 of 27, and inside the order arm's own `[min, max]` in 21 of 27.
 //!   This removes the lottery; it does not improve the expected result, and no honest reading of the

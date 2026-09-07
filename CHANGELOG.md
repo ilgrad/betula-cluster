@@ -110,6 +110,29 @@ All notable changes to this project are documented here. The format follows
   quality cost was measured *before* the constant was picked and is a wash (8 shards minus 1, mean
   **+0.004** ARI). Inputs under 25 000 rows return one shard and keep the plain sequential build, so
   every published cell is unchanged. With the flag off nothing changes at all.
+- **The canonical order's "3 → 30 rebuilds, insert 1.56×" was a tail draw published as the cost of
+  high dimension — one claim corrected, no code change, and a magic constant deliberately left
+  alone.** `order::PROJECTION_SEED` seeds the eight projections the insertion key is built from, and
+  the worst cell on the cost page made it look badly chosen: a seven-candidate screen over six shapes
+  found four constants reading 3 → 3..5 at `50k × 784, max_leaves = 8000` against the shipped
+  constant's 3 → 30, and 138–152 total rebuilds against 172.
+
+  It is not badly chosen, and the screen could not have shown that either way. Quality does not move
+  with the constant (18 cells × 7 constants × 3 head seeds; Friedman **p = 0.53**, largest gap between
+  any two constants' mean delta **0.028** against the arrival order's own median spread of 0.077), so
+  the choice was a cost choice — and the cost margin vanished on shapes the candidates had not been
+  screened on (**107 / 109 / 99** total rebuilds for shipped / winner / runner-up, with the roles
+  inverting outright on `blobs 60k × 384`: shipped 3, winner 15). Twenty-four draws per shape give the
+  reason: the rebuild count is a right-tailed lottery over the projection draw, reading min 3,
+  **median 4**, max **31** at the very shape that started this, with the shipped constant at 4. One
+  draw in roughly twenty-four is pathological at a given shape, and which one changes with the shape.
+
+  So the constant stays, and stays *untuned*: a screen of a few shapes will always produce a winner
+  that does not generalise. Selecting the draw from the data at fit time would have preserved the
+  order-invariance guarantee and is rejected on measurement instead — no cheap statistic of the codes
+  predicts the rebuild count (Spearman |ρ| ≤ 0.48 over those draws, mostly under 0.27, sign-flipping
+  between cases), so there is nothing to select on short of building a tree per candidate. Recorded in
+  [`docs/adr/005-canonical-order-projection-seed.md`](https://github.com/ilgrad/betula-cluster/blob/main/docs/adr/005-canonical-order-projection-seed.md).
 - **The scoreboard ratchet identified a cell by who won it, so a champion changing read as a result
   vanishing.** `bench/scoreboard.py --check` is now a CI job, and it could not have been one before:
   on a clean tree it failed, reporting two `results_sparse` cells as VANISHED. Neither had moved —
