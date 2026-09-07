@@ -6,6 +6,27 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- **`scripts/check_mutants_baseline.py` — the staleness half of the mutation ratchet, in a second
+  rather than three hours.** `mutants-baseline.txt` records accepted surviving mutants by their exact
+  `path:line:col: description`, so any edit that shifts a line silently invalidates every entry below
+  it in that file. Nothing checked that: the weekly `mutants.yml` run notices only as a "trim them"
+  note inside a step summary, and it had been red since 2026-08-19 for an unrelated reason. Checked
+  by hand on 2026-09-07, **147 of the 315 entries no longer matched anything** — 121 the same
+  mutation at a new line, 26 gone entirely, worst in `stream.rs` (33), `scalespace.rs` (28) and
+  `hdbscan.rs` (21, rewritten for the parallel build).
+
+  `cargo mutants --list` builds and runs nothing — about a second on this crate — so this is
+  answerable on every push. The script separates the two cases that need different work: a *moved*
+  entry keeps its recorded argument and needs re-anchoring, and 42 of the 121 are unambiguous enough
+  for the script to propose the new line outright; a *vanished* entry describes code that is gone and
+  takes its justification with it. It is not yet a CI job.
+
+  It also surfaced a second problem it was not written for: the crate now lists **8 927** mutants
+  against the 4 312 that `.cargo/mutants.toml` sizes the 96-shard matrix on. At the measured ~101
+  worker-seconds per mutant that is ~2.6 h per shard against a 150-minute cap, so the weekly run
+  cannot finish as configured even once it is green again.
+
 ## [0.8.0] — 2026-09-07
 
 ### Fixed
@@ -65,6 +86,16 @@ All notable changes to this project are documented here. The format follows
   aborts mid-file**, which is why the Watson overflow went unseen; `local/scratch/run_maxima.sh`
   now runs every `.mac` under `-Q`, scans for the abort signature and requires a completion
   sentinel, and all 13 scripts pass it.
+
+- **The release workflow would have failed after publishing.** `release.yml` pipes this file's
+  section for the tag straight into the GitHub Release body, and GitHub caps that body at 125 000
+  characters. 0.6.0's section is 16 649 bytes and published fine; 0.8.0's is **172 863**, so the
+  `github-release` job would have returned 422 — *after* the `publish` and `crates-io` jobs had
+  already put the wheels on PyPI and the crate on crates.io, leaving a published version with no
+  Release and therefore no Zenodo archive, and no way to re-run it without a new version number.
+  The step now truncates on a line boundary at 110 000 bytes and appends a link to the full file;
+  under the cap it is unchanged. Verified by running the step's script against this tree: it emits
+  108 517 characters out of 170 426.
 
 ### Changed
 - **`CFTree::build_parallel` is now `CFTree::build_sharded`, is compiled without the `parallel`
