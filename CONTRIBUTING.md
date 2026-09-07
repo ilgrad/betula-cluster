@@ -45,6 +45,13 @@ python -m mypy.stubtest betula_cluster             # the .pyi stubs must match t
   `bench/comprehensive.py` and reconciled in `bench/RESULTS.md` — wins *and* losses.
 - **Illegal states unrepresentable.** Prefer the type system / invariants over scattered runtime guards;
   validate untrusted input once, at the boundary.
+- **Every array-taking entry point joins the layout test.** A column-major array is contiguous, so a
+  zero-copy ingest can borrow its buffer and then index it row-major — which reads the transpose and
+  returns a plausible wrong answer with no error anywhere. That is not hypothetical: it shipped here
+  once, and no benchmark could see it because every dataset in `bench/` arrives C-contiguous. A new
+  function that takes an array is added to
+  `test_the_answer_depends_on_the_values_and_not_on_how_numpy_stores_them` in `tests/test_python.py`
+  in the same commit that adds the function.
 - Conventional-commit messages (`feat:` / `fix:` / `test:` / `docs:` / `chore:` …).
 
 By contributing you agree that your contributions are licensed under the project's
