@@ -6,6 +6,23 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+- **The ELKI cross-check of the GMM head is re-run at five seeds, and it costs the E-step page one
+  cell.** `research/RESULTS-estep.md` claimed the shipped head "leads at the median in all four
+  cells" of an ELKI 0.8.0 comparison; three seeds could not separate a 0.02 ARI gap from its spread.
+  At five, the shipped head's own medians are unchanged (0.5239, 0.5210, 0.0852 — its spread was
+  already resolved) but ELKI's moved, and covtype/D0/D0 is now 0.0632 against `BetulaGMMWeighted`'s
+  0.0681. That is a tie inside a −0.0168…0.1039 seed range, not a loss, but it is not a lead and the
+  sentence is corrected rather than left standing. **The within-cluster sum of squares still favours
+  the shipped head in all four cells**, which is the claim worth keeping: WCSS is the objective and
+  ARI is a proxy for it.
+
+  The same run makes the two come apart visibly on covtype, where ELKI's k-means scores higher ARI
+  (0.0951 vs 0.0820) while reaching a *higher* within-cluster sum of squares in every cell — a
+  better-optimised k-means that predicts forest-cover classes worse, because those classes are not
+  k-means-shaped. And one number for the open `n_init` question: ELKI's 4 restarts buy **+0.137 ARI
+  on digits** (0.6856 vs 0.5482) and **nothing on covtype**.
+
 ### Fixed
 - **The greedy descent misroutes a quarter to a half of all rows, measured — and the blast radius is
   a quarter of what it was thought to be.** The premise on record was that every label this library

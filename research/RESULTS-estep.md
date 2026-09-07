@@ -112,3 +112,43 @@ variants A/B/C wired behind a flag in this crate and run on the same fixtures, w
 if the decision is ever revisited. One directional signal is worth recording: `BetulaGMMWeighted`
 beats plain `BetulaGMM` in all four cells, which is the same direction as this page's argument —
 folding the leaf's own mass and scatter into the E-step helps.
+
+
+## Re-run at five seeds on 0.8.0 (2026-09-08)
+
+Three seeds could not separate a 0.02 ARI gap from its own spread, so the check above was repeated at
+**five** seeds against the current tree. Same harness, same two geometries, `max_leaves` now passed
+as the resolved integer (the fraction form is the estimator's; the free `fit_predict` this harness
+calls takes the count).
+
+| dataset | geometry | `betula gmm` ARI / WCSS | ELKI `BetulaGMM` | ELKI `BetulaGMMWeighted` |
+|---|---|---|---|---|
+| digits (1797×64, 200 leaves) | D0/D0 | **0.5239** / **1.245e6** | 0.2305 / 1.591e6 | 0.3528 / 1.444e6 |
+| digits | D4/R | **0.5210** / **1.219e6** | 0.1627 / 1.603e6 | 0.3756 / 1.432e6 |
+| covtype50k (50000×54, 2000 leaves) | D0/D0 | 0.0632 / **2.180e6** | 0.0565 / 2.305e6 | **0.0681** / 2.274e6 |
+| covtype50k | D4/R | **0.0852** / **2.170e6** | 0.0544 / 2.258e6 | 0.0575 / 2.277e6 |
+
+**The shipped head's own medians did not move at all** — 0.5239, 0.5210, 0.0852 are the same numbers
+the three-seed run produced, so its spread was already resolved. What moved is ELKI's, and it costs
+this page one cell: the claim "leads at the median in all four cells" becomes **three of four**, with
+covtype/D0/D0 now 0.0632 against `BetulaGMMWeighted`'s 0.0681. That gap is 0.005 ARI against a
+`BetulaGMMWeighted` seed range of −0.0168 to 0.1039, so it is a tie, not a loss — but it is no longer
+a lead and the sentence above is corrected rather than left standing.
+
+**The within-cluster sum of squares still favours the shipped head in all four cells**, and that is
+the claim worth keeping: WCSS is the objective, ARI is a label proxy for it. The two come apart here,
+which is itself the finding — see below.
+
+**The k-means layer of the same run says why.** On covtype, ELKI's k-means variants score *higher*
+ARI than this library's head (0.0951 vs 0.0820 at D0/D0, 0.0943 vs 0.0591 at D4/R) while reaching a
+*higher* within-cluster sum of squares in every cell (2.219/2.178/2.226/2.346e6 against 2.169e6, and
+2.262/2.176/2.236/2.333e6 against 2.165e6). A better-optimised k-means solution is a worse predictor
+of covtype's forest-cover classes, because those classes are not k-means-shaped — the ARI column on
+this dataset ranks agreement with a labelling the objective was never trying to recover. Any reading
+of "ELKI is ahead on covtype ARI" that treats it as "ELKI's clustering is better" is unsupported by
+the same run's objective column.
+
+One number for the still-open `n_init` question: ELKI's 4-restart k-means buys **+0.137 ARI on
+digits/D4/R** (0.6856 against 0.5482 for a single restart of the same initialiser) and **nothing on
+covtype** (0.0951 both at D0/D0, 0.0943 both at D4/R), while lowering WCSS on both. Restarts pay
+where the objective and the labels agree.
