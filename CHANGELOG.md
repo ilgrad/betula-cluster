@@ -6,27 +6,6 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
-### Added
-- **`scripts/check_mutants_baseline.py` — the staleness half of the mutation ratchet, in a second
-  rather than three hours.** `mutants-baseline.txt` records accepted surviving mutants by their exact
-  `path:line:col: description`, so any edit that shifts a line silently invalidates every entry below
-  it in that file. Nothing checked that: the weekly `mutants.yml` run notices only as a "trim them"
-  note inside a step summary, and it had been red since 2026-08-19 for an unrelated reason. Checked
-  by hand on 2026-09-07, **147 of the 315 entries no longer matched anything** — 121 the same
-  mutation at a new line, 26 gone entirely, worst in `stream.rs` (33), `scalespace.rs` (28) and
-  `hdbscan.rs` (21, rewritten for the parallel build).
-
-  `cargo mutants --list` builds and runs nothing — about a second on this crate — so this is
-  answerable on every push. The script separates the two cases that need different work: a *moved*
-  entry keeps its recorded argument and needs re-anchoring, and 42 of the 121 are unambiguous enough
-  for the script to propose the new line outright; a *vanished* entry describes code that is gone and
-  takes its justification with it. It is not yet a CI job.
-
-  It also surfaced a second problem it was not written for: the crate now lists **8 927** mutants
-  against the 4 312 that `.cargo/mutants.toml` sizes the 96-shard matrix on. At the measured ~101
-  worker-seconds per mutant that is ~2.6 h per shard against a 150-minute cap, so the weekly run
-  cannot finish as configured even once it is green again.
-
 ## [0.8.0] — 2026-09-07
 
 ### Fixed
@@ -1589,6 +1568,25 @@ arms differing only in the code under test.
   in high dimension). This closes task #89 with a mechanism rather than a workaround; heads other
   than these two read the same isotropic `variance(d)` but were not measured, so the warning does not
   claim them.
+- **`scripts/check_mutants_baseline.py` — the staleness half of the mutation ratchet, in a second
+  rather than three hours.** `mutants-baseline.txt` records accepted surviving mutants by their exact
+  `path:line:col: description`, so any edit that shifts a line silently invalidates every entry below
+  it in that file. Nothing checked that: the weekly `mutants.yml` run notices only as a "trim them"
+  note inside a step summary, and it had been red since 2026-08-19 for an unrelated reason. Checked
+  by hand on 2026-09-07, **147 of the 315 entries no longer matched anything** — 121 the same
+  mutation at a new line, 26 gone entirely, worst in `stream.rs` (33), `scalespace.rs` (28) and
+  `hdbscan.rs` (21, rewritten for the parallel build).
+
+  `cargo mutants --list` builds and runs nothing — about a second on this crate — so this is
+  answerable on every push. The script separates the two cases that need different work: a *moved*
+  entry keeps its recorded argument and needs re-anchoring, and 42 of the 121 are unambiguous enough
+  for the script to propose the new line outright; a *vanished* entry describes code that is gone and
+  takes its justification with it. It is not yet a CI job.
+
+  It also surfaced a second problem it was not written for: the crate now lists **8 927** mutants
+  against the 4 312 that `.cargo/mutants.toml` sizes the 96-shard matrix on. At the measured ~101
+  worker-seconds per mutant that is ~2.6 h per shard against a 150-minute cap, so the weekly run
+  cannot finish as configured even once it is green again.
 
 ### Changed
 - **The sparse path stores micro-cluster coordinates feature-major, and the 20-newsgroups fit is
