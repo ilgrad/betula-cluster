@@ -7,6 +7,30 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Fixed
+- **The greedy descent misroutes a quarter to a half of all rows, measured — and the blast radius is
+  a quarter of what it was thought to be.** The premise on record was that every label this library
+  returns goes through `CFTree::nearest_entry`. It does not: `fit_predict` ends in `route_data`,
+  which consults the tree only when no `PointRule` is set, and `finalize` sets one for every head
+  with a centroid assignment rule. On `digits`, `kmeans` labels agree with an exact argmin over the
+  **k cluster centres** 100.00 % of the time and `gmm` uses the mixture posterior — neither touches
+  the tree at label time. Only ward, spectral, leiden and hdbscan assign by microcluster.
+
+  For those, against an exact BLAS scan at `max_leaves=4000`: **24.6 % (blobs) to 44.4 % (covtype)**
+  of rows do not get their nearest microcluster, and a microcluster's own centre fed back through the
+  tree returns that microcluster only **48–71 %** of the time. It costs almost nothing on four of the
+  five datasets — 0.00–0.23 % of labels change, ARI between the two routings ≥ 0.994, and against
+  ground truth greedy is a wash or marginally ahead — because the median misroute lands 0.05 to 1.15
+  centre spacings away, i.e. in a neighbour that belongs to the same cluster.
+
+  **`mnist` is the exception: 9.5 % of labels change and exact routing is worth +0.037 ARI (0.3533 →
+  0.3902, a 10 % relative gain).** At `d = 784` the excess is the smallest in the table (0.06
+  spacings) and still crosses cluster boundaries — concentration of measure makes the wrong answer
+  cheap in distance and expensive in labels at once. No fix is taken here: an unconditional exact scan
+  costs 0.7× the fit on mnist but **8.9× on covtype** (and covtype's scan is the cheaper of the two in
+  FLOPs, so the cost is `n × m` memory traffic, worst exactly where betula's advantage lives). An
+  exact scan below an `m₀`, or a beam at descent, both change mnist labels and so are type-1 doors.
+  Full table in `bench/RESULTS.md`.
+
 - **A published claim retracted: the +7.9 MB peak-RSS move on full covtype is not reproducible.**
   `bench/RESULTS.md` called it "a real, reproducible move in the wrong direction" on the strength of
   one sample against one sample — two paragraphs after warning that a single sample cannot settle

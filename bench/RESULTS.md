@@ -2574,6 +2574,73 @@ implementation does (`mintClock`) and which can only make the union bound behind
 brings it to **54 ns against 1174 ns, 4.6%**, at the cost of at most 32 points of detection latency —
 visible in the table as the 33-point first alarm.
 
+## The descent misroutes a third of the rows, and only one published cell notices
+
+`CFTree::nearest_entry` descends the tree to one leaf and scans that leaf's entries. The descent is
+greedy and never backtracks, so what it returns is the nearest entry *in the leaf it reached* — not
+the nearest entry in the tree. An adversarial fixture had put the rate near 27 %: 600 singleton
+leaves, one refit pass, 436 rows back in their own entry. That is one fixture, and the question it
+raises — whether the labels this library returns are the labels an exact assignment would give — is a
+type-1 door, so it was worth measuring on the datasets the tables above are built from.
+
+**First, the blast radius is a quarter of what it looked like.** "Every label goes through
+`nearest_entry`" is false: `fit_predict` ends in `route_data`, which consults the tree only when no
+`PointRule` is set, and `finalize` sets one for every head with a centroid assignment rule. Measured
+on `digits` at `max_leaves = 4000`:
+
+| head | how a row gets its label | agreement |
+|---|---|---|
+| `kmeans` | exact argmin over the **k cluster centres** | 100.00 % |
+| `gmm` | the mixture posterior | — |
+| `ward` | `label[nearest_entry(x)]` | 100.00 % |
+| `spectral` | `label[nearest_entry(x)]` | 100.00 % |
+
+So a misroute can only change a label under the heads that assign *by microcluster* — ward, spectral,
+leiden, hdbscan. `kmeans` and `gmm` never touch the tree at label time.
+
+**Second, the rate is higher than the fixture said, and the cost is lower.** Exact reference: a
+chunked BLAS scan of every row against every microcluster centre, valid because `distance="centroid"`
+is the default and what every table here uses. `ward`, `max_leaves = 4000`, seed 0; *excess* is how
+much further the greedy answer lands, in units of the median nearest-neighbour spacing between
+centres (a ratio to the exact distance is meaningless where that distance is zero, which is exactly
+where singleton leaves put it):
+
+| dataset | n | d | m | misroute | excess med | p99 | centre finds itself | labels changed | ARI(greedy, exact) | vs truth: greedy → exact |
+|---|---|---|---|---|---|---|---|---|---|---|
+| blobs | 200 000 | 2 | 3641 | 24.6 % | 0.38 | 2.07 | 71.4 % | 0.04 % | 0.9990 | 0.9802 → 0.9802 |
+| highdim | 200 000 | 20 | 3739 | 39.9 % | 0.05 | 1.05 | 61.1 % | 0.00 % | 1.0000 | 1.0000 → 1.0000 |
+| digits | 1 797 | 64 | 1797 | 30.0 % | 1.15 | 2.43 | 70.0 % | 0.15 % | 0.9955 | 0.6597 → 0.6589 |
+| **mnist** | 70 000 | 784 | 3875 | 26.8 % | 0.06 | 1.57 | 57.1 % | **9.49 %** | **0.8106** | **0.3533 → 0.3902** |
+| covtype | 581 012 | 54 | 3783 | 44.4 % | 0.32 | 2.80 | 48.3 % | 0.23 % | 0.9939 | 0.0898 → 0.0894 |
+
+The sharpest way to state the defect is the *centre finds itself* column: feed a microcluster's own
+centre back through the tree and it returns that microcluster between 48 % and 71 % of the time. The
+structure cannot reliably locate a point that **is** one of its entries.
+
+And on four of the five datasets that does not matter. Between 0.00 % and 0.23 % of labels change,
+ARI between the two routings is ≥ 0.994, and against ground truth the greedy answer is a wash — very
+slightly *ahead* on `digits` and `covtype`, tied on the two synthetic sets. The reason is in the
+*excess* column: the median misroute lands 0.05 to 1.15 spacings further away, i.e. in a neighbouring
+cell, and a neighbouring cell almost always belongs to the same final cluster.
+
+**`mnist` is the exception, and it is worth a decision.** 9.5 % of labels change and exact routing is
+**+0.037 ARI, 0.3533 → 0.3902 — a 10 % relative gain** on the hardest set in this file. What makes it
+different is not the misroute rate (26.8 %, the second lowest here) but that at `d = 784` the
+microclusters of different digits are interleaved: the excess is a mere 0.06 spacings, yet that is
+enough to cross a cluster boundary. Concentration of measure makes the wrong answer cheap in distance
+and expensive in labels at the same time.
+
+**What it would cost to fix.** An unconditional exact scan is not affordable: the BLAS reference took
+**4.97 s on mnist against a 7.32 s fit** (0.7×) but **15.23 s on covtype against a 1.72 s fit**
+(8.9×) — and covtype's scan is the *cheaper* of the two in floating-point work (1.19 vs 2.13 × 10¹¹),
+so the cost is memory traffic over `n × m`, not arithmetic, and it grows worst exactly where betula's
+own advantage lives. Two designs stay open: an exact scan below a microcluster count `m₀`, or a beam
+of width `b` at descent, which multiplies only the descent. Both change labels on `mnist`, so both
+are type-1 doors and neither is taken here on the strength of one seed and one dataset.
+
+Reproduce: `local/scratch/t9_misroute.py` (local-only), which calls nothing but the public wrapper —
+`fit_predict`, `microcluster_centers_`, `assign_microclusters`.
+
 ## Conclusions
 
 - **Use betula** when data is large or streaming, memory is bounded, or you want one numerically
