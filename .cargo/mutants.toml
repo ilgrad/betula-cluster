@@ -8,10 +8,11 @@
 # before changing that matrix -- this crate grew from 4312 to 6158 to 8927 between 2026-08-20,
 # 2026-08-31 and 2026-09-07, and the shard sizing is the only thing that reads these numbers:
 #   2026-08-20  4312     2026-08-31  6158     2026-09-07  8927
-# Throughput is **~250 worker-seconds per mutant**, not the ~110 an earlier edition of this comment
-# claimed: measured on run 33385956775, whose 95 collated shards carried 65 mutants each and took a
-# median of 4085 s at -j4. A mutant that *survives* runs the whole suite to the end, and the tail is
-# what sizes the cap -- that run's p90 shard was 7480 s and its slowest 7887 s.
+# There is no useful "seconds per mutant": measured on run 34108190109 the per-mutant wall cost is
+# 15 s unviable, 70 s caught (p90 447, max 1082), 660 s missed and 988 s timed out, so an average
+# over that mix says nothing about a shard whose mix is unusual -- and `--shard k/n` slices the list
+# contiguously, so every shard's mix *is* unusual. The sizing model, and the numbers behind it, are
+# in `.github/workflows/mutants.yml`.
 # `scripts/check_mutants_baseline.py` prints the current count as a side effect.
 exclude_globs = ["src/python.rs", "src/bin/**"]
 # python.rs has no Rust-level test coverage (coverage runs --features persistence,cli, not python),

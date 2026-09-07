@@ -7,23 +7,36 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Fixed
-- **The weekly mutation run's timeout was sized on a throughput number 2.3× too optimistic, and the
-  crate has since grown 1.45×.** Both were found by `scripts/check_mutants_baseline.py` printing the
-  live mutant count, and the correction is measured rather than modelled. On the last completed run
-  (33385956775, 2026-08-31) the 95 collated shards carried **65 mutants each** and took a median of
-  **4085 s**, p90 **7480 s**, max **7887 s** at `-j4` — about **250 worker-seconds per mutant**, not
-  the 110 `.cargo/mutants.toml` claimed, because a *surviving* mutant runs the whole suite to the end
-  while a caught one stops at the first failure. `cargo mutants --list` reads 6158 at that run's
-  commit and **8927** today, so the same 96 shards now carry 93 mutants each: median 99 min, p90
-  **181**, max **191** — the top decile cancelled at the 150-minute cap, which turns a run into a
-  silent undercount rather than a failure.
+- **The weekly mutation run was sharded 96 ways on a mutant count that has since grown 2.1×, and
+  more than half of its shards are being cancelled at the timeout.** Found by
+  `scripts/check_mutants_baseline.py`, which prints the live count as a side effect: `cargo mutants
+  --list` reads **8 927** against the 4 312 the matrix was sized on. Run 34108190109 was in flight
+  while this was being fixed and settled it — **28 of its first 53 completed shards were cancelled
+  at exactly the 150-minute cap**. A cancelled shard still uploads its partial `mutants.out`, so the
+  collation job counts it as present and the week's survivor total simply comes out short, with
+  nothing red to say so.
 
-  The cap is raised to **300 minutes** rather than the shard count doubled: 96 shards at 12 parallel
-  is 8 waves and ~13 h of wall clock, and 192 shards would halve the job length and double the waves.
-  At 300 the projected worst shard sits at 64 % of its budget and absorbs another 1.5× of growth;
-  GitHub's ceiling for a hosted job is 360. The v0.8.0 changelog reached the same conclusion by
-  wrong arithmetic (a stale 101 worker-seconds, and `-j4` forgotten); that sentence is corrected in
-  place on `main`.
+  The 23 shards of that run that did finish give a cost model, taken from the per-mutant phase
+  timings in their `outcomes.json` rather than from a per-mutant average — averaging is what hid
+  this, because the distribution spans two orders of magnitude: **15 s** unviable, **70 s** caught
+  (p90 447, max 1082), **660 s** missed, **988 s** timed out, plus a 236 s baseline per shard. `-j4`
+  measures 0.94 parallel efficiency, so `job_minutes ≈ worker_seconds / 4 / 0.94 / 60`. Shard cost
+  is set by the *mix*, not the count: those 23 shards span **7 024 to 34 971 worker-seconds** at an
+  identical 93 mutants each, because `--shard k/n` slices the deterministic list contiguously and so
+  effectively by file.
+
+  That rules out raising the cap alone: 93 mutants that all time out is **467 minutes**, past
+  GitHub's 360-minute ceiling for a hosted job, so no cap makes a 96-shard matrix safe. The matrix is
+  **192 shards** with a **300-minute** cap, which puts that same worst case at 236 minutes and the
+  worst *observed* mix at ~78. Wall clock does not pay for the split — the total work is unchanged
+  and only the per-shard baseline and job setup are duplicated, ~25 minutes against a measured total
+  of ~610 worker-hours. The shard count now lives in one `env: SHARDS` that both `--shard k/n` and
+  the collation tally read, so the two can no longer drift apart silently; a mismatch with the
+  literal matrix surfaces as `shards collated: 96 / 192` and fails.
+
+  The v0.8.0 changelog reached the "cannot finish as configured" conclusion by wrong arithmetic (a
+  stale 101 worker-seconds per mutant, and `-j4` forgotten); that sentence is corrected in place
+  rather than deleted.
 
 ## [0.8.0] — 2026-09-07
 

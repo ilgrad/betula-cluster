@@ -9,6 +9,13 @@ on:
 permissions:
   contents: read
 
+# The shard *count*, in one place: it divides `--shard k/n` and it is what the summary job checks
+# the artifact tally against. The matrix below lists the shard ids literally because `strategy`
+# accepts no `env` context -- a disagreement between the two shows up as "shards collated: 96 / 192"
+# and fails the summary, which is the right failure.
+env:
+  SHARDS: 192
+
 jobs:
   cargo-mutants:
     # Sharded because a single job never finished: measured on the 2026-08-17 run, 90 minutes at
@@ -33,18 +40,34 @@ jobs:
     # the same 101 s: 76 minutes of work against a cap twice that. Shards are 0-indexed and the
     # mutant list order is deterministic, so shard k covers the same mutants every week.
     #
-    # Re-sized 2026-09-07 on the last completed run (33385956775, 2026-08-31) rather than on the
-    # model above, which under-counted: that run's 95 collated shards measured **65 mutants each**
-    # in a median of 4085 s, p90 7480 s, max 7887 s at -j4 -- i.e. ~250 worker-seconds per mutant,
-    # not 110, because a *surviving* mutant runs the whole suite to the end. `cargo mutants --list`
-    # at that run's commit reads 6158; today it reads **8927**, 1.45x more, so the same 96 shards
-    # now carry 93 mutants each and the distribution scales to a median of 99 min, p90 **181** and
-    # max **191** -- with the top decile cancelled at a 150-minute cap, which is how a run silently
-    # becomes an undercount. The cap is raised rather than the shard count: 96 shards at 12 parallel
-    # is 8 waves and ~13 h of wall clock, and doubling the shards to keep the jobs short would
-    # double the waves instead. 300 min leaves the projected worst shard at 64 % of its budget and
-    # absorbs another 1.5x of crate growth; GitHub's ceiling for a hosted job is 360.
-    name: cargo-mutants ${{ matrix.shard }}/96
+    # Re-sized 2026-09-07 on run 34108190109, which was still in flight while this was written and
+    # falsified the model above from both ends. `cargo mutants --list` now reads **8927** against
+    # the 4312 that sizing was done on, so 96 shards carry 93 mutants each -- and **28 of the first
+    # 53 shards to complete were cancelled at exactly the 150-minute cap**, not the top decile that
+    # scaling the previous run's shard durations predicted. A cancelled shard still uploads its
+    # partial `mutants.out`, so the collation below counts it as present and the week's survivor
+    # total comes out short with nothing going red.
+    #
+    # The 23 shards that did finish carry a cost model, taken from the per-mutant phase timings in
+    # their `outcomes.json` rather than from a per-mutant average -- averaging is what hid this,
+    # because the distribution spans two orders of magnitude:
+    #
+    #   unviable  median   15 s      caught   median  70 s, p90 447 s, max 1082 s
+    #   missed    median  660 s      timeout  median 988 s, max 1133 s
+    #   baseline  236 s, once per shard
+    #
+    # -j4 measures 0.94 parallel efficiency and the job spends 0.4 min outside cargo-mutants, so
+    # job_minutes ~= worker_seconds / 4 / 0.94 / 60. Shard cost is set by the *mix*, not the count:
+    # those 23 shards span 7024 to 34971 worker-seconds -- 5x -- at an identical 93 mutants each,
+    # because `--shard k/n` slices the deterministic list contiguously and so effectively by file.
+    #
+    # That rules out a cap-only fix. 93 mutants that all time out is 467 minutes, past GitHub's
+    # 360-minute ceiling for a hosted job, so no cap makes a 96-shard matrix safe. **192 shards**
+    # puts that same worst case at 236 minutes and the worst *observed* mix at ~78, both inside a
+    # 300-minute cap. Wall clock does not pay for the split: the total work is unchanged and only
+    # the per-shard baseline and job setup are duplicated, ~25 minutes against a measured total of
+    # ~610 worker-hours -- ~13 h at -j4 with 12 jobs in parallel.
+    name: cargo-mutants ${{ matrix.shard }}/192
     runs-on: ubuntu-latest
     timeout-minutes: 300
     strategy:
@@ -55,12 +78,18 @@ jobs:
       # -- free for a job that runs Mondays at 05:00 UTC, and it leaves eight slots for a push.
       max-parallel: 12
       matrix:
-        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
-                16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
-                32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47,
-                48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63,
-                64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79,
-                80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95]
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
+                21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39,
+                40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58,
+                59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77,
+                78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96,
+                97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112,
+                113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127,
+                128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142,
+                143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 157,
+                158, 159, 160, 161, 162, 163, 164, 165, 166, 167, 168, 169, 170, 171, 172,
+                173, 174, 175, 176, 177, 178, 179, 180, 181, 182, 183, 184, 185, 186, 187,
+                188, 189, 190, 191]
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -70,7 +99,7 @@ jobs:
           tool: cargo-mutants,cargo-nextest
       - name: cargo mutants (whole crate, scope in .cargo/mutants.toml)
         # Exit 2 is "some mutants survived", which is the expected state, not a failure: this shard
-        # is one 96th of a crate whose `mutants-baseline.txt` records 309 accepted survivors, so
+        # is one 192nd of a crate whose `mutants-baseline.txt` records 309 accepted survivors, so
         # most shards contain at least one. Measured on run 33385956775 -- 77 of 96 shards red, and
         # the 19 green ones were exactly those whose `missed.txt` was empty (shards 5 and 9 at 0
         # missed, shards 0 and 1 at 21 and 27). The verdict on survivors belongs to
@@ -81,7 +110,7 @@ jobs:
         # 2 mutants missed, 4 build or check failure -- and a runner shutdown or an exhausted
         # timeout is none of those.
         run: |
-          cargo mutants --shard ${{ matrix.shard }}/96 -j4 --test-tool nextest || {
+          cargo mutants --shard "${{ matrix.shard }}/$SHARDS" -j4 --test-tool nextest || {
             rc=$?
             [ "$rc" -eq 2 ] || exit "$rc"
             echo "exit 2: this shard has surviving mutants; the summary job scores them"
@@ -119,9 +148,9 @@ jobs:
           # ran 88 minutes against a ~20-minute median, ended in failure, and uploaded nothing
           # despite `if: always()`, so 95 of 96 shards collated into a number that looked complete.
           got=$(ls -d shards/mutants-out-* 2>/dev/null | wc -l)
-          echo "shards collated: $got / 96" >> "$GITHUB_STEP_SUMMARY"
-          if [ "$got" -ne 96 ]; then
-            for k in $(seq 0 95); do
+          echo "shards collated: $got / $SHARDS" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$got" -ne "$SHARDS" ]; then
+            for k in $(seq 0 $((SHARDS - 1))); do
               [ -d "shards/mutants-out-$k" ] || echo "::error::shard $k produced no artifact -- its mutants are unmeasured"
             done
             exit 1
