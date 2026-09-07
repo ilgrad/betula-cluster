@@ -6,6 +6,16 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- **A published claim retracted: the +7.9 MB peak-RSS move on full covtype is not reproducible.**
+  `bench/RESULTS.md` called it "a real, reproducible move in the wrong direction" on the strength of
+  one sample against one sample — two paragraphs after warning that a single sample cannot settle
+  this cell. Eight paired runs of `bench/_worker.py real_fit betula-kmeans covtype`, alternating this
+  tree against `28d4e9f`, put the medians at **884.7 MB against 882.6 MB — 2.1 MB apart**, inside
+  within-arm spreads of 9.6 and 15.3 MB. The same eight pairs make the *time* gain larger than
+  published, **1.005 s against 1.158 s (13 %)** where the table reads 1.06 → 1.01 s. The scoreboard
+  cell is a tie either way; what changes is that there is no unattributed memory regression to chase.
+
 ### Changed
 - **The uniform 1–12 % slowdown across the scaling and streaming suites is measured, and it is not
   the insert path.** `bench/RESULTS.md` recorded the shift honestly but could not attribute it,

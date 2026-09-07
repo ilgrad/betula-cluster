@@ -548,9 +548,9 @@ a single seed, like every row in the speed suite, and the 20 k subsample's three
 (0.071–0.102 for the same head) is wide enough that the ARI column here should be read as "not
 worse", not as a 43 % lead. The speed ratio itself is soft: the two ARIs are byte-identical to the
 previous edition and both times moved (betula 1.06 → 1.01 s, scikit-learn 4.92 → 5.58 s), which is a
-single sample against a single sample even under the gate. The memory column is the one that changed
-verdict — betula 905.3 → 913.3 MB against an unmoved 931 MB — and it is discussed under *The
-scoreboard*.
+single sample against a single sample even under the gate. The memory column changed verdict —
+betula 905.3 → 913.3 MB against an unmoved 931 MB — and that +7.9 MB has since been re-measured and
+does not survive repetition; see *The scoreboard*.
 
 ## Structured covariance — `gmm-toeplitz` / `gmm-toeplitz-full` on stationary signals
 
@@ -960,10 +960,23 @@ accepted deliberately rather than overwritten:
   never there, not of the code, which has not changed. Memory went
   30/4/0 → **28/6/0** on the two full-`covtype` cells (`vs-best` and `vs-same/betula-kmeans`), also
   **win → tie**: betula's peak RSS on 581 012 × 54 rose 905.3 → 913.3 MB while scikit-learn's stayed
-  at 931 MB, and 18 MB of margin on a 913 MB cell is inside the single-run tolerance. That +7.9 MB is
-  a real, reproducible move in the wrong direction on a path the zero-copy ingest was supposed to
-  help, it is not attributed, and it is on the same list as the uniform insert-path slowdown under
-  *Speed*.
+  at 931 MB, and 18 MB of margin on a 913 MB cell is inside the single-run tolerance.
+
+  **The +7.9 MB itself does not survive repetition (re-measured 2026-09-08).** Eight paired runs of
+  `bench/_worker.py real_fit betula-kmeans covtype`, alternating this tree against `28d4e9f` in a
+  second worktree — the same two builds the *Speed* section's source arm uses — put the peak-RSS
+  medians at **884.7 MB against 882.6 MB, a difference of 2.1 MB**, inside a within-arm spread of
+  9.6 MB on one side and 15.3 MB on the other. A single sample against a single sample cannot resolve
+  8 MB on this cell, and the previous edition's reading of that number as "a real, reproducible move
+  in the wrong direction" was the single-sample artefact it warns about two paragraphs earlier.
+  Absolute levels in that re-measure sit ~20 MB below the table because the probe was run with only
+  NumPy, scikit-learn and SciPy imported, where `comprehensive.py` spawns the worker from its own
+  interpreter with pandas and matplotlib already resident; only the paired difference is comparable,
+  which is the statistic in question.
+
+  The same eight pairs make the *time* move larger than published rather than softer: **1.005 s
+  against 1.158 s**, a 13 % gain for this tree, where the table's single samples read 1.06 → 1.01 s.
+  The scoreboard cell stays a tie on the recorded numbers, which are what it ratchets against.
 
 ## Where the leaf budget goes — geometry, not mass (tasks #70 and #77)
 
