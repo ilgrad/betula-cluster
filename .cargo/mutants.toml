@@ -4,14 +4,15 @@
 # with `--shard k/n`; a local run narrows with `-f <glob>` (which unions with `examine_globs`, so
 # leaving that key out is what makes `-f` mean "only this").
 #
-# Measured mutant counts (`cargo mutants --list | wc -l`), for sizing the shard matrix:
-#   src/clustering/*  2093   src/stream.rs  449   src/sketch/*  191   src/topology.rs  180
-#   src/feature.rs     368   src/stats.rs   275   src/tree.rs   153   src/linalg.rs    151
-#   src/mixture.rs     148   src/sparse.rs  120   src/distance.rs 95   src/model.rs      74
-#   src/kernels.rs      13   src/types.rs     0
-#   whole crate       4312
-# Throughput is ~110 worker-seconds per mutant on a GitHub runner, so 32 shards at -j4 is ~135
-# mutants and ~62 minutes each, inside the 90-minute cap.
+# Measured mutant counts (`cargo mutants --list | wc -l`), for sizing the shard matrix. Re-count
+# before changing that matrix -- this crate grew from 4312 to 6158 to 8927 between 2026-08-20,
+# 2026-08-31 and 2026-09-07, and the shard sizing is the only thing that reads these numbers:
+#   2026-08-20  4312     2026-08-31  6158     2026-09-07  8927
+# Throughput is **~250 worker-seconds per mutant**, not the ~110 an earlier edition of this comment
+# claimed: measured on run 33385956775, whose 95 collated shards carried 65 mutants each and took a
+# median of 4085 s at -j4. A mutant that *survives* runs the whole suite to the end, and the tail is
+# what sizes the cap -- that run's p90 shard was 7480 s and its slowest 7887 s.
+# `scripts/check_mutants_baseline.py` prints the current count as a side effect.
 exclude_globs = ["src/python.rs", "src/bin/**"]
 # python.rs has no Rust-level test coverage (coverage runs --features persistence,cli, not python),
 # so any mutant there is a false survivor; the CLI bin is a thin wrapper over the library.

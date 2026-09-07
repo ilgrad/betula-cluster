@@ -6,6 +6,25 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- **The weekly mutation run's timeout was sized on a throughput number 2.3× too optimistic, and the
+  crate has since grown 1.45×.** Both were found by `scripts/check_mutants_baseline.py` printing the
+  live mutant count, and the correction is measured rather than modelled. On the last completed run
+  (33385956775, 2026-08-31) the 95 collated shards carried **65 mutants each** and took a median of
+  **4085 s**, p90 **7480 s**, max **7887 s** at `-j4` — about **250 worker-seconds per mutant**, not
+  the 110 `.cargo/mutants.toml` claimed, because a *surviving* mutant runs the whole suite to the end
+  while a caught one stops at the first failure. `cargo mutants --list` reads 6158 at that run's
+  commit and **8927** today, so the same 96 shards now carry 93 mutants each: median 99 min, p90
+  **181**, max **191** — the top decile cancelled at the 150-minute cap, which turns a run into a
+  silent undercount rather than a failure.
+
+  The cap is raised to **300 minutes** rather than the shard count doubled: 96 shards at 12 parallel
+  is 8 waves and ~13 h of wall clock, and 192 shards would halve the job length and double the waves.
+  At 300 the projected worst shard sits at 64 % of its budget and absorbs another 1.5× of growth;
+  GitHub's ceiling for a hosted job is 360. The v0.8.0 changelog reached the same conclusion by
+  wrong arithmetic (a stale 101 worker-seconds, and `-j4` forgotten); that sentence is corrected in
+  place on `main`.
+
 ## [0.8.0] — 2026-09-07
 
 ### Fixed
@@ -1584,9 +1603,10 @@ arms differing only in the code under test.
   takes its justification with it. It is not yet a CI job.
 
   It also surfaced a second problem it was not written for: the crate now lists **8 927** mutants
-  against the 4 312 that `.cargo/mutants.toml` sizes the 96-shard matrix on. At the measured ~101
-  worker-seconds per mutant that is ~2.6 h per shard against a 150-minute cap, so the weekly run
-  cannot finish as configured even once it is green again.
+  against the 4 312 that `.cargo/mutants.toml` sizes the 96-shard matrix on, so the weekly run cannot
+  finish as configured even once it is green again. (The tagged v0.8.0 text reached that conclusion
+  through wrong arithmetic — it multiplied a stale 101 worker-seconds per mutant and forgot `-j4`.
+  The measured basis is in `[Unreleased]`; the conclusion survives it.)
 
 ### Changed
 - **The sparse path stores micro-cluster coordinates feature-major, and the 20-newsgroups fit is

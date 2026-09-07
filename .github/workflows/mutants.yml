@@ -32,9 +32,21 @@ jobs:
     # margin, and the suite has grown since. 96 shards at a 150-minute cap gives ~45 mutants each at
     # the same 101 s: 76 minutes of work against a cap twice that. Shards are 0-indexed and the
     # mutant list order is deterministic, so shard k covers the same mutants every week.
+    #
+    # Re-sized 2026-09-07 on the last completed run (33385956775, 2026-08-31) rather than on the
+    # model above, which under-counted: that run's 95 collated shards measured **65 mutants each**
+    # in a median of 4085 s, p90 7480 s, max 7887 s at -j4 -- i.e. ~250 worker-seconds per mutant,
+    # not 110, because a *surviving* mutant runs the whole suite to the end. `cargo mutants --list`
+    # at that run's commit reads 6158; today it reads **8927**, 1.45x more, so the same 96 shards
+    # now carry 93 mutants each and the distribution scales to a median of 99 min, p90 **181** and
+    # max **191** -- with the top decile cancelled at a 150-minute cap, which is how a run silently
+    # becomes an undercount. The cap is raised rather than the shard count: 96 shards at 12 parallel
+    # is 8 waves and ~13 h of wall clock, and doubling the shards to keep the jobs short would
+    # double the waves instead. 300 min leaves the projected worst shard at 64 % of its budget and
+    # absorbs another 1.5x of crate growth; GitHub's ceiling for a hosted job is 360.
     name: cargo-mutants ${{ matrix.shard }}/96
     runs-on: ubuntu-latest
-    timeout-minutes: 150
+    timeout-minutes: 300
     strategy:
       fail-fast: false
       # Capped below the account's 20-slot concurrency limit. Measured on run 32347677860: the
