@@ -219,11 +219,19 @@ All notable changes to this project are documented here. The format follows
   to 256 weighted landmarks conditions the affinity graph better than 4 000 raw 784-dimensional
   centroids do, so the rewrite needs roughly twice the microclusters to build the same embedding.
 
-  It pays for them many times over. At *equal quality* the new head reads **0.2029 in 6.21 s** against
-  the landmark path's **0.2033 in 43.87 s** on the same machine and harness one commit earlier — a
-  **7.1× speed-up**, measured on a contended machine and therefore a lower bound. The fixed-budget row
-  is published as the loss it is; the practical reading is that `method="spectral"` now wants a leaf
-  budget scaled to the dimension, and can afford one.
+  It pays for them many times over, and then passes the old head. At *equal quality* the new head
+  reads **0.2029 in 6.21 s** against the landmark path's **0.2033 in 43.87 s** on the same machine and
+  harness one commit earlier — a **7.1× speed-up**, measured on a contended machine and therefore a
+  lower bound. Given the resolution outright it does better than the landmark path ever did: the curve
+  continues 12 000 → 0.235 and peaks at **16 000 → 0.328**, 61 % above the published 0.203, before
+  turning down at one leaf per point (20 000 → 0.299) exactly as the documented graph ceiling
+  predicts. Sixteen thousand is what `bench/RESULTS.md`'s `hires` table already gives every head.
+
+  The fixed-budget row is published as the loss it is. The correction that matters to users is in
+  [`docs/USAGE.md`](https://github.com/ilgrad/betula-cluster/blob/main/docs/USAGE.md), which advised
+  spending "a few hundred to a few thousand leaves" on this head — advice derived from two-dimensional
+  non-convex fixtures and `digits`-PCA20, and actively wrong at 784 dimensions, where it costs a
+  factor of four in ARI.
 
 - **`clustering::SPECTRAL_MAX_NODES` is now `SPECTRAL_EXACT_NODES`, and a second constant
   `SPECTRAL_DENSE_GRAPH_MAX` joins it.** Rust API only; the Python surface is unaffected. The old name

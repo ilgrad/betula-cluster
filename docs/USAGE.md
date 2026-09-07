@@ -677,9 +677,27 @@ What that buys, A/B against the landmark path on identical trees, median of seed
 non-convex fixtures still score ARI 1.000 in 0.7 s. At 20 000 — one leaf per point — they fall to
 ≈ 0.6, and forcing the *exact* affinity there gives the same answer for ten times the wall clock. The
 cause is the fixed neighbour count: 10 neighbours is `1.0 · log n` at 20 000 nodes, at the
-connectivity threshold below which a k-NN Laplacian's spectrum stops describing the manifold. So
-spend the budget where the head reads it — a few hundred to a few thousand leaves — and note that
-this is the same advice `max_leaves` gets everywhere else, now with the mechanism attached.
+connectivity threshold below which a k-NN Laplacian's spectrum stops describing the manifold.
+
+**But where that ceiling sits scales with the dimension, and on high-dimensional data it is far
+higher than the fixtures above suggest.** MNIST, 20 000 rows standardized, `k = 10`, median of seeds
+0/1/2 — the same head, only `max_leaves` moving:
+
+| `max_leaves` | 256 | 512 | 1024 | 2048 | 4000 | 8000 | 12 000 | **16 000** | 20 000 (= n) |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| ARI | 0.000 | 0.007 | 0.025 | 0.050 | 0.082 | 0.203 | 0.235 | **0.328** | 0.299 |
+
+The curve is monotone until it turns at one leaf per point, and the peak is at **16 000** — where
+this page's own `hires` table already puts it. At 4 000, the bounded-memory budget the comparison
+table uses, the head reads 0.082 against the landmark path's 0.203; at 8 000 it matches that answer
+in **6.21 s against 43.87 s**, and at 16 000 it passes it outright. What the landmark reduction was
+doing beyond saving time was *smoothing*: 256 weighted k-means landmarks condition the affinity graph
+better than 4 000 raw 784-dimensional centroids do, so the Chebyshev head needs the resolution back
+before it can beat them — and buys it cheaply.
+
+So do not read "a few hundred to a few thousand leaves" as the rule. Give the head the resolution the
+data's dimension asks for, stop short of one leaf per point, and expect the useful budget to be a
+large fraction of `n` in high dimension and a small one in two.
 
 ### `min_samples` on a summary — `hdbscan`
 
