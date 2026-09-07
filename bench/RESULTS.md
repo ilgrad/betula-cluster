@@ -118,7 +118,7 @@ Absolute times vary by machine; the *ratios* far less.
 | Python / NumPy / SciPy / scikit-learn | 3.14.7 / 2.5.2 / 1.18.1 / 1.9.0 |
 | matplotlib / pandas | 3.11.1 / 3.0.5 |
 | Rust | rustc 1.98.1 |
-| betula-cluster | 0.7.0 + unreleased changes (working tree), `maturin --release` (LTO, `codegen-units=1`); **portable** wheel (no `target-cpu=native`) |
+| betula-cluster | 0.8.0 (working tree at `7d5a062`), `maturin --release` (LTO, `codegen-units=1`); **portable** wheel (no `target-cpu=native`) |
 | Threads | `OMP_NUM_THREADS=8` (the machine's, exported by the shell), `OPENBLAS/MKL/NUMEXPR_NUM_THREADS=1`, `RAYON_NUM_THREADS` unset — both libraries get the machine, which is the only configuration in which a speed row means anything. An earlier edition of this row read `1` for all four and was wrong about what the run had done; see the `Reproduce:` line above. |
 
 ## Methodology

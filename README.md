@@ -31,7 +31,7 @@ Measured against scikit-learn on `StandardScaler`-normalized data, each method i
 with peak RSS sampled from `/proc/self/statm`. Full methodology, every metric, and all tables (wins
 **and** losses) live in [**`bench/RESULTS.md`**](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md).
 
-> **Re-measured 2026-08-24 against the working tree after 0.7.0.** Every quality figure is the
+> **Re-measured 2026-09-07 against the 0.8.0 tree, on a machine gated to be idle.** Every quality figure is the
 > **median of seeds 0, 1, 2** — clustering
 > quality is seed-dependent and a single run is not a result. Ranges per cell are in
 > `bench/results_*_spread.csv`; on the synthetic sets every row moves by more than 0.05 ARI across the
@@ -375,7 +375,7 @@ algorithms** it implements. Machine-readable metadata (including the method refe
   author  = {Gradina, Ilia},
   title   = {betula-cluster: numerically stable {BETULA} clustering with a {Rust} core},
   year    = {2026},
-  version = {0.7.0},
+  version = {0.8.0},
   doi     = {10.5281/zenodo.21427331},
   license = {MIT},
   url     = {https://github.com/ilgrad/betula-cluster}

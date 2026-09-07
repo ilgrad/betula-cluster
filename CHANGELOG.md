@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-09-07
+
 ### Fixed
 - **A column-major (Fortran-order) input array was read as its transpose — silently, with no error,
   producing a clustering of scrambled data.** Every array-taking entry point was affected: `fit`,
@@ -2031,6 +2033,12 @@ arms differing only in the code under test.
 
 ## [0.7.0] — 2026-08-23
 
+**Never published, and the heading below is deliberately not a link.** The version was bumped
+and this section written, but no `v0.7.0` tag was ever created, so nothing here reached PyPI,
+crates.io or Zenodo and there is no commit range to compare against. Everything in it ships in
+0.8.0, whose compare link spans `v0.6.0...v0.8.0` and therefore covers both. The section is kept
+as the record of what that heading described.
+
 ### Changed
 - **Rust 2024 edition; minimum supported Rust version 1.82 → 1.85.** The migration needed two source
   changes in total (a binding mode made explicit in `gmm_toeplitz.rs`); the rest is `rustfmt`'s 2024
@@ -2738,8 +2746,8 @@ First public release.
   far below `max_leaves`), and rebuilds reinsert in reverse-DFS leaf order. The CF-tree build is now
   byte-for-byte the reference (`betulars`) tree shape and at speed parity with matched build flags.
 
-[Unreleased]: https://github.com/ilgrad/betula-cluster/compare/v0.7.0...HEAD
-[0.7.0]: https://github.com/ilgrad/betula-cluster/compare/v0.6.0...v0.7.0
+[Unreleased]: https://github.com/ilgrad/betula-cluster/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/ilgrad/betula-cluster/compare/v0.6.0...v0.8.0
 [0.6.0]: https://github.com/ilgrad/betula-cluster/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/ilgrad/betula-cluster/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/ilgrad/betula-cluster/compare/v0.3.0...v0.4.0

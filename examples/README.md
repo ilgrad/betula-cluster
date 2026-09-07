@@ -5,7 +5,9 @@ Executed Jupyter notebooks (with plots, tables, and graphs) demonstrating **ever
 source (the diff-friendly form); the `.ipynb` is the rendered, executed output you can read on GitHub.
 
 > **Provenance.** The stored outputs were executed on **2026-08-30** against the working tree after
-> 0.7.0 — the same tree [`bench/RESULTS.md`](../bench/RESULTS.md) is measured on — except
+> 0.7.0, which is **no longer** the tree [`bench/RESULTS.md`](../bench/RESULTS.md) is measured on: that
+> page was re-measured on 2026-09-07 for 0.8.0, and the `method="spectral"` head was rewritten in
+> between, so a spectral figure printed in a notebook is a 0.7.0 figure. Except
 > [`07_mixed_data_kprototypes`](07_mixed_data_kprototypes.ipynb), re-executed on **2026-09-02** when
 > its directional section was added. Every notebook prints the build it ran under in its first cell,
 > and every one pins its seeds in code, so re-executing reproduces what you see.
