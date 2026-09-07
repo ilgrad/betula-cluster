@@ -169,11 +169,11 @@ Python end-to-end + scikit-learn benchmark (`README.md`, `bench/RESULTS.md`):
   done in place, and the reinsertion pass that follows only re-routes (absorption off, which is what
   walked off the concentration cliff); per-feature EWMA `decay`; runtime-selectable routing; **parallel
   shard+merge build**
-  `build_sharded` / `n_jobs` — each shard summarises to `max_leaves/shards` leaves so the merge
+  `build_sharded` / `n_shards` — each shard summarises to `max_leaves/shards` leaves so the merge
   stays ~`max_leaves` CFs, giving ~4–5× on large `N` at equal granularity; opt-in, default serial.
   The shard count is part of the answer and the thread count is not: the `parallel` feature decides
   only whether the shards run concurrently, and under `canonical_order` the count comes from `n`
-  rather than from `n_jobs`, so neither the machine nor the build configuration enters the summary;
+  rather than from the caller, so neither the machine nor the build configuration enters the summary;
   optional **robust insertion** `set_huber_k(k)` — winsorize a point to $\pm k\sigma$ of its target
   microcluster before the Welford fold so stream outliers cannot stretch a centroid/radius, gated by
   a 5-point warm-up and $\sigma_j = 0$ pass-through, leaving a valid $(n, \mu, S)$; point inserts only,
@@ -246,7 +246,7 @@ Python end-to-end + scikit-learn benchmark (`README.md`, `bench/RESULTS.md`):
   `cluster_profile`; plus the **`topology::mapper`** Mapper graph (`Betula.mapper() → MapperGraph`).
 - Parallelism (`parallel` feature, default-on): rayon over point labeling and `estimate_threshold`
   (index-ordered serial reduction → bit-identical to serial), plus opt-in parallel Phase-1 build
-  (shard+merge, `n_jobs > 1`) — the latter changes the leaf structure like a different insertion
+  (shard+merge, `n_shards > 1`) — the latter changes the leaf structure like a different insertion
   order, so it is off by default. `--no-default-features` = fully serial.
 - `stats::chi2_quantile` (inverse regularized incomplete gamma, NR `invgammp`; tested vs χ² tables
   to 1e-3) + `distance::MahalanobisChi2` — a Phase-1-safe Mahalanobis-χ² absorption gate with a

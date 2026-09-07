@@ -706,9 +706,9 @@ class Betula:
         # label arrays are equal element for element. Dense or CSR `fit` / `fit_predict`, but not a
         # `partial_fit` stream, for the same reason as `leaf_refit`: a stream never holds the whole
         # dataset, and ordering a chunk would be canonical for the wrong set.
-        # It also takes `n_jobs` out of the answer -- the shard count is derived from `n` instead,
+        # It also takes the shard count out of the caller's hands -- it is derived from `n` instead,
         # since shards are the partition and two counts summarise differently (0.46 pairwise ARI
-        # between `n_jobs=1` and `n_jobs=8` under compression). It buys reproducibility, not
+        # between 1 shard and 8 under compression). It buys reproducibility, not
         # accuracy: over 27 dataset x budget x head cells the median change against the arrival
         # order's median draw is -0.002 ARI, and the fit runs 0.83-1.33x.
         self.canonical_order = canonical_order

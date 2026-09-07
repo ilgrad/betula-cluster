@@ -72,7 +72,7 @@ def fit(method: str, X, k: int):
         import betula_cluster as bc
 
         return bc.fit_predict(
-            X, k, feature="spherical", method="kmeans", threshold=0.0, max_leaves=2000, n_jobs=1
+            X, k, feature="spherical", method="kmeans", threshold=0.0, max_leaves=2000, n_shards=1
         )
     if method == "betula-hdbscan":
         import betula_cluster as bc
@@ -84,7 +84,7 @@ def fit(method: str, X, k: int):
             min_samples=10,
             threshold=0.0,
             max_leaves=2000,
-            n_jobs=1,
+            n_shards=1,
         )
     if method.startswith("faiss-kmeans"):
         import faiss

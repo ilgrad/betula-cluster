@@ -81,11 +81,11 @@ const MAX_SHARDS: usize = 64;
 /// How many shards a canonical build splits into — a function of `n` alone.
 ///
 /// The shard count *is* part of the answer: two counts hold different point sets, build different
-/// sub-summaries, and the merge cannot repair that. So a build that promises invariance cannot take
-/// its shard count from the thread count, or the promise holds only while nobody re-tunes `n_jobs`.
-/// Measured, the gap is not academic — at real compression, labels from `n_jobs = 1` and `n_jobs = 8`
-/// agree at pairwise ARI 0.46 on average and 0.098 at worst, which is as far apart as two row orders
-/// were before any of this.
+/// sub-summaries, and the merge cannot repair that. So a build that promises invariance cannot let
+/// the caller set its shard count, or the promise holds only while nobody re-tunes `n_shards`.
+/// Measured, the gap is not academic — at real compression, labels from 1 shard and from 8 agree at
+/// pairwise ARI 0.46 on average and 0.098 at worst, which is as far apart as two row orders were
+/// before any of this.
 ///
 /// Deriving it from `n` costs the parallelism above the returned count and buys a summary that does
 /// not move when the machine does. Small inputs return 1, so they keep the plain sequential build.

@@ -110,7 +110,7 @@ def load_real(name: str, seed: int = 0):
 
 # ── methods ─────────────────────────────────────────────────────────────────────────────────────
 # Everything except the seed, which every caller supplies from --seed.
-BETULA_KW = dict(threshold=0.0, max_leaves=4000, n_jobs=1)
+BETULA_KW = dict(threshold=0.0, max_leaves=4000, n_shards=1)
 
 
 def methods(k: int, n: int, seed: int = 0) -> dict:
@@ -311,7 +311,7 @@ def run_real_hires(datasets: list[str], seed: int = 0) -> pd.DataFrame:
             continue
         X, y, k = loaded
         ml = min(len(X), 16_000)
-        kw = dict(threshold=0.0, max_leaves=ml, seed=seed, n_jobs=1)
+        kw = dict(threshold=0.0, max_leaves=ml, seed=seed, n_shards=1)
         skip_full = X.shape[1] > 100
         cand = [
             (

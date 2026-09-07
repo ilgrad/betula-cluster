@@ -1908,7 +1908,7 @@ mod tests {
     /// The shard count is part of the answer, so a build that promises invariance must not take it
     /// from a thread count. This pins the *mechanism* that forces the choice — two counts hold
     /// different point sets and no merge order repairs that — so that anyone tempted to hand
-    /// `n_jobs` back to `build_sharded` sees the cost first.
+    /// `n_shards` back to `build_sharded` sees the cost first.
     #[test]
     fn two_shard_counts_summarise_the_same_canonical_order_differently() {
         use crate::order::canonical_permutation;

@@ -30,9 +30,9 @@ sphere squared-Euclidean is monotone in cosine, so the tree clusters by angle. I
 it is now a wash — 0.307 → 0.346, inside the seed spread and sign-flipping between seeds, since the
 tree-rebuild fix removed most of the Euclidean collapse it used to compensate for. Leave it off for
 tabular data where magnitude is signal: it takes covtype ward to **−0.049**, worse than random),
-`n_jobs` (parallel shard+merge tree build — `>1` gives ~4–5× on large
+`n_shards` (shard+merge tree build — `>1` gives ~4–5× on large
 `N`, and **changes the labels**, since the shards are the partition; `canonical_order=True` derives
-the shard count from `n` instead and takes it back out of the answer), `threshold`, `branching`, `leaf_cap`, `max_leaves` (an integer is an absolute leaf cap; a
+the shard count from `n` instead and rejects a caller-set one), `threshold`, `branching`, `leaf_cap`, `max_leaves` (an integer is an absolute leaf cap; a
 float in `(0, 1)` is a **fraction of the row count**, resolved as `ceil(frac·N)` at `fit` time —
 ELKI's `-cftree.maxleaves` convention, whose own default is `0.05`. A fraction is undefined for
 `partial_fit`, which never sees a final `N`, and raises there rather than guessing a batch size;
@@ -908,25 +908,27 @@ as an unvectorised rank-1 accumulate it was roughly twice that.
 Low-discrepancy walks over the sorted order (van der Corput, round-robin stride) were measured and
 rejected — 5/16 and 7/16 cells non-negative against this scheme's 12/16, for an extra constant.
 
-**`n_jobs` is a model parameter on the arrival-order path, and `canonical_order` takes it out of the
-answer.** The parallel build shards the insertion sequence, so the shard count *is* the partition:
-two counts hold different point sets and build different sub-summaries, which no merge order can
-repair. Measured over the 27 cells above at `n_jobs ∈ {1, 2, 4, 8}`, the labels at `n_jobs=8` agree
-with those at `n_jobs=1` at pairwise ARI **0.46 on average and 0.098 at worst** wherever compression
-is real (exactly 1.0000 where `max_leaves ≥ n`, which is the control) — as far apart as two row
-orders were. scikit-learn's own documentation defines `n_jobs` only as a worker count and stops
-short of promising the output does not move with it; what makes ours a defect anyway is that no
-scikit-learn estimator *does* move, so the name carries a convention every caller reads it by.
+**`n_shards` is a model parameter, not a worker count — which is why it is not called `n_jobs`.**
+The shard+merge build splits the insertion sequence, so the shard count *is* the partition: two
+counts hold different point sets and build different sub-summaries, which no merge order can repair.
+Measured over the 27 cells above at 1 / 2 / 4 / 8 shards, the labels at 8 agree with those at 1 at
+pairwise ARI **0.46 on average and 0.098 at worst** wherever compression is real (exactly 1.0000
+where `max_leaves ≥ n`, which is the control) — as far apart as two row orders were. scikit-learn's
+own documentation defines `n_jobs` only as a worker count and stops short of promising the output
+does not move with it; what made the old name a defect anyway is that no scikit-learn estimator
+*does* move, so it carried a convention every caller reads it by. Threads come from
+`RAYON_NUM_THREADS`, as they already do for the kernels and the Phase-3 heads, and do not enter the
+answer.
 
-With `canonical_order=True` the shard count is derived from `n` instead (`n / 25000`, capped at 64),
-so the summary no longer moves with the thread count and **`n_jobs` is ignored for the tree build** —
-parallelism then comes from `RAYON_NUM_THREADS`, as it already does for the kernels and the Phase-3
-heads. That constant is the measured knee, not a guess: at `n = 200k, max_leaves = 2000` a `kmeans`
-fit reads 1.00 / 1.90 / 2.66 / **3.42** / 3.71 / 3.91× for 1 / 2 / 4 / 8 / 16 / 32 shards, so eight
-shards buy 87 % of the available speed-up. The quality cost of sharding is a wash and was measured
-before the constant was chosen: `n_jobs=8` minus `n_jobs=1` is mean **+0.004** ARI over those 27
-cells. Inputs under 25 000 rows return one shard and keep the plain sequential build, so nothing in
-the table above is affected.
+With `canonical_order=True` the shard count is derived from `n` instead (`n / 25000`, capped at 64)
+and **passing `n_shards` as well raises `ValueError`** — a guarantee that survives a reshuffle but
+not a re-tuned shard count is not a guarantee, and silently discarding the argument is what let the
+old name go unexamined. That constant is the measured knee, not a guess: at `n = 200k,
+max_leaves = 2000` a `kmeans` fit reads 1.00 / 1.90 / 2.66 / **3.42** / 3.71 / 3.91× for 1 / 2 / 4 /
+8 / 16 / 32 shards, so eight shards buy 87 % of the available speed-up. The quality cost of sharding
+is a wash and was measured before the constant was chosen: 8 shards minus 1 is mean **+0.004** ARI
+over those 27 cells. Inputs under 25 000 rows return one shard and keep the plain sequential build,
+so nothing in the table above is affected.
 
 The remaining scoping rule: it applies to a `fit` / `fit_predict` that sees the whole dataset — a
 `partial_fit` stream never does, and ordering a chunk would be canonical for the wrong set, so the

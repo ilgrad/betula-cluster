@@ -171,7 +171,7 @@ def fit_predict(
     absorb: _Absorb = ...,
     chi2_p: float = ...,
     chi2_scale: float = ...,
-    n_jobs: int = ...,
+    n_shards: int | None = ...,
     normalize: bool = ...,
     resolution: float = ...,
     covariance_weight: float = ...,

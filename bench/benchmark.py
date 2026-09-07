@@ -73,7 +73,7 @@ def run_method(name, x, y, spec):
     elif name == "betula-kmeans-par8":
         # parallel Phase-1 shard+merge build (8 workers); same quality, faster on large N
         labels = betula_cluster.fit_predict(
-            x, k, feature="spherical", method="kmeans", threshold=0.0, max_leaves=2000, n_jobs=8
+            x, k, feature="spherical", method="kmeans", threshold=0.0, max_leaves=2000, n_shards=8
         )
     elif name == "betula-kmeans-f32":
         # float32 input clustered in f32 (half the working memory)
@@ -98,7 +98,7 @@ def run_method(name, x, y, spec):
         )
     elif name == "betula-gmm-full-par8":
         labels = betula_cluster.fit_predict(
-            x, k, feature="diagonal", method="gmm-full", threshold=0.0, max_leaves=2000, n_jobs=8
+            x, k, feature="diagonal", method="gmm-full", threshold=0.0, max_leaves=2000, n_shards=8
         )
     elif name == "betula-ward":
         labels = betula_cluster.fit_predict(
@@ -230,7 +230,7 @@ def main():
         ["betula-hdbscan", "sklearn-kmeans", "sklearn-hdbscan"],
     )
     bench(
-        f"parallel build  blobs  n={int(400_000 * s)}  k=16  d=16  (Phase-1 n_jobs speedup)",
+        f"parallel build  blobs  n={int(400_000 * s)}  k=16  d=16  (Phase-1 n_shards speedup)",
         dict(kind="blobs", n=int(400_000 * s), k=16, d=16, std=1.0),
         ["betula-kmeans", "betula-kmeans-par8"],
     )

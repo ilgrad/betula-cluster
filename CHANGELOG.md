@@ -83,23 +83,31 @@ All notable changes to this project are documented here. The format follows
   the merge order are identical either way, and the tests that cover them run in both
   configurations rather than only under `--features parallel`.
 
-- **`n_jobs` no longer reaches the summary when `canonical_order=True`.** It was the shard count, and
-  shards are the partition: two counts hold different point sets and build different sub-summaries,
-  which no merge order repairs. Measured over the 27 published cells at `n_jobs ∈ {1, 2, 4, 8}`,
-  labels at `n_jobs=8` agreed with `n_jobs=1` at pairwise ARI **0.46 on average, 0.098 at worst**
-  wherever compression was real — as wide as the row-order gap `canonical_order` exists to close.
-  scikit-learn documents `n_jobs` as a worker count and no more, so this broke a convention rather
-  than a written contract — but the convention is real (no scikit-learn estimator moves with it) and
-  it is what the name buys. A guarantee that survives a reshuffle but not an `n_jobs=8` is not a
-  guarantee.
+- **`fit_predict`'s `n_jobs` is renamed `n_shards`, now `int | None` defaulting to `None` — a
+  breaking change for Python callers who passed it.** There is no deprecated alias: the migration is
+  a rename, and `n_shards=1` or the default reproduces the previous default exactly.
+  `consensus(n_jobs=…)` is untouched — there it really is a worker count over independent runs, and
+  the result is invariant to it.
 
-  With the flag on, the shard count is `clamp(n / 25000, 1, 64)` — a function of the data — and
-  `n_jobs` is ignored for the tree build; parallelism comes from `RAYON_NUM_THREADS`, as it already
-  does for the kernels and the Phase-3 heads. The constant is the measured knee rather than a round
-  number: at `n = 200k, max_leaves = 2000` a `kmeans` fit reads 1.00 / 1.90 / 2.66 / **3.42** / 3.71
-  / 3.91× for 1 / 2 / 4 / 8 / 16 / 32 shards, so 25 000 rows per shard buys 87 % of the available
-  speed-up and leaves the partition four times coarser than the alternative. Sharding's quality cost
-  was measured *before* the constant was picked and is a wash (`n_jobs=8` minus `n_jobs=1`, mean
+  It was never a worker count here. It was the shard count, and shards are the partition: two counts
+  hold different point sets and build different sub-summaries, which no merge order repairs.
+  Measured over the 27 published cells at 1 / 2 / 4 / 8 shards, labels at 8 agreed with 1 at pairwise
+  ARI **0.46 on average, 0.098 at worst** wherever compression was real — as wide as the row-order
+  gap `canonical_order` exists to close. scikit-learn documents `n_jobs` as a worker count and no
+  more, so the old name broke a convention rather than a written contract; but the convention is
+  real — no scikit-learn estimator moves with it — and it is what the name buys. Parallelism comes
+  from `RAYON_NUM_THREADS`, as it already does for the kernels and the Phase-3 heads, and does not
+  enter the answer.
+
+- **`n_shards` together with `canonical_order=True` raises `ValueError` rather than being ignored.**
+  With the flag on the shard count is `clamp(n / 25000, 1, 64)` — a function of the data — because a
+  guarantee that survives a reshuffle but not a re-tuned shard count is not a guarantee. Silently
+  discarding an argument it will not honour is the shape that let the old name go unexamined for two
+  releases, so the two are rejected as a pair instead. The constant is the measured knee rather than
+  a round number: at `n = 200k, max_leaves = 2000` a `kmeans` fit reads 1.00 / 1.90 / 2.66 / **3.42**
+  / 3.71 / 3.91× for 1 / 2 / 4 / 8 / 16 / 32 shards, so 25 000 rows per shard buys 87 % of the
+  available speed-up and leaves the partition four times coarser than the alternative. Sharding's
+  quality cost was measured *before* the constant was picked and is a wash (8 shards minus 1, mean
   **+0.004** ARI). Inputs under 25 000 rows return one shard and keep the plain sequential build, so
   every published cell is unchanged. With the flag off nothing changes at all.
 - **The scoreboard ratchet identified a cell by who won it, so a champion changing read as a result

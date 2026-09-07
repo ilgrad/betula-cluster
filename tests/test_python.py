@@ -1168,8 +1168,8 @@ def test_invalid_distance_raises(blobs):
         betula_cluster.fit_predict(x, distance="bogus")
 
 
-@pytest.mark.parametrize("n_jobs", [1, 4])
-def test_parallel_build_recovers_blobs(blobs, n_jobs):
+@pytest.mark.parametrize("n_shards", [1, 4])
+def test_parallel_build_recovers_blobs(blobs, n_shards):
     x, y = blobs
     labels = betula_cluster.fit_predict(
         x,
@@ -1179,7 +1179,7 @@ def test_parallel_build_recovers_blobs(blobs, n_jobs):
         threshold=0.05,
         max_leaves=300,
         seed=1,
-        n_jobs=n_jobs,
+        n_shards=n_shards,
     )
     assert ari(labels, y) > 0.95  # parallel shard+merge gives a valid summary, clusters recover
 
@@ -4054,7 +4054,7 @@ def test_canonical_order_makes_the_labels_identical_under_any_row_permutation():
     merely similar. The arrival-order arm is in the same test because a permutation that the engine
     ignores would satisfy the assertion for the wrong reason."""
     x = _blobs(n=3000, d=10, k=6, seed=4)
-    kw = dict(feature="spherical", method="kmeans", max_leaves=80, seed=0, n_jobs=1)
+    kw = dict(feature="spherical", method="kmeans", max_leaves=80, seed=0)
 
     def labels(canonical):
         out = []
@@ -4073,38 +4073,42 @@ def test_canonical_order_makes_the_labels_identical_under_any_row_permutation():
 
 
 def test_canonical_order_holds_across_the_sharded_parallel_build():
-    """`n_jobs > 1` shards the insertion sequence, and the naive wiring shards *rows* — which keeps
-    the order dependence while looking like it removed it. Sharding ranks of the canonical order is
-    what makes this pass."""
-    x = _blobs(n=3000, d=10, k=6, seed=5)
-    kw = dict(feature="spherical", method="kmeans", max_leaves=80, seed=0, canonical_order=True)
+    """A shard-and-merge build splits the insertion sequence, and the naive wiring splits *rows* —
+    which keeps the order dependence while looking like it removed it. Sharding ranks of the
+    canonical order is what makes this pass.
+
+    `n` is above one shard's worth on purpose. Below it the derived count is 1 and this test would
+    quietly stop exercising the merge at all, so the arrival-order arm is the witness that it does:
+    two shard counts disagree at this shape, which is what makes the canonical arm's exactness mean
+    something other than the exactness of a build that never sharded."""
+    x = _blobs(n=50_000, d=6, k=6, seed=5)
+    kw = dict(feature="spherical", method="kmeans", max_leaves=80, seed=0)
+    assert not np.array_equal(
+        betula_cluster.fit_predict(x, 6, n_shards=1, **kw),
+        betula_cluster.fit_predict(x, 6, n_shards=2, **kw),
+    )
+
     first = None
     for seed in (1, 2, 3):
         xs, perm = _shuffled(x, seed)
-        lab = betula_cluster.fit_predict(xs, 6, n_jobs=4, **kw)
+        lab = betula_cluster.fit_predict(xs, 6, canonical_order=True, **kw)
         back = np.empty(len(x), dtype=lab.dtype)
         back[perm] = lab
         first = back if first is None else first
         assert np.array_equal(first, back)
 
 
-def test_canonical_order_does_not_let_the_thread_count_into_the_answer():
-    """`n_jobs` is the shard count, and shards are the partition — two counts hold different point
-    sets, so no merge order repairs the difference. Measured at real compression, `n_jobs=1` and
-    `n_jobs=8` agreed at pairwise ARI 0.46 on average, which is as far apart as two row orders were.
-    Under `canonical_order` the count is derived from `n` instead and `n_jobs` stops entering the
-    summary; the arrival-order arm is here because it must keep the old behaviour, or the assertion
-    above it would pass on a build that had simply stopped sharding."""
-    n = 60_000
-    x = _blobs(n=n, d=6, k=6, seed=9)
-    kw = dict(method="kmeans", max_leaves=120, seed=0)
-    canonical = [
-        betula_cluster.fit_predict(x, 6, n_jobs=j, canonical_order=True, **kw) for j in (1, 2, 4, 8)
-    ]
-    assert all(np.array_equal(canonical[0], lb) for lb in canonical[1:])
-
-    arrival = [betula_cluster.fit_predict(x, 6, n_jobs=j, **kw) for j in (1, 8)]
-    assert not np.array_equal(arrival[0], arrival[1])
+def test_a_caller_set_shard_count_is_refused_under_canonical_order():
+    """Shards are the partition: two counts hold different point sets, so no merge order repairs
+    the difference — measured at real compression, 1 shard and 8 agreed at pairwise ARI 0.46 on
+    average, as far apart as two row orders. `canonical_order` therefore derives the count from `n`,
+    and the pair has to raise rather than silently drop the argument, which is the shape that let
+    the old `n_jobs` be read as a worker count for two releases."""
+    x = _blobs(n=200, d=4, k=3, seed=9)
+    with pytest.raises(ValueError, match="n_shards"):
+        betula_cluster.fit_predict(x, 3, n_shards=4, canonical_order=True)
+    with pytest.raises(ValueError, match="at least 1"):
+        betula_cluster.fit_predict(x, 3, n_shards=0)
 
 
 def test_canonical_order_is_honoured_by_fit_and_ignored_by_a_partial_fit_stream():

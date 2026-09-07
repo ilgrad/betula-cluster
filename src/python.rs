@@ -1359,8 +1359,12 @@ fn parse_route(distance: &str) -> PyResult<RouteKind> {
 
 // ── one-shot function ─────────────────────────────────────────────────────────────────────────
 
-/// Build the CF-tree — sequentially (default) or via parallel shard+merge when `n_jobs > 1` and the
-/// `parallel` feature is on. The sequential path is the byte-identical default.
+/// Build the CF-tree — sequentially (default) or via shard-and-merge when more than one shard is
+/// asked for or derived. The sequential path is the byte-identical default.
+///
+/// `requested_shards` is what the caller asked for and is honoured only on the arrival-order path;
+/// under `canonical_order` the count comes from `n`, which is why the caller is not allowed to pass
+/// one there at all (see `fit_predict`).
 #[allow(clippy::too_many_arguments)]
 fn build_tree<R: Real, C: ClusterFeature<R>>(
     dim: usize,
@@ -1372,17 +1376,16 @@ fn build_tree<R: Real, C: ClusterFeature<R>>(
     absorb: AbsorbKind<R>,
     flat: &[R],
     n: usize,
-    n_jobs: usize,
+    requested_shards: usize,
     balance: Option<R>,
     canonical_order: bool,
 ) -> CFTree<R, C, RouteKind, AbsorbKind<R>> {
     let order = canonical_order.then(|| canonical_permutation(flat, n, dim));
-    // Under `canonical_order` the shard count comes from the data, not from `n_jobs`: the shards are
-    // the partition, so taking them from a thread count would leave the guarantee holding only until
-    // somebody re-tuned `n_jobs`.
+    // Under `canonical_order` the shard count comes from the data: the shards are the partition, so
+    // letting the caller set it would leave the guarantee holding only until somebody re-tuned it.
     let shards = match order {
         Some(_) => canonical_shards(n),
-        None => n_jobs,
+        None => requested_shards,
     };
     if shards > 1 {
         return CFTree::build_sharded(
@@ -1427,7 +1430,7 @@ fn cluster<R: Real, C: ClusterFeature<R>>(
     max_iter: usize,
     seed: u64,
     auto_k_max: usize,
-    n_jobs: usize,
+    shards: usize,
     nmf_dim: Option<ProjectionSpec>,
     refine: usize,
     balance: Option<R>,
@@ -1444,7 +1447,7 @@ fn cluster<R: Real, C: ClusterFeature<R>>(
         absorb,
         flat,
         n,
-        n_jobs,
+        shards,
         balance,
         canonical_order,
     );
@@ -1542,7 +1545,7 @@ fn run_oneshot<R: Real + Element>(
     max_leaves: usize,
     max_iter: usize,
     seed: u64,
-    n_jobs: usize,
+    shards: usize,
     normalize: bool,
     nmf_dim: Option<ProjectionSpec>,
     refine: usize,
@@ -1584,7 +1587,7 @@ fn run_oneshot<R: Real + Element>(
                 max_iter,
                 seed,
                 auto_k_max,
-                n_jobs,
+                shards,
                 nmf_dim,
                 refine,
                 balance,
@@ -1606,7 +1609,7 @@ fn run_oneshot<R: Real + Element>(
                 max_iter,
                 seed,
                 auto_k_max,
-                n_jobs,
+                shards,
                 nmf_dim,
                 refine,
                 balance,
@@ -1628,7 +1631,7 @@ fn run_oneshot<R: Real + Element>(
                 max_iter,
                 seed,
                 auto_k_max,
-                n_jobs,
+                shards,
                 nmf_dim,
                 refine,
                 balance,
@@ -1650,7 +1653,7 @@ fn run_oneshot<R: Real + Element>(
                 max_iter,
                 seed,
                 auto_k_max,
-                n_jobs,
+                shards,
                 nmf_dim,
                 refine,
                 balance,
@@ -1681,12 +1684,20 @@ fn run_oneshot<R: Real + Element>(
 /// it, having no centre model to sweep. It trades a second pass over the data for a lower
 /// within-cluster sum of squares, which is not the same thing as a better partition: on `covtype`
 /// scikit-learn's k-means already reaches the lower objective and the worse ARI. Default `0` (off).
+///
+/// `n_shards` splits the insertion sequence for a shard-and-merge build. It is a **model**
+/// parameter, not a worker count: each shard summarises its own rows, so two shard counts hold
+/// different point sets and no merge order repairs the difference — measured over the 27 published
+/// cells, labels at 8 shards agree with 1 shard at pairwise ARI 0.46 on average and 0.098 at worst.
+/// Thread count is `RAYON_NUM_THREADS` and does not enter the answer. `None` (the default) builds
+/// sequentially; under `canonical_order` the count is derived from `n` and passing one is an error
+/// rather than a silent no-op.
 #[pyfunction]
 #[pyo3(signature = (
     data, n_clusters = 8, feature = "diagonal", method = "gmm", threshold = 0.0,
     branching = 32, leaf_cap = 32, max_leaves = 2000, max_iter = 100,
     min_samples = 5, min_cluster_size = 5, seed = 0, distance = "euclidean",
-    absorb = "euclidean", chi2_p = 0.95, chi2_scale = 0.0, n_jobs = 1, normalize = false,
+    absorb = "euclidean", chi2_p = 0.95, chi2_scale = 0.0, n_shards = None, normalize = false,
     resolution = 1.0, covariance_weight = 0.0, tangent_weight = 0.0, tangent_rank = 2,
     projection = "none", projection_dim = 64, projection_max_iter = 100, refine = 0, rank = 2,
     graph_degree = 0, balance = None, auto_k_max = 0, fuzzifier = 2.0, leaf_refit = 0,
@@ -1711,7 +1722,7 @@ fn fit_predict<'py>(
     absorb: &str,
     chi2_p: f64,
     chi2_scale: f64,
-    n_jobs: usize,
+    n_shards: Option<usize>,
     normalize: bool,
     resolution: f64,
     covariance_weight: f64,
@@ -1729,6 +1740,19 @@ fn fit_predict<'py>(
     leaf_refit: usize,
     canonical_order: bool,
 ) -> PyResult<Bound<'py, PyArray1<i64>>> {
+    // Two mutually exclusive ways to set one count: reject the pair instead of picking a winner.
+    // Quietly ignoring the argument is how the old `n_jobs` came to read as a thread count.
+    if canonical_order && n_shards.is_some() {
+        return Err(PyValueError::new_err(
+            "n_shards cannot be combined with canonical_order=True: there the shard count is \
+             derived from the row count, because the shards are the partition and a caller-set \
+             count would make the ordering guarantee depend on it",
+        ));
+    }
+    let shards = n_shards.unwrap_or(1);
+    if shards == 0 {
+        return Err(PyValueError::new_err("n_shards must be at least 1"));
+    }
     let kind = parse_method(
         method,
         min_samples,
@@ -1759,7 +1783,7 @@ fn fit_predict<'py>(
             max_leaves,
             max_iter,
             seed,
-            n_jobs,
+            shards,
             normalize,
             nmf_dim,
             refine,
@@ -1785,7 +1809,7 @@ fn fit_predict<'py>(
             max_leaves,
             max_iter,
             seed,
-            n_jobs,
+            shards,
             normalize,
             nmf_dim,
             refine,

@@ -142,7 +142,7 @@ def reduce_dims(X, reducer: str, n_components: int):
 
 
 def fit_method(method: str, X, k: int, n: int):
-    bkw = dict(threshold=0.0, max_leaves=4000, seed=0, n_jobs=1)
+    bkw = dict(threshold=0.0, max_leaves=4000, seed=0, n_shards=1)
     mcs = max(20, n // 400)
     if method.startswith("betula"):
         import betula_cluster as bc
@@ -284,7 +284,7 @@ def main() -> dict:
             z = reduce_dims(X, "nmf", 20)
             labels = np.asarray(
                 bc.fit_predict(
-                    z, k, feature="spherical", method="kmeans", max_leaves=2048, seed=0, n_jobs=1
+                    z, k, feature="spherical", method="kmeans", max_leaves=2048, seed=0, n_shards=1
                 )
             )
         elif method in ("sklearn-svd", "sklearn-nmf"):

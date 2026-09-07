@@ -50,7 +50,7 @@ def main() -> None:
         x = blobs(n, d, 10, seed=0)
         for method in HEADS:
             labels = bc.fit_predict(
-                x, 10, method=method, threshold=0.0, max_leaves=max_leaves, seed=0, n_jobs=1
+                x, 10, method=method, threshold=0.0, max_leaves=max_leaves, seed=0, n_shards=1
             )
             print(f"{method:<8} n={n:<8} d={d:<4} clusters={len(set(labels.tolist()))}")
         # The streaming path takes different branches from the one-shot one: chunked absorption,
