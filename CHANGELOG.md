@@ -133,6 +133,24 @@ All notable changes to this project are documented here. The format follows
   predicts the rebuild count (Spearman |ρ| ≤ 0.48 over those draws, mostly under 0.27, sign-flipping
   between cases), so there is nothing to select on short of building a tree per candidate. Recorded in
   [`docs/adr/005-canonical-order-projection-seed.md`](https://github.com/ilgrad/betula-cluster/blob/main/docs/adr/005-canonical-order-projection-seed.md).
+- **`bench/RESULTS.md`'s reproduce recipe pinned OpenMP, which hands betula a free 2.2× — recipe
+  corrected, no published number moves.** The page told the reader to export
+  `OMP/OPENBLAS/MKL/NUMEXPR_NUM_THREADS=1`. Following it does not reproduce the page, because the two
+  libraries do not share a thread knob: betula's parallelism is rayon's, which `OMP_NUM_THREADS` does
+  not reach, while scikit-learn's k-means Lloyd loop is OpenMP. Pinning OpenMP gags one side and
+  leaves the other on every core.
+
+  Every table was in fact taken at `OMP_NUM_THREADS=8`, inherited from the shell — which makes
+  `comprehensive.py`'s `os.environ.setdefault` a no-op for that variable and leaves it pinning only
+  the harness's own BLAS. Instruction and numbers were never the same run. Re-running the whole sweep
+  with that single variable changed, scikit-learn alone slows **2.2–2.7×** wherever `d` is large
+  enough for the Lloyd loop to matter — 1.03 → 2.80 s on the memory suite at `n = 500 000, d = 20`,
+  4.92 → 10.86 s on full covtype, 1.03 → 1.80 s on 20-newsgroups — and does not move at all on
+  `results_scaling.csv`, whose blobs are two-dimensional. That dimension dependence is what identifies
+  the cause: a dependency bump or machine drift would not spare `d = 2`. Two alternative explanations
+  were tested and rejected first — scikit-learn 1.7.2 and 1.8.0 are *slower* than the installed 1.9.0
+  at equal threads (22 s against 13 s on covtype), and every affected cell's ARI is unchanged to three
+  decimals, so it is not a different computation.
 - **The scoreboard ratchet identified a cell by who won it, so a champion changing read as a result
   vanishing.** `bench/scoreboard.py --check` is now a CI job, and it could not have been one before:
   on a clean tree it failed, reporting two `results_sparse` cells as VANISHED. Neither had moved —
