@@ -86,8 +86,8 @@
   "results_real_hires/quality/vs-same/digits/1797/1797/betula-gmm-full": "tie",
   "results_real_hires/quality/vs-same/digits/1797/1797/betula-kmeans": "tie",
   "results_real_hires/quality/vs-same/mnist/20000/16000/betula-kmeans": "tie",
-  "results_real_scale/memory/vs-best/covtype": "win",
-  "results_real_scale/memory/vs-same/covtype/betula-kmeans": "win",
+  "results_real_scale/memory/vs-best/covtype": "tie",
+  "results_real_scale/memory/vs-same/covtype/betula-kmeans": "tie",
   "results_real_scale/quality/vs-best/covtype": "win",
   "results_real_scale/quality/vs-same/covtype/betula-kmeans": "win",
   "results_real_scale/speed/vs-best/covtype": "win",
@@ -137,7 +137,7 @@
   "results_sparse/quality/vs-same/20news/betula-sparse": "loss",
   "results_sparse/quality/vs-same/20news/betula-svd": "win",
   "results_sparse/speed/vs-best/20news": "loss",
-  "results_sparse/speed/vs-same/20news/betula-nmf": "win",
+  "results_sparse/speed/vs-same/20news/betula-nmf": "tie",
   "results_sparse/speed/vs-same/20news/betula-sparse": "loss",
   "results_sparse/speed/vs-same/20news/betula-svd": "loss"
  }

@@ -2,11 +2,13 @@
 
 Reproduces the "spectral clustering that scales" table in RESULTS.md. betula's spectral head runs on
 the <= max_leaves CF microclusters, so its cost is bounded by the microcluster count and the same call
-reaches N = 1M, where sklearn's graph + eigensolve are O(N)+ in memory and cap out near 30k. At 30k it
-is parity, not a multiple — 1.04x on moons and 1.54x on circles at equal quality (an earlier edition
-of this page claimed 3-5x; sklearn's own times fell threefold between versions). The durable claim is
-the scaling one. leiden (community detection) is included as an honest negative — it over-splits
-manifolds.
+reaches N = 1M, where sklearn's graph + eigensolve are O(N)+ in memory and cap out near 30k.
+
+Do not quote the ratio at 30k. It has read 3-5x, then 1.04x / 1.54x, and now 2.4x / 2.5x, and the
+denominator is what keeps moving: scikit-learn's arm went 1.23 / 1.22 -> 0.389 / 0.372 -> 0.564 /
+0.547 s across editions with no change to the code being timed, while betula's moved once, for the
+08-31 rewrite. The durable claim is the scaling one -- betula's cost is set by max_leaves, not by N.
+leiden (community detection) is included as an honest negative -- it over-splits manifolds.
 
     python bench/spectral_nonconvex.py            # N = 30000
     python bench/spectral_nonconvex.py --n 100000

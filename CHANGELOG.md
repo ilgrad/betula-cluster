@@ -151,6 +151,50 @@ All notable changes to this project are documented here. The format follows
   were tested and rejected first — scikit-learn 1.7.2 and 1.8.0 are *slower* than the installed 1.9.0
   at equal threads (22 s against 13 s on covtype), and every affected cell's ARI is unchanged to three
   decimals, so it is not a different computation.
+- **Every table in `bench/RESULTS.md` re-measured 2026-09-07, and it is the first edition taken
+  under a contention gate.** This machine is shared with other long-running jobs, and the two
+  libraries do not lose the same fraction to a competing process — scikit-learn's OpenMP loops lose
+  more than betula's rayon does, so contention moves a *ratio* while leaving every label and every
+  structural count bit-identical. Repetition cannot detect that. Each of the three measured steps
+  waited for four consecutive clean 15-second samples, was sampled every 10 seconds while running,
+  and was discarded and re-run if any foreign process crossed 80 % of a core; the first took three
+  attempts.
+
+  **The quality column reproduced and the speed column did not, which is what makes the speed
+  changes attributable.** 108 of the 117 rows in `results_quality.csv` + `results_real.csv` are
+  **byte-identical in every metric column** to the 2026-08-24/25 edition across 180 commits — every
+  scikit-learn row, and the whole of `results_real_hires.csv`,
+  `results_real_normalize.csv` and `results_refit.csv`. The nine that moved are all
+  `betula-spectral`, from the rewrite already described above.
+
+  What moved on speed, and why: `betula-hdbscan` at 1 M **0.801 → 0.517 s** and, where those heads
+  dominate, far more — on `mnist` 20 000 × 784 hdbscan **15.61 → 1.75 s** and ward **17.67 → 3.62 s**,
+  which is `06ad6b5` putting the `O(m²)` heads on rayon. Streaming peak RSS fell **60.2 → 52.9 MB**,
+  uniformly at all five sizes, because the suite streams 50 000 × 20 `f64` chunks — 8.0 MB — and the
+  same commit stopped the ingest duplicating each one; the saving is one chunk and not a function of
+  `N`. Headline figures move with it: 1 M k-means **0.26 → 0.28 s**, **9× → 8.7×** against
+  scikit-learn's `KMeans`, **30× → 29×** against `Birch`, **82× → 94×** on 10 M streaming memory.
+  `README.md`, `docs/index.md`, `docs/MATH.md` and `paper/paper.md` are updated to match.
+
+  **Three things are recorded as losses rather than smoothed.** (1) Every betula row other than
+  hdbscan on the `d = 2` scaling fixture got 1–12 % *slower*, and the streaming time column by the
+  same 6–9 % at every size — a uniform shift across two independent suites is not a timing sample,
+  it is either the insert path or the toolchain (rustc 1.98.0 → 1.98.1, kernel 7.1.9 → 7.1.13), and
+  this run cannot tell which. (2) betula's peak RSS on full covtype rose 905.3 → 913.3 MB against an
+  unmoved scikit-learn, which demotes two scoreboard cells to ties. (3) Every time in the 20-newsgroups
+  table fell, some by a factor of two, with every ARI byte-identical. Three further gated
+  repetitions with the six arms interleaved put five of the six published values **above the whole
+  four-sample gated range**, which is what a slower machine looks like — but they also put the
+  `betula-sparse / sklearn-kmeans` ratio at 2.18–3.22 with the published 2.23 inside it, so that
+  ratio is not resolved by four samples and the page now says so rather than quoting it. Within a
+  gated session every arm slows 4–21 % from the first repetition to the third, which is most of that
+  spread. The one pair the samples do resolve is `betula-nmf` against `sklearn-nmf`: a tie inside
+  6 % in all four, against a published 0.79. The board therefore moves 33/0/5 → **32/1/5** on speed
+  and 30/4/0 → **28/6/0** on memory, accepted with `scoreboard.py --update` in the same commit.
+
+  **One published cell was a transcription error, not a measurement.** `betula-hdbscan` on MNIST was
+  printed in the real-datasets table as **0.000**; its own `results_real.csv` has read **0.117** in
+  both editions. The table is corrected; nothing was re-run to correct it.
 - **The scoreboard ratchet identified a cell by who won it, so a champion changing read as a result
   vanishing.** `bench/scoreboard.py --check` is now a CI job, and it could not have been one before:
   on a clean tree it failed, reporting two `results_sparse` cells as VANISHED. Neither had moved —

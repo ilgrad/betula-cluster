@@ -1,13 +1,28 @@
 # Benchmark: betula-cluster vs scikit-learn — quality · speed · memory
 
-> **Provenance — read before quoting a number.** Re-measured **2026-08-24** against the working tree
-> after 0.7.0. Every quality table is the **median of seeds 0, 1, 2**, and
-> each ships its own
+> **Provenance — read before quoting a number.** Re-measured **2026-09-07** against the working tree
+> before 0.8.0, on a machine gated to be idle (see the next paragraph). Every quality table is the
+> **median of seeds 0, 1, 2**, and each ships its own
 > min/median/max sidecar (`results_*_spread.csv`); the speed, memory, scale and sparse tables are a
 > single run, since `bench/_worker.py` pins `seed=0` for them and they are seed-invariant by
-> construction. The previous edition of this page was a single run of 2026-07-18 against a **0.2.0**
-> build; every number on it has been replaced, several of them downwards. This page is re-measured as
-> a whole, not patched cell by cell.
+> construction. This page is re-measured as a whole, not patched cell by cell.
+>
+> **The quality column reproduced to the last digit; the speed column did not, and that is the
+> finding.** Against the 2026-08-24/25 edition, **108 of the 117 rows in `results_quality.csv` + `results_real.csv` are byte-identical in every metric column**
+> across 180 commits — every scikit-learn row, every `betula` row other than one head, and the whole
+> of `results_real_hires.csv`, `results_real_normalize.csv` and `results_refit.csv`. The nine that
+> moved are all `betula-spectral` and all belong to one commit; they are discussed where they appear.
+> Nothing else moved by a single ulp, which is what makes the timing changes attributable to the
+> commits that caused them rather than to the re-run.
+>
+> **This is the first edition measured under a contention gate, and the previous ones needed one.**
+> This machine is shared with other long-running jobs, and the two libraries do not lose the same
+> fraction to a competing process: scikit-learn's OpenMP loops lose more than betula's rayon does, so
+> contention moves a *ratio* while leaving every label and every structural count bit-identical.
+> Repetition cannot detect that — three consistent contended runs look exactly like a result. Each of
+> the three measured steps below therefore waited for four consecutive clean 15-second samples before
+> starting, was sampled every 10 seconds while running, and was **discarded and re-run** if any
+> foreign process crossed 80 % of a core. The first step took three attempts.
 >
 > **One exception, closed 2026-08-30.** The two Toeplitz tables were a *single* run under this banner:
 > `bench/toeplitz_ar_mixture.py` pinned `seed=1` and shipped no sidecar, so they sat in the gap between
@@ -17,14 +32,11 @@
 > and the ordering *among the three Toeplitz rungs* turned out not to survive the spread below
 > `d = 128`; see the section itself.
 >
-> This edition re-ran every table after the CF k-means++ sampling weight gained the leaf's own scatter
-> term (Lang Eq. 5.4, `S_i + n_i·D²_i`; see the changelog's `[Unreleased]`). Cell-by-cell against the
-> previous run, **only the seeded heads moved** — `kmeans`, `gmm`, `gmm-full` and `spectral`, plus the
-> two sparse rows that cluster with `method="kmeans"`. `ward`, `leiden`, `hdbscan` and every
-> scikit-learn row reproduced to the last digit, which is what makes the deltas attributable to that
-> one change. The synthetic tables did not move at all: at `N = 30 000` under `max_leaves=4000` the
-> quality suite is not where the term bites, and `digits` at `max_leaves=1797` holds one point per leaf,
-> so `S_i = 0` and the change is provably a no-op there.
+> The 2026-08-24/25 edition re-ran every table after the CF k-means++ sampling weight gained the leaf's
+> own scatter term (Lang Eq. 5.4, `S_i + n_i·D²_i`). Cell-by-cell against the run before it, **only the
+> seeded heads moved** — `kmeans`, `gmm`, `gmm-full` and `spectral`, plus the two sparse rows that
+> cluster with `method="kmeans"`. The edition before that was a single run of 2026-07-18 against a
+> **0.2.0** build; every number on it was replaced, several of them downwards.
 >
 > The previous edition re-ran the quality tables after the `min_samples` convention change (the head now
 > counts the microcluster itself, matching `sklearn.cluster.HDBSCAN`). No table here
@@ -45,7 +57,10 @@ scikit-learn's Lloyd loop and leaves betula on every core. Every table here was 
 Following the old instruction changes exactly one variable and slows *scikit-learn alone* by
 2.2–2.7× wherever `d` is large enough for the Lloyd loop to matter: 1.03 s → 2.80 s on the memory
 suite at `n = 500 000, d = 20`, 4.92 s → 10.86 s on full covtype, 1.03 s → 1.80 s on 20-newsgroups,
-and — the control — no change at all on `results_scaling.csv`, whose blobs are two-dimensional.
+and — the control — no change at all on `results_scaling.csv`, whose blobs are two-dimensional. (Those
+six numbers are an A/B pair each, taken on 2026-09-07 *before* the contention gate existed, which is
+why their `OMP=8` arms match the old contended tables rather than the gated ones now published. The
+pairing is what the paragraph rests on and contention does not invert it.)
 Leave `OMP_NUM_THREADS` at the machine's value and `RAYON_NUM_THREADS` unset: both sides get the
 machine, which is the only configuration in which a speed row means anything. The harness needs `scikit-learn pandas matplotlib scipy seaborn`; `seaborn` is imported only inside
 `make_plots`, which runs *last*, so without it every CSV is still written and only the plot step
@@ -57,18 +72,18 @@ losses** are reported below.
 
 ## TL;DR (honest)
 
-- **Always faster, always lighter — on every row below.** betula labels 1 M points in **0.26 s**
-  (9× faster than scikit-learn KMeans, 15× vs GaussianMixture, 30× vs Birch) and streams 10 M in a
-  flat **~60 MB** where an in-core KMeans needs **~5.0 GB** (**82× less**, and the gap grows without
+- **Always faster, always lighter — on every row below.** betula labels 1 M points in **0.28 s**
+  (8.7× faster than scikit-learn KMeans, 14× vs GaussianMixture, 29× vs Birch) and streams 10 M in a
+  flat **~53 MB** where an in-core KMeans needs **~5.0 GB** (**94× less**, and the gap grows without
   bound). This is the unconditional win: it holds for every method at every size, and it is what a
   bounded-memory compression engine is built to deliver.
 - **Quality is at parity on the centroid heads and ahead on the structured ones.** betula's k-means is
   at parity with scikit-learn (blobs 0.793 vs 0.794, `digits` 0.467 vs 0.468); full-covariance GMM
   **beats** scikit-learn's on anisotropic data (**0.961 vs 0.902**) and on real 64-D `digits`
-  (**0.575 vs 0.463**, via the high-dimensional covariance floor); the **spectral** and **HDBSCAN**
-  heads hit ARI **1.00** on moons and circles.
+  (**0.575 vs 0.463**, via the high-dimensional covariance floor); the **HDBSCAN** head hits ARI
+  **1.00** on moons and circles and the **spectral** head 0.99 / 0.98.
 - **Two losses stated plainly.** On `covtype` and MNIST, `sklearn-birch` beats **every** betula head —
-  0.131 vs a best of 0.100, and 0.426 vs 0.377. On `covtype` that is a loss on the merits (not a
+  0.131 vs a best of 0.091, and 0.426 vs 0.377. On `covtype` that is a loss on the merits (not a
   leaf-budget artefact, measured both ways) and the mechanism is now known: the leaf budget produces
   cells of far more unequal mass than a radius threshold does. On MNIST most of the gap is the price
   of compression — Birch returns 20 000 subclusters for 20 000 points and compresses nothing, and at
@@ -99,12 +114,12 @@ Absolute times vary by machine; the *ratios* far less.
 |---|---|
 | CPU | AMD Ryzen 7 5800HS (8 cores / 16 threads) |
 | RAM | 38 GiB |
-| OS / kernel | Fedora Linux 44, kernel 7.1.9 |
+| OS / kernel | Fedora Linux 44, kernel 7.1.13 |
 | Python / NumPy / SciPy / scikit-learn | 3.14.7 / 2.5.2 / 1.18.1 / 1.9.0 |
 | matplotlib / pandas | 3.11.1 / 3.0.5 |
-| Rust | rustc 1.98.0 |
+| Rust | rustc 1.98.1 |
 | betula-cluster | 0.7.0 + unreleased changes (working tree), `maturin --release` (LTO, `codegen-units=1`); **portable** wheel (no `target-cpu=native`) |
-| BLAS threads | 1 (`OMP/OPENBLAS/MKL/NUMEXPR_NUM_THREADS=1`) — comparable single-thread timings |
+| Threads | `OMP_NUM_THREADS=8` (the machine's, exported by the shell), `OPENBLAS/MKL/NUMEXPR_NUM_THREADS=1`, `RAYON_NUM_THREADS` unset — both libraries get the machine, which is the only configuration in which a speed row means anything. An earlier edition of this row read `1` for all four and was wrong about what the run had done; see the `Reproduce:` line above. |
 
 ## Methodology
 
@@ -135,7 +150,7 @@ Median of seeds 0/1/2 (`results_quality.csv`; spreads in `results_quality_spread
 | **betula-gmm** (diag) | 0.812 | 0.540 | **0.907** | 0.514 | −0.000 | 1.00 |
 | **betula-gmm-full** | 0.811 | **0.961** | **0.907** | 0.504 | −0.000 | 1.00 |
 | **betula-ward** | 0.776 | 0.573 | 0.663 | **0.641** | 0.014 | 1.00 |
-| **betula-spectral** | 0.766 | 0.413 | 0.650 | **1.00** | **1.00** | 1.00 |
+| **betula-spectral** | 0.750 | 0.440 | 0.620 | 0.989 | 0.981 | 1.00 |
 | **betula-leiden** (auto-`k`) | 0.722 | 0.465 | 0.633 | 0.512 | 0.007 | 1.00 |
 | **betula-hdbscan** | 0.142 | 0.568 | 0.479 | **1.00** | **1.00** | 1.00 |
 | sklearn-kmeans | 0.794 | 0.545 | 0.670 | 0.484 | −0.000 | 1.00 |
@@ -156,8 +171,14 @@ Reading it honestly:
 - **betula-ward** (bounded, 4 000 leaves) beats the **full-30 000** `sklearn-ward` on `varied`
   (0.663 vs 0.673 — a tie), `moons` (0.641 vs 0.507) and `aniso` (0.573 vs 0.565), and edges it on
   blobs (0.776 vs 0.770). Compression does not cost here; the CF microclusters denoise the linkage.
-- **betula-spectral and betula-hdbscan own the non-convex cases** — moons and circles **1.00**, where
-  every centroid head sits at 0.49–0.51 and ≈ 0.
+- **betula-spectral and betula-hdbscan own the non-convex cases** — hdbscan **1.00** on both, spectral
+  0.989 and 0.981, where every centroid head sits at 0.49–0.51 and ≈ 0. The spectral row is the only
+  one on this page that moved since the previous edition, and it moved because the head was rewritten
+  to cluster every leaf instead of 256 landmarks: the two non-convex cells lose a hundredth, the
+  blob-like ones lose more (`blobs` 0.766 → 0.750, `varied` 0.650 → 0.620) and `aniso` gains
+  (0.413 → 0.440). None of the six survives its own spread — `blobs` spans 0.449–0.819 and `aniso`
+  0.384–0.994 over the three seeds — so read the row as a regime rather than as six numbers. The
+  cells where the rewrite is decidable are on the real datasets, below.
 - **betula-leiden** discovers the community count with **no `k`** — strong on separable community
   structure (highdim 1.00, blobs 0.722) but, being a modularity community-detector rather than a
   general partitioner, it over-splits elongated manifolds (moons 0.512). Use spectral for those.
@@ -178,15 +199,28 @@ rather than on all `N`, so its cost is bounded by the microcluster count and the
 
 | method | moons ARI | circles ARI | time (moons / circles) |
 |---|---|---|---|
-| **betula-spectral** | **1.00** | **1.00** | **0.373 s / 0.241 s** |
-| sklearn-SpectralClustering (k-NN affinity) | 0.999 | **1.00** | 0.389 s / 0.372 s |
-| betula-leiden | 0.116 | 0.127 | 0.145 s / 0.117 s |
+| **betula-spectral** | **1.00** | **1.00** | **0.240 s / 0.218 s** |
+| sklearn-SpectralClustering (k-NN affinity) | 0.999 | **1.00** | 0.564 s / 0.547 s |
+| betula-leiden | 0.116 | 0.127 | 0.156 s / 0.136 s |
 
-**Correction to the previous edition, which claimed 3–5× the speed.** At equal quality betula is now
-**1.04× on moons and 1.54× on circles** — parity, not a multiple. betula's own times barely moved
-(0.39 → 0.373, 0.25 → 0.241); scikit-learn's fell from 1.23 s / 1.22 s to 0.389 s / 0.372 s between
-sklearn versions. The durable claim is the **scaling** one — betula's cost is set by `max_leaves`, not
-by `N` — not a constant-factor speedup at 30 k.
+Median of three gated repetitions, which on this fixture is barely a median: every ARI is identical
+across the three and betula's times span 0.240–0.240 and 0.217–0.218.
+
+**Both columns moved since the previous edition, in opposite directions, and only one of them is
+ours.** betula went 0.373 → 0.240 s and 0.241 → 0.218 s, which is the 08-31 spectral rewrite — the
+head now filters the Laplacian over every leaf instead of factoring it over 256 landmarks, and the
+ARI is unchanged at 1.00 on both. scikit-learn went 0.389 → 0.564 s and 0.372 → 0.547 s, and this
+page does not know why: the version is 1.9.0 in both editions, the machine was gated for this one,
+and the arm is untouched code. It is recorded as an unexplained move in the baseline rather than
+claimed as a speed-up. **The ratio is therefore 2.4× on moons and 2.5× on circles, and it should not
+be quoted** — the previous edition read 1.04× and 1.54× on the same two arms, and a ratio whose
+denominator moves 1.4× between runs it cannot account for is not a result. The durable claim is the
+**scaling** one: betula's cost is set by `max_leaves`, not by `N`.
+
+The ARI here reads 1.00 where the quality table above reads 0.989 / 0.981 for the same head on the
+same generators. Both are right: this table is `max_leaves = 2000` at seed 0, and that one is the
+median of three seeds at `max_leaves = 4000` — where `seed` also redraws the dataset, so the three
+cells are three different moons.
 
 `method="leiden"` is included as an honest negative: it is built for community / blob structure, not
 elongated manifolds — modularity chops each arc into ~19 segments (ARI ~0.12), exactly the
@@ -202,35 +236,42 @@ the scaling shape — `O(N)` build, flat memory — is unchanged.
 
 | method | time @ 1 M | vs betula-kmeans |
 |---|---|---|
-| **betula-kmeans** | **0.264 s** | 1× |
-| betula-gmm | 0.292 s | 1.1× |
-| betula-gmm-full | 0.360 s | 1.4× |
-| betula-ward | 0.417 s | 1.6× |
-| betula-hdbscan | 0.801 s | 3.0× |
-| sklearn-kmeans | 2.45 s | 9.3× |
-| sklearn-minibatch | 2.76 s | 10.5× |
-| sklearn-gmm | 3.85 s | 14.5× |
-| sklearn-birch | 8.01 s | **30×** |
+| **betula-kmeans** | **0.283 s** | 1× |
+| betula-gmm | 0.313 s | 1.1× |
+| betula-gmm-full | 0.374 s | 1.3× |
+| betula-ward | 0.422 s | 1.5× |
+| betula-hdbscan | 0.517 s | 1.8× |
+| sklearn-kmeans | 2.46 s | 8.7× |
+| sklearn-minibatch | 2.78 s | 9.8× |
+| sklearn-gmm | 3.88 s | 13.7× |
+| sklearn-birch | 8.17 s | **29×** |
 | sklearn-ward, sklearn-hdbscan | (O(N²) — cannot reach 1 M) | — |
 
-All five betula heads finish a million points in **under 0.9 s**; full-covariance GMM runs **4 EM
-restarts** (for robustness against local optima) **in parallel**, finishing in **0.360 s** — 10.7×
+All five betula heads finish a million points in **under 0.55 s**; full-covariance GMM runs **4 EM
+restarts** (for robustness against local optima) **in parallel**, finishing in **0.374 s** — 10.4×
 faster than scikit-learn's GMM. betula-ward does the equivalent of `O(N²)` agglomerative at 1 M in
-**0.417 s**, where scikit-learn's Agglomerative cannot run past ~10 k at all.
+**0.422 s**, where scikit-learn's Agglomerative cannot run past ~10 k at all.
 
 This table is a **single run** — `bench/_worker.py` pins `seed=0` for the speed phase, so it is
-seed-invariant by construction, but it is one timing sample and the ratios move by a few percent
-between editions (previous editions read 0.230 s and 0.242 s for the same cell, and the sklearn
-baselines moved further than betula's did — `sklearn-kmeans` 3.10 s → 2.45 s). Quote the order of
-magnitude, not the third digit.
+seed-invariant by construction, but it is one timing sample. Quote the order of magnitude, not the
+third digit.
 
-Two betula rows moved for reasons that are **not** timing noise, and both are named rather than
-smoothed. `betula-hdbscan` 0.681 s → 0.801 s is the price of counting `min_samples` in points instead
-of leaves: the core distance is now the smallest radius enclosing that much *weight*, which is more
-work and finds more clusters. `betula-kmeans` 0.242 s → 0.264 s is the AVX2 dispatch's residual cost
-below `d = 16` — this fixture is `d = 2` blobs, the one shape in the whole suite where the packed
-kernels cannot help and their length gate is pure overhead (ADR 003). The heads that run on real
-dimensions gain instead: streaming 20-D is **1.29×** faster and the sparse SVD pipeline **1.18×**.
+**`betula-hdbscan` is the row that actually moved: 0.801 s → 0.517 s**, and it is not noise. The
+O(m²) heads ran single-threaded beside an eight-core tree build until `06ad6b5` put ward's
+nearest-neighbour chain and hdbscan's core-distance and Prim relaxation passes on rayon. On this
+fixture that is 1.55×, and on the shapes where those heads dominate it is far more — the same commit
+measured 3.6× and 4.7× at 7 250 leaves of 784-dimensional data. `results_real.csv`, whose ARI column
+did not move at all, carries that as its time column: on `mnist` at 20 000 × 784, hdbscan
+**15.61 s → 1.75 s** and ward **17.67 s → 3.62 s**.
+
+**Every other betula row on this fixture got 1 to 12 % *slower*, uniformly**, and that is recorded
+rather than smoothed: `kmeans` 0.264 → 0.283 s, `gmm` 0.292 → 0.313, `gmm-full` 0.360 → 0.374,
+`ward` 0.417 → 0.422, and the streaming memory suite's time column moved by the same 6–9 % at every
+one of its five sizes. A uniform shift across two independent suites is not a timing sample; it is
+either the insert path or the toolchain, and this page cannot tell which, because the compiler moved
+too (rustc 1.98.0 → 1.98.1, and the kernel 7.1.9 → 7.1.13). It is small enough not to change any
+claim here and specific enough to be worth bisecting against `benches/tree_insert.rs`, which is where
+it belongs rather than here.
 
 ## Memory — streaming stays bounded
 
@@ -241,22 +282,29 @@ array) vs an in-core KMeans that must hold all of `X` (20-D):
 
 | N | betula (streaming) | sklearn KMeans (one-shot) | ratio |
 |---|---|---|---|
-| 500 k | 60.1 MB | 407 MB | 6.8× |
-| 1 M | 60.4 MB | 647 MB | 10.7× |
-| 2 M | 60.1 MB | 1.13 GB | 18.7× |
-| 5 M | 60.5 MB | 2.57 GB | 42.4× |
-| 10 M | **60.3 MB** | **4.97 GB** | **82×** |
+| 500 k | 52.9 MB | 407 MB | 7.7× |
+| 1 M | 53.0 MB | 647 MB | 12.2× |
+| 2 M | 52.9 MB | 1.13 GB | 21.3× |
+| 5 M | 52.9 MB | 2.57 GB | 48.5× |
+| 10 M | **53.0 MB** | **4.97 GB** | **94×** |
 
 betula's footprint is **flat in N** — the CF-tree is bounded by `max_leaves`, so it clusters streams
 larger than RAM. Any in-core method's memory grows linearly with `N` (it must hold `X`), and
 Agglomerative's pairwise-distance matrix is O(N²) — **~1 GB at just 10 k points**, OOM beyond.
 
+**The betula column fell 60.2 MB → 52.9 MB, and the drop is one chunk.** This suite streams
+`chunk = 50 000` rows of `d = 20` — 8.0 MB of `float64` — and until `06ad6b5` the ingest copied every
+array it was handed, so a `partial_fit` call held the caller's chunk *and* betula's duplicate of it.
+The ingest now borrows the numpy buffer when the array is already contiguous and of the requested
+dtype, and the measured saving is 7.2–7.4 MB at every one of the five sizes: the same number at
+500 k and at 10 M, because it is one chunk and not a function of `N`. Labels are bit-identical.
+
 `results_memory.csv` also carries a time column. Two earlier editions recorded the sklearn 10 M cell
 as *lower* than its 5 M cell and called it a reproducible allocator artefact of the one-shot path;
-**this edition does not reproduce it** (7.89 s at 5 M, 8.85 s at 10 M — sublinear, but monotone), so
-that claim is withdrawn rather than carried forward. The betula column is the one this section rests
-on, and it is 1.28–1.31× faster than the previous edition across all five sizes, which is the AVX2
-kernels doing their job on 20-dimensional data.
+**neither this edition nor the previous one reproduces it** (8.00 s at 5 M, 8.96 s at 10 M —
+strongly sublinear, but monotone), so that claim stays withdrawn. The betula time column is 1.06–1.09×
+slower than the previous edition at all five sizes — the uniform shift discussed under *Speed*, not
+the memory change, which cannot cost time it does not spend copying.
 
 ## Real datasets — bounded 4 000-leaf budget
 
@@ -280,9 +328,9 @@ Median of seeds 0/1/2 (`results_real.csv`; spreads in `results_real_spread.csv`)
 | sklearn-gmm (full) | 0.463 | 0.080 | — |
 | **betula-ward** | 0.643 | 0.091 | 0.377 |
 | sklearn-ward | 0.664 | — | — |
-| **betula-spectral** | 0.653 | 0.100 | 0.203 |
+| **betula-spectral** | 0.669 | 0.064 | 0.101 |
 | **betula-leiden** | 0.781 | 0.056 | 0.005 |
-| **betula-hdbscan** | **0.164** | 0.051 | 0.000 |
+| **betula-hdbscan** | **0.164** | 0.052 | 0.117 |
 | sklearn-hdbscan | 0.149 | — | — |
 | sklearn-birch | 0.664 | **0.131** | **0.426** |
 
@@ -309,7 +357,8 @@ Reading it honestly:
   0.080 is a **tie**, not the win the previous edition claimed — the two three-seed ranges are
   0.055–0.096 and 0.055–0.102, i.e. almost coincident, and the margin either way is a fifth of the
   spread. The head to quote here is `ward` (0.091, range 0.086–0.093, the tightest on the table);
-  `spectral`'s 0.100 median is higher still but spans −0.015 to 0.128 and cannot be leaned on. At
+  `spectral` used to read a higher median, 0.100, and after its rewrite reads 0.064 — but it spans
+  0.020–0.095 now and −0.015 to 0.128 then, so it could not be leaned on in either edition. At
   **16 000 leaves** the GMM does separate from scikit-learn — 0.104 vs 0.080, two sections down.
   `sklearn-birch` at **0.131** still beats every betula head. See below.
 - **MNIST (784-D):** raw Euclidean k-means scores **0.307** against scikit-learn's 0.324 — in 784
@@ -317,6 +366,13 @@ Reading it honestly:
   sections down). `sklearn-birch` leads here too, 0.426 against betula-ward's 0.377 — but at
   **20 000 subclusters for 20 000 points**, i.e. no compression at all against betula's 5.3×; give
   betula the same non-compression and it reaches 0.416. See below.
+- **Two cells in this table are corrections rather than re-measurements.** `betula-hdbscan` on MNIST
+  was printed as **0.000** and its own `results_real.csv` has read **0.117** since the table was
+  generated — a transcription error, not a run: the CSV cell is byte-identical across both editions,
+  and the row is a modest win over the leiden head rather than the total failure it was published as.
+  `betula-spectral` on MNIST really did move, 0.203 → **0.101**, and that is the rewrite; it is a loss
+  at *this* leaf budget and a large win once the budget is raised, which is the whole of the section
+  on `max_leaves` and this head in [`docs/USAGE.md`](https://github.com/ilgrad/betula-cluster/blob/main/docs/USAGE.md).
 
 ### The `covtype` loss to `sklearn-birch` is real, not a budget artefact
 
@@ -443,14 +499,18 @@ Clustering a **real** half-million-row dataset, each run isolated in its own sub
 
 | method | time | peak RSS | ARI |
 |---|---|---|---|
-| **betula-kmeans** | **1.06 s** | 0.91 GB | **0.070** |
-| sklearn-kmeans | 4.92 s | 0.93 GB | 0.049 |
+| **betula-kmeans** | **1.01 s** | 0.91 GB | **0.070** |
+| sklearn-kmeans | 5.58 s | 0.93 GB | 0.049 |
 
-betula-kmeans clusters the full 581 k-row covtype **4.7× faster** than scikit-learn KMeans — at the
+betula-kmeans clusters the full 581 k-row covtype **5.5× faster** than scikit-learn KMeans — at the
 same memory and, on this run, a higher ARI (0.070 vs 0.049), on real data rather than blobs. This is
 a single seed, like every row in the speed suite, and the 20 k subsample's three-seed spread
 (0.071–0.102 for the same head) is wide enough that the ARI column here should be read as "not
-worse", not as a 43 % lead.
+worse", not as a 43 % lead. The speed ratio itself is soft: the two ARIs are byte-identical to the
+previous edition and both times moved (betula 1.06 → 1.01 s, scikit-learn 4.92 → 5.58 s), which is a
+single sample against a single sample even under the gate. The memory column is the one that changed
+verdict — betula 905.3 → 913.3 MB against an unmoved 931 MB — and it is discussed under *The
+scoreboard*.
 
 ## Structured covariance — `gmm-toeplitz` / `gmm-toeplitz-full` on stationary signals
 
@@ -548,21 +608,49 @@ isolated in its own subprocess (`bench/results_sparse.csv`):
 
 | reduction | clusterer | time | ARI |
 |---|---|---|---|
-| raw 2 000-D (none) | betula `fit_predict_sparse` (O(nnz)) | 2.30 s | 0.038 |
-| raw 2 000-D (none) | sklearn k-means | 1.03 s | 0.056 |
-| **betula CF-weighted PCA(50)** | **betula** spherical k-means | 2.25 s | **0.200** |
-| TruncatedSVD(50) | sklearn k-means | **0.74 s** | 0.130 |
-| NMF(20) | **betula** k-means | 2.64 s | 0.130 |
-| NMF(20) | sklearn k-means | 3.32 s | 0.124 |
+| raw 2 000-D (none) | betula `fit_predict_sparse` (O(nnz)) | 1.70 s | 0.038 |
+| raw 2 000-D (none) | sklearn k-means | 0.53 s | 0.056 |
+| **betula CF-weighted PCA(50)** | **betula** spherical k-means | 1.73 s | **0.200** |
+| TruncatedSVD(50) | sklearn k-means | **0.41 s** | 0.130 |
+| NMF(20) | **betula** k-means | 2.36 s | 0.130 |
+| NMF(20) | sklearn k-means | 2.26 s | 0.124 |
 
-**Third exception to the page banner, 2026-08-30.** All six rows were re-measured in one pass after
-task #104 — the sparse leader pass now caps how much of the mass one micro-cluster may hold, and the
+**Every ARI here is byte-identical to the 2026-08-30 edition and every time on it fell**, some by a
+factor of two — `sklearn-kmeans` 1.03 → 0.53 s, `sklearn-svd` 0.74 → 0.41 s, `betula-sparse`
+2.30 → 1.70. A rival halving its time while nothing about it changed is a measurement question, so
+this row was re-taken three more times under the gate, the six arms interleaved A-B-A-B, on top of
+the sweep's own sample. Version and threads are not the answer (scikit-learn is 1.9.0 in both
+editions — the resolved wheel in the local cache since 2026-06-22 — and `OMP_NUM_THREADS` is 8 in
+both), and the identical ARI column proves the partition is the same.
+
+| arm | published | four gated samples | verdict |
+|---|---|---|---|
+| `betula-sparse` | 2.302 s | 1.702 · 1.839 · 1.888 · 2.213 | above the range |
+| `sklearn-kmeans` | 1.033 s | 0.528 · 0.845 · 0.666 · 0.878 | above the range |
+| `betula-svd` | 2.252 s | 1.732 · 1.610 · 1.608 · 1.731 | above the range |
+| `sklearn-svd` | 0.740 s | 0.407 · 0.462 · 0.508 · 0.562 | above the range |
+| `betula-nmf` | 2.637 s | 2.356 · 2.418 · 2.574 · 2.852 | **inside** the range |
+| `sklearn-nmf` | 3.321 s | 2.258 · 2.462 · 2.744 · 2.956 | above the range |
+
+**The absolute times say the machine was slower then; the ratio says nothing, and the page should
+stop pretending otherwise.** Five of the six published values sit above the whole gated range, which
+is what a busier machine looks like. But `betula-sparse / sklearn-kmeans` reads **2.18, 2.83, 2.52 and
+3.22** across those same four gated samples, and the published pair's 2.23 sits inside that — four
+samples do not resolve this ratio to two digits, and neither did one. Most of the spread is
+within-session drift on a laptop: from the first interleaved rep to the third, every arm slows by
+4–21 % while the machine stays gated, which is also why the sweep's own sample — taken first, after a
+long wait for quiet — is the fastest of the four in five arms. **So read this table's ARI column, and
+read its time column as an order of magnitude.**
+
+The one pair four samples *do* resolve is `betula-nmf` against `sklearn-nmf`: gated, the ratio is
+0.98 / 0.94 / 0.96 / 1.04 — a tie inside 6 % — against a published 0.79. That is the scoreboard
+demotion recorded below, and it is a demotion of a number that was never resolved rather than of the
+code, which has not changed: both sides spend most of that call inside the same scikit-learn NMF.
+
+Task #104 — the sparse leader pass now caps how much of the mass one micro-cluster may hold, and the
 centre-based heads label each row by its nearest cluster centroid rather than its nearest
-micro-cluster. Both betula ARIs moved: `betula-sparse` 0.004 → **0.038**, `betula-svd` 0.164 → **0.200**.
-The three scikit-learn rows and `betula-nmf` cannot be touched by that change and their ARIs are
-unmoved — but their times rose 1.4–1.7× against the 2026-08-24 edition, so the time column is
-comparable **within** this table and not with the previous one. `betula-svd`'s own time fell over the
-same interval (3.31 → 2.25 s), which is the smaller summary, not a faster machine.
+micro-cluster — moved both betula ARIs when it landed: `betula-sparse` 0.004 → **0.038**, `betula-svd`
+0.164 → **0.200**. Those are the values above and they have not moved since.
 
 The `betula-svd` row changed meaning at 0.4.0. It used to call scikit-learn's `TruncatedSVD` and then
 cluster with betula, so it measured scikit-learn's reducer; it now runs betula's own
@@ -605,7 +693,9 @@ Read honestly:
   bad way to cluster text. The standard fix is **reduce-then-cluster**, and `projection="svd"` does it
   inside the same call.
 - **On quality the leaf-summary PCA wins; on time it does not.** 0.200 against `sklearn-svd`'s 0.130
-  at this budget, but 2.25 s against 0.74 s. The basis is not the compromise — labelling raw rows in it
+  at this budget, but 1.73 s against 0.41 s. Per the four gated samples above that ratio is somewhere
+  in 3.1–4.3× and this page cannot narrow it further; what is not in doubt is that it is a loss of
+  several times over. The basis is not the compromise — labelling raw rows in it
   scored 0.159 against 0.143 for `TruncatedSVD`'s own basis on the same rows (2026-08-24, **not**
   re-measured after #104, which moved the summary that basis is computed from), since the within-leaf
   scatter the summary discards is isotropic under the spherical cluster feature and so moves no
@@ -781,8 +871,8 @@ single runs by construction and fall back to a per-axis tolerance.
 
 ```
 ## quality — 8 win · 54 tie · 6 loss
-## speed   — 33 win · 0 tie · 5 loss
-## memory  — 30 win · 4 tie · 0 loss
+## speed   — 32 win · 1 tie · 5 loss
+## memory  — 28 win · 6 tie · 0 loss
 ```
 
 `bench/scoreboard.json` records those 140 verdicts; `--check` re-derives them and exits non-zero if
@@ -821,6 +911,19 @@ accepted deliberately rather than overwritten:
   `…-vs-faiss-kmeans-matched`. The three column totals are unchanged (8/54/6, 32/1/5, 30/4/0): a
   configuration of FAISS that reaches betula's quality also costs 6.3× the time, so it converts a
   quality cell from tie-against-sklearn to tie-against-FAISS and adds nothing on speed.
+- **2026-09-07, the contention-gated edition: three demotions, all ours, none a code regression.**
+  The quality column did not move at all (8/54/6), which is the same statement as "108 of 117 quality
+  rows are byte-identical". Speed went 33/0/5 → **32/1/5** on
+  `results_sparse/speed/vs-same/20news/betula-nmf`, **win → tie**: four gated samples put the two
+  within 6 % of each other (ratio 0.94–1.04) against a published 0.79, and both sides spend most of
+  that call inside the same scikit-learn NMF. The demotion is of a margin that four samples say was
+  never there, not of the code, which has not changed. Memory went
+  30/4/0 → **28/6/0** on the two full-`covtype` cells (`vs-best` and `vs-same/betula-kmeans`), also
+  **win → tie**: betula's peak RSS on 581 012 × 54 rose 905.3 → 913.3 MB while scikit-learn's stayed
+  at 931 MB, and 18 MB of margin on a 913 MB cell is inside the single-run tolerance. That +7.9 MB is
+  a real, reproducible move in the wrong direction on a path the zero-copy ingest was supposed to
+  help, it is not attributed, and it is on the same list as the uniform insert-path slowdown under
+  *Speed*.
 
 ## Where the leaf budget goes — geometry, not mass (tasks #70 and #77)
 
