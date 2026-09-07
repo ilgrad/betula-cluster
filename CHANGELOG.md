@@ -6,6 +6,27 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+- **The uniform 1–12 % slowdown across the scaling and streaming suites is measured, and it is not
+  the insert path.** `bench/RESULTS.md` recorded the shift honestly but could not attribute it,
+  because the compiler moved with the code (rustc 1.98.0 → 1.98.1, kernel 7.1.9 → 7.1.13). Two A/Bs,
+  each varying one thing: the **toolchain** costs 8.9 % on the kmeans probe, 4.1 % on ward and 7.7 %
+  on streaming, with gmm a wash; the **source** (0.7.0 → 0.8.0, compiler pinned at 1.98.0, 15 clean
+  samples per cell and 0 dirty of 120) costs 4.1 % on ward and ~2.5 % on streaming, while kmeans and
+  gmm flip sign between cycles and are a wash.
+
+  Both probes run `bench/_worker.py` directly, so the cell measured is the cell published rather than
+  a proxy, and each arm's compiler is read back out of the built `.so` instead of trusted from the
+  environment variable meant to select it. The second arm nearly measured something else entirely:
+  a fresh `uv venv` in the baseline worktree resolves the repo's `3.14` pin to uv's managed
+  *free-threaded* build, not the system CPython the repo's own venv uses, and would have compared two
+  pyo3 configurations rather than two revisions. Both arms now assert the interpreter as well.
+
+  What the source change did buy: this edition is **4–12 % lighter in peak RSS on all four probes**
+  (88.1 vs 91.4 MB, 88.2 vs 95.5, 52.0 vs 54.8, 52.9 vs 60.1). The kernel could not be varied and so
+  is not excluded, only unnecessary; the reading that *is* excluded is the one the old note pointed
+  at, since kmeans — the purest insert-bound probe of the four — is 1.5 % **faster** on the new tree.
+
 ### Added
 - **A wheel for free-threaded CPython (3.14t), and a CI gate on what it claims.** abi3 cannot express
   a `Py_GIL_DISABLED` build — such an interpreter exposes SOABI `cpython-314t` and no abi3 tag at all

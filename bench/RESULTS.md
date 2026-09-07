@@ -267,11 +267,51 @@ did not move at all, carries that as its time column: on `mnist` at 20 000 × 78
 **Every other betula row on this fixture got 1 to 12 % *slower*, uniformly**, and that is recorded
 rather than smoothed: `kmeans` 0.264 → 0.283 s, `gmm` 0.292 → 0.313, `gmm-full` 0.360 → 0.374,
 `ward` 0.417 → 0.422, and the streaming memory suite's time column moved by the same 6–9 % at every
-one of its five sizes. A uniform shift across two independent suites is not a timing sample; it is
-either the insert path or the toolchain, and this page cannot tell which, because the compiler moved
-too (rustc 1.98.0 → 1.98.1, and the kernel 7.1.9 → 7.1.13). It is small enough not to change any
-claim here and specific enough to be worth bisecting against `benches/tree_insert.rs`, which is where
-it belongs rather than here.
+one of its five sizes. A uniform shift across two independent suites is not a timing sample, and the
+two candidates could not be told apart from this page alone, because the compiler moved with the code
+(rustc 1.98.0 → 1.98.1, and the kernel 7.1.9 → 7.1.13).
+
+**Measured, 2026-09-08 — most of it is the compiler, and what is left is not the insert path.** Two
+A/Bs, each varying one thing and holding the other fixed, both running `bench/_worker.py` directly so
+the probe is the published cell rather than a proxy, both A-B-A-B under the same quiet gate as the
+rest of this page, and both reading the arm back out of the built `.so` (`readelf -p .comment`)
+rather than trusting the environment variable meant to select it.
+
+*Same source, two toolchains* (HEAD, rebuilt per arm, ≥ 5 clean samples per cell):
+
+| probe | rustc 1.98.1 | rustc 1.98.0 | ratio |
+|---|---|---|---|
+| `fit betula-kmeans blobs 1000000` | 0.2981 s | 0.2737 s | **1.089** |
+| `fit betula-ward blobs 200000` | 0.2179 s | 0.2093 s | **1.041** |
+| `stream 2000000 20 50000` | 1.8841 s | 1.7498 s | **1.077** |
+| `fit betula-gmm blobs 1000000` | 0.3111 s | 0.3131 s | 0.993 |
+
+*Same toolchain (1.98.0), two sources* — this edition's tree against `28d4e9f`, the commit the
+previous edition was measured at, in a second worktree with its own venv built from the **same**
+interpreter (a fresh `uv venv` resolves the repo's `3.14` pin to a free-threaded build, which would
+have compared two different pyo3 configurations). Each era runs its own `bench/_worker.py`; the two
+differ only by the `n_jobs` → `n_shards` rename of the same argument at the same value. 15 clean
+samples per cell, **0 dirty of 120**:
+
+| probe | 0.8.0 | 0.7.0 | ratio | per cycle | peak RSS 0.8.0 / 0.7.0 |
+|---|---|---|---|---|---|
+| `fit betula-kmeans blobs 1000000` | 0.2783 s | 0.2827 s | 0.985 | 1.048 · 0.947 · 0.968 | 88.1 / 91.4 MB |
+| `fit betula-gmm blobs 1000000` | 0.3182 s | 0.3131 s | 1.016 | 1.021 · 0.974 · 1.067 | 88.2 / 95.5 MB |
+| `fit betula-ward blobs 200000` | 0.2235 s | 0.2147 s | **1.041** | 1.045 · 1.013 · 1.056 | 52.0 / 54.8 MB |
+| `stream 2000000 20 50000` | 1.8536 s | 1.8081 s | 1.025 | 0.996 · 1.044 · 1.026 | 52.9 / 60.1 MB |
+
+So: **the toolchain bump costs 4–9 % on three of the four probes**, and the source change costs
+**4.1 % on ward and ~2.5 % on streaming** — the only two cells whose per-cycle ratios keep their sign.
+`kmeans` and `gmm` flip sign between cycles under a fixed compiler, which is what a wash looks like
+when it is reported honestly rather than rounded to a trend. Together the two effects cover the
+published band, and the direction of the residual is worth naming: this edition is **4–12 % lighter**
+in peak RSS on every one of the four probes, so whatever the source change bought, it was not paid
+for in memory.
+
+The kernel is the one thing that could not be varied — 7.1.13 is what is booted — so it is not
+excluded, merely unnecessary as an explanation. What *is* excluded is the reading the previous
+edition of this paragraph pointed at: there is no uniform insert-path regression to bisect. `kmeans`,
+the purest insert-bound probe here, is 1.5 % *faster* on the newer source.
 
 ## Memory — streaming stays bounded
 
