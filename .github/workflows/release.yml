@@ -82,7 +82,11 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.platform.target }}
-          args: --release --out dist --interpreter 3.14t
+          # `python3.14t`, not `3.14t`: maturin's documented form for a free-threaded interpreter is
+          # the executable name, and on Linux the build runs inside a manylinux container where the
+          # setup-python above is not visible at all -- the name has to resolve to the container's
+          # own /opt/python/cp314-cp314t/bin/python3.14t.
+          args: --release --out dist --interpreter python3.14t
           manylinux: auto
           sccache: "true"
       - uses: actions/upload-artifact@v7
