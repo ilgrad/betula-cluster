@@ -206,6 +206,25 @@ All notable changes to this project are documented here. The format follows
   connectivity threshold. Tables in
   [`bench/RESULTS.md`](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md).
 
+  **On MNIST the change is a budget shift, and the A/B above missed it — this is the loss.** That A/B
+  covered `two-moons`, `two-circles`, `digits`-PCA20 and `covtype`, none of them above 64 dimensions
+  after reduction. At 784 the benchmark's fixed `max_leaves = 4000` reads ARI **0.203 → 0.101**, with
+  the seed ranges disjoint (published `[0.183, 0.203, 0.248]` against `[0.079, 0.101, 0.122]` over
+  seeds 0/1/2) — and out of 117 quality cells, the nine that moved at all are all this head's.
+
+  It is neither the new solver nor the approximate graph. Sweeping the budget through both boundaries
+  at a fixed subsample, quality rises *monotonically* — 256 → 0.0005, 512 → 0.007, 1024 → 0.025,
+  2048 → 0.050, 4000 → 0.082, 8000 → **0.203** — and the `≤ 256` row, whose code path is unchanged
+  from 0.7.0, is the worst of the six. What the landmark path bought was **smoothing**: k-means down
+  to 256 weighted landmarks conditions the affinity graph better than 4 000 raw 784-dimensional
+  centroids do, so the rewrite needs roughly twice the microclusters to build the same embedding.
+
+  It pays for them many times over. At *equal quality* the new head reads **0.2029 in 6.21 s** against
+  the landmark path's **0.2033 in 43.87 s** on the same machine and harness one commit earlier — a
+  **7.1× speed-up**, measured on a contended machine and therefore a lower bound. The fixed-budget row
+  is published as the loss it is; the practical reading is that `method="spectral"` now wants a leaf
+  budget scaled to the dimension, and can afford one.
+
 - **`clustering::SPECTRAL_MAX_NODES` is now `SPECTRAL_EXACT_NODES`, and a second constant
   `SPECTRAL_DENSE_GRAPH_MAX` joins it.** Rust API only; the Python surface is unaffected. The old name
   described a landmark cap that no longer exists — the value 256 is now the size at which the *exact
