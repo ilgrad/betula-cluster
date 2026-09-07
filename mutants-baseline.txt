@@ -51,6 +51,20 @@
 # (`cargo mutants -f <file>`) and replace its section, which is what was done for `src/tree.rs` on
 # 2026-08-20 after the rebuild-cost fix moved its production lines.
 #
+# HOW STALE, MEASURED (2026-09-07, `scripts/check_mutants_baseline.py`): 315 entries against the
+# 8927 mutants `cargo mutants --list` now emits -- 121 moved and 26 vanished. Of the moved, 42 are
+# unambiguous (their description occurs exactly once in that file now) and the script prints the
+# replacement line; the other 79 share a description with another mutant in the same file, and only
+# a measurement can say which line carried the accepted argument. Worst files: stream.rs 33,
+# scalespace.rs 28, hdbscan.rs 21, feature.rs 16, mixture.rs 14, gmm.rs 12, vmf.rs 10.
+#
+# It is deliberately not repaired from the 2026-09-07 run (34108190109). That run cancelled 28 of its
+# first 53 completed shards at the 150-minute cap, and a cancelled shard still uploads a *partial*
+# `missed.txt`, so its collated survivor set is an undercount -- rewriting this file from it would
+# delete real survivors and quietly weaken the ratchet. Repair it from the first complete run under
+# the 192-shard matrix. That is also why the script is not a CI gate yet: it would be red from its
+# first run, which is the failure mode `mutants-summary` was rewritten to escape.
+#
 # A `timeout` is a detection, not a survivor: the mutant made the suite hang (a `rebuild` or `split`
 # that no longer terminates, a divergent `ln_gamma` series). Only `missed.txt` feeds this list.
 #
