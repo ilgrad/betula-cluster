@@ -104,14 +104,32 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Extract this version's CHANGELOG section
+        # GitHub caps a release body at 125 000 characters and rejects anything longer with a 422.
+        # That would fail *after* the wheels are already on PyPI and the crate on crates.io, leaving
+        # a published version with no Release and no Zenodo archive. It is not hypothetical: 0.6.0's
+        # section is 16 649 bytes and published fine, 0.8.0's is 172 863. Truncate on a line
+        # boundary and point at the file that holds the whole thing.
         run: |
           ver="${GITHUB_REF_NAME#v}"
           awk -v v="$ver" '
             $0 ~ "^## \\[" v "\\]" { f = 1; next }
             f && /^## \[/ { exit }
             f { print }
-          ' CHANGELOG.md > release-notes.md
-          echo "----- release notes -----"; cat release-notes.md
+          ' CHANGELOG.md > full-notes.md
+          limit=110000   # bytes, so a multi-byte page is always under the character cap
+          if [ "$(wc -c < full-notes.md)" -gt "$limit" ]; then
+            head -c "$limit" full-notes.md | sed '$d' > release-notes.md
+            {
+              printf '\n---\n\n'
+              printf 'This section is longer than a GitHub release body may be, and is truncated here.\n'
+              printf 'The full text is in [CHANGELOG.md](%s/blob/%s/CHANGELOG.md).\n' \
+                "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" "$GITHUB_REF_NAME"
+            } >> release-notes.md
+          else
+            cp full-notes.md release-notes.md
+          fi
+          echo "----- release notes: $(wc -c < release-notes.md) of $(wc -c < full-notes.md) bytes -----"
+          head -40 release-notes.md
       - uses: softprops/action-gh-release@v3
         with:
           name: betula-cluster ${{ github.ref_name }}
