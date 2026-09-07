@@ -927,8 +927,10 @@ arms differing only in the code under test.
   default) is the previous behaviour unchanged. Table in
   [bench/RESULTS.md](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md).
 
-- `max_leaves` accepts a **fraction of the row count**: a float in `(0, 1)` resolves to
-  `ceil(frac · N)` at `fit` time, alongside the absolute integer cap. One parameter carries both
+- `Betula` accepts `max_leaves` as a **fraction of the row count**: a float in `(0, 1)` resolves to
+  `ceil(frac · N)` at `fit` time, alongside the absolute integer cap. (Estimator only — resolving the
+  fraction lives in the Python wrapper, while the free `fit_predict` / `fit_predict_sparse` are the
+  engine functions re-exported verbatim and take the integer.) One parameter carries both
   forms, discriminated by range rather than by a second flag, which is ELKI's `-cftree.maxleaves`
   convention (its own default is `0.05`) and makes a configuration independent of dataset size. A
   fraction is undefined for `partial_fit`, which never sees a final `N`, and raises there rather

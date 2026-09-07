@@ -36,7 +36,10 @@ the shard count from `n` instead and rejects a caller-set one), `threshold`, `br
 float in `(0, 1)` is a **fraction of the row count**, resolved as `ceil(frac·N)` at `fit` time —
 ELKI's `-cftree.maxleaves` convention, whose own default is `0.05`. A fraction is undefined for
 `partial_fit`, which never sees a final `N`, and raises there rather than guessing a batch size;
-`memory_budget_mb` overrides either form, being the harder constraint), `max_iter`, `min_samples`
+`memory_budget_mb` overrides either form, being the harder constraint. **The fraction is the
+estimator's**: resolving it lives in the Python wrapper, and the free `fit_predict` /
+`fit_predict_sparse` are the engine functions re-exported verbatim, so those two take the integer
+and raise `TypeError` on a float), `max_iter`, `min_samples`
 (for `method="hdbscan"`, the core-distance neighbourhood **counting the point itself** —
 the convention of Campello's Def. 3.1, `sklearn.cluster.HDBSCAN` and ELKI, so `min_samples=1`
 leaves every core distance at 0 and HDBSCAN\* degenerates to single linkage;
