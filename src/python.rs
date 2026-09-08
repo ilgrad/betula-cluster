@@ -4024,6 +4024,27 @@ impl Betula {
         d.set_item("leaf_refit", self.leaf_refit)?;
         d.set_item("canonical_order", self.canonical_order)?;
         d.set_item("route_beam", self.route_beam)?;
+        // The projection is stored decomposed — rank, solver flags, sweeps — because the wire format
+        // predates the sum type, so reporting it means inverting `projection_spec`. Omitting it is
+        // not harmless: `Betula.load` rebuilds the wrapper with `cls(**core.get_params())`, so a
+        // model fitted with `projection="svd"` came back reporting `"none"`, and `clone()` of it
+        // returned an estimator that does not project at all.
+        let (projection, projection_dim) = match self.projection_spec() {
+            // 64 mirrors the constructor default; with no projection the rank is not stored and the
+            // value is inert, so reporting the default keeps `cls(**get_params())` equivalent.
+            None => ("none", 64),
+            Some(s) => (
+                match s.kind {
+                    ProjectionKind::Svd => "svd",
+                    ProjectionKind::Nmf { kl: true, .. } => "weighted-nmf-kl",
+                    ProjectionKind::Nmf { kl: false, .. } => "weighted-nmf",
+                },
+                s.rank,
+            ),
+        };
+        d.set_item("projection", projection)?;
+        d.set_item("projection_dim", projection_dim)?;
+        d.set_item("projection_max_iter", self.nmf_max_iter)?;
         Ok(d)
     }
 

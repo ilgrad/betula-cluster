@@ -2396,6 +2396,38 @@ def test_get_params_returns_constructor_args():
     assert betula_cluster.Betula(**p).get_params() == p
 
 
+def test_the_engine_reports_every_parameter_the_wrapper_carries():
+    """`Betula.load` rebuilds the wrapper with `cls(**core.get_params())`, so a parameter the engine
+    stores but does not report comes back as its default — the loaded model behaves one way and
+    describes itself another, and `clone()` of it silently drops the setting. The engine's
+    `get_params` is a hand-maintained mirror of the struct with nothing tying the two together,
+    which is how `route_beam` and the three `projection` keys each went missing; this is the tie.
+
+    `memory_budget_mb` is the one legitimate exception: the wrapper resolves it into `max_leaves`
+    before the engine is built, and `load` recovers the already-resolved cap."""
+    core = set(betula_cluster._core.Betula(n_clusters=4).get_params())
+    missing = set(betula_cluster._PARAM_NAMES) - core - {"memory_budget_mb"}
+    assert not missing, f"engine get_params omits {sorted(missing)}"
+
+
+def test_projection_survives_save_load(nmf_topics, tmp_path):
+    """The engine stores the projection decomposed (rank, solver flags, sweeps) because the wire
+    format predates the sum type, so reporting it means inverting that — which is why it was not
+    reported at all."""
+    x, _ = nmf_topics
+    est = betula_cluster.Betula(
+        n_clusters=3, method="kmeans", projection="svd", projection_dim=4, max_leaves=200, seed=0
+    )
+    est.fit(x)
+    path = str(tmp_path / "model.bin")
+    est.save(path)
+    loaded = betula_cluster.Betula.load(path)
+
+    assert loaded.get_params()["projection"] == "svd"
+    assert loaded.get_params()["projection_dim"] == 4
+    assert np.array_equal(np.asarray(est.predict(x)), np.asarray(loaded.predict(x)))
+
+
 def test_set_params_updates_and_refits(blobs):
     x, y = blobs
     est = betula_cluster.Betula(n_clusters=2, threshold=0.05, max_leaves=300, seed=1)

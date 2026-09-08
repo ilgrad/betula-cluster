@@ -54,6 +54,21 @@ All notable changes to this project are documented here. The format follows
   on digits** (0.6856 vs 0.5482) and **nothing on covtype**.
 
 ### Fixed
+- **A loaded model reported `projection="none"` however it was fitted.** `Betula.load` rebuilds the
+  wrapper with `cls(**core.get_params())`, and the engine's `get_params` never reported `projection`,
+  `projection_dim` or `projection_max_iter` — so a model fitted with `projection="svd",
+  projection_dim=4`, saved and loaded, came back describing itself as `("none", 64)`. The fitted
+  state survived (`components_` and `predict` were unaffected), but `get_params` lied and
+  `sklearn.clone` of a loaded model returned an estimator that does not project at all.
+
+  The cause is that the engine stores the projection **decomposed** — rank, an SVD flag, a KL flag,
+  solver sweeps — because the persisted wire format predates the `ProjectionSpec` sum type, so
+  reporting it means inverting `projection_spec()` and nobody did. More generally the engine's
+  `get_params` is a hand-maintained mirror of the struct with nothing tying the two together, which
+  is how these three and the new `route_beam` each went missing. A test now asserts the engine
+  reports every parameter the wrapper carries, with `memory_budget_mb` — resolved into `max_leaves`
+  before the engine exists — as the one documented exception.
+
 - **The greedy descent misroutes a quarter to a half of all rows, measured — and the blast radius is
   a quarter of what it was thought to be.** The premise on record was that every label this library
   returns goes through `CFTree::nearest_entry`. It does not: `fit_predict` ends in `route_data`,
