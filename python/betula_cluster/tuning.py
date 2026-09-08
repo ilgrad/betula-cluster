@@ -177,12 +177,27 @@ _METRICS = {
     "davies_bouldin": davies_bouldin,
     "dbcv": dbcv,
 }
-_MAXIMIZE = {"calinski_harabasz": True, "davies_bouldin": False, "dbcv": True, "ari": True}
+
+#: Objectives read off the fitted leaf summary instead of the points: `O(leaves * k * d)` against
+#: the `O(N * k * d)` the point-level metrics above pay, and the only silhouette a summary can
+#: carry at all (`Betula.validity`).
+_LEAF_METRICS = {"simplified_silhouette", "medoid_silhouette"}
+
+_MAXIMIZE = {
+    "calinski_harabasz": True,
+    "davies_bouldin": False,
+    "dbcv": True,
+    "ari": True,
+    "simplified_silhouette": True,
+    "medoid_silhouette": True,
+}
 _WORST = {
     "calinski_harabasz": float("-inf"),
     "davies_bouldin": float("inf"),
     "dbcv": -1.0,
     "ari": float("-inf"),
+    "simplified_silhouette": -1.0,
+    "medoid_silhouette": -1.0,
 }
 
 
@@ -245,12 +260,16 @@ def _n_labels(labels: np.ndarray) -> int:
     return int(np.sum(np.unique(labels) >= 0))
 
 
-def _score(x: np.ndarray, labels: np.ndarray, y: np.ndarray | None, objective: str) -> float:
+def _score(
+    x: np.ndarray, labels: np.ndarray, y: np.ndarray | None, objective: str, est: Any
+) -> float:
     if _n_labels(labels) < 2:
         return _WORST[objective]
     if objective == "ari":
         assert y is not None  # tune() guarantees labels are present for objective='ari'
         return adjusted_rand(y, labels)
+    if objective in _LEAF_METRICS:
+        return est.validity()[objective]
     return _METRICS[objective](x, labels)
 
 
@@ -271,7 +290,7 @@ def _evaluate(
     elapsed = time.perf_counter() - start
     return Trial(
         params=params,
-        score=_score(x, labels, y, objective),
+        score=_score(x, labels, y, objective, est),
         n_leaves=len(est.microcluster_centers_),
         time_s=elapsed,
     )
@@ -333,7 +352,11 @@ def tune(
     objective
         ``"calinski_harabasz"`` (default, higher better), ``"davies_bouldin"`` (lower better),
         ``"dbcv"`` (density-based, higher better — use for the HDBSCAN-CF / DbStream density heads,
-        where the convex metrics mislead), or ``"ari"`` (needs ``y``).
+        where the convex metrics mislead), or ``"ari"`` (needs ``y``). ``"simplified_silhouette"``
+        and ``"medoid_silhouette"`` (higher better) are scored on the fitted **leaf summary**
+        instead of the points, so they cost ``O(leaves · k · d)`` per trial and stay affordable
+        where the point-level metrics do not; read :meth:`Betula.validity` for what a summary
+        silhouette is and is not.
     n_trials, seed
         Search budget and RNG seed.
     sampler

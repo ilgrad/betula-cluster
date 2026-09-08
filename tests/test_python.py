@@ -1831,6 +1831,36 @@ def test_validity_agrees_with_sklearn_on_the_indices_that_are_exact():
     assert abs(got - want) < 1e-6 * want
 
 
+def test_the_simplified_silhouette_is_the_point_level_one_when_every_leaf_is_a_point():
+    rng = np.random.default_rng(6)
+    x = np.vstack([rng.normal(c, 0.5, (300, 2)) for c in ([0, 0], [7, 0], [0, 7])])
+    est = betula_cluster.Betula(
+        n_clusters=3, feature="diagonal", threshold=0.0, max_leaves=4000, seed=0
+    )
+    labels = np.asarray(est.fit_predict(x))
+    cent = np.stack([x[labels == c].mean(0) for c in range(3)])
+    d = ((x[:, None, :] - cent[None, :, :]) ** 2).sum(-1)
+    own = d[np.arange(len(x)), labels]
+    d[np.arange(len(x)), labels] = np.inf
+    want = float(np.mean(1.0 - own / d.min(1)))
+    assert abs(est.validity()["simplified_silhouette"] - want) < 1e-9
+
+
+def test_both_summary_silhouettes_prefer_the_true_grouping(blobs):
+    x, _ = blobs
+    kwargs = dict(feature="diagonal", method="kmeans", threshold=0.05, max_leaves=300, seed=1)
+    good = betula_cluster.Betula(n_clusters=4, **kwargs).fit(x).validity()
+    split = betula_cluster.Betula(n_clusters=16, **kwargs).fit(x).validity()
+    for index in ("medoid_silhouette", "simplified_silhouette"):
+        assert good[index] > split[index], index
+        assert good[index] <= 1.0, index
+    # They are two indices, not one index and its approximation: the centroid minimises the own
+    # distance, while the medoid can sit farther from a foreign leaf than that cluster's centroid
+    # does and so widen the separation term. Neither dominates -- on MNIST at k=2 the medoid form
+    # reads 0.2837 against 0.2473. Only the direction is shared.
+    assert good["simplified_silhouette"] != good["medoid_silhouette"]
+
+
 def test_validity_requires_a_finalized_clustering(blobs):
     x, _ = blobs
     est = betula_cluster.Betula(n_clusters=3, max_leaves=300)
@@ -3538,6 +3568,16 @@ def test_tune_ari_without_labels_raises(blobs):
         betula_cluster.tune(x, n_clusters=4, objective="ari")
 
 
+@pytest.mark.parametrize("objective", ["simplified_silhouette", "medoid_silhouette"])
+def test_tune_can_select_on_a_leaf_silhouette(blobs, objective):
+    x, _ = blobs
+    result = betula_cluster.tune(x, n_clusters=4, objective=objective, n_trials=6, seed=3)
+    assert result.best_score == max(t.score for t in result.trials)  # both maximize
+    # The score is the leaf index of the winning configuration, not a point-level stand-in.
+    est = betula_cluster.Betula(n_clusters=4, seed=3, **result.best_params).fit(x)
+    assert est.validity()[objective] == pytest.approx(result.best_score)
+
+
 def test_tune_unknown_objective_raises(blobs):
     x, _ = blobs
     with pytest.raises(ValueError, match="unknown objective"):
@@ -3584,8 +3624,9 @@ def test_tune_internal_guards():
     with pytest.raises(ValueError, match="parameter spec"):
         tuning._sample(np.random.default_rng(0), ("linear", 1, 2))
     x = np.zeros((4, 2))
-    assert tuning._score(x, np.zeros(4, dtype=int), None, "davies_bouldin") == float("inf")
-    assert tuning._score(x, np.zeros(4, dtype=int), None, "calinski_harabasz") == float("-inf")
+    one_label = np.zeros(4, dtype=int)
+    assert tuning._score(x, one_label, None, "davies_bouldin", None) == float("inf")
+    assert tuning._score(x, one_label, None, "calinski_harabasz", None) == float("-inf")
 
 
 def test_tune_metric_extreme_scores():

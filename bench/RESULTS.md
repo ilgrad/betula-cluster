@@ -2796,6 +2796,68 @@ objective the labels follow. So `n_init` reaches only the heads whose labels com
 inertia-selected k-means (`kmeans`, `spherical-kmeans`, `spectral`, and the COP-KMeans of
 `fit_constrained`), and passing it to any other head raises instead of being quietly ignored.
 
+## A silhouette a summary can carry, and the two losses to name (`simplified_silhouette`)
+
+The exact silhouette needs `Σ‖x − y‖` over all pairs — degree 1 in the norm, and not a polynomial
+in `(n, μ, SSE)`. A Z3 witness settles it rather than an argument: `A = {−1, −7/12, 0, 1}` and
+`B = {−4/3, 0, 0, 3/4}` share `n`, `Σx` and `Σx²` exactly and differ in `Σ|xᵢ − xⱼ|` by more than
+0.1, so no cluster feature — however rich — carries the silhouette. What a summary *can* carry is
+Hruschka's **simplified silhouette**: the distance to the cluster's centroid rather than the mean
+distance to its members, in the squared form, since the mean squared distance from a leaf's points
+to any fixed `c` is `‖μ_i − c‖² + S_i/n_i` exactly. `simplified_silhouette` ships that, mass-weighted
+over leaves; `medoid_silhouette` was already shipping the same construction with the leaf nearest
+the centroid as the representative.
+
+Two losses are stacked in that sentence and they are not the same size. `kmeans`, `max_leaves=4000`,
+`threshold=0`, medians of seeds 0/1/2, against the point-level simplified silhouette (the same
+surrogate with no summary) and against scikit-learn's classical silhouette on a 10 000-point sample:
+
+| dataset | `k` | leaf simplified | point simplified | leaf medoid | sampled classical |
+|---|---:|---:|---:|---:|---:|
+| digits (1797 × 64, one leaf per point) | 10 | 0.4393 | 0.4393 | 0.3886 | 0.1420 |
+| mnist-20k (784-D, 3779 leaves) | 10 | 0.2217 | 0.2245 | 0.1656 | 0.0003 |
+| mnist-20k | 2 | 0.2473 | 0.2596 | 0.2837 | 0.1453 |
+| covtype-20k (54-D, 3602 leaves) | 10 | 0.5068 | 0.5072 | 0.4858 | 0.1679 |
+| covtype-20k | 20 | 0.6722 | 0.6727 | 0.6400 | 0.3003 |
+
+**The summary costs almost nothing**: on covtype at 5.6 points per leaf the leaf index sits 0.0004
+from the point-level one, and on 784-dimensional MNIST at 5.3 points per leaf the worst gap over the
+whole `k`-grid is 0.013. On digits, where `threshold=0` at a budget above `N` gives one leaf per
+point, the two agree to every digit printed — the exactness the unit test asserts.
+
+**The surrogate class costs a lot**, and it is a level shift, not noise: 0.44 against 0.16 on digits.
+That is the price of squared distances to a centroid instead of mean distances to members, and it is
+the part no leaf model can buy back. So the number is comparable *across configurations of the same
+data*, which is what a tuner needs, and is not comparable to a published `silhouette_score`.
+
+Whether the two rank `k` the same way is the question that matters for selection. Kendall's τ against
+the sampled classical silhouette over the seven-point `k`-grid:
+
+| dataset | leaf simplified | leaf medoid | point simplified | argmax `k` (leaf simplified / sampled) |
+|---|---:|---:|---:|---|
+| digits | +0.62 | +0.71 | +0.62 | 10 / 20 |
+| mnist-20k | −0.24 | −0.33 | −0.43 | 2 / 2 |
+| covtype-20k | +0.71 | +0.71 | +0.71 | 20 / 20 |
+
+MNIST is the honest row: every index disagrees with the reference there, and the *point-level*
+surrogate disagrees hardest (−0.43 against the leaf index's −0.24). The disagreement is the
+surrogate class, not the summary — which is exactly what the first table says too, and is why
+"compute it on the leaves instead" is not the thing to fix.
+
+**What it costs to compute.** One fitted partition, best of three, MNIST-20k `k=10`:
+
+| scoring | digits | mnist-20k | covtype-20k |
+|---|---:|---:|---:|
+| `validity()` — all four indices off the leaves | 1.1 ms | **39 ms** | 2.2 ms |
+| point-level `calinski_harabasz_score` | 0.8 ms | 81 ms | 5.7 ms |
+| point-level simplified silhouette | 7.8 ms | 442 ms | 51 ms |
+| `silhouette_score`, 10 000-point sample | 39 ms | 1456 ms | 1142 ms |
+
+`tune(objective="simplified_silhouette")` therefore adds 39 ms per trial on MNIST where a sampled
+point silhouette would add 1.5 s — 37× — and the sample is itself an approximation with a seed in
+it. Selecting on the leaf index is the cheap option *and* the reproducible one; what it is not is a
+number to publish next to someone else's silhouette.
+
 ## Conclusions
 
 - **Use betula** when data is large or streaming, memory is bounded, or you want one numerically

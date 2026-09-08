@@ -1184,26 +1184,29 @@ class Betula:
     def validity(self):
         """Internal validity indices of the fitted partition, scored on the leaf summary.
 
-        Returns ``calinski_harabasz`` (higher is better), ``davies_bouldin`` (lower is better) and
-        ``medoid_silhouette`` (higher is better, capped at 1). All three cost
-        ``O(n_leaves · k · d)`` rather than the ``O(N²)`` an exact silhouette over the points would
-        — the sum of squared distances inside a leaf is ``S_i + n_i‖μ_i − c‖²`` exactly, so no
-        point ever has to be revisited.
+        Returns ``calinski_harabasz`` (higher is better), ``davies_bouldin`` (lower is better),
+        ``medoid_silhouette`` and ``simplified_silhouette`` (higher is better, capped at 1). All
+        four cost ``O(n_leaves · k · d)`` rather than the ``O(N²)`` an exact silhouette over the
+        points would — the sum of squared distances inside a leaf is ``S_i + n_i‖μ_i − c‖²``
+        exactly, so no point ever has to be revisited.
 
         Caveats worth reading before using any of them to choose ``k``: Calinski–Harabasz is exact
         but undefined at ``k = 1``; Davies–Bouldin is the RMS-dispersion variant, not the classical
-        mean-distance one; the medoid silhouette is the index of the summary, not of the points, and
-        no richer leaf model would change that — two point sets with identical cluster features can
+        mean-distance one; both silhouettes are indices of the summary, not of the points, and no
+        richer leaf model would change that — two point sets with identical cluster features can
         have different pairwise distances, so the exact silhouette is not recoverable from any
-        summary in this family (``research/RESULTS-cf-boundary.md``). None of the three can report
-        "there is no structure here" — for that, fit with ``n_clusters=0`` on a mixture head and let
-        BIC answer.
+        summary in this family (``research/RESULTS-cf-boundary.md``). The two differ in the
+        representative only: ``simplified_silhouette`` measures to the cluster **centroid**
+        (Hruschka's simplified silhouette), ``medoid_silhouette`` to the leaf nearest it. None of
+        the four can report "there is no structure here" — for that, fit with ``n_clusters=0`` on a
+        mixture head and let BIC answer.
         """
-        ch, db, ms = self._require_fit().validity_()
+        ch, db, ms, ss = self._require_fit().validity_()
         return {
             "calinski_harabasz": ch,
             "davies_bouldin": db,
             "medoid_silhouette": ms,
+            "simplified_silhouette": ss,
         }
 
     def summary_mmd(self, X, *, bandwidth=None):

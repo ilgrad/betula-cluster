@@ -1236,10 +1236,11 @@ drift = betula_cluster.Betula.compare_snapshots(snap, est_next.snapshot())  # ma
 
 ```python
 est.validity()
-# {'calinski_harabasz': 8143.2, 'davies_bouldin': 0.41, 'medoid_silhouette': 0.93}
+# {'calinski_harabasz': 8143.2, 'davies_bouldin': 0.41,
+#  'medoid_silhouette': 0.93, 'simplified_silhouette': 0.95}
 ```
 
-Three indices off the leaf summary, all in $O(\ell k d)$ — there is no second pass over the data
+Four indices off the leaf summary, all in $O(\ell k d)$ — there is no second pass over the data
 and no $O(N^2)$ term, because the sum of squared distances inside a leaf is
 $S_i + n_i\lVert\mu_i - c\rVert^2$ exactly. On a fine tree (`threshold=0` with a leaf budget above
 $N$) `calinski_harabasz` reproduces scikit-learn's point-level `calinski_harabasz_score` to
@@ -1252,13 +1253,29 @@ Read the caveats before selecting `k` with any of them:
 | `calinski_harabasz` | higher is better | **exact**; undefined at `k = 1` |
 | `davies_bouldin` | lower is better | the **RMS**-dispersion variant, $\sigma_j=\sqrt{E\lVert x-c_j\rVert^2}$ — the classical mean-distance form is not a function of a cluster feature at all |
 | `medoid_silhouette` | higher is better, ≤ 1 | the index **of the summary**: a per-leaf ratio weighted by leaf mass, which converges to the point-level value only as the leaves shrink |
+| `simplified_silhouette` | higher is better, ≤ 1 | the same construction with the cluster **centroid** as the representative (Hruschka's simplified silhouette) — a declared surrogate for the classical one, not an approximation that tightens |
 
-**None of the three can say "there is no structure here."** Schubert, *Stop using the elbow
+The exact silhouette needs $\sum\lVert x-y\rVert$ over all pairs, which is degree 1 in the norm and
+so not a function of a cluster feature at all: `{−1, −7/12, 0, 1}` and `{−4/3, 0, 0, 3/4}` share
+`n`, `Σx` and `Σx²` exactly and differ in $\sum\lvert x_i-x_j\rvert$ by more than 0.1. Both
+silhouettes here replace it with a distance to one representative, which *is* summarisable. What
+that buys and what it costs, measured on three datasets, is in
+[bench/RESULTS.md](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md): the
+summary itself costs almost nothing (0.0004 on covtype-20k at 5.6 points per leaf, 0.013 worst-case
+on 784-dimensional MNIST, and *nothing* on a tree with one leaf per point), while the surrogate
+class shifts the level a long way — 0.44 against scikit-learn's 0.16 on digits. **Compare it across
+configurations of the same data; do not compare it to a published `silhouette_score`.**
+
+**None of the four can say "there is no structure here."** Schubert, *Stop using the elbow
 criterion for k-means* (SIGKDD Explorations 25(1), 2023), Table 1 shows the distance-based indices
 reporting 3–22 clusters in pure noise where BIC correctly reports one. Calinski–Harabasz is
 undefined at `k = 1`, which is the same limitation stated honestly. For the "is there anything here
 at all" question, fit with `n_clusters=0` on a mixture head and let BIC answer — that path is
 unchanged and is the authority.
+
+`tune(objective="simplified_silhouette")` (or `"medoid_silhouette"`) scores each trial on the leaf
+summary instead of the points, which is 39 ms per trial against 1456 ms for a 10 000-point sampled
+`silhouette_score` on MNIST-20k — and has no sampling seed in it.
 
 **What "exact" and "of the summary" mean, precisely.** A cluster feature is a sum-decomposition in
 the sense of Deep Sets — $f(X)=\varphi(\sum_u \psi(x_u))$ with $\psi(x)=(1,x,xx^{\mathsf T})$ — so it
@@ -1887,9 +1904,11 @@ best = betula_cluster.tune(
 labels = betula_cluster.fit_predict(X, n_clusters=8, **best.best_params)
 ```
 
-Objectives: `"calinski_harabasz"` (default, higher better), `"davies_bouldin"` (lower better), or
-`"ari"` (needs `y=`). Because betula fits are cheap, hundreds of trials stay fast — and every trial is
-scored for memory (`n_leaves`) and time, not just quality.
+Objectives: `"calinski_harabasz"` (default, higher better), `"davies_bouldin"` (lower better),
+`"dbcv"` (density-based), `"ari"` (needs `y=`), or — scored on the fitted **leaf summary** rather
+than the points — `"simplified_silhouette"` / `"medoid_silhouette"` (higher better; see *Internal
+validity* for what a summary silhouette is and is not). Because betula fits are cheap, hundreds of
+trials stay fast — and every trial is scored for memory (`n_leaves`) and time, not just quality.
 
 ## Consensus & stability — `consensus`
 

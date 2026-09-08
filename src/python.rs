@@ -1228,8 +1228,8 @@ fn compute_cluster_chol<R: Real, C: ClusterFeature<R>>(
         .collect()
 }
 
-/// The three internal validity indices over the labelled leaves, as
-/// `(calinski_harabasz, davies_bouldin, medoid_silhouette)`.
+/// The four internal validity indices over the labelled leaves, as
+/// `(calinski_harabasz, davies_bouldin, medoid_silhouette, simplified_silhouette)`.
 ///
 /// Noise leaves (`label < 0`, HDBSCAN) are dropped rather than pooled into a cluster of their own:
 /// noise is not a cluster, and scoring it as one would make every index a function of how much of
@@ -1238,7 +1238,7 @@ fn compute_validity<R: Real, C: ClusterFeature<R>>(
     feats: &[C],
     labels: &[i64],
     k: usize,
-) -> (f64, f64, f64) {
+) -> Validity {
     let mut kept: Vec<C> = Vec::with_capacity(feats.len());
     let mut kept_labels: Vec<usize> = Vec::with_capacity(feats.len());
     for (f, &l) in feats.iter().zip(labels) {
@@ -1251,8 +1251,12 @@ fn compute_validity<R: Real, C: ClusterFeature<R>>(
         crate::validity::calinski_harabasz(&kept, &kept_labels, k),
         crate::validity::davies_bouldin(&kept, &kept_labels, k),
         crate::validity::medoid_silhouette(&kept, &kept_labels, k),
+        crate::validity::simplified_silhouette(&kept, &kept_labels, k),
     )
 }
+
+/// `(calinski_harabasz, davies_bouldin, medoid_silhouette, simplified_silhouette)`.
+type Validity = (f64, f64, f64, f64);
 
 /// `(points, weights, offset, reference_cost, total_sensitivity, n_leaves, radii)` as Python
 /// sees it.
@@ -2553,8 +2557,8 @@ impl<R: Real> TreeState<R> {
         }
     }
 
-    /// `(calinski_harabasz, davies_bouldin, medoid_silhouette)` over the labelled leaves.
-    fn validity(&self, labels: &[i64], k: usize) -> (f64, f64, f64) {
+    /// The four internal validity indices over the labelled leaves.
+    fn validity(&self, labels: &[i64], k: usize) -> Validity {
         match self {
             TreeState::Spherical(t) => compute_validity(t.leaf_features(), labels, k),
             TreeState::Diagonal(t) => compute_validity(t.leaf_features(), labels, k),
@@ -3573,8 +3577,8 @@ impl Betula {
         }
     }
 
-    /// The three internal validity indices; errors if the clustering has not been finalized.
-    fn validity_any(&self) -> PyResult<(f64, f64, f64)> {
+    /// The four internal validity indices; errors if the clustering has not been finalized.
+    fn validity_any(&self) -> PyResult<Validity> {
         let labels = self.labels.as_ref().ok_or_else(|| {
             PyValueError::new_err(
                 "finalize first (fit / fit_predict / partial_fit with no args) before scoring clusters",
@@ -4069,7 +4073,7 @@ impl Betula {
 
     /// `(calinski_harabasz, davies_bouldin, medoid_silhouette)` over the leaf summary; requires a
     /// finalized clustering.
-    fn validity_(&self) -> PyResult<(f64, f64, f64)> {
+    fn validity_(&self) -> PyResult<Validity> {
         self.validity_any()
     }
 

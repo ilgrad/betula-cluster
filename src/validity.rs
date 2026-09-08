@@ -255,6 +255,69 @@ pub fn medoid_silhouette<R: Real, C: ClusterFeature<R>>(
     if mass > 0.0 { acc / mass } else { 0.0 }
 }
 
+/// Simplified (centroid) silhouette on the leaf summary, in the squared-distance form; higher is
+/// better, `1.0` is the ceiling.
+///
+/// Hruschka's *simplified silhouette* (Vendramin, Campello & Hruschka, *Relative clustering
+/// validity criteria: a comparative overview*, Stat. Anal. Data Min. 3(4), 2010) replaces the mean
+/// distance to the members of a cluster with the distance to that cluster's **centroid**, which
+/// takes the index from `O(N²)` to `O(N·k)`. That substitution is what makes it computable here at
+/// all: the mean squared distance from a leaf's points to any fixed point `c` is
+/// `‖μ_i − c‖² + S_i/n_i` exactly, so a leaf contributes its whole mass without being reopened.
+///
+/// It differs from [`medoid_silhouette`] in the representative only — a centroid, which minimises
+/// the mean squared distance and need not be a data point, against the leaf nearest it. The
+/// numbers each returns and what they cost against the sampled point silhouette are in
+/// `bench/RESULTS.md`.
+///
+/// **A declared surrogate, not an approximation that tightens.** The exact silhouette needs
+/// `Σ‖x − y‖`, which is degree 1 in the norm and not a polynomial in `(n, μ, SSE)`; two point sets
+/// with bitwise-identical features have different pairwise distance sets (a Z3 witness is recorded
+/// in `research/RESULTS-cf-boundary.md`). So no leaf model, however rich, would close the gap, and
+/// this index is the silhouette *of the summary*: it converges to the simplified point-level value
+/// as the leaves shrink, and to the classical one never.
+pub fn simplified_silhouette<R: Real, C: ClusterFeature<R>>(
+    features: &[C],
+    labels: &[usize],
+    k: usize,
+) -> f64 {
+    if features.is_empty() || k < 2 {
+        return 0.0;
+    }
+    let c = centroids(features, labels, k);
+    let live: Vec<usize> = (0..k).filter(|&j| c.weight[j] > R::zero()).collect();
+    if live.len() < 2 {
+        return 0.0;
+    }
+    let mut acc = 0.0;
+    let mut mass = 0.0;
+    for (f, &j) in features.iter().zip(labels) {
+        let w = f.weight().to_f64().unwrap_or(0.0);
+        if w <= 0.0 {
+            continue;
+        }
+        let spread = (f.ssd() / f.weight()).to_f64().unwrap_or(0.0);
+        let to = |l: usize| {
+            sq_euclidean(f.mean(), &c.centroid[l])
+                .to_f64()
+                .unwrap_or(0.0)
+                + spread
+        };
+        let own = to(j);
+        let other = live
+            .iter()
+            .filter(|&&l| l != j)
+            .map(|&l| to(l))
+            .fold(f64::INFINITY, f64::min);
+        // As in `medoid_silhouette`: every distance carries the leaf's own spread, so a zero here
+        // means a zero-width leaf sitting exactly on a foreign centroid — coincident clusters.
+        let s = if other > 0.0 { 1.0 - own / other } else { 0.0 };
+        acc += w * s;
+        mass += w;
+    }
+    if mass > 0.0 { acc / mass } else { 0.0 }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -444,5 +507,109 @@ mod tests {
         // member's own distance grows while the nearest foreign medoid does not.
         let merged: Vec<usize> = truth.iter().map(|&c| if c == 2 { 2 } else { 0 }).collect();
         assert!(medoid_silhouette(&feats, &merged, 3) < good);
+    }
+
+    /// The simplified silhouette from the raw points, written from the definition: mean squared
+    /// distance to the own centroid over the same to the nearest foreign centroid.
+    fn reference_simplified(points: &[Vec<f64>], labels: &[usize], k: usize) -> f64 {
+        let d = points[0].len();
+        let mut cent = vec![vec![0.0; d]; k];
+        let mut cnt = vec![0.0; k];
+        for (p, &c) in points.iter().zip(labels) {
+            cnt[c] += 1.0;
+            for (a, x) in cent[c].iter_mut().zip(p) {
+                *a += x;
+            }
+        }
+        for c in 0..k {
+            for x in &mut cent[c] {
+                *x /= cnt[c];
+            }
+        }
+        let sq =
+            |p: &[f64], c: &[f64]| p.iter().zip(c).map(|(a, b)| (a - b) * (a - b)).sum::<f64>();
+        let mut acc = 0.0;
+        for (p, &j) in points.iter().zip(labels) {
+            let own = sq(p, &cent[j]);
+            let other = (0..k)
+                .filter(|&l| l != j)
+                .map(|l| sq(p, &cent[l]))
+                .fold(f64::INFINITY, f64::min);
+            acc += 1.0 - own / other;
+        }
+        acc / points.len() as f64
+    }
+
+    #[test]
+    fn the_simplified_silhouette_matches_the_point_level_definition_on_singleton_leaves() {
+        let mut rng = SplitMix64::new(13);
+        let centers = [[0.0, 0.0], [7.0, 0.0], [0.0, 7.0]];
+        let (pts, truth) = blobs(&mut rng, 240, &centers, 0.8);
+        let feats = leaf_per_point(&pts);
+        let got = simplified_silhouette(&feats, &truth, 3);
+        let want = reference_simplified(&pts, &truth, 3);
+        assert!((got - want).abs() < 1e-12, "{got} vs {want}");
+    }
+
+    #[test]
+    fn the_simplified_silhouette_charges_a_leaf_for_its_own_spread_exactly() {
+        // Pool each cluster into one leaf. Then the leaf's mean *is* its cluster's centroid, so
+        // its own mean squared distance is the spread alone and the foreign one is the centroid
+        // gap plus the same spread — a closed form the raw points give independently. (Pooling
+        // does not move the score in a fixed direction: this is a ratio of expectations where the
+        // point-level index is an expectation of ratios, and on this fixture pooling reads *above*
+        // the point-level 0.9840.)
+        let mut rng = SplitMix64::new(29);
+        let centers = [[0.0, 0.0], [6.0, 0.0]];
+        let (pts, truth) = blobs(&mut rng, 400, &centers, 0.5);
+        let mut leaves: Vec<Spherical<f64>> = Vec::new();
+        let mut spread = [0.0; 2];
+        let mut mean = [[0.0; 2]; 2];
+        for c in 0..2 {
+            let members: Vec<&Vec<f64>> = (0..pts.len())
+                .filter(|&i| truth[i] == c)
+                .map(|i| &pts[i])
+                .collect();
+            let n = members.len() as f64;
+            for p in &members {
+                for (m, x) in mean[c].iter_mut().zip(p.iter()) {
+                    *m += x / n;
+                }
+            }
+            spread[c] = members
+                .iter()
+                .map(|p| sq_euclidean(p, &mean[c]))
+                .sum::<f64>()
+                / n;
+            let mut f = Spherical::new(2);
+            for p in members {
+                f.push(p, 1.0);
+            }
+            leaves.push(f);
+        }
+        let gap = sq_euclidean(&mean[0], &mean[1]);
+        let want = (0..2)
+            .map(|c| (1.0 - spread[c] / (gap + spread[c])) * leaves[c].weight())
+            .sum::<f64>()
+            / (leaves[0].weight() + leaves[1].weight());
+        let got = simplified_silhouette(&leaves, &[0, 1], 2);
+        assert!((got - want).abs() < 1e-12, "{got} vs {want}");
+    }
+
+    #[test]
+    fn the_simplified_silhouette_prefers_the_true_grouping_and_is_zero_where_undefined() {
+        let mut rng = SplitMix64::new(37);
+        let centers = [[0.0, 0.0], [9.0, 0.0], [0.0, 9.0]];
+        let (pts, truth) = blobs(&mut rng, 300, &centers, 0.6);
+        let feats = leaf_per_point(&pts);
+        let shuffled: Vec<usize> = (0..pts.len()).map(|i| i % 3).collect();
+        let good = simplified_silhouette(&feats, &truth, 3);
+        assert!(good > simplified_silhouette(&feats, &shuffled, 3));
+        assert!(good <= 1.0, "{good}");
+        assert_eq!(simplified_silhouette(&feats, &vec![0; pts.len()], 1), 0.0);
+        assert_eq!(
+            simplified_silhouette::<f64, Spherical<f64>>(&[], &[], 3),
+            0.0
+        );
     }
 }

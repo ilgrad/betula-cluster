@@ -44,6 +44,26 @@ All notable changes to this project are documented here. The format follows
   non-monotone on all three datasets, so `n_init` on a head that would ignore it raises a
   `ValueError` instead of passing silently. Rust: `Model::fit` and the `kmeans_auto` / `spectral`
   entry points take the count (`0` = the default), and `KMEANS_N_INIT` is public.
+- **`simplified_silhouette` — the silhouette a summary can actually carry.** `validity()` now
+  reports a fourth index: Hruschka's simplified silhouette, mass-weighted over leaves, measuring to
+  the cluster **centroid** rather than to the members. The classical silhouette needs `Σ‖x − y‖`,
+  which is degree 1 in the norm and provably not a function of a cluster feature (a Z3 witness:
+  `{−1, −7/12, 0, 1}` and `{−4/3, 0, 0, 3/4}` share `n`, `Σx`, `Σx²` and differ in `Σ|xᵢ − xⱼ|` by
+  more than 0.1), so this is a declared surrogate, not an approximation that tightens.
+
+  The two losses are measured separately and are not the same size. The *summary* costs 0.0004 on
+  covtype-20k at 5.6 points per leaf, at most 0.013 over the `k`-grid on 784-dimensional MNIST, and
+  exactly nothing on a tree with one leaf per point, where a unit test pins it to the point-level
+  definition. The *surrogate class* shifts the level a long way — 0.4393 against scikit-learn's
+  0.1420 on digits — so the number ranks configurations of one dataset and must not be compared to
+  a published `silhouette_score`. Rank agreement with a 10 000-point sampled classical silhouette
+  is τ = +0.71 on covtype, +0.62 on digits and −0.24 on MNIST, where the *point-level* surrogate
+  disagrees harder still (−0.43): the disagreement is the surrogate, not the summary.
+
+  `tune()` can now select on it — `objective="simplified_silhouette"` or `"medoid_silhouette"` —
+  scoring off the leaves at 39 ms per trial on MNIST-20k against 1456 ms for the sampled point
+  silhouette, with no sampling seed in the answer. Rust: `validity::simplified_silhouette` is
+  public.
 - **`balance="auto"` — the mass cap as a decision the data makes.** `balance` bounds how much of the
   total mass one leaf may hold, and it has a known domain: over 27 cells (digits / covtype-20k /
   mnist-10k × `kmeans`/`ward`/`gmm` × three budgets) a fixed cap gains **+0.08 to +0.25 ARI on all
