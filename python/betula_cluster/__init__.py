@@ -477,6 +477,7 @@ def fit_predict_sparse(
     threshold=0.0,
     max_leaves=2048,
     max_iter=100,
+    n_init=None,
     seed=0,
     projection="none",
     projection_dim=64,
@@ -529,6 +530,7 @@ def fit_predict_sparse(
         threshold=threshold,
         max_leaves=max_leaves,
         max_iter=max_iter,
+        n_init=n_init,
         seed=seed,
         projection=projection,
         projection_dim=projection_dim,
@@ -547,6 +549,7 @@ _DEFAULTS = {
     "leaf_cap": 32,
     "max_leaves": 2000,
     "max_iter": 100,
+    "n_init": None,
     "min_samples": 5,
     "min_cluster_size": 5,
     "seed": 0,
@@ -611,6 +614,7 @@ class Betula:
         leaf_cap=32,
         max_leaves=2000,
         max_iter=100,
+        n_init=None,
         min_samples=5,
         min_cluster_size=5,
         seed=0,
@@ -647,6 +651,9 @@ class Betula:
         self.leaf_cap = leaf_cap
         self.max_leaves = max_leaves
         self.max_iter = max_iter
+        # Restart count for the heads whose labels come from an inertia-selected k-means; ``None``
+        # leaves each on its own default. The engine rejects it on a head that would ignore it.
+        self.n_init = n_init
         self.min_samples = min_samples
         self.min_cluster_size = min_cluster_size
         self.seed = seed

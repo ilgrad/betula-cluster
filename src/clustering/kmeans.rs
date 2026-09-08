@@ -22,6 +22,12 @@ pub struct KMeans<R: Real> {
     pub inertia: R,
 }
 
+/// Number of k-means++ restarts the k-means family takes when the caller names none. EM is not the
+/// only non-convex head: Lloyd converges to a local optimum of the inertia, and the restart keeps
+/// the lowest of `n_init` draws. Four is the measured knee for the *cost*, not for the quality —
+/// `bench/RESULTS.md` records what 25 buys on MNIST.
+pub const KMEANS_N_INIT: usize = 4;
+
 /// Cluster `features` into `k` groups. Runs `n_init` k-means++ restarts and keeps the lowest
 /// inertia; each restart runs up to `max_iter` Lloyd iterations.
 pub fn kmeans<R: Real, C: ClusterFeature<R>>(
@@ -568,6 +574,7 @@ pub fn kmeans_auto<R: Real, C: ClusterFeature<R>>(
     k_min: usize,
     k_max: usize,
     max_iter: usize,
+    n_init: usize,
     seed: u64,
 ) -> KMeans<R> {
     let m = features.len();
@@ -578,7 +585,7 @@ pub fn kmeans_auto<R: Real, C: ClusterFeature<R>>(
     let mut best: Option<KMeans<R>> = None;
     let mut best_bic = R::neg_infinity();
     for k in lo..=hi {
-        let km = kmeans(features, k, max_iter, 4, seed);
+        let km = kmeans(features, k, max_iter, n_init, seed);
         let mut nk = vec![R::zero(); k];
         for (i, f) in features.iter().enumerate() {
             nk[km.labels[i]] = nk[km.labels[i]] + f.weight();
@@ -639,7 +646,7 @@ mod tests {
         let centers = [[0.0, 0.0], [9.0, 0.0], [0.0, 9.0], [9.0, 9.0]];
         let (pts, truth) = blobs(&mut rng, 400, &centers, 0.6);
         let (micros, point_to_micro) = grid_micros(&pts, 0.5);
-        let km = kmeans_auto(&micros, 1, 8, 100, 7);
+        let km = kmeans_auto(&micros, 1, 8, 100, 4, 7);
         assert_eq!(km.centers.len(), 4, "selected k = {}", km.centers.len());
         let labels: Vec<usize> = point_to_micro.iter().map(|&m| km.labels[m]).collect();
         assert!(ari(&labels, &truth) > 0.95);
@@ -774,7 +781,7 @@ mod tests {
                         want = k;
                     }
                 }
-                let got = kmeans_auto(&micros, lo, hi, 100, seed).centers.len();
+                let got = kmeans_auto(&micros, lo, hi, 100, 4, seed).centers.len();
                 assert_eq!(got, want, "fixture {f}, seed {seed}");
             }
         }
@@ -1234,7 +1241,7 @@ mod tests {
                 }
             }
             want.push(best.1);
-            got.push(kmeans_auto(&micros, lo, hi, 100, 5).centers.len());
+            got.push(kmeans_auto(&micros, lo, hi, 100, 4, 5).centers.len());
         }
         assert!(
             want.windows(2).any(|w| w[0] != w[1]),

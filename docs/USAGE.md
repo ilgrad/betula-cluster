@@ -39,7 +39,11 @@ ELKI's `-cftree.maxleaves` convention, whose own default is `0.05`. A fraction i
 `memory_budget_mb` overrides either form, being the harder constraint. **The fraction is the
 estimator's**: resolving it lives in the Python wrapper, and the free `fit_predict` /
 `fit_predict_sparse` are the engine functions re-exported verbatim, so those two take the integer
-and raise `TypeError` on a float), `max_iter`, `min_samples`
+and raise `TypeError` on a float), `max_iter`, `n_init` (k-means++ restarts, kept by lowest inertia;
+`None` leaves each head on its own count of 4. Only the heads whose labels come from an
+inertia-selected k-means take it — `"kmeans"`, `"spherical-kmeans"`, `"spectral"`, and the
+COP-KMeans of `fit_constrained` — and passing it to any other head raises rather than being ignored;
+see *How many restarts a k-means head needs* below), `min_samples`
 (for `method="hdbscan"`, the core-distance neighbourhood **counting the point itself** —
 the convention of Campello's Def. 3.1, `sklearn.cluster.HDBSCAN` and ELKI, so `min_samples=1`
 leaves every core distance at 0 and HDBSCAN\* degenerates to single linkage;
@@ -179,6 +183,35 @@ same partition as the fully-swept `kmeans` **120× faster**, which is the head t
 
 A selection that lands exactly on its ceiling raises a `UserWarning`: an argmax on the last candidate
 is evidence the search stopped early, not evidence about the data.
+
+### How many restarts a k-means head needs — `n_init`
+
+Lloyd converges to a *local* optimum of the inertia, so the k-means heads run `n_init` k-means++
+draws and keep the lowest-inertia one. `None` (the default) leaves each on its own count of 4.
+
+MNIST-20k, `feature="spherical"`, `method="kmeans"`, `max_leaves=4000`, `threshold=0`, ARI and time
+the median of seeds 0/1/2 (the same harness the published tables use):
+
+| `n_init` | mnist ARI | mnist time | digits ARI | covtype ARI |
+|---|---|---|---|---|
+| 1 | 0.2873 | 1.37 s | 0.4513 | 0.0739 |
+| 4 (default) | 0.3069 | 2.22 s | 0.4670 | 0.0739 |
+| 10 | 0.3069 | 3.26 s | **0.5698** | 0.0562 |
+| 25 | **0.3303** | 6.64 s | 0.4670 | **0.0912** |
+| 50 | 0.3303 | 11.65 s | 0.4670 | 0.0486 |
+| `sklearn.cluster.KMeans(n_init=10)` on the raw rows | 0.3244 | 13.45 s | — | 0.0539 |
+
+So on MNIST 25 restarts pass scikit-learn's score at half its wall clock, and cost 3× the default
+fit; on `digits` the same 25 score *below* 10, and on covtype the column has no direction. The
+restart is chosen by inertia, which is not ARI: more draws reliably buy a lower objective and only
+sometimes buy better labels. Raise it when the head is the bottleneck and you can afford the linear
+cost, and check the result rather than assuming it.
+
+Only the heads whose labels come from an inertia-selected k-means take it — `"kmeans"`,
+`"spherical-kmeans"`, `"spectral"` (its embedding k-means) and the COP-KMeans behind
+`fit_constrained`. The EM heads restart too, but they select by likelihood, and moving their count
+1 → 25 was measured to be non-monotone on all three datasets (`bench/RESULTS.md`), so `n_init` on a
+head that would ignore it raises a `ValueError` rather than passing silently.
 
 ### Where `xmeans` refuses to split — `method="xmeans"`
 

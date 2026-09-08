@@ -68,8 +68,6 @@ pub const SPECTRAL_DENSE_GRAPH_MAX: usize = 2048;
 /// Cluster count used when `k == 0` (auto) is requested — spectral has no reliable built-in
 /// selection, and two clusters is the canonical non-convex case (moons / two rings).
 pub const SPECTRAL_DEFAULT_K: usize = 2;
-/// k-means restarts for the embedding (mirrors the k-means head).
-const N_INIT: usize = 4;
 
 /// Extra vectors carried above `k` in the subspace iteration.
 ///
@@ -102,13 +100,14 @@ pub fn spectral<R: Real, C: ClusterFeature<R>>(
     features: &[C],
     k: usize,
     max_iter: usize,
+    n_init: usize,
     seed: u64,
 ) -> Spectral {
     assert!(!features.is_empty(), "spectral needs at least one feature");
     let k = if k == 0 { SPECTRAL_DEFAULT_K } else { k };
     let centers: Vec<Vec<R>> = features.iter().map(|f| f.mean().to_vec()).collect();
     Spectral {
-        labels: spectral_core::<R>(&centers, k, max_iter, seed),
+        labels: spectral_core::<R>(&centers, k, max_iter, n_init, seed),
     }
 }
 
@@ -127,14 +126,21 @@ pub fn spectral<R: Real, C: ClusterFeature<R>>(
 /// `measure_alpha_normalization` harness and `bench/RESULTS.md`.
 const DIFFUSION_ALPHA: f64 = 0.0;
 
-fn spectral_core<R: Real>(centers: &[Vec<R>], k: usize, max_iter: usize, seed: u64) -> Vec<usize> {
-    spectral_core_alpha(centers, k, max_iter, seed, DIFFUSION_ALPHA, None)
+fn spectral_core<R: Real>(
+    centers: &[Vec<R>],
+    k: usize,
+    max_iter: usize,
+    n_init: usize,
+    seed: u64,
+) -> Vec<usize> {
+    spectral_core_alpha(centers, k, max_iter, n_init, seed, DIFFUSION_ALPHA, None)
 }
 
 fn spectral_core_alpha<R: Real>(
     centers: &[Vec<R>],
     k: usize,
     max_iter: usize,
+    n_init: usize,
     seed: u64,
     alpha: f64,
     degree: Option<usize>,
@@ -206,7 +212,7 @@ fn spectral_core_alpha<R: Real>(
             f
         })
         .collect();
-    kmeans(&embed, k, max_iter, N_INIT, seed).labels
+    kmeans(&embed, k, max_iter, n_init, seed).labels
 }
 
 /// `P = D^{-1/2} A D^{-1/2}` from a sparse symmetric affinity, in the same sparse layout.
@@ -491,8 +497,8 @@ mod tests {
         let (micros, _) = grid_micros(&pts, 0.16);
         let centers: Vec<Vec<f64>> = micros.iter().map(|f| f.mean().to_vec()).collect();
         assert_eq!(
-            spectral(&micros, 2, 100, 1).labels,
-            spectral_core_alpha(&centers, 2, 100, 1, DIFFUSION_ALPHA, None),
+            spectral(&micros, 2, 100, 4, 1).labels,
+            spectral_core_alpha(&centers, 2, 100, 4, 1, DIFFUSION_ALPHA, None),
             "the head and the constant have drifted apart"
         );
     }
@@ -506,8 +512,8 @@ mod tests {
         let (micros, _) = grid_micros(&pts, 0.1);
         let centers: Vec<Vec<f64>> = micros.iter().map(|f| f.mean().to_vec()).collect();
         assert_ne!(
-            spectral_core_alpha(&centers, 2, 100, 1, 0.0, None),
-            spectral_core_alpha(&centers, 2, 100, 1, 1.0, None),
+            spectral_core_alpha(&centers, 2, 100, 4, 1, 0.0, None),
+            spectral_core_alpha(&centers, 2, 100, 4, 1, 1.0, None),
             "alpha = 1 produced the same labelling as alpha = 0"
         );
     }
@@ -544,7 +550,7 @@ mod tests {
                     let (micros, assign) = grid_micros(&pts, cell);
                     let centers: Vec<Vec<f64>> = micros.iter().map(|f| f.mean().to_vec()).collect();
                     nodes = centers.len();
-                    let lab = spectral_core_alpha(&centers, k, 100, seed, 0.0, Some(degree));
+                    let lab = spectral_core_alpha(&centers, k, 100, 4, seed, 0.0, Some(degree));
                     let per_point: Vec<usize> = assign.iter().map(|&m| lab[m]).collect();
                     scores.push(ari(&per_point, &truth));
                 }
@@ -588,7 +594,7 @@ mod tests {
                     let (micros, assign) = grid_micros(&pts, cell);
                     leaves = micros.len();
                     let centers: Vec<Vec<f64>> = micros.iter().map(|f| f.mean().to_vec()).collect();
-                    let lab = spectral_core_alpha(&centers, k, 100, seed, alpha, None);
+                    let lab = spectral_core_alpha(&centers, k, 100, 4, seed, alpha, None);
                     let per_point: Vec<usize> = assign.iter().map(|&m| lab[m]).collect();
                     scores.push(ari(&per_point, &truth));
                 }
@@ -617,7 +623,7 @@ mod tests {
                         let (micros, assign) = grid_micros(&pts, 0.10);
                         let centers: Vec<Vec<f64>> =
                             micros.iter().map(|f| f.mean().to_vec()).collect();
-                        let lab = spectral_core_alpha(&centers, 2, 100, seed, alpha, None);
+                        let lab = spectral_core_alpha(&centers, 2, 100, 4, seed, alpha, None);
                         let per_point: Vec<usize> = assign.iter().map(|&m| lab[m]).collect();
                         scores.push(ari(&per_point, &truth));
                     }
@@ -640,7 +646,7 @@ mod tests {
         let mut rng = SplitMix64::new(7);
         let (pts, truth) = two_moons(&mut rng, 250, 0.05);
         let (micros, point_to_micro) = grid_micros(&pts, 0.12);
-        let micro_labels = spectral(&micros, 2, 100, 1).labels;
+        let micro_labels = spectral(&micros, 2, 100, 4, 1).labels;
         let pred: Vec<usize> = point_to_micro.iter().map(|&m| micro_labels[m]).collect();
         assert_eq!(n_distinct(&micro_labels), 2);
         // The non-convex moons are recovered — a centroid head (k-means) scores ~0 here.
@@ -653,7 +659,7 @@ mod tests {
         let mut rng = SplitMix64::new(5);
         let (pts, truth) = two_moons(&mut rng, 250, 0.05);
         let (micros, point_to_micro) = grid_micros(&pts, 0.12);
-        let micro_labels = spectral(&micros, 0, 100, 1).labels;
+        let micro_labels = spectral(&micros, 0, 100, 4, 1).labels;
         assert_eq!(n_distinct(&micro_labels), SPECTRAL_DEFAULT_K);
         let pred: Vec<usize> = point_to_micro.iter().map(|&m| micro_labels[m]).collect();
         assert!(ari(&pred, &truth) > 0.85, "auto-k moons ARI too low");
@@ -662,20 +668,20 @@ mod tests {
     #[test]
     fn spectral_more_clusters_than_nodes_is_identity() {
         let (micros, _) = grid_micros(&[vec![0.0, 0.0], vec![9.0, 0.0], vec![0.0, 9.0]], 0.5);
-        let labels = spectral(&micros, 5, 100, 1).labels;
+        let labels = spectral(&micros, 5, 100, 4, 1).labels;
         assert_eq!(labels, vec![0, 1, 2]);
     }
 
     #[test]
     fn spectral_single_feature_is_one_cluster() {
         let (micros, _) = grid_micros(&[vec![1.0, 2.0]], 1.0);
-        assert_eq!(spectral(&micros, 1, 100, 1).labels, vec![0]);
+        assert_eq!(spectral(&micros, 1, 100, 4, 1).labels, vec![0]);
     }
 
     #[test]
     fn spectral_k_one_collapses_to_a_single_cluster() {
         let (micros, _) = grid_micros(&[vec![0.0, 0.0], vec![9.0, 0.0], vec![0.0, 9.0]], 0.5);
-        let labels = spectral(&micros, 1, 100, 1).labels;
+        let labels = spectral(&micros, 1, 100, 4, 1).labels;
         assert_eq!(labels, vec![0, 0, 0]);
     }
 
@@ -813,7 +819,7 @@ mod tests {
             micros.len() > SPECTRAL_EXACT_NODES,
             "need > cap microclusters"
         );
-        let micro_labels = spectral(&micros, 3, 100, 1).labels;
+        let micro_labels = spectral(&micros, 3, 100, 4, 1).labels;
         assert_eq!(micro_labels.len(), micros.len());
         let pred: Vec<usize> = point_to_micro.iter().map(|&m| micro_labels[m]).collect();
         assert!(ari(&pred, &truth) > 0.9, "sparse spectral lost the blobs");
@@ -849,7 +855,7 @@ mod tests {
         // group's short rows cluster together with whichever small group is nearest the origin --
         // so an exact partition, not an ARI threshold, is what makes the step visible.
         let (pts, truth) = lopsided_groups();
-        let labels = spectral_core(&pts, 3, 100, 5);
+        let labels = spectral_core(&pts, 3, 100, 4, 5);
         assert_eq!(n_distinct(&labels), 3, "{labels:?}");
         assert!(
             (ari(&labels, &truth) - 1.0).abs() < 1e-12,

@@ -2714,6 +2714,47 @@ the achievable score on one. A width that helps has to be chosen against the dat
 parameter is for. The heuristic the table supports — raise it when `d` is large and the classes are
 known to interleave — rests on two datasets and is documented as a heuristic, not wired in.
 
+## Restarts pass scikit-learn on MNIST, and the same count loses on digits (`n_init`)
+
+Lloyd converges to a *local* optimum of the inertia, so the k-means head has always run several
+k-means++ draws and kept the lowest — four of them, hard-coded. `n_init` makes that count a
+parameter. The question the parameter had to answer first was whether the count was worth exposing:
+the published `mnist,20000,betula-kmeans` cell reads ARI 0.3069 against `sklearn-kmeans`'s 0.3244,
+and a restart-starved head would explain the gap for free.
+
+Harness identical to `bench/comprehensive.py::run_real` — the same per-seed 20 000-row subsample, the
+same `StandardScaler`, the same `BETULA_KW` (`threshold=0`, `max_leaves=4000`, `n_shards=1`) —
+`feature="spherical"`, `method="kmeans"`, ARI and wall time the median of seeds 0/1/2, one machine,
+one process, `RAYON_NUM_THREADS` default. Raw output in `local/scratch/q3_curve_shipped.out`.
+
+| `n_init` | mnist ARI | mnist time | digits ARI | covtype ARI |
+|---|---|---|---|---|
+| 1 | 0.2873 | 1.37 s | 0.4513 | 0.0739 |
+| **4** (the default) | 0.3069 | 2.22 s | 0.4670 | 0.0739 |
+| 10 | 0.3069 | 3.26 s | **0.5698** | 0.0562 |
+| 25 | **0.3303** | 6.64 s | 0.4670 | **0.0912** |
+| 50 | 0.3303 | 11.65 s | 0.4670 | 0.0486 |
+| `sklearn.cluster.KMeans(n_init=10)`, raw rows | 0.3244 | 13.45 s | — | 0.0539 |
+
+**On MNIST the gap was restart-cheap, and the fix is not free.** 25 draws take the head to 0.3303,
+past scikit-learn's 0.3244, in half its wall clock — but at 3.0× the four-draw fit. The three seeds
+separate cleanly: 25 restarts read [0.3219, 0.3328] against the default's [0.3061, 0.3146], so this
+is the parameter moving the answer and not the seed.
+
+**On the other two sets the same knob is noise or worse.** `digits` peaks at 10 and falls back to the
+four-draw score at 25 and 50; `covtype-20k` reads 0.0739 → 0.0562 → 0.0912 → 0.0486 with no
+direction at all. Both are the same fact: the restart is selected by **inertia**, and inertia is not
+ARI. More draws reliably buy a lower objective and only sometimes buy better labels, which is why
+the default stays at 4 and the count is a parameter rather than a raised constant.
+
+**The EM heads are excluded, measured rather than assumed.** The same sweep against the GMM restart
+count (a probe on `GMM_N_INIT`, `local/scratch/q3_gmm.out`) moves 1 → 4 → 10 → 25 to 0.387 / 0.461 /
+0.396 / 0.396 on digits, 0.237 / 0.234 / 0.294 / 0.294 on mnist and 0.094 / 0.076 / 0.072 / 0.096 on
+covtype — non-monotone on all three, and their restarts are selected by likelihood rather than by an
+objective the labels follow. So `n_init` reaches only the heads whose labels come from an
+inertia-selected k-means (`kmeans`, `spherical-kmeans`, `spectral`, and the COP-KMeans of
+`fit_constrained`), and passing it to any other head raises instead of being quietly ignored.
+
 ## Conclusions
 
 - **Use betula** when data is large or streaming, memory is bounded, or you want one numerically

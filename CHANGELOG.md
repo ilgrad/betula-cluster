@@ -29,6 +29,21 @@ All notable changes to this project are documented here. The format follows
   arrival-order path keeps the uniform draw and is untouched.
 
 ### Added
+- **`n_init` — the k-means restart count is a parameter.** Lloyd converges to a local optimum of the
+  inertia, so the k-means heads have always kept the best of four k-means++ draws; the count was a
+  constant. On MNIST-20k it is worth choosing: 25 restarts read ARI **0.3303** against the
+  four-restart default's 0.3069 and `sklearn.cluster.KMeans`'s 0.3244, in half scikit-learn's wall
+  clock and 3.0× the default fit's (median of seeds 0/1/2, the published harness). It is not a free
+  win and the docs say so — on `digits` the same 25 restarts score *below* 10, and on covtype-20k the
+  column has no direction, because the draw is selected by inertia and inertia is not ARI. The
+  default is unchanged, so no existing fit moves.
+
+  Only the heads whose labels come from an inertia-selected k-means take it (`kmeans`,
+  `spherical-kmeans`, `spectral`, and the COP-KMeans behind `fit_constrained`). The EM heads select
+  their restarts by likelihood, and the same sweep over the GMM restart count was measured
+  non-monotone on all three datasets, so `n_init` on a head that would ignore it raises a
+  `ValueError` instead of passing silently. Rust: `Model::fit` and the `kmeans_auto` / `spectral`
+  entry points take the count (`0` = the default), and `KMEANS_N_INIT` is public.
 - **`balance="auto"` — the mass cap as a decision the data makes.** `balance` bounds how much of the
   total mass one leaf may hold, and it has a known domain: over 27 cells (digits / covtype-20k /
   mnist-10k × `kmeans`/`ward`/`gmm` × three budgets) a fixed cap gains **+0.08 to +0.25 ARI on all
@@ -117,6 +132,10 @@ All notable changes to this project are documented here. The format follows
   `CFTree::nearest_entry_beam` is public on the Rust side.
 
 ### Changed
+- **Rust API (breaking): `Model::fit`, `kmeans_auto` and `spectral` take the restart count.** It
+  sits after `max_iter`, and `0` asks for `KMEANS_N_INIT` — the value they used before — so the
+  fix at every call site is to pass `0`. `spectral`'s private `N_INIT` and the Python layer's
+  `COP_N_INIT` are gone, both being the same constant under two names. No fit changes.
 - **The ELKI cross-check of the GMM head is re-run at five seeds, and it costs the E-step page one
   cell.** `research/RESULTS-estep.md` claimed the shipped head "leads at the median in all four
   cells" of an ELKI 0.8.0 comparison; three seeds could not separate a 0.02 ARI gap from its spread.

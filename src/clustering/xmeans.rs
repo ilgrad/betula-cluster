@@ -298,7 +298,7 @@ mod tests {
         let n = micros.len();
         assert_eq!(n, 24, "the fixture is four leaves per blob");
 
-        let swept = kmeans_auto(&micros, 1, n, 100, 0);
+        let swept = kmeans_auto(&micros, 1, n, 100, 4, 0);
         assert_eq!(swept.centers.len(), 6, "the sweep ran away toward {n}");
         assert!(ari(&swept.labels, &truth) > 0.99);
 
@@ -366,7 +366,7 @@ mod tests {
         assert_eq!(xmeans(&micros, 2, 20, 100, 3).centers.len(), 9);
         // The sweep, on the same leaves, is not fooled either — so the fixture does have nine
         // groups in it and the refusal at `k_min = 1` is the split test's, not the data's.
-        assert_eq!(kmeans_auto(&micros, 1, 20, 100, 3).centers.len(), 9);
+        assert_eq!(kmeans_auto(&micros, 1, 20, 100, 4, 3).centers.len(), 9);
     }
 
     #[test]
@@ -400,7 +400,7 @@ mod tests {
         // sweep cannot reach through the shipped path however good its score is.
         let (micros, truth) = blob_leaves(30, 10, 40, 11);
 
-        let swept = kmeans_auto(&micros, 1, 20, 100, 11);
+        let swept = kmeans_auto(&micros, 1, 20, 100, 4, 11);
         assert!(
             swept.centers.len() > 15,
             "the sweep answered {} well inside its cap, so the cap is not what bounds it here and \
@@ -488,7 +488,7 @@ mod tests {
                     let hi = 20.min(micros.len()); // AUTO_K_MAX, the sweep's shipped cap
 
                     let t0 = std::time::Instant::now();
-                    let ks = kmeans_auto(&micros, 1, hi, 100, seed).centers.len();
+                    let ks = kmeans_auto(&micros, 1, hi, 100, 4, seed).centers.len();
                     ts += t0.elapsed().as_secs_f64();
 
                     let t1 = std::time::Instant::now();

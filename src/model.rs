@@ -1,9 +1,9 @@
 //! End-to-end model: build a CF-tree, cluster its leaves (Phase 3), and label points.
 
 use crate::clustering::{
-    Gmm, GmmFull, GmmToeplitz, Linkage, Mfa, Movmf, Mppca, Objective, Watson, agglomerative,
-    agglomerative_auto, dyn_msc, fuzzy_cmeans, fuzzy_cmeans_auto, gmm_diagonal, gmm_diagonal_auto,
-    gmm_full, gmm_full_auto, gmm_toeplitz, gmm_toeplitz_auto, gmm_toeplitz_full,
+    Gmm, GmmFull, GmmToeplitz, KMEANS_N_INIT, Linkage, Mfa, Movmf, Mppca, Objective, Watson,
+    agglomerative, agglomerative_auto, dyn_msc, fuzzy_cmeans, fuzzy_cmeans_auto, gmm_diagonal,
+    gmm_diagonal_auto, gmm_full, gmm_full_auto, gmm_toeplitz, gmm_toeplitz_auto, gmm_toeplitz_full,
     gmm_toeplitz_full_auto, gmm_toeplitz_gs, gmm_toeplitz_gs_auto, hyperbolic_kmeans, kmeans,
     kmeans_auto, kmedoids, leiden, mfa, mfa_auto, movmf, movmf_auto, mppca, mppca_auto,
     project_to_sheet, spectral, spherical_kmeans, ward_hac, ward_hac_auto, watson, watson_auto,
@@ -268,17 +268,27 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> Mo
     /// Cluster the leaves of a tree that already contains the data. `k` is clamped to the number of
     /// available leaf micro-clusters; `k == 0` requests automatic BIC selection of the component
     /// count (GMM heads only — k-means falls back to a single cluster). `auto_k_max` overrides the
-    /// ceiling that selection searches under, and `0` takes the default. The realised cluster count
-    /// is available via [`Model::n_clusters`].
+    /// ceiling that selection searches under, and `0` takes the default. `n_init` is the restart
+    /// count of the inertia-selected heads, and `0` takes [`KMEANS_N_INIT`]. The realised cluster
+    /// count is available via [`Model::n_clusters`].
     pub fn fit(
         tree: CFTree<R, C, D, A>,
         k: usize,
         method: Method,
         max_iter: usize,
+        n_init: usize,
         seed: u64,
         auto_k_max: usize,
     ) -> Self {
-        let fit = fit_head(tree.leaf_features(), k, method, max_iter, seed, auto_k_max);
+        let fit = fit_head(
+            tree.leaf_features(),
+            k,
+            method,
+            max_iter,
+            n_init,
+            seed,
+            auto_k_max,
+        );
         let n_clusters = distinct_count(&fit.labels);
         let assign = match (assignment_rule(method), fit.mixture) {
             // A head that named its own centres keeps them: averaging the clusters instead would
@@ -589,22 +599,29 @@ pub(crate) fn auto_k_ceiling(method: Method, n_leaves: usize, auto_k_max: usize)
 /// the same point-level model out of it.
 ///
 /// `auto_k_max` overrides the ceiling the automatic arms search under; `0` takes the default.
+///
+/// `n_init` is the restart count for the heads whose final labels come from a k-means run selected
+/// by inertia — the k-means, spherical k-means and spectral arms; `0` takes [`KMEANS_N_INIT`]. The
+/// EM heads keep their own restart constants: their restarts are selected by likelihood, and the
+/// curve measured for `bench/RESULTS.md` shows that buys no direction in the labels.
 pub(crate) fn fit_head<R: Real, C: ClusterFeature<R>>(
     features: &[C],
     k: usize,
     method: Method,
     max_iter: usize,
+    n_init: usize,
     seed: u64,
     auto_k_max: usize,
 ) -> HeadFit<R> {
     let nlv = features.len();
+    let n_init = if n_init == 0 { KMEANS_N_INIT } else { n_init };
     let hi = auto_k_ceiling(method, nlv, auto_k_max);
     let kk = k.min(nlv).max(1);
     match method {
         Method::KMeans if k == 0 => {
-            HeadFit::hard(kmeans_auto(features, 1, hi, max_iter, seed).labels)
+            HeadFit::hard(kmeans_auto(features, 1, hi, max_iter, n_init, seed).labels)
         }
-        Method::KMeans => HeadFit::hard(kmeans(features, kk, max_iter, 4, seed).labels),
+        Method::KMeans => HeadFit::hard(kmeans(features, kk, max_iter, n_init, seed).labels),
         // `k == 0` has no meaning for total deviation, which falls monotonically in `k`. The medoid
         // silhouette can choose, so the automatic arm is DynMSC — a different objective, and the
         // head's docs say so rather than pretending the sweep is free.
@@ -654,7 +671,7 @@ pub(crate) fn fit_head<R: Real, C: ClusterFeature<R>>(
             HeadFit::hard(agglomerative(features, linkage, kk).labels)
         }
         // Spectral resolves `k == 0` (eigengap) and clamps internally, so one arm covers both.
-        Method::Spectral => HeadFit::hard(spectral(features, k, max_iter, seed).labels),
+        Method::Spectral => HeadFit::hard(spectral(features, k, max_iter, n_init, seed).labels),
         // Leiden discovers the community count from the graph; `k` is ignored (like HDBSCAN).
         Method::Leiden {
             resolution,
@@ -685,11 +702,11 @@ pub(crate) fn fit_head<R: Real, C: ClusterFeature<R>>(
         Method::SphericalKMeans if k == 0 => {
             let auto = movmf_auto(features, 1, hi, max_iter, seed).means.len();
             HeadFit::hard(
-                spherical_kmeans(features, auto.min(nlv).max(1), max_iter, 4, seed).labels,
+                spherical_kmeans(features, auto.min(nlv).max(1), max_iter, n_init, seed).labels,
             )
         }
         Method::SphericalKMeans => {
-            HeadFit::hard(spherical_kmeans(features, kk, max_iter, 4, seed).labels)
+            HeadFit::hard(spherical_kmeans(features, kk, max_iter, n_init, seed).labels)
         }
         Method::Movmf if k == 0 => HeadFit::soft(movmf_auto(features, 1, hi, max_iter, seed)),
         Method::Movmf => HeadFit::soft(movmf(features, kk, max_iter, seed)),
@@ -747,6 +764,29 @@ mod tests {
     use std::collections::HashMap;
 
     #[test]
+    fn the_restart_count_reaches_the_head_and_zero_is_the_default() {
+        // Nine blobs give k-means++ enough room to miss one on a single draw, which is the whole
+        // reason the head restarts. The point under test is the wiring: `0` has to mean
+        // `KMEANS_N_INIT` exactly, and a value the caller names has to survive as far as Lloyd.
+        let (feats, truth) = blob_leaves(30, 2, 40, 11);
+        let labels = |n_init| fit_head(&feats, 30, Method::KMeans, 100, n_init, 3, 0).labels;
+        assert_eq!(
+            labels(0),
+            labels(KMEANS_N_INIT),
+            "`0` must be the head's own default, not a zero-restart fit"
+        );
+        let (one, many) = (labels(1), labels(32));
+        assert_ne!(one, many, "the restart count never reached the head");
+        assert!(
+            ari(&many, &truth) >= ari(&one, &truth),
+            "restarts are selected by inertia: {} restarts scored {} against one draw's {}",
+            32,
+            ari(&many, &truth),
+            ari(&one, &truth)
+        );
+    }
+
+    #[test]
     fn end_to_end_hyperbolic_from_points() {
         // Three arms of `H^2` spanning radii 4 to 8 — the shape a hyperbolic embedding of a tree
         // has, and the one where the two geometries rank pairs differently. The wiring is what is
@@ -769,7 +809,7 @@ mod tests {
         for p in &pts {
             tree.insert(p);
         }
-        let mut model = Model::fit(tree, 3, Method::Hyperbolic, 100, 7, 0);
+        let mut model = Model::fit(tree, 3, Method::Hyperbolic, 100, 0, 7, 0);
         let labels: Vec<usize> = pts.iter().map(|p| model.predict(p)).collect();
         let score = ari(&labels, &truth);
         assert!(score > 0.9, "ARI = {score}");
@@ -790,7 +830,7 @@ mod tests {
         for p in &pts {
             tree.insert(p);
         }
-        let model = Model::fit(tree, 4, Method::KMeans, 100, 7, 0);
+        let model = Model::fit(tree, 4, Method::KMeans, 100, 0, 7, 0);
         let labels: Vec<usize> = pts.iter().map(|p| model.predict(p)).collect();
         let score = ari(&labels, &truth);
         assert!(score > 0.95, "ARI = {score}");
@@ -806,7 +846,7 @@ mod tests {
         for p in &pts {
             tree.insert(p);
         }
-        let model = Model::fit(tree, 3, Method::Gmm, 200, 3, 0);
+        let model = Model::fit(tree, 3, Method::Gmm, 200, 0, 3, 0);
         let labels: Vec<usize> = pts.iter().map(|p| model.predict(p)).collect();
         let score = ari(&labels, &truth);
         assert!(score > 0.95, "ARI = {score}");
@@ -822,7 +862,7 @@ mod tests {
         for p in &pts {
             tree.insert(p);
         }
-        let model = Model::fit(tree, 2, Method::KMeans, 100, 1, 0);
+        let model = Model::fit(tree, 2, Method::KMeans, 100, 0, 1, 0);
         assert_eq!(model.n_clusters(), 2);
         assert!(model.tree().num_leaves() > 0);
     }
@@ -878,7 +918,7 @@ mod tests {
             Method::Hyperbolic,
         ] {
             for k in [3usize, 0usize] {
-                let labels = fit_head(&feats, k, method, 100, 1, 0).labels;
+                let labels = fit_head(&feats, k, method, 100, 0, 1, 0).labels;
                 assert_eq!(labels.len(), feats.len());
             }
         }
@@ -926,7 +966,7 @@ mod tests {
         let n = feats.len();
         assert_eq!(n, 24, "the fixture is four leaves per blob");
         let selected: [(&str, usize); 9] = [
-            ("kmeans", kmeans_auto(&feats, 1, n, 100, 1).centers.len()),
+            ("kmeans", kmeans_auto(&feats, 1, n, 100, 4, 1).centers.len()),
             ("xmeans", xmeans(&feats, 2, n, 100, 1).centers.len()),
             ("kmedoids", dyn_msc(&feats, n, 100, 1).k),
             ("gmm", gmm_diagonal_auto(&feats, 1, n, 100, 1).means.len()),
@@ -978,9 +1018,9 @@ mod tests {
             ("mppca", Method::Mppca { rank: 2 }),
             ("mfa", Method::Mfa { rank: 2 }),
         ] {
-            let auto = distinct_count(&fit_head(&feats, 0, method, 100, 1, 0).labels);
-            let one = distinct_count(&fit_head(&feats, 1, method, 100, 1, 0).labels);
-            let two = distinct_count(&fit_head(&feats, 2, method, 100, 1, 0).labels);
+            let auto = distinct_count(&fit_head(&feats, 0, method, 100, 0, 1, 0).labels);
+            let one = distinct_count(&fit_head(&feats, 1, method, 100, 0, 1, 0).labels);
+            let two = distinct_count(&fit_head(&feats, 2, method, 100, 0, 1, 0).labels);
             assert!(auto > 1, "{name}: the automatic arm collapsed to {auto}");
             assert_eq!(one, 1, "{name}: k = 1 did not take the fixed arm");
             assert_eq!(two, 2, "{name}: k = 2 did not take the fixed arm");
@@ -995,15 +1035,15 @@ mod tests {
         // not silently inherit the sweep's `AUTO_K_MAX`, and that the head still finds structure.
         let feats = dispatch_leaves();
         for k in 1..=4 {
-            let got = distinct_count(&fit_head(&feats, k, Method::XMeans, 100, 1, 0).labels);
+            let got = distinct_count(&fit_head(&feats, k, Method::XMeans, 100, 0, 1, 0).labels);
             assert!(got <= k, "k = {k} is a cap, but the head returned {got}");
         }
         assert_eq!(
-            distinct_count(&fit_head(&feats, 1, Method::XMeans, 100, 1, 0).labels),
+            distinct_count(&fit_head(&feats, 1, Method::XMeans, 100, 0, 1, 0).labels),
             1,
             "a cap of 1 leaves nothing to split"
         );
-        let auto = distinct_count(&fit_head(&feats, 0, Method::XMeans, 100, 1, 0).labels);
+        let auto = distinct_count(&fit_head(&feats, 0, Method::XMeans, 100, 0, 1, 0).labels);
         assert!(auto > 1, "the automatic arm collapsed to {auto}");
         assert!(
             auto <= feats.len(),
@@ -1040,7 +1080,7 @@ mod tests {
         // rather than run for minutes to restate what 120 already shows.
         for &cap in &[AUTO_K_MAX, 120] {
             let t = Instant::now();
-            let km = kmeans_auto(&feats, 1, cap, 100, 0);
+            let km = kmeans_auto(&feats, 1, cap, 100, 4, 0);
             row("kmeans", cap, t, &km.labels, km.centers.len());
             let t = Instant::now();
             let g = gmm_diagonal_auto(&feats, 1, cap, 100, 0);
@@ -1065,7 +1105,7 @@ mod tests {
             ("mppca", Method::Mppca { rank: 2 }),
             ("mfa", Method::Mfa { rank: 2 }),
         ] {
-            let got = distinct_count(&fit_head(&feats, 0, method, 100, 1, 0).labels);
+            let got = distinct_count(&fit_head(&feats, 0, method, 100, 0, 1, 0).labels);
             assert_eq!(
                 got, AUTO_K_MAX,
                 "{name} is a sweep and must stop at the ceiling"
@@ -1081,7 +1121,7 @@ mod tests {
             ),
             ("xmeans", Method::XMeans),
         ] {
-            let fit = fit_head(&feats, 0, method, 100, 1, 0);
+            let fit = fit_head(&feats, 0, method, 100, 0, 1, 0);
             assert_eq!(
                 distinct_count(&fit.labels),
                 40,
@@ -1101,7 +1141,7 @@ mod tests {
         // its own score's choice and not the ceiling's doing.
         let (feats, truth) = blob_leaves(40, 10, 40, 7);
         for (name, method) in [("kmeans", Method::KMeans), ("gmm", Method::Gmm)] {
-            let fit = fit_head(&feats, 0, method, 100, 1, 60);
+            let fit = fit_head(&feats, 0, method, 100, 0, 1, 60);
             assert_eq!(
                 distinct_count(&fit.labels),
                 40,
@@ -1111,7 +1151,7 @@ mod tests {
         }
         // And it binds downward too, on a head the default does not bound at all: `ward` answers
         // 40 here when left alone. A ceiling is not a target, so what must hold is `<=`.
-        let held = distinct_count(&fit_head(&feats, 0, Method::Ward, 100, 1, 6).labels);
+        let held = distinct_count(&fit_head(&feats, 0, Method::Ward, 100, 0, 1, 6).labels);
         assert!(
             (2..=6).contains(&held),
             "auto_k_max must cap as well as raise, but ward answered {held}"
@@ -1198,7 +1238,7 @@ mod tests {
             for p in &pts {
                 tree.insert(p);
             }
-            let model = Model::fit(tree, 3, method, 100, 1, 0);
+            let model = Model::fit(tree, 3, method, 100, 0, 1, 0);
             let ok = matches!(
                 (assignment_rule(method), &model.assign),
                 (Rule::Centroid { .. }, Assignment::Centers { .. })
@@ -1224,7 +1264,7 @@ mod tests {
         for p in core.iter().chain(&satellite).chain(&far) {
             tree.insert(p);
         }
-        let model = Model::fit(tree, 2, Method::KMeans, 100, 1, 0);
+        let model = Model::fit(tree, 2, Method::KMeans, 100, 0, 1, 0);
         let probe = [7.0, 0.0];
         let micro = model.entry_labels[model.tree.nearest_entry(&probe)];
         assert_eq!(
@@ -1304,7 +1344,7 @@ mod tests {
         for p in &pts {
             tree.insert(p);
         }
-        let mut model = Model::fit(tree, 4, Method::KMeans, 100, 3, 0);
+        let mut model = Model::fit(tree, 4, Method::KMeans, 100, 0, 3, 0);
         let wcss = |m: &Model<f64, Diagonal<f64>, _, _>| -> f64 {
             let Assignment::Centers { centers, .. } = &m.assign else {
                 unreachable!("k-means is a centroid head")
@@ -1392,7 +1432,7 @@ mod tests {
             .iter()
             .map(|f| f.mean().to_vec())
             .collect();
-        let model = Model::fit(tree, 4, Method::KMedoids, 100, 6, 0);
+        let model = Model::fit(tree, 4, Method::KMedoids, 100, 0, 6, 0);
         let Assignment::Centers { centers, .. } = &model.assign else {
             unreachable!("the medoid head is a centroid head")
         };
@@ -1425,7 +1465,7 @@ mod tests {
         for p in &pts {
             tree.insert(p);
         }
-        let mut model = Model::fit(tree, 3, Method::KMedoids, 100, 8, 0);
+        let mut model = Model::fit(tree, 3, Method::KMedoids, 100, 0, 8, 0);
         let before: Vec<usize> = pts.iter().map(|p| model.predict(p)).collect();
         assert_eq!(model.refine(&flat, pts.len(), 2, 10), 0);
         let after: Vec<usize> = pts.iter().map(|p| model.predict(p)).collect();
@@ -1446,7 +1486,7 @@ mod tests {
             for p in &pts {
                 tree.insert(p);
             }
-            let mut model = Model::fit(tree, 3, method, 100, 2, 0);
+            let mut model = Model::fit(tree, 3, method, 100, 0, 2, 0);
             let before: Vec<usize> = pts.iter().map(|p| model.predict(p)).collect();
             assert_eq!(model.refine(&flat, pts.len(), 2, 10), 0, "{method:?}");
             let after: Vec<usize> = pts.iter().map(|p| model.predict(p)).collect();

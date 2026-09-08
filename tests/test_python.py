@@ -2027,6 +2027,75 @@ def test_balance_nonpositive_raises(blobs, bad):
         est.fit(x)
 
 
+def _many_blobs(k=30, per=40, seed=3):
+    """`k` overlapping 2-D blobs — enough of them that one k-means++ draw misses some."""
+    rng = np.random.default_rng(seed)
+    centers = rng.normal(0, 12.0, (k, 2))
+    x = np.vstack([rng.normal(c, 1.6, (per, 2)) for c in centers])
+    return x.astype(np.float64), np.repeat(np.arange(k), per)
+
+
+def _kmeans_labels(x, k, **kw):
+    est = betula_cluster.Betula(
+        n_clusters=k,
+        feature="spherical",
+        method="kmeans",
+        threshold=0.0,
+        max_leaves=500,
+        seed=0,
+        **kw,
+    )
+    return np.asarray(est.fit_predict(x))
+
+
+def test_more_restarts_change_the_kmeans_labels():
+    x, _ = _many_blobs()
+    one = _kmeans_labels(x, 30, n_init=1)
+    many = _kmeans_labels(x, 30, n_init=32)
+    assert not np.array_equal(one, many)
+
+
+def test_the_default_restart_count_is_what_the_head_would_have_taken():
+    x, _ = _many_blobs()
+    assert np.array_equal(_kmeans_labels(x, 30), _kmeans_labels(x, 30, n_init=4))
+
+
+@pytest.mark.parametrize("method", ["gmm", "ward", "hdbscan"])
+def test_n_init_on_a_head_that_ignores_it_raises(blobs, method):
+    x, _ = blobs
+    with pytest.raises(ValueError, match="no effect on method"):
+        betula_cluster.Betula(n_clusters=4, method=method, n_init=4).fit(x)
+
+
+def test_n_init_must_be_at_least_one(blobs):
+    x, _ = blobs
+    with pytest.raises(ValueError, match="n_init must be >= 1"):
+        betula_cluster.Betula(n_clusters=4, method="kmeans", n_init=0).fit(x)
+
+
+def test_n_init_round_trips_through_the_parameter_dict(blobs):
+    x, _ = blobs
+    est = betula_cluster.Betula(n_clusters=4, method="kmeans", n_init=7)
+    assert est.get_params()["n_init"] == 7
+    assert betula_cluster.Betula(**est.get_params()).fit(x).get_params()["n_init"] == 7
+    assert betula_cluster.Betula(n_clusters=4).get_params()["n_init"] is None
+
+
+def test_n_init_reaches_the_functional_and_sparse_entry_points():
+    x, _ = _many_blobs()
+    one = betula_cluster.fit_predict(
+        x, 30, feature="spherical", method="kmeans", threshold=0.0, max_leaves=500, n_init=1
+    )
+    many = betula_cluster.fit_predict(
+        x, 30, feature="spherical", method="kmeans", threshold=0.0, max_leaves=500, n_init=32
+    )
+    assert not np.array_equal(np.asarray(one), np.asarray(many))
+    sparse = pytest.importorskip("scipy.sparse")
+    csr = sparse.csr_matrix(np.abs(x))
+    labels = betula_cluster.fit_predict_sparse(csr, n_clusters=30, method="kmeans", n_init=8)
+    assert len(labels) == len(x)
+
+
 def _labels_at(balance, x, **kw):
     est = betula_cluster.Betula(
         n_clusters=4,

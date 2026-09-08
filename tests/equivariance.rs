@@ -208,7 +208,7 @@ fn all_heads(pts: &[Vec<f64>]) -> Vec<(&'static str, Vec<i64>)> {
             "fuzzy_cmeans",
             as_i64(&fuzzy_cmeans(&lv, K, 2.0, 100, SEED).labels),
         ),
-        ("spectral", as_i64(&spectral(&lv, K, 100, SEED).labels)),
+        ("spectral", as_i64(&spectral(&lv, K, 100, 4, SEED).labels)),
         (
             "dc_center",
             as_i64(&dc_clustering(&lv, K, DcObjective::Center, 8, 0, SEED).labels),

@@ -30,9 +30,9 @@ use crate::clustering::hyperbolic::lorentz_dot;
 use crate::clustering::nmf::{Projection, ProjectionKind, ProjectionSpec};
 use crate::clustering::scalespace::scale_space;
 use crate::clustering::{
-    BlockWeights, ConstraintError, Linkage, MixedCf, MixedRows, MixedSchema, bregman_agglomerative,
-    bregman_em, bregman_kmeans, cop_kmeans, kprototypes, nearest_micro, project_to_sheet,
-    summarize_mixed,
+    BlockWeights, ConstraintError, KMEANS_N_INIT, Linkage, MixedCf, MixedRows, MixedSchema,
+    bregman_agglomerative, bregman_em, bregman_kmeans, cop_kmeans, kprototypes, nearest_micro,
+    project_to_sheet, summarize_mixed,
 };
 use crate::clustering::{DcObjective, dc_clustering};
 use crate::clustering::{Reachability, optics};
@@ -469,12 +469,13 @@ fn dispatch_kind<R: Real, C: ClusterFeature<R>>(
     kind: Kind,
     k: usize,
     max_iter: usize,
+    n_init: usize,
     seed: u64,
     auto_k_max: usize,
 ) -> Dispatch {
     match kind {
         Kind::Parametric(method) => {
-            let fit = fit_head(feats, k, method, max_iter, seed, auto_k_max);
+            let fit = fit_head(feats, k, method, max_iter, n_init, seed, auto_k_max);
             let proba = fit.resp.map(|r| {
                 let kk = r.first().map_or(0, |row| row.len());
                 let flat = r
@@ -584,11 +585,13 @@ struct Labelling {
 /// Label leaf features, optionally projecting them to `nmf_dim`-dimensional CF-weighted NMF codes
 /// first (for nonnegative data). The head then clusters the codes; labels stay per-leaf so `predict`
 /// (point → leaf → label) is unchanged.
+#[allow(clippy::too_many_arguments)]
 fn label_features_proba<R: Real, C: ClusterFeature<R>>(
     feats: &[C],
     kind: Kind,
     k: usize,
     max_iter: usize,
+    n_init: usize,
     seed: u64,
     auto_k_max: usize,
     nmf_dim: Option<ProjectionSpec>,
@@ -599,7 +602,7 @@ fn label_features_proba<R: Real, C: ClusterFeature<R>>(
             // The head clustered *codes*, so its density lives in code space. A linear projection can
             // carry a raw row there and keep the head's own point rule; an NMF cannot, and falls back
             // to the microcluster route.
-            let d = dispatch_kind(&p.coded, kind, k, max_iter, seed, auto_k_max);
+            let d = dispatch_kind(&p.coded, kind, k, max_iter, n_init, seed, auto_k_max);
             let (labels, proba) = (d.labels, d.proba);
             let rule = projected_rule(&p, &labels, kind, d.mixture, d.rule);
             let parts = p
@@ -620,7 +623,7 @@ fn label_features_proba<R: Real, C: ClusterFeature<R>>(
             }
         }
         None => {
-            let d = dispatch_kind(feats, kind, k, max_iter, seed, auto_k_max);
+            let d = dispatch_kind(feats, kind, k, max_iter, n_init, seed, auto_k_max);
             Labelling {
                 labels: d.labels,
                 proba: d.proba,
@@ -632,8 +635,32 @@ fn label_features_proba<R: Real, C: ClusterFeature<R>>(
     }
 }
 
-/// k-means++ restarts for the constrained head (mirrors the unconstrained `kmeans` default).
-const COP_N_INIT: usize = 4;
+/// Whether a head takes its labels from a k-means run selected by inertia — the only place a
+/// restart count changes the answer in a direction the caller can predict. The EM heads restart too,
+/// but they select by likelihood, and the curve in `bench/RESULTS.md` shows that moves the labels
+/// without moving them anywhere.
+fn head_restarts(kind: Kind) -> bool {
+    matches!(
+        kind,
+        Kind::Parametric(Method::KMeans | Method::SphericalKMeans | Method::Spectral)
+    )
+}
+
+/// Validate `n_init` against the head that would consume it, and lower it to the engine sentinel:
+/// `0` asks for [`KMEANS_N_INIT`]. A value handed to a head that ignores it is an error rather than
+/// a silent no-op — the caller asked for something the fit will not do.
+fn parse_n_init(n_init: Option<usize>, kind: Kind, method: &str) -> PyResult<usize> {
+    match n_init {
+        None => Ok(0),
+        Some(0) => Err(PyValueError::new_err("n_init must be >= 1")),
+        Some(v) if head_restarts(kind) => Ok(v),
+        Some(_) => Err(PyValueError::new_err(format!(
+            "n_init has no effect on method='{method}': it is the restart count of the heads whose \
+             labels come from an inertia-selected k-means ('kmeans', 'spherical-kmeans', \
+             'spectral'). The EM heads keep their own restart count."
+        ))),
+    }
+}
 
 /// Run COP-KMeans over leaf features (already-translated leaf-index constraints) → `i64` labels.
 fn label_features_constrained<R: Real, C: ClusterFeature<R>>(
@@ -642,9 +669,11 @@ fn label_features_constrained<R: Real, C: ClusterFeature<R>>(
     must: &[(usize, usize)],
     cannot: &[(usize, usize)],
     max_iter: usize,
+    n_init: usize,
     seed: u64,
 ) -> Result<Vec<i64>, ConstraintError> {
-    cop_kmeans(feats, k, must, cannot, max_iter, COP_N_INIT, seed)
+    let n_init = if n_init == 0 { KMEANS_N_INIT } else { n_init };
+    cop_kmeans(feats, k, must, cannot, max_iter, n_init, seed)
         .map(|v| v.into_iter().map(|c| c as i64).collect())
 }
 
@@ -1545,6 +1574,7 @@ fn cluster<R: Real, C: ClusterFeature<R>>(
     leaf_cap: usize,
     max_leaves: usize,
     max_iter: usize,
+    n_init: usize,
     seed: u64,
     auto_k_max: usize,
     shards: usize,
@@ -1585,6 +1615,7 @@ fn cluster<R: Real, C: ClusterFeature<R>>(
                     kind,
                     k,
                     max_iter,
+                    n_init,
                     seed,
                     auto_k_max,
                     nmf_dim,
@@ -1597,7 +1628,7 @@ fn cluster<R: Real, C: ClusterFeature<R>>(
                 }
             }
             None => {
-                let mut model = Model::fit(tree, k, method, max_iter, seed, auto_k_max);
+                let mut model = Model::fit(tree, k, method, max_iter, n_init, seed, auto_k_max);
                 model.refine(flat, n, dim, refine);
                 map_rows(n, |i| model.predict(&flat[i * dim..(i + 1) * dim]) as i64)
             }
@@ -1663,6 +1694,7 @@ fn run_oneshot<R: Real + Element>(
     leaf_cap: usize,
     max_leaves: usize,
     max_iter: usize,
+    n_init: usize,
     seed: u64,
     shards: usize,
     normalize: bool,
@@ -1705,6 +1737,7 @@ fn run_oneshot<R: Real + Element>(
                 leaf_cap,
                 max_leaves,
                 max_iter,
+                n_init,
                 seed,
                 auto_k_max,
                 shards,
@@ -1728,6 +1761,7 @@ fn run_oneshot<R: Real + Element>(
                 leaf_cap,
                 max_leaves,
                 max_iter,
+                n_init,
                 seed,
                 auto_k_max,
                 shards,
@@ -1751,6 +1785,7 @@ fn run_oneshot<R: Real + Element>(
                 leaf_cap,
                 max_leaves,
                 max_iter,
+                n_init,
                 seed,
                 auto_k_max,
                 shards,
@@ -1774,6 +1809,7 @@ fn run_oneshot<R: Real + Element>(
                 leaf_cap,
                 max_leaves,
                 max_iter,
+                n_init,
                 seed,
                 auto_k_max,
                 shards,
@@ -1819,7 +1855,7 @@ fn run_oneshot<R: Real + Element>(
 #[pyfunction]
 #[pyo3(signature = (
     data, n_clusters = 8, feature = "diagonal", method = "gmm", threshold = 0.0,
-    branching = 32, leaf_cap = 32, max_leaves = 2000, max_iter = 100,
+    branching = 32, leaf_cap = 32, max_leaves = 2000, max_iter = 100, n_init = None,
     min_samples = 5, min_cluster_size = 5, seed = 0, distance = "euclidean",
     absorb = "euclidean", chi2_p = 0.95, chi2_scale = 0.0, n_shards = None, normalize = false,
     resolution = 1.0, covariance_weight = 0.0, tangent_weight = 0.0, tangent_rank = 2,
@@ -1839,6 +1875,7 @@ fn fit_predict<'py>(
     leaf_cap: usize,
     max_leaves: usize,
     max_iter: usize,
+    n_init: Option<usize>,
     min_samples: usize,
     min_cluster_size: usize,
     seed: u64,
@@ -1890,6 +1927,7 @@ fn fit_predict<'py>(
         fuzzifier,
     )?;
     let nmf_dim = parse_projection(projection, projection_dim, projection_max_iter)?;
+    let n_init = parse_n_init(n_init, kind, method)?;
     let (balance, auto_balance) = parse_balance(balance)?;
     let (labels, leaves) = if let Ok(a) = data.extract::<PyReadonlyArray2<'py, f64>>() {
         run_oneshot::<f64>(
@@ -1907,6 +1945,7 @@ fn fit_predict<'py>(
             leaf_cap,
             max_leaves,
             max_iter,
+            n_init,
             seed,
             shards,
             normalize,
@@ -1934,6 +1973,7 @@ fn fit_predict<'py>(
             leaf_cap,
             max_leaves,
             max_iter,
+            n_init,
             seed,
             shards,
             normalize,
@@ -2127,11 +2167,13 @@ impl<R: Real> TreeState<R> {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn label_proba(
         &self,
         kind: Kind,
         k: usize,
         max_iter: usize,
+        n_init: usize,
         seed: u64,
         auto_k_max: usize,
         nmf_dim: Option<ProjectionSpec>,
@@ -2142,6 +2184,7 @@ impl<R: Real> TreeState<R> {
                 kind,
                 k,
                 max_iter,
+                n_init,
                 seed,
                 auto_k_max,
                 nmf_dim,
@@ -2151,6 +2194,7 @@ impl<R: Real> TreeState<R> {
                 kind,
                 k,
                 max_iter,
+                n_init,
                 seed,
                 auto_k_max,
                 nmf_dim,
@@ -2160,6 +2204,7 @@ impl<R: Real> TreeState<R> {
                 kind,
                 k,
                 max_iter,
+                n_init,
                 seed,
                 auto_k_max,
                 nmf_dim,
@@ -2169,6 +2214,7 @@ impl<R: Real> TreeState<R> {
                 kind,
                 k,
                 max_iter,
+                n_init,
                 seed,
                 auto_k_max,
                 nmf_dim,
@@ -2183,21 +2229,46 @@ impl<R: Real> TreeState<R> {
         must: &[(usize, usize)],
         cannot: &[(usize, usize)],
         max_iter: usize,
+        n_init: usize,
         seed: u64,
     ) -> Result<Vec<i64>, ConstraintError> {
         match self {
-            TreeState::Spherical(t) => {
-                label_features_constrained(t.leaf_features(), k, must, cannot, max_iter, seed)
-            }
-            TreeState::Diagonal(t) => {
-                label_features_constrained(t.leaf_features(), k, must, cannot, max_iter, seed)
-            }
-            TreeState::Full(t) => {
-                label_features_constrained(t.leaf_features(), k, must, cannot, max_iter, seed)
-            }
-            TreeState::Fd(t) => {
-                label_features_constrained(t.leaf_features(), k, must, cannot, max_iter, seed)
-            }
+            TreeState::Spherical(t) => label_features_constrained(
+                t.leaf_features(),
+                k,
+                must,
+                cannot,
+                max_iter,
+                n_init,
+                seed,
+            ),
+            TreeState::Diagonal(t) => label_features_constrained(
+                t.leaf_features(),
+                k,
+                must,
+                cannot,
+                max_iter,
+                n_init,
+                seed,
+            ),
+            TreeState::Full(t) => label_features_constrained(
+                t.leaf_features(),
+                k,
+                must,
+                cannot,
+                max_iter,
+                n_init,
+                seed,
+            ),
+            TreeState::Fd(t) => label_features_constrained(
+                t.leaf_features(),
+                k,
+                must,
+                cannot,
+                max_iter,
+                n_init,
+                seed,
+            ),
         }
     }
 
@@ -2587,6 +2658,7 @@ fn constrained_labels<R: Real>(
     cannot: &[(i64, i64)],
     k: usize,
     max_iter: usize,
+    n_init: usize,
     seed: u64,
 ) -> PyResult<Vec<i64>> {
     let leaf_of = |idx: i64| -> PyResult<usize> {
@@ -2620,7 +2692,7 @@ fn constrained_labels<R: Real>(
     leaf_must.dedup();
     leaf_cannot.sort_unstable();
     leaf_cannot.dedup();
-    tree.label_constrained(k, &leaf_must, &leaf_cannot, max_iter, seed)
+    tree.label_constrained(k, &leaf_must, &leaf_cannot, max_iter, n_init, seed)
         .map_err(|e| PyValueError::new_err(constraint_msg(e)))
 }
 
@@ -2684,6 +2756,9 @@ struct Betula {
     leaf_cap: usize,
     max_leaves: usize,
     max_iter: usize,
+    /// `None` leaves every head on its own restart count; see [`parse_n_init`].
+    #[serde(default)]
+    n_init: Option<usize>,
     seed: u64,
     absorb: String,
     chi2_p: f64,
@@ -3218,20 +3293,21 @@ impl Betula {
     /// entry point (`fit`, `fit_predict`, `partial_fit(None)`, and both CSR paths) funnels through,
     /// so the rule lives here rather than being repeated at each of them.
     fn finalize(&mut self, py: Python<'_>) -> PyResult<()> {
-        let (kind, k, mi, seed, akm, nmf) = (
+        let (kind, k, mi, ni, seed, akm, nmf) = (
             self.kind,
             self.n_clusters,
             self.max_iter,
+            self.n_init.unwrap_or(0),
             self.seed,
             self.auto_k_max,
             self.projection_spec(),
         );
         let result = if let Some(t) = &self.state64 {
-            Some(t.label_proba(kind, k, mi, seed, akm, nmf))
+            Some(t.label_proba(kind, k, mi, ni, seed, akm, nmf))
         } else {
             self.state32
                 .as_ref()
-                .map(|t| t.label_proba(kind, k, mi, seed, akm, nmf))
+                .map(|t| t.label_proba(kind, k, mi, ni, seed, akm, nmf))
         };
         match result {
             Some(out) => {
@@ -3278,15 +3354,21 @@ impl Betula {
         must: &[(i64, i64)],
         cannot: &[(i64, i64)],
     ) -> PyResult<()> {
-        let (k, mi, seed, norm) = (self.n_clusters, self.max_iter, self.seed, self.row_prep());
+        let (k, mi, ni, seed, norm) = (
+            self.n_clusters,
+            self.max_iter,
+            self.n_init.unwrap_or(0),
+            self.seed,
+            self.row_prep(),
+        );
         let labels = if let Some(t) = self.state64.as_ref() {
             let (src, n, dim) = flat_as::<f64>(data, norm)?;
             let flat = src.as_slice();
-            constrained_labels(t, flat, n, dim, must, cannot, k, mi, seed)?
+            constrained_labels(t, flat, n, dim, must, cannot, k, mi, ni, seed)?
         } else if let Some(t) = self.state32.as_ref() {
             let (src, n, dim) = flat_as::<f32>(data, norm)?;
             let flat = src.as_slice();
-            constrained_labels(t, flat, n, dim, must, cannot, k, mi, seed)?
+            constrained_labels(t, flat, n, dim, must, cannot, k, mi, ni, seed)?
         } else {
             return Err(PyValueError::new_err("no data was fitted"));
         };
@@ -3454,7 +3536,7 @@ impl Betula {
     #[new]
     #[pyo3(signature = (
         n_clusters = 8, feature = "diagonal", method = "gmm", threshold = 0.0,
-        branching = 32, leaf_cap = 32, max_leaves = 2000, max_iter = 100,
+        branching = 32, leaf_cap = 32, max_leaves = 2000, max_iter = 100, n_init = None,
         min_samples = 5, min_cluster_size = 5, seed = 0,
         distance = "euclidean", absorb = "euclidean", chi2_p = 0.95, chi2_scale = 0.0, decay = 1.0,
         normalize = false, huber_k = None, resolution = 1.0, covariance_weight = 0.0,
@@ -3473,6 +3555,7 @@ impl Betula {
         leaf_cap: usize,
         max_leaves: usize,
         max_iter: usize,
+        n_init: Option<usize>,
         min_samples: usize,
         min_cluster_size: usize,
         seed: u64,
@@ -3543,10 +3626,12 @@ impl Betula {
             }
         }
         let (balance, balance_auto) = parse_balance(balance)?;
+        parse_n_init(n_init, kind, method)?; // validated here, lowered to the sentinel at use
         Ok(Self {
             feature: feature.to_string(),
             kind,
             route,
+            n_init,
             method: method.to_string(),
             distance: distance.to_string(),
             min_samples,
@@ -4248,6 +4333,7 @@ impl Betula {
         d.set_item("leaf_cap", self.leaf_cap)?;
         d.set_item("max_leaves", self.max_leaves)?;
         d.set_item("max_iter", self.max_iter)?;
+        d.set_item("n_init", self.n_init)?;
         d.set_item("min_samples", self.min_samples)?;
         d.set_item("min_cluster_size", self.min_cluster_size)?;
         d.set_item("seed", self.seed)?;
@@ -5806,7 +5892,7 @@ impl SparseRule<'_> {
 #[pyfunction]
 #[pyo3(signature = (
     data, indices, indptr, n_features, n_clusters = 8, method = "kmeans",
-    threshold = 0.0, max_leaves = 2048, max_iter = 100, seed = 0,
+    threshold = 0.0, max_leaves = 2048, max_iter = 100, n_init = None, seed = 0,
     projection = "none", projection_dim = 64, projection_max_iter = 100, auto_k_max = 0
 ))]
 #[allow(clippy::too_many_arguments)]
@@ -5821,6 +5907,7 @@ fn fit_predict_sparse<'py>(
     threshold: f64,
     max_leaves: usize,
     max_iter: usize,
+    n_init: Option<usize>,
     seed: u64,
     projection: &str,
     projection_dim: usize,
@@ -5828,6 +5915,7 @@ fn fit_predict_sparse<'py>(
     auto_k_max: usize,
 ) -> PyResult<Bound<'py, PyArray1<i64>>> {
     let m = parse_parametric(method)?;
+    let n_init = parse_n_init(n_init, Kind::Parametric(m), method)?;
     let spec = parse_projection(projection, projection_dim, projection_max_iter)?;
     let data = data.as_slice()?;
     if matches!(spec.map(|s| s.kind), Some(ProjectionKind::Nmf { .. })) {
@@ -5857,7 +5945,9 @@ fn fit_predict_sparse<'py>(
         );
         let leaves = micros.len();
         let kind = Kind::Parametric(m);
-        let out = label_features_proba(&micros, kind, n_clusters, max_iter, seed, auto_k_max, spec);
+        let out = label_features_proba(
+            &micros, kind, n_clusters, max_iter, n_init, seed, auto_k_max, spec,
+        );
         // A linear projection labels each row from its own code, touching only the non-zeros.
         let labels = match &out.rule {
             Some(rule) => rule.label_csr(data, indices, indptr, n_features),
