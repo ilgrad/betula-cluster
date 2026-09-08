@@ -153,6 +153,22 @@ answer.
 (`leiden` reads the count off the graph — tune granularity with `resolution` γ, higher ⇒ more).
 For a robustness score per point, wrap any partitional head in `consensus` (see below).
 
+### The leaf feature a covariance head can read
+
+`feature="spherical"` keeps one scalar of within-leaf scatter per leaf. `gmm`, `gmm-full` and `mfa`
+read a *per-component* covariance off that summary, and a scalar cannot supply one: `Spherical`'s
+`cov_dense` hands back `ssd/(w·dim) · I`, so every component gets the same isotropic term added,
+`ln|Σ_c|` moves with it, and the maximum-posterior argmax follows. On `digits` at ×2.0 compression
+that is ARI 0.0097 against 0.4343 for `feature="diagonal"` — a collapse, not a degradation. **The
+library raises on that pair** rather than warning, and `tune()`'s default space does not propose it.
+Pass `feature="diagonal"` (or `"full"`, or `"fd"` in high dimension).
+
+The exemptions are measured, not assumed. `mppca` is unaffected because its own model *is* a
+low-rank subspace plus isotropic noise — its `σ²` absorbs the addition — and the `gmm-toeplitz`
+family reads covariance off the between-leaf structure and scores identically on both features. The
+centroid, linkage, graph and density heads never touch the leaf covariance at all. Numbers in
+[bench/RESULTS.md](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md).
+
 ### `auto_k_max` — the ceiling `n_clusters=0` searches under
 
 Two families of selector sit behind `n_clusters=0`, and they pay for a wide search differently.

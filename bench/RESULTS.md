@@ -1285,13 +1285,38 @@ test, medians of seeds 0/1/2 on `digits`:
 two columns are unchanged to the digit, which is the control — neither feature touches `FdSketch`.)
 
 The ×1.0 row is the control: with no scatter to add, all three agree to the digit. `gmm-full` on the
-spherical feature collapses the same way (0.0096 at 1200 leaves, 0.0115 at 500) and never does on
-`feature="full"`, since `cov_dense`'s default is the same isotropic diagonal.
+spherical feature collapses the same way (0.0096 at 1200 leaves, 0.0115 at 500 — both reproduced on
+2026-09-09) and never does on `feature="full"`, since `cov_dense`'s default is the same isotropic
+diagonal.
 
 So `method="gmm"` with `feature="spherical"` is a mismatch as soon as the tree compresses: the head
-asks for a per-dimension covariance and the feature has none. That combination now **warns**, naming
-the measured cost and the fix. The other heads read the same isotropic `variance(d)` and were not
-measured, so the warning does not claim them.
+asks for a per-dimension covariance and the feature has none.
+
+**The other covariance heads were then measured rather than assumed, and the pair is now refused
+rather than warned about.** Digits, medians of seeds 0/1/2, `spherical` against `full` at leaf
+budgets 1797 / 1200 / 900 / 500 / 300 (`local/scratch/q9_budget_sweep.out`):
+
+| head | `spherical` | `full` | verdict |
+|---|---|---|---|
+| `gmm` | 0.0097 at ×2.0 | 0.4343 | **refused** |
+| `gmm-full` | 0.0096 (1200), 0.0115 (500), healthy at the other three | 0.6220, 0.5131 | **refused** |
+| `mfa` | 0.0086 at ×2.0 | 0.4949 | **refused** |
+| `mppca` | 0.5197 / 0.6381 / 0.5945 / 0.4888 / 0.4596 | 0.5197 / 0.6346 / 0.5876 / 0.4773 / 0.4468 | allowed |
+| `gmm-toeplitz`, `-full` | identical to four decimals on both features, all five budgets | — | allowed |
+| `gmm-toeplitz-gs` | 0.0911 = 0.0911 at ×2.0, the one budget it was measured on | — | allowed |
+
+`mppca` is the interesting row and its mechanism is the reason it stays: its model *is* a low-rank
+subspace plus isotropic noise, so an isotropic addition is exactly what its own `σ²` term is there to
+explain. The Toeplitz family reads its covariance off the between-leaf structure and never touches
+`variance(d)` in a way the feature can change. `gmm-full` is the reason the refusal is unconditional
+rather than budget-dependent: an answer that is right at three budgets and near zero at two is worse
+than no answer, and the caller cannot tell which they got.
+
+The three studies that swept `("kmeans", "gmm", "ward")` on `feature="spherical"` —
+`bench/leaf_budget.py`, `bench/size_imbalance.py`, `bench/insertion_order.py` — now put the `gmm`
+head on `feature="diagonal"`. **Their published `gmm` columns, including the ×2.0 collapse above,
+were measured on the pair the library no longer accepts**; they stand as the evidence for the
+refusal and will move when those tables are next re-run.
 - **The routing distance only exists under compression, mechanically.** At ×1.0 the spread across
   `euclidean` / `manhattan` / `ward` / `average` is exactly **0.0000** on all three datasets: the four
   distances build the identical singleton leaf set, so there is nothing left to differ. The spread

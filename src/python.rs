@@ -217,28 +217,46 @@ fn warn_no_compression(py: Python<'_>, leaves: usize, n: usize, max_leaves: usiz
 /// The ×1.0 row is the control: with no within-leaf scatter to add, all three agree to the digit.
 /// `gmm-full` shows the same collapse on the same feature (0.0096 at 1200 leaves, 0.0115 at 500) and
 /// none of it on `feature="full"`. The other heads read the same isotropic `variance(d)` but were not
-/// measured, so they are not covered here.
-fn warn_isotropic_gaussian(
-    py: Python<'_>,
-    method: &str,
-    feature: &str,
-    leaves: usize,
-    n: usize,
-) -> PyResult<()> {
-    if feature != "spherical" || leaves >= n || !matches!(method, "gmm" | "gmm-full") {
+/// Refuse the head/feature pairs whose model cannot be read off the summary.
+///
+/// `Spherical` carries a single scalar `S`, so `variance(d) = S/(w·d)` is the **same** number in
+/// every dimension and `cov_dense` is that number times `I`. A head that reads a per-component
+/// covariance then has an isotropic term added to it: a dimension with genuinely near-zero variance
+/// is lifted to the average, `ln|Σ_c|` moves, and the maximum-posterior argmax the labels come from
+/// follows it. The fit itself stays healthy — labelling the same points by nearest fitted centre
+/// recovers the score, which is how the cause was found (`bench/RESULTS.md`, task #89).
+///
+/// Measured on digits, medians of seeds 0/1/2, `spherical` against `full`, over leaf budgets 1797 /
+/// 1200 / 900 / 500 / 300 (`local/scratch/q9_budget_sweep.out`):
+///
+/// * `gmm` — 0.0097 against 0.4343 at ×2.0. Refused.
+/// * `gmm-full` — collapses at two of the five budgets, 0.0096 against 0.6220 and 0.0115 against
+///   0.5131, and is healthy at the other three. Refused: an answer that is right at three budgets
+///   and near-zero at two is worse than no answer.
+/// * `mfa` — 0.0086 against 0.4949 at ×2.0. Refused.
+/// * `mppca` — 0.5197 / 0.6381 / 0.5945 / 0.4888 / 0.4596 against 0.5197 / 0.6346 / 0.5876 / 0.4773
+///   / 0.4468. Allowed, and the mechanism says why: its model *is* low-rank plus isotropic noise, so
+///   an isotropic addition is exactly what its own `σ²` term is there to explain.
+/// * `gmm-toeplitz`, `-full`, `-gs` — identical to four decimals on both features at every budget;
+///   the covariance they fit comes from the between-leaf structure. Allowed.
+fn require_dimensionwise_feature(feature: &str, kind: Kind, method: &str) -> PyResult<()> {
+    let reads_the_leaf_covariance = matches!(
+        kind,
+        Kind::Parametric(Method::Gmm | Method::GmmFull | Method::Mfa { .. })
+    );
+    if feature != "spherical" || !reads_the_leaf_covariance {
         return Ok(());
     }
-    let msg = CString::new(format!(
-        "method=\"{method}\" fits a per-dimension covariance, but feature=\"spherical\" carries only \
-         a scalar within-leaf scatter, so the same isotropic number is added to every dimension. \
-         With {leaves} leaves for {n} points that is a real compression, and it distorts each \
-         component's log-determinant — measured on digits at x2.0 compression the labels fall to \
-         ARI 0.0088 against 0.4403 for feature=\"full\", while the fitted centres stay healthy. Pass \
-         feature=\"full\" (or \"fd\" for high dimension), or keep max_leaves at n so the tree does \
-         not compress."
-    ))
-    .expect("the formatted warning contains no interior NUL");
-    PyErr::warn(py, &py.get_type::<PyUserWarning>(), &msg, 1)
+    Err(PyValueError::new_err(format!(
+        "method=\"{method}\" reads a per-component covariance off the leaf summary, and \
+         feature=\"spherical\" carries only a scalar within-leaf scatter — the same number is \
+         added to every dimension, which distorts each component's log-determinant and with it the \
+         posterior the labels come from. Measured on digits at x2.0 compression that is ARI 0.0097 \
+         against 0.4343 for feature=\"diagonal\". Pass feature=\"diagonal\" (or \"full\", or \
+         \"fd\" in high dimension). feature=\"spherical\" stays right for the centroid heads, for \
+         the gmm-toeplitz family, and for method=\"mppca\", whose own isotropic noise term absorbs \
+         the addition."
+    )))
 }
 
 /// The `balance` argument, which is one of three things and must stay one argument.
@@ -1978,6 +1996,7 @@ fn fit_predict<'py>(
     )?;
     let nmf_dim = parse_projection(projection, projection_dim, projection_max_iter)?;
     let n_init = parse_n_init(n_init, kind, method)?;
+    require_dimensionwise_feature(feature, kind, method)?;
     let (balance, auto_balance) = parse_balance(balance)?;
     let (labels, leaves) = if let Ok(a) = data.extract::<PyReadonlyArray2<'py, f64>>() {
         run_oneshot::<f64>(
@@ -2044,7 +2063,6 @@ fn fit_predict<'py>(
         warn_leaf_budget(py, leaves, n_clusters, max_leaves)?;
     }
     warn_no_compression(py, leaves, labels.len(), max_leaves)?;
-    warn_isotropic_gaussian(py, method, feature, leaves, labels.len())?;
     Ok(labels.into_pyarray(py))
 }
 
@@ -3385,14 +3403,6 @@ impl Betula {
             seen.dedup();
             warn_auto_k_saturated(py, kind, k, seen.len(), self.n_leaves_(), akm)?;
         }
-        // The estimator does not carry a point count, but the leaf weights sum to one — and for the
-        // unweighted `fit(X)` path that sum *is* `n`, which is what the compression test needs.
-        let seen = self
-            .leaf_stats_any()
-            .map_or(0.0, |(_, w, _, _)| w.iter().sum::<f64>());
-        let method = self.method.clone();
-        let feature = self.feature.clone();
-        warn_isotropic_gaussian(py, &method, &feature, self.n_leaves_(), seen as usize)?;
         Ok(())
     }
 
@@ -3663,6 +3673,7 @@ impl Betula {
                 "feature must be 'spherical', 'diagonal', 'full' or 'fd'",
             ));
         }
+        require_dimensionwise_feature(feature, kind, method)?;
         // The estimator rejects a bad `absorb` at construction, before any data has fixed `dim`, but
         // the accepted names and the χ²-scale rule belong to `resolve_gate`. Ask it with a
         // placeholder `dim` and drop the gate it builds, rather than restating them here where the

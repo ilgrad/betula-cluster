@@ -152,6 +152,25 @@ All notable changes to this project are documented here. The format follows
   **Labels change** for `method="hdbscan"` / `"dc-center"` / `"dc-median"` fits that did not name a
   `min_samples`; an explicit integer is used exactly as before. `get_params()` reports `None` for the
   automatic state, and `auto_min_samples` / `AUTO_MIN_SAMPLES_LEAVES` are public on the Rust side.
+- **A covariance head with `feature="spherical"` is now refused, not warned about.** `Spherical`
+  keeps one scalar of within-leaf scatter, and `cov_dense` hands it back as `ssd/(w·dim) · I` — so a
+  head reading a per-component covariance gets the *same* isotropic term added to every component,
+  `ln|Σ_c|` moves with it, and the maximum-posterior argmax follows. On `digits` at ×2.0 compression
+  `method="gmm"` reads ARI **0.0097** against 0.4343 on `feature="diagonal"`; nearest-centre
+  labelling of the same fitted model reads 0.5288, which is how the head rather than the fit was
+  identified as the loser. 0.8.0 warned on the `gmm` pair only, on the grounds that the other heads
+  were unmeasured. They have now been measured, over five leaf budgets on `digits` (medians of seeds
+  0/1/2): `gmm-full` collapses at two of the five (0.0096 and 0.0115 against 0.6220 and 0.5131) and
+  `mfa` at ×2.0 (0.0086 against 0.4949), while `mppca` — whose model is a low-rank subspace plus its
+  own isotropic noise — and the three `gmm-toeplitz` rungs, which read covariance off the
+  between-leaf structure, are unaffected to four decimals.
+
+  So `method` ∈ {`gmm`, `gmm-full`, `mfa`} with `feature="spherical"` now raises a `ValueError`
+  naming the measured cost and the fix, and `tune()`'s default space stops proposing the pair. An
+  answer that is right at three budgets and near zero at two is worse than no answer, and the caller
+  cannot tell which one they got. `bench/leaf_budget.py`, `bench/size_imbalance.py` and
+  `bench/insertion_order.py` measured their `gmm` column on that pair; they now pass `"diagonal"`,
+  and those published tables will move when next re-run.
 - **Rust API (breaking): `Model::fit`, `kmeans_auto` and `spectral` take the restart count.** It
   sits after `max_iter`, and `0` asks for `KMEANS_N_INIT` — the value they used before — so the
   fix at every call site is to pass `0`. `spectral`'s private `N_INIT` and the Python layer's

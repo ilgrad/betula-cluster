@@ -368,7 +368,9 @@ def ar_windows():
 
 def test_gmm_toeplitz_separates_ar_mixture(ar_windows):
     x, y = ar_windows
-    kw = dict(feature="spherical", threshold=0.0, seed=1)
+    # `diagonal` for both arms: the Toeplitz head reads the same answer off either feature, and the
+    # diagonal GMM it is measured against cannot be given a scalar scatter.
+    kw = dict(feature="diagonal", threshold=0.0, seed=1)
     toe = betula_cluster.fit_predict(x, 3, method="gmm-toeplitz", **kw)
     diag = betula_cluster.fit_predict(x, 3, method="gmm", **kw)
     a_toe, a_diag = ari(toe, y), ari(diag, y)
@@ -398,7 +400,7 @@ def test_gmm_toeplitz_predict_proba(ar_windows):
 
 def test_gmm_toeplitz_full_clusters_ar_mixture(ar_windows):
     x, y = ar_windows
-    kw = dict(feature="spherical", threshold=0.0, seed=1)
+    kw = dict(feature="diagonal", threshold=0.0, seed=1)
     full = betula_cluster.fit_predict(x, 3, method="gmm-toeplitz-full", **kw)
     diag = betula_cluster.fit_predict(x, 3, method="gmm", **kw)
     a_full, a_diag = ari(full, y), ari(diag, y)
@@ -1821,7 +1823,7 @@ def test_validity_agrees_with_sklearn_on_the_indices_that_are_exact():
     # threshold=0 with a leaf budget above N gives one leaf per point, so the leaf summary is the
     # data and the exact index must agree with sklearn's point-level one to floating-point noise.
     est = betula_cluster.Betula(
-        n_clusters=3, feature="spherical", threshold=0.0, max_leaves=4000, seed=0
+        n_clusters=3, feature="diagonal", threshold=0.0, max_leaves=4000, seed=0
     )
     labels = est.fit_predict(x)
     got = est.validity()["calinski_harabasz"]
@@ -1854,7 +1856,7 @@ def test_summary_mmd_vanishes_when_the_summary_kept_every_point(blobs):
     x, _ = blobs
     # threshold=0 with a budget above N is one leaf per point: the surrogate *is* the sample.
     est = betula_cluster.Betula(
-        n_clusters=4, feature="spherical", threshold=0.0, max_leaves=4000, seed=0
+        n_clusters=4, feature="diagonal", threshold=0.0, max_leaves=4000, seed=0
     )
     est.partial_fit(x)
     assert est.summary_mmd(x, bandwidth=2.0) < 1e-9
@@ -4702,7 +4704,7 @@ def test_svd_predict_proba_still_agrees_with_predict():
     x, _ = _topic_rows(seed=3)
     est = betula_cluster.Betula(
         n_clusters=6,
-        feature="spherical",
+        feature="diagonal",
         method="gmm",
         max_leaves=200,
         seed=0,
@@ -4740,36 +4742,50 @@ def test_a_binding_budget_does_not_warn_about_compression():
         betula_cluster.fit_predict(x, 3, max_leaves=500, threshold=0.0, seed=0)
 
 
-def test_a_compressing_gmm_on_a_spherical_feature_warns_about_isotropic_scatter():
+@pytest.mark.parametrize("method", ["gmm", "gmm-full", "mfa"])
+def test_a_head_that_reads_the_leaf_covariance_refuses_a_spherical_feature(method):
     """`Spherical::variance(_d)` ignores its argument: it returns one isotropic number for every
-    dimension, because a spherical cluster feature carries a scalar scatter. A diagonal GMM adds
-    that number to all `dim` component variances, so under compression a dimension with genuinely
-    near-zero variance is lifted to the isotropic average. Measured on digits at x2.0 compression
-    that costs ARI 0.4403 -> 0.0088 while the fitted centres stay healthy, so the mismatch is worth
-    a warning rather than a silent wrong answer."""
+    dimension, because a spherical cluster feature carries a scalar scatter. A head that reads a
+    per-component covariance then has that same number added to it, and a dimension with genuinely
+    near-zero variance is lifted to the isotropic average, which moves `ln|Sigma_c|` and with it the
+    posterior argmax. Measured on digits, ARI against `full`: `gmm` 0.0097 against 0.4343 at x2.0,
+    `mfa` 0.0086 against 0.4949, and `gmm-full` 0.0096 against 0.6220 at 1200 leaves and 0.0115
+    against 0.5131 at 500 while being healthy at three other budgets. The fitted centres stay
+    healthy in every case, so the pair is refused rather than warned about."""
     rng = np.random.default_rng(0)
-    x = np.ascontiguousarray(rng.normal(size=(4000, 8)))
-    with pytest.warns(UserWarning, match="per-dimension covariance"):
+    x = np.ascontiguousarray(rng.normal(size=(2000, 8)))
+    with pytest.raises(ValueError, match="per-component covariance"):
         betula_cluster.fit_predict(
-            x, 3, method="gmm", feature="spherical", max_leaves=200, threshold=0.0, seed=0
+            x, 3, method=method, feature="spherical", max_leaves=200, threshold=0.0, seed=0
         )
+    with pytest.raises(ValueError, match="per-component covariance"):
+        betula_cluster.Betula(n_clusters=3, method=method, feature="spherical").fit(x)
 
 
-def test_a_per_dimension_feature_does_not_warn_about_isotropic_scatter():
-    """The control, twice over: the same compressing call on a feature that *does* carry
-    per-dimension scatter must stay silent, and so must the spherical feature when the budget never
-    binds — with one leaf per point there is no scatter to add, which is exactly the row where the
-    measured collapse disappears."""
+@pytest.mark.parametrize("method", ["mppca", "gmm-toeplitz", "kmeans"])
+def test_a_head_that_can_absorb_an_isotropic_term_keeps_the_spherical_feature(method):
+    """The control. `mppca`'s model is low-rank plus isotropic noise, so an isotropic addition is
+    what its own sigma^2 term is there to explain — measured against `full` over five leaf budgets
+    it is within 0.01 everywhere. The `gmm-toeplitz` family reads its covariance off the
+    between-leaf structure and is identical on both features to four decimals. Refusing them would
+    remove working configurations."""
     rng = np.random.default_rng(0)
-    x = np.ascontiguousarray(rng.normal(size=(4000, 8)))
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")
-        betula_cluster.fit_predict(
-            x, 3, method="gmm", feature="full", max_leaves=200, threshold=0.0, seed=0
-        )
-        betula_cluster.fit_predict(
-            x, 3, method="kmeans", feature="spherical", max_leaves=200, threshold=0.0, seed=0
-        )
+    x = np.ascontiguousarray(rng.normal(size=(2000, 8)))
+    labels = betula_cluster.fit_predict(
+        x, 3, method=method, feature="spherical", max_leaves=200, threshold=0.0, seed=0
+    )
+    assert len(np.asarray(labels)) == len(x)
+
+
+def test_the_search_space_does_not_propose_a_feature_the_head_refuses():
+    from betula_cluster.tuning import _default_space
+
+    assert "spherical" not in _default_space(3, "gmm")["feature"][1]
+    assert "spherical" not in _default_space(3, "mfa")["feature"][1]
+    assert "spherical" in _default_space(3, "kmeans")["feature"][1]
+    rng = np.random.default_rng(0)
+    x = np.ascontiguousarray(rng.normal(size=(600, 4)))
+    assert betula_cluster.tune(x, 3, n_trials=3, seed=0).best_params["feature"] != "spherical"
 
 
 # ───────────────────────────── BregmanBetula (ADR 004) ─────────────────────────────

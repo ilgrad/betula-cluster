@@ -124,9 +124,14 @@ def betula_cell(x, y, k, head, budget, seed, ari, absorb="euclidean"):
     # budget.
     chi2_gate = absorb in ("chi2", "subspace")
     extra = {"chi2_scale": float(x.var(0).mean())} if chi2_gate else {}
+    # `gmm`, `gmm-full` and `mfa` read a per-component covariance off the leaf summary, which a
+    # scalar within-leaf scatter cannot supply; the library refuses that pair (the isotropic
+    # collapse, task #89). The centroid heads read the scalar summary and are unaffected.
+    feature = "diagonal" if head in ("gmm", "gmm-full", "mfa") else "spherical"
+
     est = bc.Betula(
         n_clusters=k,
-        feature="spherical",
+        feature=feature,
         method=head,
         threshold=0.0,
         max_leaves=budget,

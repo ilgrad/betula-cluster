@@ -213,10 +213,19 @@ class TuneResult:
 # ── search ─────────────────────────────────────────────────────────────────────────────────────
 
 
-def _default_space(n_clusters: int) -> dict[str, tuple]:
+#: Heads that read a per-component covariance off the leaf summary, which a scalar within-leaf
+#: scatter cannot supply. The engine refuses the pair; the search space must not propose it, or a
+#: default `tune` call on the default head would raise on a third of its trials.
+_READS_THE_LEAF_COVARIANCE = ("gmm", "gmm-full", "mfa")
+
+
+def _default_space(n_clusters: int, method: str = "gmm") -> dict[str, tuple]:
+    features = ["spherical", "diagonal", "full"]
+    if method in _READS_THE_LEAF_COVARIANCE:
+        features.remove("spherical")
     return {
         "max_leaves": ("int_log", max(2 * n_clusters, 16), max(64 * n_clusters, 2048)),
-        "feature": ("cat", ["spherical", "diagonal", "full"]),
+        "feature": ("cat", features),
         "normalize": ("cat", [False, True]),
     }
 
@@ -345,7 +354,7 @@ def tune(
         raise ValueError(f"unknown objective {objective!r}; choose one of {sorted(_MAXIMIZE)}")
     if objective == "ari" and y is None:
         raise ValueError("objective='ari' requires ground-truth labels y")
-    space = space or _default_space(n_clusters)
+    space = space or _default_space(n_clusters, fixed.get("method", "gmm"))
     if sampler == "optuna":  # pragma: no cover - optional Optuna backend
         return _tune_optuna(
             x, n_clusters, space, y, objective, n_trials, multi_objective, seed, fixed

@@ -70,10 +70,15 @@ DATASETS = {
 def one_fit(x, y, k, head, budget, distance, seed, ari):
     import betula_cluster as bc
 
+    # `gmm`, `gmm-full` and `mfa` read a per-component covariance off the leaf summary, which a
+    # scalar within-leaf scatter cannot supply; the library refuses that pair (the isotropic
+    # collapse, task #89). The centroid heads read the scalar summary and are unaffected.
+    feature = "diagonal" if head in ("gmm", "gmm-full", "mfa") else "spherical"
+
     est = bc.Betula(
         n_clusters=k,
         method=head,
-        feature="spherical",
+        feature=feature,
         threshold=0.0,
         max_leaves=budget,
         distance=distance,
