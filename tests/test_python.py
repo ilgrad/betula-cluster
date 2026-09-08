@@ -1345,6 +1345,43 @@ def test_streaming_float32_matches_float64(blobs):
     assert ari(out[np.float32], out[np.float64]) > 0.95  # f32 tree agrees with f64 on this data
 
 
+def _stream_identical_float32_rows(est, rows, chunk=524_288):
+    """Feed ``rows`` identical ``float32`` rows through ``partial_fit`` into a single leaf."""
+    block = np.zeros((chunk, 1), dtype=np.float32)
+    for start in range(0, rows, chunk):
+        est.partial_fit(block[: min(chunk, rows - start)])
+    return est
+
+
+def test_a_saturating_float32_tree_warns_before_its_weights_stop_counting():
+    """An ``f32`` leaf stops counting at ``2^24``: binary32 spaces its values 2 apart from there
+    up, so a unit-weight row leaves the weight unchanged while the mean and the scatter keep
+    moving — the leaf under-reports its mass and inflates its radius, silently. The estimator warns
+    at half that mass, while every summary it holds is still exact.
+    """
+    est = betula_cluster.Betula(n_clusters=2, max_leaves=4, threshold=10.0)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        _stream_identical_float32_rows(est, 2**23 + 524_288)
+    saturation = [w for w in caught if "stops counting" in str(w.message)]
+    assert len(saturation) == 1, "the ceiling is reported once, not once per chunk"
+    assert "16777216" in str(saturation[0].message)
+    assert issubclass(saturation[0].category, UserWarning)
+    assert est.microcluster_weights_.max() >= 2**23
+
+
+def test_a_float64_tree_of_the_same_mass_says_nothing():
+    """The control: `f64` counts to `2^53`, so the same stream in the wider dtype says nothing."""
+    est = betula_cluster.Betula(n_clusters=2, max_leaves=4, threshold=10.0)
+    block = np.zeros((524_288, 1), dtype=np.float64)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        for _ in range(2**23 // 524_288 + 1):
+            est.partial_fit(block)
+    assert [w for w in caught if "stops counting" in str(w.message)] == []
+    assert est.microcluster_weights_.max() >= 2**23
+
+
 def test_save_load_roundtrip(blobs, tmp_path):
     x, _ = blobs
     est = betula_cluster.Betula(

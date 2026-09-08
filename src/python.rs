@@ -241,6 +241,45 @@ fn warn_isotropic_gaussian(
     PyErr::warn(py, &py.get_type::<PyUserWarning>(), &msg, 1)
 }
 
+/// The `f32` mass at which a leaf stops counting: `w + 1 == w` in binary32 from `2^24` upward.
+const F32_MASS_CEILING: f64 = 16_777_216.0;
+/// Warn at half the ceiling, while every summary in the tree is still exact.
+const F32_MASS_WARN: f64 = 8_388_608.0;
+/// Rows between two peak-leaf scans once the tree carries enough mass for the ceiling to be
+/// reachable at all. The scan is `O(leaves)`, so running it per chunk would tax a row-at-a-time
+/// `partial_fit` loop; a stride keeps it amortized and still catches the crossing within half a
+/// million rows of it happening.
+const F32_MASS_SCAN_STRIDE: f64 = 524_288.0;
+
+/// Warn when the heaviest leaf of an `f32` tree approaches the mass an `f32` weight can still count.
+///
+/// Every cluster feature accumulates `w_new = w + wᵢ` ([`Spherical::push`] and its siblings), and
+/// binary32 spaces its values 2 apart from `2^24` upward, so a unit-weight row leaves the weight
+/// exactly where it was. Measured 2026-09-08: 16 781 312 identical `float32` rows into one leaf
+/// report weight 16 777 216, while the `f64` control is exact.
+///
+/// The rest of the summary does not stop with the weight, which is what makes this worth a warning
+/// rather than a footnote. The mean keeps moving at `2^-24` per row, i.e. it degrades into an
+/// exponential moving average, and the scatter keeps accumulating against a weight that no longer
+/// grows, so the leaf's variance and radius inflate in proportion to the rows the weight dropped —
+/// unit-variance rows past the ceiling report variance 1.0105 after 200 000 of them
+/// (`local/scratch/e29_ceiling.py`).
+///
+/// A `partial_fit` stream reaches this, and not only in principle — a heavy leaf takes a roughly
+/// constant share of the data (60 % of MNIST-20k lands in one leaf), so the ceiling arrives a few
+/// times `2^24` rows into a stream rather than after `2^24` leaves.
+fn warn_f32_mass_ceiling(py: Python<'_>, peak: f64) -> PyResult<()> {
+    let msg = CString::new(format!(
+        "the heaviest leaf of this float32 tree holds {peak:.0} points, and an f32 weight stops \
+         counting at {F32_MASS_CEILING:.0} (2^24): past that a unit-weight row leaves the weight \
+         unchanged, while the mean and the scatter keep moving, so the leaf reports too little mass \
+         and a radius that inflates with every row it drops. Feed float64 data to get an f64 tree, \
+         or lower threshold / raise max_leaves so the mass is spread over more leaves."
+    ))
+    .expect("the formatted warning contains no interior NUL");
+    PyErr::warn(py, &py.get_type::<PyUserWarning>(), &msg, 1)
+}
+
 /// Map the `method` keyword (+ HDBSCAN params) to an internal [`Kind`].
 #[allow(clippy::too_many_arguments)] // one parameter per head-specific keyword, as the callers have
 fn parse_method(
@@ -2192,6 +2231,23 @@ impl<R: Real> TreeState<R> {
         out
     }
 
+    /// The heaviest leaf's mass, in `f64` whatever the tree's element type. Read by the `f32`
+    /// saturation warning, which needs the peak and none of the rest of [`Self::leaf_stats`].
+    fn peak_leaf_weight(&self) -> f64 {
+        fn peak<R: Real, C: ClusterFeature<R>>(feats: &[C]) -> f64 {
+            feats
+                .iter()
+                .map(|c| c.weight().to_f64().unwrap())
+                .fold(0.0, f64::max)
+        }
+        match self {
+            TreeState::Spherical(t) => peak(t.leaf_features()),
+            TreeState::Diagonal(t) => peak(t.leaf_features()),
+            TreeState::Full(t) => peak(t.leaf_features()),
+            TreeState::Fd(t) => peak(t.leaf_features()),
+        }
+    }
+
     /// Per-leaf (microcluster) `(centers, weights, radii, dim)` in `f64`.
     fn leaf_stats(&self) -> F64Stats {
         match self {
@@ -2613,6 +2669,16 @@ struct Betula {
     /// like `leaf_refit` a `partial_fit` stream cannot honour it.
     #[serde(default)]
     canonical_order: bool,
+    /// An upper bound on the heaviest `f32` leaf: the mass streamed into the `f32` tree this
+    /// session, seeded from the tree itself when one arrives from disk. Gates the `O(leaves)` peak
+    /// scan behind [`warn_f32_mass_ceiling`]; session state, not part of the model.
+    #[serde(skip)]
+    f32_mass: f64,
+    /// Whether the `f32` saturation ceiling has already been reported for this tree — the warning
+    /// carries a mass that changes with every chunk, so Python's own de-duplication cannot collapse
+    /// it. Cleared by [`Betula::reset`] along with the tree.
+    #[serde(skip)]
+    warned_f32_mass: bool,
 }
 
 /// A 2-D array as flat row-major rows, casting from the other float dtype if needed (lossless
@@ -2673,6 +2739,41 @@ impl Betula {
         self.proba = None;
         self.rule = None;
         self.dim = 0;
+        self.f32_mass = 0.0;
+        self.warned_f32_mass = false;
+    }
+
+    /// Report the `f32` weight ceiling once the heaviest leaf is within a factor of two of it.
+    ///
+    /// `n` rows were just streamed. `f32_mass` is kept as an upper bound on any single leaf's mass
+    /// (a leaf can only hold what was inserted), which is what makes the cheap test sound: below
+    /// the bound no leaf can be near the ceiling, so the scan is skipped entirely.
+    fn check_f32_saturation(&mut self, py: Python<'_>, n: usize) -> PyResult<()> {
+        if self.warned_f32_mass {
+            return Ok(());
+        }
+        if self.f32_mass == 0.0 {
+            // A tree that arrived through `load` carries mass this session never saw.
+            self.f32_mass = self
+                .state32
+                .as_ref()
+                .map_or(0.0, TreeState::peak_leaf_weight);
+        }
+        let before = self.f32_mass;
+        self.f32_mass += n as f64;
+        let stride = |m: f64| (m / F32_MASS_SCAN_STRIDE).floor();
+        if self.f32_mass < F32_MASS_WARN || stride(before) == stride(self.f32_mass) {
+            return Ok(());
+        }
+        let peak = self
+            .state32
+            .as_ref()
+            .map_or(0.0, TreeState::peak_leaf_weight);
+        if peak >= F32_MASS_WARN {
+            warn_f32_mass_ceiling(py, peak)?;
+            self.warned_f32_mass = true;
+        }
+        Ok(())
     }
 
     /// Stream a chunk into the matching-dtype tree (dtype is the existing tree's, or the input's at
@@ -2727,6 +2828,7 @@ impl Betula {
             TreeState::stream_chunk(&mut self.state32, &cfg, flat, n, dim, order.as_deref())
                 .map_err(PyValueError::new_err)?;
             self.dim = dim;
+            self.check_f32_saturation(data.py(), n)?;
         } else {
             let (src, n, dim) = flat_as::<f64>(data, self.row_prep())?;
             let flat = src.as_slice();
@@ -3345,6 +3447,8 @@ impl Betula {
             route_beam,
             leaf_refit,
             canonical_order,
+            f32_mass: 0.0,
+            warned_f32_mass: false,
         })
     }
 

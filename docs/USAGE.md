@@ -1096,6 +1096,31 @@ est = betula_cluster.Betula(n_clusters=7, max_leaves=1000, balance=4.0)
 the mass in one tight core this moves `kmeans` from ARI 0.4174 to **1.0000** at every budget from 250
 to 4000 — but it is a lever, not a free win, so measure it against `balance=None` on your own data.
 
+### How much a `float32` tree can count
+
+`float32` input builds an `f32` tree, which halves the resident memory and carries one limit worth
+knowing before a long stream: **a leaf stops counting at 2²⁴ = 16 777 216 points.** Binary32 spaces
+its values 2 apart from there upward, so `w + 1 == w` and a unit-weight row leaves the leaf's weight
+exactly where it was. Measured: 16 781 312 identical `float32` rows into one leaf report a weight of
+16 777 216, while the same stream in `float64` is exact.
+
+The rest of the summary does not stop with the weight, which is why this matters beyond a count. The
+mean keeps moving at 2⁻²⁴ per row — it degrades into an exponential moving average — and the scatter
+keeps accumulating against a weight that no longer grows, so the leaf's variance and radius inflate
+in proportion to the rows the weight dropped: unit-variance rows past the ceiling report a variance
+of 1.0105 after 200 000 of them, against 1.0000 in `float64`.
+
+This is reached by mass in one leaf, not by dataset size, and the previous section is why that
+distinction is not reassuring: a heavy leaf takes a roughly constant share of the data, so a stream
+that puts half its mass in one leaf reaches the ceiling at about 2²⁵ rows. `betula` raises a
+`UserWarning` naming the heaviest leaf's mass when it passes **2²³**, one doubling short of the
+ceiling and while every summary it holds is still exact. Three ways out, in the order to try them:
+feed `float64` (the `f64` tree counts to 2⁵³, far beyond any stream), lower `threshold` or raise
+`max_leaves` so the mass spreads over more leaves, or set `balance` to cap what any one leaf takes.
+
+`fit` and `fit_predict` are not exposed to this in practice — reaching it needs 16.7 M rows resident
+in one array — and `float64` is unaffected at any size a stream can reach.
+
 ## Soft assignment, coresets, diagnostics, drift
 
 All over the microclusters the tree already holds (no extra data passes):

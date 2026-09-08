@@ -19,6 +19,17 @@ All notable changes to this project are documented here. The format follows
   arrival-order path keeps the uniform draw and is untouched.
 
 ### Added
+- **A `float32` tree now warns before its weights stop counting.** An `f32` leaf saturates at
+  2²⁴ = 16 777 216 points: binary32 spaces its values 2 apart from there upward, so a unit-weight
+  row leaves the weight exactly where it was. Measured, 16 781 312 identical `float32` rows into one
+  leaf report a weight of 16 777 216 against an exact `float64` control. The mean and the scatter do
+  not stop with it — the mean becomes an exponential moving average of span 2²⁴ and the variance
+  inflates in proportion to the rows the weight dropped (1.0105 against 1.0000 after 200 000 rows
+  past the ceiling) — so the summary degrades silently rather than erroring. The estimator now
+  raises a `UserWarning` naming the heaviest leaf's mass when it passes 2²³, one doubling short of
+  the ceiling and while every summary is still exact, and `docs/USAGE.md` documents the limit and
+  the three ways out. This is a warning, not a fix: the accumulators are still `f32`, and widening
+  them is a persisted-format change.
 - **`assign::AssignPlan` — pruned exact nearest-centroid assignment (Rust).** A squared Euclidean
   distance is a sum of non-negative terms, so any prefix of it is a lower bound on the whole, and a
   candidate whose prefix already exceeds the best distance so far cannot win. `AssignPlan` walks the

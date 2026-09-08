@@ -1056,6 +1056,61 @@ mod tests {
         assert!(close(s.variance(0), sv));
     }
 
+    /// Where an `f32` leaf stops counting, stated as a test so the number in `docs/USAGE.md` and in
+    /// the estimator's warning cannot drift away from the arithmetic.
+    ///
+    /// `push` forms `w_new = w + wᵢ`, and binary32 spaces its values 2 apart from `2^24` upward, so
+    /// a unit-weight row leaves the weight exactly where it was. The rest of the update does not
+    /// stop with it: `factor = wᵢ / w_new` is `2^-24`, so the mean keeps creeping and degrades into
+    /// an exponential moving average of span `2^24`, and the scatter keeps accumulating against a
+    /// weight that no longer grows, so `variance = ssd / w` inflates in proportion to the rows the
+    /// weight dropped (measured in `local/scratch/e29_ceiling.py`: unit-variance rows past `2^24`
+    /// report variance 1.0105 after 200 000 of them, against 1.0000 in `f64`).
+    ///
+    /// **This test pins the defect, not the intent.** When the accumulators move to `f64` it starts
+    /// failing, and the right response is to delete it together with the documented limit — the
+    /// acceptance test for that fix is `an_f32_leaf_counts_every_row_it_absorbs`.
+    #[test]
+    fn an_f32_leaf_stops_counting_at_two_to_the_24() {
+        let mut c: Spherical<f32> = Spherical::new(1);
+        c.push(&[0.0], 16_777_216.0); // 2^24, reached in one weighted push
+        c.push(&[1.0], 1.0);
+        assert_eq!(c.weight(), 16_777_216.0, "the 2^24-th row added no mass");
+        assert!(c.mean()[0] > 0.0, "the mean moves on regardless");
+        assert!(
+            c.ssd() > 0.0,
+            "so does the scatter, against a weight that stopped"
+        );
+        // A weighted push above the spacing still lands, which is why the ceiling is reached by
+        // streaming rows one at a time and not by inserting summaries.
+        let mut merged: Spherical<f32> = Spherical::new(1);
+        merged.push(&[0.0], 16_777_216.0);
+        merged.push(&[1.0], 4096.0);
+        assert_eq!(merged.weight(), 16_781_312.0);
+    }
+
+    /// The acceptance test for the `f64`-accumulator fix, by the route a user actually reaches the
+    /// ceiling by: one leaf of an `f32` tree absorbing more than `2^24` unit-weight rows.
+    ///
+    /// **It fails today**, reporting 16 777 216 against the 16 781 312 rows it was given, which is
+    /// why it is `#[ignore]`d rather than absent: `cargo test --lib -- --ignored
+    /// an_f32_leaf_counts_every_row_it_absorbs` is the measurement behind the limit documented in
+    /// `docs/USAGE.md`, and it is what the fix has to turn green. The `f64` control in the same
+    /// body is exact today and must stay so.
+    #[test]
+    #[ignore]
+    fn an_f32_leaf_counts_every_row_it_absorbs() {
+        const ROWS: usize = 16_781_312; // 2^24 + 4096
+        let mut narrow: Spherical<f32> = Spherical::new(1);
+        let mut wide: Spherical<f64> = Spherical::new(1);
+        for _ in 0..ROWS {
+            narrow.push(&[1.0], 1.0);
+            wide.push(&[1.0], 1.0);
+        }
+        assert_eq!(wide.weight(), ROWS as f64, "the f64 control is exact");
+        assert_eq!(narrow.weight(), ROWS as f32);
+    }
+
     #[test]
     fn weighted_push_equals_repeats() {
         let mut a: Diagonal<f64> = Diagonal::new(2);
