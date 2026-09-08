@@ -179,6 +179,12 @@ pub(crate) fn randomized_svd<R: Real>(
     (sigma, u, v)
 }
 
+/// Rows per sequential partial of [`wt_x`]. Any fixed value makes the summation order a function of
+/// the input length alone; this one keeps an `r×d` accumulator hot across enough rows to amortize
+/// its allocation while still handing a 16-thread pool work at the leaf counts the tree produces.
+#[cfg(feature = "parallel")]
+const WT_X_CHUNK: usize = 64;
+
 /// `WᵀX` (`r×d`) accumulated row-by-row over `X`.
 ///
 /// The transpose-product is the sweep's hot loop, and the obvious expression of it —
@@ -186,6 +192,15 @@ pub(crate) fn randomized_svd<R: Real>(
 /// of the `r·d` cells, striding `d` floats per step through a matrix far larger than L2. Accumulating
 /// into the (small, cache-resident) `r×d` output while reading each row of `X` once, sequentially,
 /// computes the same product with the access pattern the hardware wants.
+///
+/// **The chunking is fixed rather than left to the pool.** Floating-point addition does not
+/// associate, so a `par_iter().fold(..).reduce(..)` — where rayon splits by work-stealing and merges
+/// in completion order — makes the sum a function of how the threads happened to interleave.
+/// Measured on 19 998 rows through `projection="weighted-nmf"`: two runs at
+/// `RAYON_NUM_THREADS=8` produced different `components_` bit patterns, and neither matched the
+/// single-threaded run. Summing fixed-size chunks sequentially and merging them in index order gives
+/// one order for one input, whatever the pool size, at the cost of collecting `⌈n/64⌉` small
+/// partials instead of one per worker.
 fn wt_x<R: Real>(w: &[Vec<R>], x: &[Vec<R>], r: usize, d: usize) -> Vec<Vec<R>> {
     let fold = |mut acc: Vec<Vec<R>>, (wj, xj): (&Vec<R>, &Vec<R>)| {
         for k in 0..r {
@@ -210,10 +225,12 @@ fn wt_x<R: Real>(w: &[Vec<R>], x: &[Vec<R>], r: usize, d: usize) -> Vec<Vec<R>> 
     #[cfg(feature = "parallel")]
     {
         use rayon::prelude::*;
-        w.par_iter()
-            .zip(x.par_iter())
-            .fold(zero, fold)
-            .reduce(zero, merge)
+        w.par_chunks(WT_X_CHUNK)
+            .zip(x.par_chunks(WT_X_CHUNK))
+            .map(|(wc, xc)| wc.iter().zip(xc.iter()).fold(zero(), fold))
+            .collect::<Vec<_>>()
+            .into_iter()
+            .fold(zero(), merge)
     }
     #[cfg(not(feature = "parallel"))]
     {

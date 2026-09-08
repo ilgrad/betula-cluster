@@ -7,6 +7,16 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Fixed
+- **`projection="weighted-nmf"` no longer depends on how the threads interleaved.** The
+  transpose-product `WᵀX` is the projection's hot loop and was summed with a rayon
+  `fold`/`reduce`, which splits by work-stealing and merges in completion order. Floating-point
+  addition does not associate, so the result was a function of the run, not of the input: measured
+  on a 19 998-row fixture, **20 runs at `RAYON_NUM_THREADS=8` produced 20 different `components_`
+  bit patterns**, while the single-threaded run was stable. The sum is now taken over fixed 64-row
+  chunks and merged in index order, which is one order for one input at any pool size, and a
+  subprocess test pins it. The documented promise that the thread count does not enter the answer
+  was true everywhere else and is now true here; `components_` values shift in their last few bits
+  against 0.8.0.
 - **`threshold="auto"` no longer breaks the `canonical_order` guarantee.** `canonical_order=True`
   promises a summary that is a function of the row multiset; the automatic threshold is piloted on a
   bounded subsample, and that subsample was drawn by row *position*, so a permutation handed the

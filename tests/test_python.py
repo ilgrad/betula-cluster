@@ -7,6 +7,9 @@ and the streaming `Betula` estimator, plus the error contract.
 import collections
 import itertools
 import math
+import os
+import subprocess
+import sys
 import warnings
 from math import comb
 
@@ -508,6 +511,53 @@ def test_projection_weighted_nmf_estimator(nmf_topics):
     assert ari(betula_cluster.Betula(**kw).fit_predict(x), y) > 0.9
     est = betula_cluster.Betula(**kw).fit(x)  # fit / predict round-trip also honours the projection
     assert ari(est.predict(x), y) > 0.9
+
+
+_NMF_DIGEST_SCRIPT = '''\
+"""Fit the CF-weighted NMF projection and print a digest of the parts it learned."""
+
+import hashlib
+
+import numpy as np
+
+import betula_cluster
+
+rng = np.random.default_rng(0)
+n, d, k = 19_998, 60, 6
+centres = rng.random((k, d)) * 4.0
+x = np.abs(np.repeat(centres, n // k, axis=0) + rng.standard_normal((n, d)) * 0.5)
+est = betula_cluster.Betula(
+    n_clusters=k, projection="weighted-nmf", projection_dim=8, max_leaves=400, seed=1
+)
+est.fit(x)
+parts = np.ascontiguousarray(np.asarray(est.components_, dtype=np.float64))
+print(hashlib.sha256(parts.tobytes()).hexdigest())
+'''
+
+
+def test_the_nmf_projection_is_independent_of_the_rayon_pool_size(tmp_path):
+    """The thread count must not enter the answer, and this is the one head where it could.
+
+    `WᵀX` is the projection's hot loop and is summed in parallel. Floating-point addition does not
+    associate, so a work-stealing fold makes the result a function of how the threads interleaved:
+    before the fixed chunking, two runs at ``RAYON_NUM_THREADS=8`` on this fixture produced
+    different ``components_``, and neither matched the single-threaded run. Subprocesses because
+    rayon reads the variable once, when its global pool is first built.
+    """
+    script = tmp_path / "nmf_digest.py"
+    script.write_text(_NMF_DIGEST_SCRIPT)
+    digests = {}
+    for run, threads in enumerate(("1", "8", "8")):
+        done = subprocess.run(
+            [sys.executable, str(script)],
+            env=dict(os.environ, RAYON_NUM_THREADS=threads),
+            capture_output=True,
+            text=True,
+            timeout=600,
+            check=True,
+        )
+        digests[f"run{run}-threads{threads}"] = done.stdout.strip()
+    assert len(set(digests.values())) == 1, digests
 
 
 def test_projection_get_params_roundtrip():
