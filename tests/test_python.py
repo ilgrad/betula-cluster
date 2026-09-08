@@ -4166,6 +4166,59 @@ def test_canonical_order_makes_the_labels_identical_under_any_row_permutation():
     assert not all(np.array_equal(arrival[0], lb) for lb in arrival[1:])
 
 
+def test_auto_threshold_does_not_break_the_canonical_order_guarantee():
+    """`canonical_order=True` promises a summary that is a function of the row multiset, and
+    `threshold="auto"` used to break that promise before the tree was built: the pilot subsample was
+    drawn by row *position*, so a permutation handed the estimator a different sample and it
+    converged to a different threshold. Measured on this fixture before the fix, one permutation
+    moved the threshold from 17.184 to 17.256 and the tree from 284 leaves to 279. The engine now
+    picks the pilot rows off the canonical order, which is a function of the content."""
+    x = _blobs(n=8000, d=12, k=4, seed=11)
+    xs, perm = _shuffled(x, 5)
+    fits = [
+        betula_cluster.Betula(
+            n_clusters=4,
+            max_leaves=300,
+            threshold="auto",
+            canonical_order=True,
+            method="ward",
+            seed=0,
+        ).fit(d)
+        for d in (x, xs)
+    ]
+    assert fits[0].threshold_ == fits[1].threshold_
+    assert fits[0].n_leaves_ == fits[1].n_leaves_
+    back = fits[1].predict(xs)[np.argsort(perm)]
+    assert np.array_equal(fits[0].predict(x), back)
+
+
+def test_auto_threshold_without_canonical_order_still_takes_the_uniform_sample():
+    """The uniform draw is kept for the arrival-order path, where the tree is order-dependent by
+    construction and a canonical pass would be work with nothing to buy. This pins that the branch
+    is reachable and that the estimate is still a usable threshold."""
+    x = _blobs(n=8000, d=12, k=4, seed=12)
+    est = betula_cluster.Betula(
+        n_clusters=4, max_leaves=300, threshold="auto", canonical_order=False, seed=0
+    ).fit(x)
+    assert est.threshold_ > 0.0
+
+
+def test_the_pilot_rows_name_the_same_rows_under_any_permutation():
+    """The engine helper on its own: the returned indices differ under a permutation — they are
+    positions — but the rows they select are the same rows in the same order."""
+    x = _blobs(n=2000, d=6, k=3, seed=13)
+    xs, _ = _shuffled(x, 7)
+    a = betula_cluster._canonical_pilot_rows(x, 200)
+    b = betula_cluster._canonical_pilot_rows(xs, 200)
+    assert len(a) == len(b) == 200
+    assert np.array_equal(x[a], xs[b])
+    # a cap at or above the row count returns every row, once
+    every = betula_cluster._canonical_pilot_rows(x, len(x) + 50)
+    assert sorted(every.tolist()) == list(range(len(x)))
+    with pytest.raises(ValueError, match="cap must be at least 1"):
+        betula_cluster._canonical_pilot_rows(x, 0)
+
+
 def test_canonical_order_holds_across_the_sharded_parallel_build():
     """A shard-and-merge build splits the insertion sequence, and the naive wiring splits *rows* —
     which keeps the order dependence while looking like it removed it. Sharding ranks of the

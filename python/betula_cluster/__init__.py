@@ -24,6 +24,7 @@ from ._core import DdSketch, KllSketch, fit_predict  # type: ignore
 from ._core import DenStream as _CoreDenStream  # type: ignore
 from ._core import KPrototypes as _CoreKPrototypes  # type: ignore
 from ._core import WindowStream as _CoreWindowStream  # type: ignore
+from ._core import canonical_pilot_rows as _canonical_pilot_rows  # type: ignore
 from ._core import fit_predict_sparse as _core_fit_predict_sparse  # type: ignore
 from ._core import mixture_w2 as _core_mixture_w2  # type: ignore
 from .tuning import GapCurve, ThresholdEstimate, TuneResult, estimate_threshold, gap_statistic, tune
@@ -814,8 +815,18 @@ class Betula:
             # Small data: growing from zero is already cheap (rebuilds fold O(leaves), not O(n)),
             # and a full-data pilot would just double the work — skip it and start at zero.
             return 0.0
-        rng = np.random.default_rng(self.seed)
-        sub = X[rng.choice(n, cap, replace=False)]
+        if self.canonical_order:
+            # `canonical_order=True` promises labels that do not depend on the row order, and a
+            # pilot drawn by row position breaks that promise before the tree is even built: under
+            # one permutation of a 4-blob probe the threshold read 8.279 against 7.651 and the tree
+            # held 276 leaves against 294. The engine picks the rows off the canonical order
+            # instead, so the subsample is a function of the row multiset.
+            sub = X[_canonical_pilot_rows(np.ascontiguousarray(X), cap)]
+        else:
+            # Without that flag the tree is order-dependent by construction, so a uniform draw
+            # costs nothing and stays as it was.
+            rng = np.random.default_rng(self.seed)
+            sub = X[rng.choice(n, cap, replace=False)]
         params = {k: getattr(self, k) for k in _PARAM_NAMES if k != "memory_budget_mb"}
         params["threshold"] = 0.0
         params["max_leaves"] = max_leaves

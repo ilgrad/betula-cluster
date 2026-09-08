@@ -6,6 +6,18 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- **`threshold="auto"` no longer breaks the `canonical_order` guarantee.** `canonical_order=True`
+  promises a summary that is a function of the row multiset; the automatic threshold is piloted on a
+  bounded subsample, and that subsample was drawn by row *position*, so a permutation handed the
+  pilot different rows and it converged to a different threshold — the order dependence was back
+  before the tree was built. Measured on a 12-dimensional 4-blob probe, one permutation moved the
+  pilot from 17.184 to 17.256 and the realised tree from 284 leaves to 279, with the labels no
+  longer identical. The pilot rows are now taken evenly spaced along the canonical order, which is a
+  function of the content, so the threshold, the leaf count and the labels are all invariant again.
+  Only `canonical_order=True` with `threshold="auto"` is affected, and its labels change; the
+  arrival-order path keeps the uniform draw and is untouched.
+
 ### Added
 - **`assign::AssignPlan` — pruned exact nearest-centroid assignment (Rust).** A squared Euclidean
   distance is a sum of non-negative terms, so any prefix of it is a lower bound on the whole, and a

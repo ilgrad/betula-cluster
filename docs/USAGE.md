@@ -897,6 +897,14 @@ positive mean comes from two cells where the arrival order was collapsing a `gmm
 canonical order was not (digits at 360 leaves, 0.1738 → 0.5146; MNIST at 1000, 0.0551 → 0.2457); the
 worst losses are −0.062 and −0.061, and at `mnist-10k` with 200 leaves all three heads read lower.
 
+**It reaches `threshold="auto"` too.** That estimate is piloted on a bounded subsample, and drawing
+that subsample by row position would put the order dependence back before the tree was ever built —
+on a 12-dimensional 4-blob probe one permutation moved the pilot threshold from 17.184 to 17.256 and
+the realised tree from 284 leaves to 279, which is a different summary, not a different rounding.
+Under `canonical_order=True` the pilot rows are taken evenly spaced along the canonical order
+instead, so the subsample is a function of the row multiset like everything else on this path. With
+the flag off the uniform draw is kept, since that build is order-dependent by construction.
+
 A second, separate effect worth knowing: the **realised leaf count** stops varying too. It moved in
 18 of those 27 cells under reordering (327–358, 909–1000, 180–195) and is constant under the
 canonical order, so two runs now summarise at the same resolution and not merely to similar labels.

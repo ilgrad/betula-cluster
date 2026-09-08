@@ -5761,11 +5761,45 @@ fn mixture_w2_py(
     .ok_or_else(|| PyValueError::new_err("neither mixture may carry only non-positive weights"))
 }
 
+/// Row indices of a pilot subsample that is a function of the row *multiset*, not of the order.
+///
+/// `threshold="auto"` estimates the tree's threshold by fitting a bounded subsample. Drawing that
+/// subsample by row *position* makes the estimate depend on the order the rows arrived in, which
+/// silently voids the `canonical_order` guarantee: measured on a 4-blob probe, one permutation
+/// moved the pilot threshold from 8.279 to 7.651 and the tree from 276 leaves to 294.
+///
+/// This walks the canonical order — the same Morton-key order the tree itself uses, with ties
+/// broken lexicographically on the row content — and takes `cap` rows evenly spaced along it. A
+/// permutation of the input changes which *positions* are returned but not the *rows* they name,
+/// and they come back in canonical order, so the subsample the caller slices out is identical.
+///
+/// Spacing them along the order is also the better sample for the job: the estimate wanted is a
+/// radius, and an evenly spaced walk of a space-filling curve covers the support more uniformly
+/// than a uniform draw does.
+#[pyfunction]
+fn canonical_pilot_rows<'py>(
+    py: Python<'py>,
+    data: &Bound<'py, PyAny>,
+    cap: usize,
+) -> PyResult<Bound<'py, PyArray1<u32>>> {
+    if cap == 0 {
+        return Err(PyValueError::new_err("cap must be at least 1"));
+    }
+    let (rows, n, dim) = flat_as::<f64>(data, RowPrep::None)?;
+    let order = canonical_permutation(rows.as_slice(), n, dim);
+    let take = cap.min(n);
+    // `i * n / take` walks the order in equal strides and lands on `take` distinct positions for
+    // every `take <= n`, without the rounding drift a floating-point step would accumulate.
+    let picked: Vec<u32> = (0..take).map(|i| order[i * n / take]).collect();
+    Ok(PyArray1::from_vec(py, picked))
+}
+
 #[pymodule]
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(fit_predict, m)?)?;
     m.add_function(wrap_pyfunction!(fit_predict_sparse, m)?)?;
     m.add_function(wrap_pyfunction!(mixture_w2_py, m)?)?;
+    m.add_function(wrap_pyfunction!(canonical_pilot_rows, m)?)?;
     m.add_class::<Betula>()?;
     m.add_class::<PyBregmanBetula>()?;
     m.add_class::<PyDenStream>()?;
