@@ -187,6 +187,33 @@ fn core_distances(
     (0..m).map(row).collect()
 }
 
+/// Leaves' worth of mass the automatic `min_samples` asks for.
+///
+/// The conventional HDBSCAN\* default is about ten *points*, which over raw points is about ten
+/// neighbours. Over a leaf summary it is not the same question: a leaf already holds `N / leaves`
+/// points, so any count below that mass is enclosed at radius **zero**, every core distance
+/// collapses and mutual reachability degenerates to plain distance — single linkage, which chains
+/// straight through an overlap. Ten *leaves* is that default translated into the currency the head
+/// is counting in, the same translation [`graph_degree_for`] makes in the other direction.
+///
+/// Measured on the 100 000-point blobs contest (`bench/RESULTS.md`), the translation moves the
+/// answer from ARI 0.478 to 0.820 at 2 000 leaves and from 0.678 to 0.896 at 8 000, against
+/// `fast_hdbscan`'s 0.910 over the raw points. The plateau is wide — 5 to 40 leaves are all inside
+/// the seed spread there — so the constant is the shape of the rule rather than a fit to it.
+pub const AUTO_MIN_SAMPLES_LEAVES: f64 = 10.0;
+
+/// `min_samples` for [`hdbscan`] and the dc-distance heads when the caller names none: the mass of
+/// [`AUTO_MIN_SAMPLES_LEAVES`] average features, floored at 2 so that a core distance is never
+/// trivially zero.
+pub fn auto_min_samples<R: Real, C: ClusterFeature<R>>(features: &[C]) -> usize {
+    let total: f64 = features
+        .iter()
+        .map(|f| f.weight().to_f64().unwrap_or(0.0))
+        .sum();
+    let mean = total / features.len().max(1) as f64;
+    ((AUTO_MIN_SAMPLES_LEAVES * mean).round() as usize).max(2)
+}
+
 /// Out-degree the proximity graph actually gets, given the caller's request.
 ///
 /// `min_samples` is counted in **points** and a leaf carries `mass[i]` of them, so a graph that must
@@ -775,6 +802,60 @@ mod tests {
     use crate::clustering::rng::SplitMix64;
     use crate::clustering::testutil::{ari, blobs, grid_micros, two_moons};
     use crate::feature::Spherical;
+
+    #[test]
+    fn the_automatic_min_samples_clears_the_leaf_mass_where_a_fixed_ten_does_not() {
+        // 40 leaves of 25 points each. A request for ten *points* is enclosed inside the leaf that
+        // is asking, so every core distance is zero and mutual reachability collapses to plain
+        // distance — single linkage, which chains through any overlap. The automatic value counts
+        // in leaves, so it has to reach past the leaf itself.
+        let mut rng = SplitMix64::new(11);
+        let mut micros = Vec::new();
+        for i in 0..40 {
+            let mut f = Spherical::<f64>::new(2);
+            let c = [i as f64, 0.0];
+            for _ in 0..25 {
+                f.push(&[c[0] + 0.05 * rng.gauss(), c[1] + 0.05 * rng.gauss()], 1.0);
+            }
+            micros.push(f);
+        }
+        let mass: Vec<f64> = micros.iter().map(|f| f.weight()).collect();
+        let dist = |i: usize, j: usize| {
+            let (a, b) = (micros[i].mean(), micros[j].mean());
+            ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)).sqrt()
+        };
+        let auto = auto_min_samples(&micros);
+        assert_eq!(auto, 250, "ten leaves of 25 points each");
+
+        let fixed = core_distances(micros.len(), 10, &mass, dist);
+        assert!(
+            fixed.iter().all(|&d| d == 0.0),
+            "a request below the leaf mass is enclosed at radius zero: {fixed:?}"
+        );
+        let automatic = core_distances(micros.len(), auto, &mass, dist);
+        assert!(
+            automatic.iter().all(|&d| d > 0.0),
+            "the automatic value has to reach past the leaf that asks: {automatic:?}"
+        );
+    }
+
+    #[test]
+    fn the_automatic_min_samples_is_ten_average_leaves_of_mass() {
+        let mut leaves = Vec::new();
+        for w in [4.0, 6.0, 20.0] {
+            let mut f = Spherical::<f64>::new(1);
+            f.push(&[0.0], w);
+            leaves.push(f);
+        }
+        assert_eq!(auto_min_samples(&leaves), 100); // 10 x (4 + 6 + 20) / 3
+        let mut light = Spherical::<f64>::new(1);
+        light.push(&[0.0], 0.01);
+        assert_eq!(
+            auto_min_samples(&[light]),
+            2,
+            "the floor keeps a core distance non-trivial"
+        );
+    }
 
     #[test]
     fn hdbscan_separates_two_moons() {

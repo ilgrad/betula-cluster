@@ -901,6 +901,22 @@ within-leaf density is real, and it is simply not the quantity the overlap is de
 summary loses at these budgets is the *between*-leaf density contrast, which no per-leaf radius can
 put back.
 
+**The tuning note is now the default.** `min_samples=None` asks for the mass of ten average leaves
+— the conventional ten-*point* default translated into the currency the head counts in, the same
+translation the proximity-graph degree already made in the other direction. It reads **0.820** at
+`max_leaves = 2 000` and **0.896** at 8 000 on the table above, so best-against-best becomes 0.910
+against 0.896 and the *untuned* answer stops being 0.478. The plateau is wide: 5 to 40 leaves are
+all inside the seed spread, so the ten is the shape of the rule and not a fit to this fixture.
+
+Checked against the six published quality fixtures at N = 30 000 (median of seeds 0/1/2), the rule
+costs nothing where the fixed ten already worked — `moons` 0.9999 → 0.9995, `circles` 1.0000 →
+0.9999, `highdim` 1.0000 → 1.0000, `aniso` 0.568 → 0.565 — and gains where it did not: `blobs`
+**0.142 → 0.444**, `varied` **0.479 → 0.548**. Swept more widely (two- and six-blob fixtures ×
+N ∈ {2 000, 10 000, 100 000} × `max_leaves` ∈ {200, 2 000, 8 000}, `local/scratch/q4_rule_grid.out`)
+it wins or ties in 16 of 18 cells; the two it loses are the two-blob fixture at a 200-leaf budget,
+where the head reads ARI 0.074 with the fixed ten and 0.000 with the rule — a loss between two
+failures, on a summary too coarse to hold the answer either way.
+
 The units trap found on the way is fixed as of this edition, and was the more serious half. On the
 summary route `min_cluster_size` and `min_samples` used to be counted in **leaves**: `hdbscan.rs`
 thresholded `node_size`, a leaf count, while stability used `node_mass`, a point count. The

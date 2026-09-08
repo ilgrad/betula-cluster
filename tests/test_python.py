@@ -2027,6 +2027,55 @@ def test_balance_nonpositive_raises(blobs, bad):
         est.fit(x)
 
 
+def _coarse_blobs(k=6, per=3000, seed=5):
+    """Blobs summarised coarsely enough that one leaf holds far more than ten points."""
+    rng = np.random.default_rng(seed)
+    centers = rng.uniform(-10, 10, (k, 2))
+    x = np.vstack([rng.normal(c, 1.0, (per, 2)) for c in centers])
+    x = (x - x.mean(0)) / x.std(0)
+    return x.astype(np.float64), np.repeat(np.arange(k), per)
+
+
+def _hdbscan_ari(x, y, min_samples, max_leaves=2000):
+    est = betula_cluster.Betula(
+        method="hdbscan",
+        min_samples=min_samples,
+        min_cluster_size=len(x) // 400,
+        threshold=0.0,
+        max_leaves=max_leaves,
+    )
+    ari = pytest.importorskip("sklearn.metrics").adjusted_rand_score
+    labels = np.asarray(est.fit_predict(x))
+    return ari(y, labels), est
+
+
+def test_the_default_min_samples_reads_the_leaf_mass():
+    x, y = _coarse_blobs()
+    fixed, _ = _hdbscan_ari(x, y, 10)
+    auto, est = _hdbscan_ari(x, y, None)
+    assert auto > fixed + 0.1, f"auto {auto} against a fixed ten {fixed}"
+    assert est.get_params()["min_samples"] is None
+
+
+def test_min_samples_auto_is_the_same_request_as_none():
+    x, y = _coarse_blobs()
+    assert _hdbscan_ari(x, y, "auto")[0] == _hdbscan_ari(x, y, None)[0]
+
+
+def test_an_explicit_min_samples_still_reaches_the_head():
+    x, _ = _coarse_blobs()
+    est = betula_cluster.Betula(n_clusters=6, method="dc-median", min_samples=200, max_leaves=500)
+    assert est.get_params()["min_samples"] == 200
+    assert len(np.asarray(est.fit_predict(x))) == len(x)
+
+
+@pytest.mark.parametrize("bad", [0, -1, 2.5, "yes", [10]])
+def test_min_samples_rejects_what_is_neither_a_count_nor_auto(blobs, bad):
+    x, _ = blobs
+    with pytest.raises(ValueError, match="min_samples"):
+        betula_cluster.Betula(method="hdbscan", min_samples=bad).fit(x)
+
+
 def _many_blobs(k=30, per=40, seed=3):
     """`k` overlapping 2-D blobs — enough of them that one k-means++ draw misses some."""
     rng = np.random.default_rng(seed)

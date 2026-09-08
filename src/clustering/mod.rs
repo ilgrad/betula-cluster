@@ -43,7 +43,9 @@ pub use gmm_toeplitz::{
     GmmToeplitz, gmm_toeplitz, gmm_toeplitz_auto, gmm_toeplitz_full, gmm_toeplitz_full_auto,
     gmm_toeplitz_gs, gmm_toeplitz_gs_auto,
 };
-pub use hdbscan::{Hdbscan, Selection, hdbscan, hdbscan_selected};
+pub use hdbscan::{
+    AUTO_MIN_SAMPLES_LEAVES, Hdbscan, Selection, auto_min_samples, hdbscan, hdbscan_selected,
+};
 pub use hyperbolic::{
     HyperbolicKMeans, f64_working_radius, hyperbolic_kmeans, merge_increase, project_to_sheet,
 };

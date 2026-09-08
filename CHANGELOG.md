@@ -132,6 +132,26 @@ All notable changes to this project are documented here. The format follows
   `CFTree::nearest_entry_beam` is public on the Rust side.
 
 ### Changed
+- **`min_samples` now defaults to the leaf mass, not to a point count.** HDBSCAN\*'s core distance
+  is the radius enclosing `min_samples` points, and over a leaf summary a single leaf already holds
+  `N / max_leaves` of them at one coordinate — so any count below that mass is enclosed at radius
+  **zero**, every core distance collapses and mutual reachability degenerates to plain distance,
+  i.e. single linkage chaining through every overlap. The docs have stated that trap since 0.6.0 and
+  left the caller to avoid it. `min_samples=None` (the new default, spelled `"auto"` if preferred)
+  asks instead for the mass of ten average leaves — the conventional ten-*point* default translated
+  into the currency the head counts in.
+
+  On the 100 000-point blobs contest that moves the untuned answer from ARI **0.478 to 0.820** at
+  2 000 leaves and from 0.678 to **0.896** at 8 000, against `fast_hdbscan`'s 0.910 over raw points.
+  On the six published quality fixtures it costs nothing where the fixed ten already worked (`moons`
+  0.9999 → 0.9995, `circles` 1.0000 → 0.9999, `highdim` unchanged, `aniso` 0.568 → 0.565) and gains
+  where it did not (`blobs` 0.142 → 0.444, `varied` 0.479 → 0.548). Over a wider grid it wins or ties
+  in 16 of 18 cells, the two losses being a two-blob fixture at a 200-leaf budget where both answers
+  are ARI < 0.08.
+
+  **Labels change** for `method="hdbscan"` / `"dc-center"` / `"dc-median"` fits that did not name a
+  `min_samples`; an explicit integer is used exactly as before. `get_params()` reports `None` for the
+  automatic state, and `auto_min_samples` / `AUTO_MIN_SAMPLES_LEAVES` are public on the Rust side.
 - **Rust API (breaking): `Model::fit`, `kmeans_auto` and `spectral` take the restart count.** It
   sits after `max_iter`, and `0` asks for `KMEANS_N_INIT` — the value they used before — so the
   fix at every call site is to pass `0`. `spectral`'s private `N_INIT` and the Python layer's

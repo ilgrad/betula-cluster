@@ -31,8 +31,8 @@ use crate::clustering::nmf::{Projection, ProjectionKind, ProjectionSpec};
 use crate::clustering::scalespace::scale_space;
 use crate::clustering::{
     BlockWeights, ConstraintError, KMEANS_N_INIT, Linkage, MixedCf, MixedRows, MixedSchema,
-    bregman_agglomerative, bregman_em, bregman_kmeans, cop_kmeans, kprototypes, nearest_micro,
-    project_to_sheet, summarize_mixed,
+    auto_min_samples, bregman_agglomerative, bregman_em, bregman_kmeans, cop_kmeans, kprototypes,
+    nearest_micro, project_to_sheet, summarize_mixed,
 };
 use crate::clustering::{DcObjective, dc_clustering};
 use crate::clustering::{Reachability, optics};
@@ -272,6 +272,32 @@ fn parse_balance(value: Option<&Bound<'_, PyAny>>) -> PyResult<(Option<f64>, boo
     Ok((Some(b), false))
 }
 
+/// `min_samples` as the density heads take it: an explicit point count, or the `0` sentinel that
+/// asks for [`auto_min_samples`] once the leaf features exist.
+///
+/// `None` (the default) and `"auto"` are the same request. The count is in **points**, and over a
+/// leaf summary a value below the average leaf mass encloses at radius zero — which is the failure
+/// the automatic rule exists to avoid, so it is worth being able to say "decide it for me".
+fn parse_min_samples(value: Option<&Bound<'_, PyAny>>) -> PyResult<usize> {
+    const CHOICES: &str = "min_samples must be an integer >= 1 (a point count), or \"auto\" / None                            to take it from the leaf mass";
+    let Some(value) = value else {
+        return Ok(0);
+    };
+    if value.is_none() {
+        return Ok(0);
+    }
+    if let Ok(name) = value.extract::<String>() {
+        return match name.as_str() {
+            "auto" => Ok(0),
+            _ => Err(PyValueError::new_err(CHOICES)),
+        };
+    }
+    match value.extract::<usize>() {
+        Ok(0) | Err(_) => Err(PyValueError::new_err(CHOICES)),
+        Ok(v) => Ok(v),
+    }
+}
+
 /// The `f32` mass at which a leaf stops counting: `w + 1 == w` in binary32 from `2^24` upward.
 const F32_MASS_CEILING: f64 = 16_777_216.0;
 /// Warn at half the ceiling, while every summary in the tree is still exact.
@@ -463,6 +489,15 @@ fn require_nonnegative<R: Real>(flat: &[R]) -> PyResult<()> {
     Ok(())
 }
 
+/// The caller's `min_samples`, or the leaf-mass rule when they asked for none (`0`).
+fn resolve_min_samples<R: Real, C: ClusterFeature<R>>(min_samples: usize, feats: &[C]) -> usize {
+    if min_samples == 0 {
+        auto_min_samples(feats)
+    } else {
+        min_samples
+    }
+}
+
 #[allow(clippy::type_complexity)]
 fn dispatch_kind<R: Real, C: ClusterFeature<R>>(
     feats: &[C],
@@ -521,18 +556,32 @@ fn dispatch_kind<R: Real, C: ClusterFeature<R>>(
             min_cluster_size,
             graph_degree,
         } => Dispatch::hard(
-            hdbscan_with(feats, min_samples, min_cluster_size, graph_degree, seed).labels,
+            hdbscan_with(
+                feats,
+                resolve_min_samples(min_samples, feats),
+                min_cluster_size,
+                graph_degree,
+                seed,
+            )
+            .labels,
         ),
         Kind::DcDist {
             objective,
             min_samples,
             graph_degree,
         } => Dispatch::hard(
-            dc_clustering(feats, k, objective, min_samples, graph_degree, seed)
-                .labels
-                .into_iter()
-                .map(|l| l as i64)
-                .collect(),
+            dc_clustering(
+                feats,
+                k,
+                objective,
+                resolve_min_samples(min_samples, feats),
+                graph_degree,
+                seed,
+            )
+            .labels
+            .into_iter()
+            .map(|l| l as i64)
+            .collect(),
         ),
         Kind::ScaleSpace => Dispatch::hard(
             scale_space(feats, 0, max_iter)
@@ -1640,7 +1689,7 @@ fn cluster<R: Real, C: ClusterFeature<R>>(
         } => {
             let res = hdbscan_with(
                 tree.leaf_features(),
-                min_samples,
+                resolve_min_samples(min_samples, tree.leaf_features()),
                 min_cluster_size,
                 graph_degree,
                 seed,
@@ -1658,7 +1707,7 @@ fn cluster<R: Real, C: ClusterFeature<R>>(
                 tree.leaf_features(),
                 k,
                 objective,
-                min_samples,
+                resolve_min_samples(min_samples, tree.leaf_features()),
                 graph_degree,
                 seed,
             );
@@ -1856,7 +1905,7 @@ fn run_oneshot<R: Real + Element>(
 #[pyo3(signature = (
     data, n_clusters = 8, feature = "diagonal", method = "gmm", threshold = 0.0,
     branching = 32, leaf_cap = 32, max_leaves = 2000, max_iter = 100, n_init = None,
-    min_samples = 5, min_cluster_size = 5, seed = 0, distance = "euclidean",
+    min_samples = None, min_cluster_size = 5, seed = 0, distance = "euclidean",
     absorb = "euclidean", chi2_p = 0.95, chi2_scale = 0.0, n_shards = None, normalize = false,
     resolution = 1.0, covariance_weight = 0.0, tangent_weight = 0.0, tangent_rank = 2,
     projection = "none", projection_dim = 64, projection_max_iter = 100, refine = 0, rank = 2,
@@ -1876,7 +1925,7 @@ fn fit_predict<'py>(
     max_leaves: usize,
     max_iter: usize,
     n_init: Option<usize>,
-    min_samples: usize,
+    min_samples: Option<&Bound<'py, PyAny>>,
     min_cluster_size: usize,
     seed: u64,
     distance: &str,
@@ -1914,6 +1963,7 @@ fn fit_predict<'py>(
     if shards == 0 {
         return Err(PyValueError::new_err("n_shards must be at least 1"));
     }
+    let min_samples = parse_min_samples(min_samples)?;
     let kind = parse_method(
         method,
         min_samples,
@@ -3537,7 +3587,7 @@ impl Betula {
     #[pyo3(signature = (
         n_clusters = 8, feature = "diagonal", method = "gmm", threshold = 0.0,
         branching = 32, leaf_cap = 32, max_leaves = 2000, max_iter = 100, n_init = None,
-        min_samples = 5, min_cluster_size = 5, seed = 0,
+        min_samples = None, min_cluster_size = 5, seed = 0,
         distance = "euclidean", absorb = "euclidean", chi2_p = 0.95, chi2_scale = 0.0, decay = 1.0,
         normalize = false, huber_k = None, resolution = 1.0, covariance_weight = 0.0,
         tangent_weight = 0.0, tangent_rank = 2, projection = "none", projection_dim = 64,
@@ -3556,7 +3606,7 @@ impl Betula {
         max_leaves: usize,
         max_iter: usize,
         n_init: Option<usize>,
-        min_samples: usize,
+        min_samples: Option<&Bound<'_, PyAny>>,
         min_cluster_size: usize,
         seed: u64,
         distance: &str,
@@ -3583,6 +3633,7 @@ impl Betula {
         canonical_order: bool,
         route_beam: usize,
     ) -> PyResult<Self> {
+        let min_samples = parse_min_samples(min_samples)?;
         let kind = parse_method(
             method,
             min_samples,
@@ -4334,7 +4385,12 @@ impl Betula {
         d.set_item("max_leaves", self.max_leaves)?;
         d.set_item("max_iter", self.max_iter)?;
         d.set_item("n_init", self.n_init)?;
-        d.set_item("min_samples", self.min_samples)?;
+        // `0` is the engine sentinel for "from the leaf mass"; `get_params` speaks the
+        // constructor's language, where that request is `None`.
+        d.set_item(
+            "min_samples",
+            (self.min_samples != 0).then_some(self.min_samples),
+        )?;
         d.set_item("min_cluster_size", self.min_cluster_size)?;
         d.set_item("seed", self.seed)?;
         d.set_item("distance", &self.distance)?;

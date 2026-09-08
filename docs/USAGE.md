@@ -44,7 +44,9 @@ and raise `TypeError` on a float), `max_iter`, `n_init` (k-means++ restarts, kep
 inertia-selected k-means take it — `"kmeans"`, `"spherical-kmeans"`, `"spectral"`, and the
 COP-KMeans of `fit_constrained` — and passing it to any other head raises rather than being ignored;
 see *How many restarts a k-means head needs* below), `min_samples`
-(for `method="hdbscan"`, the core-distance neighbourhood **counting the point itself** —
+(`None`/`"auto"` by default — the mass of ten average leaves, see *`min_samples` on a summary*
+below; an integer is a point count. For `method="hdbscan"` it is the core-distance neighbourhood
+**counting the point itself** —
 the convention of Campello's Def. 3.1, `sklearn.cluster.HDBSCAN` and ELKI, so `min_samples=1`
 leaves every core distance at 0 and HDBSCAN\* degenerates to single linkage;
 `scikit-learn-contrib/hdbscan` excludes it, where the same number means one neighbour more),
@@ -756,6 +758,28 @@ N = 100 000, `min_cluster_size = 250` (ARI, clusters found):
 So set `min_samples` comfortably above `N / max_leaves`, or raise `max_leaves` until the leaf mass
 falls below the `min_samples` you want. On well-separated clusters neither matters; on overlapping
 ones it is the difference between finding three clusters and finding six.
+
+**That is a rule the library can apply itself, and by default it does.** `min_samples=None` — the
+default, spelled `"auto"` if you prefer to say it — asks for the mass of **ten average leaves**,
+which is the conventional ten-point default translated into the currency the head is counting in.
+On the table above it reads 0.820 at `max_leaves = 2 000` and 0.896 at 8 000, against
+`fast_hdbscan`'s 0.910 over the raw points. The plateau is wide — five to forty leaves are all
+inside the seed spread there — so the constant is the shape of the rule rather than a fit to it.
+
+On the six published quality fixtures at N = 30 000 (median of seeds 0/1/2) the same rule costs
+nothing where the fixed ten already worked and gains where it did not:
+
+| fixture | `min_samples=10` | automatic |
+|---|---:|---:|
+| blobs | 0.142 | **0.444** |
+| varied | 0.479 | **0.548** |
+| aniso | 0.568 | 0.565 |
+| moons | 0.9999 | 0.9995 |
+| circles | 1.0000 | 0.9999 |
+| highdim | 1.0000 | 1.0000 |
+
+Pass an integer whenever you want the scikit-learn number instead; it is used exactly as given. The
+same automatic value serves `dc-center` / `dc-median`, which read the same core distances.
 
 ### Graph-indexing the density head — `graph_degree`
 
