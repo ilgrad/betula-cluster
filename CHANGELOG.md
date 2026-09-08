@@ -29,6 +29,29 @@ All notable changes to this project are documented here. The format follows
   arrival-order path keeps the uniform draw and is untouched.
 
 ### Added
+- **`balance="auto"` — the mass cap as a decision the data makes.** `balance` bounds how much of the
+  total mass one leaf may hold, and it has a known domain: over 27 cells (digits / covtype-20k /
+  mnist-10k × `kmeans`/`ward`/`gmm` × three budgets) a fixed cap gains **+0.08 to +0.25 ARI on all
+  six cells where the heaviest leaf holds more than half the mass**, and stays inside seed noise on
+  the twelve below 0.1. That statistic is now readable by the estimator itself: `"auto"` summarises
+  once, reads the share off the finished tree and, only if it passes 0.5, summarises the same rows
+  again with the cap on from the first point. Re-measured over the same 27 cells, it is
+  **bit-identical to `balance=None` on all 21 non-firing cells** and lands on the `balance=4.0`
+  answer on all six that fire (+0.0785 to +0.2514). The price is one extra pass, paid only where it
+  fires.
+
+  `partial_fit` cannot summarise the same rows twice, so a stream gets a weaker mechanism instead:
+  the tree watches its own mass distribution as it builds and arms the cap when a leaf passes half
+  the mass. A cluster feature does not split back into points, so a leaf that has already absorbed
+  the core keeps it — measured on mnist-10k at 250 leaves the streaming arming recovers +0.006 to
+  +0.037 where the two-pass recovers +0.167 to +0.251. Both are documented in `docs/USAGE.md`; the
+  default is still `None`.
+
+  Not everything the parameter was hoped to fix is a mass problem: the published `covtype`/`ward`
+  cell (ARI 0.086 against sklearn-birch's 0.131) has a heaviest-leaf share of **0.041**, and a fixed
+  cap moves it by −0.0001. `"auto"` correctly does nothing there.
+- **`CFTree::top1_mass`** (Rust) — the heaviest leaf's share of the mass, the diagnostic the docs
+  already told readers to compute by hand.
 - **A `float32` tree now warns before its weights stop counting.** An `f32` leaf saturates at
   2²⁴ = 16 777 216 points: binary32 spaces its values 2 apart from there upward, so a unit-weight
   row leaves the weight exactly where it was. Measured, 16 781 312 identical `float32` rows into one

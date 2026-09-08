@@ -664,6 +664,8 @@ class Betula:
         # the mass, enforced at absorption and at compaction, with ``max_leaves`` still a hard
         # bound. ``None`` (default) is the purely geometric budget, where one dense region can take
         # the whole tree — worth +0.58 ARI on a size-imbalanced fixture, mixed on well-spread data.
+        # ``"auto"`` lets the tree arm the cap itself when one of its leaves passes half the mass,
+        # which is the statistic that separates the cells the cap helps from the ones it does not.
         self.balance = balance
         # Leiden resolution γ (only method="leiden" / "leiden-cpm"): higher ⇒ more, smaller
         # communities. The modularity objective has a resolution limit; "leiden-cpm" does not.

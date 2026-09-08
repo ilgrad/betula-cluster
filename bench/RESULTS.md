@@ -1091,6 +1091,20 @@ leaves, +0.244 at 450) are in the *low*-`top1` regime, and they are the isotropi
 from the section below — a lighter leaf carries less `ssd`, so there is less isotropic variance to
 inflate every dimension with. That is a side-effect of the cap, not the mass-balance argument for it.
 
+**`balance="auto"` is that rule, executed.** The estimator builds once, reads `top1` off the finished
+tree, and re-summarises the same rows with the cap only when it passes 0.5. Re-run over the same 27
+cells, it reproduces the table exactly: **bit-identical labels to `balance=None` in all 21 cells
+where `top1 < 0.5`**, and the `balance=4` column in all six where it fires. The extra pass is paid
+only in those six.
+
+Two limits, both measured rather than assumed. A stream cannot be summarised twice, so `partial_fit`
+instead lets the tree arm the cap from inside its own build — which is weaker for a reason worth
+stating, since a cluster feature cannot be split back into points: a leaf that has already absorbed
+the core keeps it, and the arming recovers **+0.006 to +0.037** on mnist-10k at 250 leaves where the
+two-pass recovers +0.167 to +0.251. And the parameter does *not* reach the `covtype` / `ward` cell it
+was once hoped to: in the published configuration that cell's `top1` is **0.041** and a fixed cap
+moves its ARI by **−0.0001**, so whatever the 0.086-against-0.131 gap is, it is not this.
+
 ### It is the CF-tree family, not this implementation (task #47)
 
 scikit-learn's Birch issue #22854 reports the same shape from the other implementation, so the

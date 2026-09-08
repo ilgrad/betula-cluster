@@ -51,7 +51,7 @@ use crate::sparse::{SparseCentroids, normalize_csr_rows, summarize_sparse};
 use crate::stats::chi2_quantile;
 use crate::stream::{DbStream, DenStream, DriftReport};
 use crate::topology::{Lens, Link, MapperGraph, MapperParams, mapper};
-use crate::tree::CFTree;
+use crate::tree::{AUTO_BALANCE_MULTIPLE, AUTO_BALANCE_TOP1, CFTree};
 use crate::types::Real;
 use crate::wasserstein::{GaussianMixture, Spread, mixture_w2};
 use crate::window::WindowStream;
@@ -239,6 +239,37 @@ fn warn_isotropic_gaussian(
     ))
     .expect("the formatted warning contains no interior NUL");
     PyErr::warn(py, &py.get_type::<PyUserWarning>(), &msg, 1)
+}
+
+/// The `balance` argument, which is one of three things and must stay one argument.
+///
+/// `None` is the textbook geometric budget. A positive number is a hard multiple of the
+/// mass-balanced ideal `total / max_leaves`. `"auto"` hands the decision to the tree, which arms the
+/// cap when one of its own leaves passes half the mass — the predictor that separated the six cells
+/// a fixed cap helped from the twelve it did not (audit §41). Two mutually exclusive settings behind
+/// one keyword rather than a `balance=` plus a `balance_auto=` the caller could set to disagree.
+fn parse_balance(value: Option<&Bound<'_, PyAny>>) -> PyResult<(Option<f64>, bool)> {
+    const CHOICES: &str = "balance must be a number > 0 (multiple of the n / max_leaves ideal), \
+                           \"auto\" to let the tree decide, or None to disable";
+    let Some(value) = value else {
+        return Ok((None, false));
+    };
+    if value.is_none() {
+        return Ok((None, false));
+    }
+    if let Ok(name) = value.extract::<String>() {
+        return match name.as_str() {
+            "auto" => Ok((None, true)),
+            _ => Err(PyValueError::new_err(CHOICES)),
+        };
+    }
+    let b: f64 = value
+        .extract()
+        .map_err(|_| PyValueError::new_err(CHOICES))?;
+    if b <= 0.0 || b.is_nan() {
+        return Err(PyValueError::new_err(CHOICES));
+    }
+    Ok((Some(b), false))
 }
 
 /// The `f32` mass at which a leaf stops counting: `w + 1 == w` in binary32 from `2^24` upward.
@@ -1417,6 +1448,52 @@ fn build_tree<R: Real, C: ClusterFeature<R>>(
     n: usize,
     requested_shards: usize,
     balance: Option<R>,
+    auto_balance: bool,
+    canonical_order: bool,
+) -> CFTree<R, C, RouteKind, AbsorbKind<R>> {
+    let build = |cap: Option<R>| {
+        build_once::<R, C>(
+            dim,
+            branching,
+            leaf_cap,
+            threshold,
+            max_leaves,
+            route,
+            absorb,
+            flat,
+            n,
+            requested_shards,
+            cap,
+            canonical_order,
+        )
+    };
+    let tree = build(balance);
+    // `balance="auto"` with every row in hand: measure the concentration on a clean build, then
+    // decide. The cap cannot repair a leaf that has already absorbed the core — a cluster feature
+    // does not split back into points — so arming it mid-build recovers only a fraction of what
+    // building again with it on from the first point does (measured on mnist-10k at 250 leaves:
+    // +0.006…+0.037 against +0.167…+0.251). The price is one extra build, and only where the
+    // predictor fires.
+    if auto_balance && tree.top1_mass().to_f64().unwrap_or(0.0) > AUTO_BALANCE_TOP1 {
+        return build(R::from_f64(AUTO_BALANCE_MULTIPLE));
+    }
+    tree
+}
+
+/// One summarisation pass, sequential or sharded. [`build_tree`] is this plus the `"auto"` decision.
+#[allow(clippy::too_many_arguments)]
+fn build_once<R: Real, C: ClusterFeature<R>>(
+    dim: usize,
+    branching: usize,
+    leaf_cap: usize,
+    threshold: R,
+    max_leaves: usize,
+    route: RouteKind,
+    absorb: AbsorbKind<R>,
+    flat: &[R],
+    n: usize,
+    requested_shards: usize,
+    balance: Option<R>,
     canonical_order: bool,
 ) -> CFTree<R, C, RouteKind, AbsorbKind<R>> {
     let order = canonical_order.then(|| canonical_permutation(flat, n, dim));
@@ -1439,6 +1516,7 @@ fn build_tree<R: Real, C: ClusterFeature<R>>(
             n,
             shards,
             balance,
+            false,
             order.as_deref(),
         );
     }
@@ -1473,6 +1551,7 @@ fn cluster<R: Real, C: ClusterFeature<R>>(
     nmf_dim: Option<ProjectionSpec>,
     refine: usize,
     balance: Option<R>,
+    auto_balance: bool,
     leaf_refit: usize,
     canonical_order: bool,
 ) -> (Vec<i64>, usize) {
@@ -1488,6 +1567,7 @@ fn cluster<R: Real, C: ClusterFeature<R>>(
         n,
         shards,
         balance,
+        auto_balance,
         canonical_order,
     );
     for _ in 0..leaf_refit {
@@ -1589,6 +1669,7 @@ fn run_oneshot<R: Real + Element>(
     nmf_dim: Option<ProjectionSpec>,
     refine: usize,
     balance: Option<f64>,
+    auto_balance: bool,
     auto_k_max: usize,
     leaf_refit: usize,
     canonical_order: bool,
@@ -1630,6 +1711,7 @@ fn run_oneshot<R: Real + Element>(
                 nmf_dim,
                 refine,
                 balance,
+                auto_balance,
                 leaf_refit,
                 canonical_order,
             )),
@@ -1652,6 +1734,7 @@ fn run_oneshot<R: Real + Element>(
                 nmf_dim,
                 refine,
                 balance,
+                auto_balance,
                 leaf_refit,
                 canonical_order,
             )),
@@ -1674,6 +1757,7 @@ fn run_oneshot<R: Real + Element>(
                 nmf_dim,
                 refine,
                 balance,
+                auto_balance,
                 leaf_refit,
                 canonical_order,
             )),
@@ -1696,6 +1780,7 @@ fn run_oneshot<R: Real + Element>(
                 nmf_dim,
                 refine,
                 balance,
+                auto_balance,
                 leaf_refit,
                 canonical_order,
             )),
@@ -1773,7 +1858,7 @@ fn fit_predict<'py>(
     refine: usize,
     rank: usize,
     graph_degree: usize,
-    balance: Option<f64>,
+    balance: Option<&Bound<'py, PyAny>>,
     auto_k_max: usize,
     fuzzifier: f64,
     leaf_refit: usize,
@@ -1805,6 +1890,7 @@ fn fit_predict<'py>(
         fuzzifier,
     )?;
     let nmf_dim = parse_projection(projection, projection_dim, projection_max_iter)?;
+    let (balance, auto_balance) = parse_balance(balance)?;
     let (labels, leaves) = if let Ok(a) = data.extract::<PyReadonlyArray2<'py, f64>>() {
         run_oneshot::<f64>(
             py,
@@ -1827,6 +1913,7 @@ fn fit_predict<'py>(
             nmf_dim,
             refine,
             balance,
+            auto_balance,
             auto_k_max,
             leaf_refit,
             canonical_order,
@@ -1853,6 +1940,7 @@ fn fit_predict<'py>(
             nmf_dim,
             refine,
             balance,
+            auto_balance,
             auto_k_max,
             leaf_refit,
             canonical_order,
@@ -1951,6 +2039,7 @@ impl<R: Real> TreeState<R> {
         gate: AbsorbKind<R>,
         huber_k: Option<R>,
         balance: Option<R>,
+        auto_balance: bool,
     ) -> Result<Self, &'static str> {
         macro_rules! tree {
             () => {{
@@ -1958,6 +2047,7 @@ impl<R: Real> TreeState<R> {
                     CFTree::new(dim, branching, leaf_cap, threshold, max_leaves, route, gate);
                 t.set_huber_k(huber_k);
                 t.set_balance(balance);
+                t.set_auto_balance(auto_balance);
                 t
             }};
         }
@@ -1986,6 +2076,17 @@ impl<R: Real> TreeState<R> {
             TreeState::Full(t) => t.num_leaves(),
             TreeState::Fd(t) => t.num_leaves(),
         }
+    }
+
+    /// The heaviest leaf's share of the mass, in `f64` whatever the tree's element type.
+    fn top1_mass(&self) -> f64 {
+        let share = match self {
+            TreeState::Spherical(t) => t.top1_mass().to_f64(),
+            TreeState::Diagonal(t) => t.top1_mass().to_f64(),
+            TreeState::Full(t) => t.top1_mass().to_f64(),
+            TreeState::Fd(t) => t.top1_mass().to_f64(),
+        };
+        share.unwrap_or(0.0)
     }
 
     fn refit_leaves(&mut self, flat: &[R], n: usize) {
@@ -2139,6 +2240,7 @@ impl<R: Real> TreeState<R> {
                 gate,
                 cfg.huber_k.map(|k| R::from_f64(k).unwrap()),
                 cfg.balance.and_then(R::from_f64),
+                cfg.auto_balance,
             )?);
         }
         let tree = slot.as_mut().unwrap();
@@ -2186,6 +2288,7 @@ impl<R: Real> TreeState<R> {
                 gate,
                 cfg.huber_k.map(|k| R::from_f64(k).unwrap()),
                 cfg.balance.and_then(R::from_f64),
+                cfg.auto_balance,
             )?);
         }
         let tree = slot.as_mut().unwrap();
@@ -2534,6 +2637,7 @@ struct StreamCfg<'a> {
     decay: f64,
     huber_k: Option<f64>,
     balance: Option<f64>,
+    auto_balance: bool,
 }
 
 /// Stateful BETULA estimator. `partial_fit` streams data into a memory-bounded CF-tree; `fit`
@@ -2591,8 +2695,13 @@ struct Betula {
     #[serde(default)]
     huber_k: Option<f64>,
     /// Per-leaf mass cap as a multiple of `n / max_leaves`; `None` is the purely geometric budget.
+    /// Mutually exclusive with `balance_auto` by construction — [`parse_balance`] is the only place
+    /// either is set, and it returns one or the other.
     #[serde(default)]
     balance: Option<f64>,
+    /// The cap was requested as `balance="auto"`: the tree arms it from its own concentration.
+    #[serde(default)]
+    balance_auto: bool,
     /// Leiden resolution `γ` (only used by `method="leiden"` / `"leiden-cpm"`); kept for `get_params`.
     #[serde(default = "default_resolution")]
     resolution: f64,
@@ -2743,6 +2852,21 @@ impl Betula {
         self.warned_f32_mass = false;
     }
 
+    /// Should this whole-array build be repeated with the mass cap on?
+    ///
+    /// `balance="auto"` is a decision the data makes, and the statistic it makes it on
+    /// (`max(weight) / total`) only exists once a tree has been built. With every row in hand that
+    /// is affordable — build once to measure, and build again with the cap when the measurement
+    /// says the budget went to geometry rather than to mass. A `partial_fit` stream cannot go back,
+    /// so it gets the tree's own incremental arming instead, which is weaker and says so.
+    fn resummarize_capped<R: Real>(&self, arrival: Arrival, state: &Option<TreeState<R>>) -> bool {
+        self.balance_auto
+            && arrival == Arrival::Whole
+            && state
+                .as_ref()
+                .is_some_and(|t| t.top1_mass() > AUTO_BALANCE_TOP1)
+    }
+
     /// Report the `f32` weight ceiling once the heaviest leaf is within a factor of two of it.
     ///
     /// `n` rows were just streamed. `f32_mass` is kept as an upper bound on any single leaf's mass
@@ -2815,6 +2939,9 @@ impl Betula {
             decay: self.decay,
             huber_k: self.huber_k,
             balance: self.balance,
+            // A whole-array arrival gets the two-pass decision below instead: the incremental arming
+            // would cap the very build the decision is supposed to measure.
+            auto_balance: self.balance_auto && arrival != Arrival::Whole,
         };
         if use_f32 {
             let (src, n, dim) = flat_as::<f32>(data, self.row_prep())?;
@@ -2827,6 +2954,16 @@ impl Betula {
             let order = self.insertion_order(flat, n, dim, arrival);
             TreeState::stream_chunk(&mut self.state32, &cfg, flat, n, dim, order.as_deref())
                 .map_err(PyValueError::new_err)?;
+            if self.resummarize_capped(arrival, &self.state32) {
+                self.state32 = None;
+                let capped = StreamCfg {
+                    balance: Some(AUTO_BALANCE_MULTIPLE),
+                    auto_balance: false,
+                    ..cfg
+                };
+                TreeState::stream_chunk(&mut self.state32, &capped, flat, n, dim, order.as_deref())
+                    .map_err(PyValueError::new_err)?;
+            }
             self.dim = dim;
             self.check_f32_saturation(data.py(), n)?;
         } else {
@@ -2840,6 +2977,16 @@ impl Betula {
             let order = self.insertion_order(flat, n, dim, arrival);
             TreeState::stream_chunk(&mut self.state64, &cfg, flat, n, dim, order.as_deref())
                 .map_err(PyValueError::new_err)?;
+            if self.resummarize_capped(arrival, &self.state64) {
+                self.state64 = None;
+                let capped = StreamCfg {
+                    balance: Some(AUTO_BALANCE_MULTIPLE),
+                    auto_balance: false,
+                    ..cfg
+                };
+                TreeState::stream_chunk(&mut self.state64, &capped, flat, n, dim, order.as_deref())
+                    .map_err(PyValueError::new_err)?;
+            }
             self.dim = dim;
         }
         self.labels = None;
@@ -2884,6 +3031,7 @@ impl Betula {
             decay: self.decay,
             huber_k: self.huber_k,
             balance: self.balance,
+            auto_balance: self.balance_auto,
         };
         // Same rule as the dense path: only a call that holds the whole matrix can order it.
         let order = (self.canonical_order && arrival == Arrival::Whole)
@@ -3345,7 +3493,7 @@ impl Betula {
         refine: usize,
         rank: usize,
         graph_degree: usize,
-        balance: Option<f64>,
+        balance: Option<&Bound<'_, PyAny>>,
         auto_k_max: usize,
         fuzzifier: f64,
         leaf_refit: usize,
@@ -3394,13 +3542,7 @@ impl Betula {
                 ));
             }
         }
-        if let Some(b) = balance {
-            if b <= 0.0 || b.is_nan() {
-                return Err(PyValueError::new_err(
-                    "balance must be > 0 (multiple of the n / max_leaves ideal), or None to disable",
-                ));
-            }
-        }
+        let (balance, balance_auto) = parse_balance(balance)?;
         Ok(Self {
             feature: feature.to_string(),
             kind,
@@ -3447,6 +3589,7 @@ impl Betula {
             route_beam,
             leaf_refit,
             canonical_order,
+            balance_auto,
             f32_mass: 0.0,
             warned_f32_mass: false,
         })
@@ -4115,7 +4258,11 @@ impl Betula {
         d.set_item("decay", self.decay)?;
         d.set_item("normalize", self.normalize)?;
         d.set_item("huber_k", self.huber_k)?;
-        d.set_item("balance", self.balance)?;
+        if self.balance_auto {
+            d.set_item("balance", "auto")?;
+        } else {
+            d.set_item("balance", self.balance)?;
+        }
         d.set_item("resolution", self.resolution)?;
         d.set_item("covariance_weight", self.covariance_weight)?;
         d.set_item("tangent_weight", self.tangent_weight)?;

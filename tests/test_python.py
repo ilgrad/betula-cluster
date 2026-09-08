@@ -2019,12 +2019,84 @@ def test_balance_leaves_the_budget_a_hard_bound():
     assert est.n_leaves_ <= 200
 
 
-@pytest.mark.parametrize("bad", [0.0, -1.0, float("nan")])
+@pytest.mark.parametrize("bad", [0.0, -1.0, float("nan"), "yes", [1.0]])
 def test_balance_nonpositive_raises(blobs, bad):
     x, _ = blobs
     est = betula_cluster.Betula(n_clusters=4, balance=bad)
     with pytest.raises(ValueError):
         est.fit(x)
+
+
+def _labels_at(balance, x, **kw):
+    est = betula_cluster.Betula(
+        n_clusters=4,
+        feature="spherical",
+        method="kmeans",
+        threshold=0.0,
+        max_leaves=200,
+        seed=0,
+        balance=balance,
+        **kw,
+    )
+    return np.asarray(est.fit_predict(x)), est
+
+
+def test_balance_auto_takes_the_cap_where_the_diagnostic_says_to():
+    """`"auto"` is the measured rule, not a compromise: where one leaf holds over half the mass it
+    must land on the `balance=4.0` answer, not somewhere between it and the uncapped one.
+    """
+    x = _dense_core_with_a_diffuse_halo()
+    off, est_off = _labels_at(None, x)
+    fixed, est_fixed = _labels_at(4.0, x)
+    auto, est_auto = _labels_at("auto", x)
+    w = np.asarray(est_off.microcluster_weights_, dtype=np.float64)
+    assert w.max() / w.sum() > 0.5, "the fixture must trip the predictor, or it tests nothing"
+    assert np.array_equal(auto, fixed)
+    assert not np.array_equal(auto, off)
+    assert est_auto.n_leaves_ == est_fixed.n_leaves_
+
+
+def test_balance_auto_is_bit_identical_to_off_on_a_well_spread_tree(blobs):
+    """The twelve cells below a 0.1 share were the reason the cap did not become a default. `"auto"`
+    must not touch them at all — same labels, same leaf count, not merely a similar score.
+    """
+    x, _ = blobs
+    off, est_off = _labels_at(None, x)
+    auto, est_auto = _labels_at("auto", x)
+    w = np.asarray(est_off.microcluster_weights_, dtype=np.float64)
+    assert w.max() / w.sum() < 0.5
+    assert np.array_equal(auto, off)
+    assert est_auto.n_leaves_ == est_off.n_leaves_
+
+
+def test_balance_auto_on_a_stream_arms_from_inside_the_build():
+    """A stream cannot be summarised twice, so the tree watches its own mass instead. The case that
+    proves it runs at all is the one a rebuild-triggered rule would miss: an absorption radius wide
+    enough that everything lands in one leaf, so the tree never reaches its budget and never
+    rebuilds.
+    """
+    x = _dense_core_with_a_diffuse_halo()
+    kw = dict(n_clusters=2, feature="spherical", method="kmeans", threshold=1e4, max_leaves=200)
+    plain = betula_cluster.Betula(**kw, balance=None)
+    armed = betula_cluster.Betula(**kw, balance="auto")
+    for chunk in np.array_split(x, 8):
+        plain.partial_fit(chunk)
+        armed.partial_fit(chunk)
+    armed.partial_fit()
+    with pytest.warns(UserWarning, match="1 leaves"):
+        plain.partial_fit()  # the control collapses, and says so
+    assert plain.n_leaves_ == 1, "the control must collapse, or the test proves nothing"
+    assert armed.n_leaves_ > 1
+
+
+def test_balance_auto_round_trips_through_the_parameter_dict(blobs):
+    x, _ = blobs
+    est = betula_cluster.Betula(n_clusters=4, balance="auto")
+    assert est.get_params()["balance"] == "auto"
+    est.fit(x)
+    assert est._est.get_params()["balance"] == "auto"  # what `load` reads back
+    est.set_params(balance=2.5)
+    assert est.get_params()["balance"] == 2.5
 
 
 def test_balance_param_roundtrips():

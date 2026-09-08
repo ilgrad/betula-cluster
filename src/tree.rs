@@ -54,7 +54,28 @@ pub struct CFTree<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDista
     /// purely geometric budget BIRCH describes. See [`Self::set_balance`].
     #[cfg_attr(feature = "persistence", serde(default = "Option::default"))]
     balance: Option<R>,
+    /// Arm `balance` on the tree's own state instead of on the caller's judgement: at a rebuild, if
+    /// one leaf holds more than [`AUTO_BALANCE_TOP1`] of the mass, the cap switches on at
+    /// [`AUTO_BALANCE_MULTIPLE`] and stays on. `false` = the caller decides. See
+    /// [`Self::set_auto_balance`].
+    #[cfg_attr(feature = "persistence", serde(default))]
+    auto_balance: bool,
+    /// Inserts since the automatic cap last looked at the mass distribution.
+    #[cfg_attr(feature = "persistence", serde(default))]
+    inserts_since_auto_check: usize,
 }
+
+/// Share of the total mass in a single leaf above which the automatic cap arms.
+///
+/// The predictor is not a guess: over 27 cells (digits / covtype-20k / mnist-10k × 3 heads × 3
+/// budgets) a fixed cap gained +0.08…+0.25 ARI on all six cells where this statistic passed 0.5 and
+/// moved nothing outside seed noise on the twelve below 0.1 (audit §41). Grouping those cells by the
+/// mechanism's own predictor is what turned a lever into a rule.
+pub(crate) const AUTO_BALANCE_TOP1: f64 = 0.5;
+
+/// Multiple of the mass-balanced ideal the automatic cap arms at — the value the 27-cell sweep and
+/// the imbalance fixture were measured with.
+pub(crate) const AUTO_BALANCE_MULTIPLE: f64 = 4.0;
 
 /// A microcluster must hold at least this many points before its scale is trusted enough to clip
 /// against (avoids winsorizing wildly against a 1–2-point estimate during warm-up).
@@ -95,6 +116,8 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> CF
             huber_k: None,
             merged_since_rebalance: 0,
             balance: None,
+            auto_balance: false,
+            inserts_since_auto_check: 0,
         }
     }
 
@@ -121,6 +144,50 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> CF
         self.balance = balance.filter(|b| *b > R::zero());
     }
 
+    /// Let the tree decide for itself whether the cap applies.
+    ///
+    /// The concentration this fixes is visible in the tree's own leaves — `max(weight) / total` — so
+    /// the decision does not need `n`, a second pass, or a judgement from the caller: at each
+    /// rebuild, a share above [`AUTO_BALANCE_TOP1`] arms the cap at [`AUTO_BALANCE_MULTIPLE`] and it
+    /// stays armed. That makes it usable from a stream, where nothing else knows how the mass will
+    /// end up distributed.
+    ///
+    /// **It arms, it does not repair.** A leaf that has already absorbed the core keeps the mass it
+    /// holds — a cluster feature cannot be split back into points — so the cap only governs what is
+    /// absorbed and merged from that rebuild on. An explicit `set_balance` is therefore strictly
+    /// stronger, and takes precedence: an armed automatic cap never overrides one the caller set.
+    pub fn set_auto_balance(&mut self, auto: bool) {
+        self.auto_balance = auto;
+    }
+
+    /// Look at the mass distribution once every `max_leaves` inserts, while the cap is unarmed.
+    ///
+    /// The statistic is `O(entries)`, so it cannot run per point; at this stride it is amortized
+    /// `O(1)` and no more than one budget's worth of points can pour into a runaway leaf before the
+    /// cap fires. A rebuild is *not* the trigger, deliberately: the pathological case — a dense core
+    /// inside the absorption radius — collapses into a single entry and never rebuilds at all, so a
+    /// rebuild-only rule would miss exactly the tree it was written for.
+    fn tick_auto_balance(&mut self) {
+        if !self.auto_balance || self.balance.is_some() {
+            return;
+        }
+        self.inserts_since_auto_check += 1;
+        if self.inserts_since_auto_check >= self.max_leaves {
+            self.inserts_since_auto_check = 0;
+            self.arm_auto_balance();
+        }
+    }
+
+    /// Arm the automatic cap if this tree's own mass distribution asks for it.
+    fn arm_auto_balance(&mut self) {
+        if !self.auto_balance || self.balance.is_some() {
+            return;
+        }
+        if self.top1_mass() > R::from_f64(AUTO_BALANCE_TOP1).unwrap() {
+            self.balance = R::from_f64(AUTO_BALANCE_MULTIPLE);
+        }
+    }
+
     /// The largest weight a leaf entry may reach, or `None` when the cap is off.
     ///
     /// The ideal is read from the *current* total mass, so a stream tightens it as it goes rather
@@ -144,6 +211,24 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> CF
     /// The leaf micro-clusters (used as input to global clustering).
     pub fn leaf_features(&self) -> &[C] {
         &self.entries
+    }
+
+    /// The heaviest leaf's share of the total mass.
+    ///
+    /// The one-line diagnostic `docs/USAGE.md` names for "the budget is spent, and spent badly", and
+    /// the statistic `balance="auto"` decides on: a geometric budget spends leaves on whichever
+    /// points happen to be far apart, so a dense core can take one entry and most of the mass while
+    /// the count still looks healthy. `0` for an empty tree.
+    pub fn top1_mass(&self) -> R {
+        let total = self.nodes[self.root].cf.weight();
+        if total <= R::zero() {
+            return R::zero();
+        }
+        self.entries
+            .iter()
+            .map(ClusterFeature::weight)
+            .fold(R::zero(), |a, b| if b > a { b } else { a })
+            / total
     }
 
     /// Number of leaf entries (micro-clusters).
@@ -197,6 +282,7 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> CF
         n: usize,
         shards: usize,
         balance: Option<R>,
+        auto_balance: bool,
         order: Option<&[u32]>,
     ) -> Self
     where
@@ -223,6 +309,7 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> CF
                 abs.clone(),
             );
             t.set_balance(balance);
+            t.set_auto_balance(auto_balance);
             for rank in lo..hi {
                 let i = order.map_or(rank, |o| o[rank] as usize);
                 t.insert(&flat[i * dim..(i + 1) * dim]);
@@ -241,6 +328,7 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> CF
 
         let mut tree = Self::new(dim, branching, leaf_cap, threshold, max_leaves, dist, abs);
         tree.set_balance(balance);
+        tree.set_auto_balance(auto_balance);
         for sub in &subtrees {
             for cf in sub.leaf_features() {
                 tree.insert_cf(cf.clone());
@@ -734,6 +822,7 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> CF
     /// Insert a point.
     pub fn insert(&mut self, x: &[R]) {
         debug_assert!(x.len() >= self.dim);
+        self.tick_auto_balance();
         if let Some(k) = self.huber_k {
             self.insert_robust(x, k);
             return;
@@ -1383,6 +1472,54 @@ mod tests {
         verify(&capped, 1000);
     }
 
+    /// The automatic cap has to fire on the fixture that motivates it, and this fixture is the hard
+    /// case for any rebuild-triggered rule: the dense core collapses into one entry, so the tree
+    /// never exceeds its budget and never rebuilds. The stride check is what finds it anyway.
+    #[test]
+    fn the_automatic_cap_arms_on_a_tree_that_never_rebuilds() {
+        let mut auto: CFTree<f64, Spherical<f64>, _, _> =
+            CFTree::new(2, 8, 8, 1.0, 40, CentroidEuclidean, CentroidEuclidean);
+        auto.set_auto_balance(true);
+        for p in &dense_core(1000) {
+            auto.insert(p);
+        }
+        assert_eq!(
+            core_tree(None).num_leaves(),
+            1,
+            "the control must collapse, or the test proves nothing"
+        );
+        assert!(
+            auto.num_leaves() > 1,
+            "the automatic cap must spread the core, got {} leaf",
+            auto.num_leaves()
+        );
+        verify(&auto, 1000);
+    }
+
+    /// Off by default, and an explicit cap is not overridden by the automatic one.
+    #[test]
+    fn the_automatic_cap_defers_to_an_explicit_one_and_to_being_off() {
+        let mut explicit: CFTree<f64, Spherical<f64>, _, _> =
+            CFTree::new(2, 8, 8, 1.0, 40, CentroidEuclidean, CentroidEuclidean);
+        explicit.set_balance(Some(2.0));
+        explicit.set_auto_balance(true);
+        for p in &dense_core(1000) {
+            explicit.insert(p);
+        }
+        let heaviest = |t: &CFTree<f64, Spherical<f64>, _, _>| {
+            t.leaf_features()
+                .iter()
+                .map(|e| e.weight())
+                .fold(0.0, f64::max)
+        };
+        assert!(
+            heaviest(&explicit) <= 50.0,
+            "the caller's balance = 2.0 (cap 50) still governs, got {}",
+            heaviest(&explicit)
+        );
+        assert_eq!(core_tree(None).num_leaves(), 1, "and off stays off");
+    }
+
     #[test]
     fn the_leaf_budget_outranks_the_mass_cap() {
         // `balance` far below 1 asks for a cap the budget cannot honour (the floor of 2 points per
@@ -2000,6 +2137,7 @@ mod tests {
             n,
             8,
             None,
+            false,
             None,
         );
         assert!(
@@ -2035,6 +2173,7 @@ mod tests {
                 n,
                 4,
                 None,
+                false,
                 order,
             )
         };
@@ -2078,6 +2217,7 @@ mod tests {
                 n,
                 shards,
                 None,
+                false,
                 Some(&perm),
             )
         };
@@ -2118,6 +2258,7 @@ mod tests {
             n,
             SHARDS,
             None,
+            false,
             None,
         );
         assert!(

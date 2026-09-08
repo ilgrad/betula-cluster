@@ -1096,6 +1096,26 @@ est = betula_cluster.Betula(n_clusters=7, max_leaves=1000, balance=4.0)
 the mass in one tight core this moves `kmeans` from ARI 0.4174 to **1.0000** at every budget from 250
 to 4000 — but it is a lever, not a free win, so measure it against `balance=None` on your own data.
 
+**`balance="auto"` reads that diagnostic for you.** The share above is not a taste question: over 27
+cells (digits / covtype-20k / mnist-10k × `kmeans`/`ward`/`gmm` × three budgets) a fixed cap gains
+**+0.08 to +0.25 ARI on all six cells where the share passes 0.5**, and moves nothing outside seed
+noise on the twelve below 0.1. `"auto"` builds the tree once, reads the share off it, and — only if
+it passes 0.5 — summarises the same rows again with the cap on from the first point:
+
+```python
+est = betula_cluster.Betula(n_clusters=10, max_leaves=250, balance="auto")
+```
+
+Two costs, both stated rather than hidden. Where the share is low the result is **bit-identical** to
+`balance=None` and nothing extra is paid; where it fires you pay one extra pass over the data, and
+the labels are the `balance=4.0` labels. And it needs every row at once, so `fit` and `fit_predict`
+get the two-pass decision while `partial_fit` cannot: on a stream the tree instead watches its own
+mass distribution as it builds and arms the cap when a leaf passes half the mass. That is strictly
+weaker, because a cluster feature cannot be split back into points — a leaf that has already
+absorbed the core keeps it. Measured on mnist-10k at 250 leaves, the streaming arming recovers
+**+0.006 to +0.037** where the two-pass recovers **+0.167 to +0.251**. If a stream is your case and
+the diagnostic is bad, pass a number.
+
 ### How much a `float32` tree can count
 
 `float32` input builds an `f32` tree, which halves the resident memory and carries one limit worth
