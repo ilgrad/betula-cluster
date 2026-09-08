@@ -4038,6 +4038,68 @@ def test_leaf_refit_survives_the_sklearn_parameter_protocol():
     assert est.set_params(leaf_refit=1).get_params()["leaf_refit"] == 1
 
 
+# ── route_beam: the descent width ────────────────────────────────────────────────────────────────
+
+
+def test_route_beam_one_is_the_shipped_descent_and_wider_moves_rows():
+    """The tree descent takes one child per level and never backtracks, so the entry it returns is
+    the nearest in the leaf it reached rather than the nearest in the tree. Measured against an
+    exact scan at `max_leaves=4000`, that is 24.6 % of rows on 2-D blobs and 44.4 % on covtype.
+
+    `route_beam` keeps the `b` nearest nodes at each level instead of one. The default of 1 must be
+    byte-identical to the behaviour before the parameter existed, and a wider beam must actually
+    move rows — otherwise the knob is decorative."""
+    x = _blobs(n=1500, d=6, k=4, seed=3)
+    kw = dict(feature="diagonal", method="ward", n_clusters=4, max_leaves=4000, seed=0)
+    plain = betula_cluster.Betula(**kw).fit(x)
+    one = betula_cluster.Betula(route_beam=1, **kw).fit(x)
+    wide = betula_cluster.Betula(route_beam=8, **kw).fit(x)
+
+    assert np.array_equal(plain.assign_microclusters(x), one.assign_microclusters(x))
+    assert not np.array_equal(plain.assign_microclusters(x), wide.assign_microclusters(x))
+
+
+def test_route_beam_wide_enough_reaches_the_exact_nearest_microcluster():
+    """The width is a dial between the greedy descent and an exact scan, so at a width past the
+    tree's own fan-out it must *be* the exact scan. This is the property that says the beam prunes
+    by distance and not by luck."""
+    x = _blobs(n=1200, d=5, k=3, seed=11)
+    est = betula_cluster.Betula(
+        feature="diagonal", method="ward", n_clusters=3, max_leaves=4000, seed=0, route_beam=4096
+    ).fit(x)
+    centers = np.asarray(est.microcluster_centers_)
+    exact = np.argmin(((x[:, None, :] - centers[None, :, :]) ** 2).sum(-1), axis=1)
+    got = np.asarray(est.assign_microclusters(x))
+
+    d_got = ((x - centers[got]) ** 2).sum(-1)
+    d_exact = ((x - centers[exact]) ** 2).sum(-1)
+    assert np.allclose(d_got, d_exact)
+
+
+def test_route_beam_survives_the_sklearn_parameter_protocol():
+    est = betula_cluster.Betula(route_beam=4)
+    assert est.get_params()["route_beam"] == 4
+    assert est.set_params(route_beam=1).get_params()["route_beam"] == 1
+
+
+def test_route_beam_survives_save_load(tmp_path):
+    """`load` rebuilds the wrapper with `cls(**core.get_params())`, so a width the engine persisted
+    but the engine's `get_params` omits comes back as a model that routes at 8 while reporting 1 —
+    `clone()` would then return an estimator that labels differently from the one it copied."""
+    x = _blobs(n=1500, d=6, k=4, seed=3)
+    est = betula_cluster.Betula(
+        n_clusters=4, feature="diagonal", method="ward", max_leaves=4000, seed=0, route_beam=8
+    )
+    est.fit(x)
+    before = np.asarray(est.predict(x))
+    path = str(tmp_path / "model.bin")
+    est.save(path)
+    loaded = betula_cluster.Betula.load(path)
+
+    assert loaded.get_params()["route_beam"] == 8
+    assert np.array_equal(before, np.asarray(loaded.predict(x)))
+
+
 # ── canonical_order: the summary as a function of the multiset ───────────────────────────────────
 
 

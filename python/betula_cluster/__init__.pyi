@@ -254,6 +254,7 @@ class Betula:
         fuzzifier: float = ...,
         graph_degree: int = ...,
         auto_k_max: int = ...,
+        route_beam: int = ...,
         memory_budget_mb: float | None = ...,
     ) -> None: ...
     def get_params(self, deep: bool = ...) -> dict[str, Any]: ...

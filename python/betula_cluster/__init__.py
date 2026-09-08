@@ -571,6 +571,7 @@ _DEFAULTS = {
     "fuzzifier": 2.0,
     "graph_degree": 0,
     "auto_k_max": 0,
+    "route_beam": 1,
     "memory_budget_mb": None,
 }
 _PARAM_NAMES = tuple(_DEFAULTS)
@@ -634,6 +635,7 @@ class Betula:
         fuzzifier=2.0,
         graph_degree=0,
         auto_k_max=0,
+        route_beam=1,
         memory_budget_mb=None,
     ):
         self.n_clusters = n_clusters
@@ -712,6 +714,17 @@ class Betula:
         # accuracy: over 27 dataset x budget x head cells the median change against the arrival
         # order's median draw is -0.002 ARI, and the fit runs 0.83-1.33x.
         self.canonical_order = canonical_order
+        # Descent width when a row is routed to its microcluster. The tree descent commits to one
+        # child per level and never backtracks, so at `1` -- the default, and the only behaviour
+        # this library had before -- the entry it returns is the nearest *in the leaf it reached*:
+        # measured against an exact scan at `max_leaves=4000`, 24.6 % (blobs) to 44.4 % (covtype) of
+        # rows get a different answer. It almost never matters: on four of five datasets under a
+        # by-microcluster head that changes 0.00-0.23 % of labels. It matters on MNIST, where an
+        # exact route is worth +0.037 ARI (0.3533 -> 0.3902). Wider keeps the `route_beam` nearest
+        # nodes at each level instead of one, at a linear cost in routing time, and only the heads
+        # that assign by microcluster (ward, spectral, leiden, hdbscan) can see the difference --
+        # kmeans and the mixtures label from their own centres and never consult the tree.
+        self.route_beam = route_beam
         # Subspace rank q of the two subspace heads: each component's covariance is W Wᵀ + σ²I
         # (method="mppca") or W Wᵀ + diag(ψ) (method="mfa") with W of rank q, clamped to at most
         # dim - 1. Ignored by every other head.

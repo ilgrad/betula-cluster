@@ -59,7 +59,7 @@ most `dim - 1`; `0` makes every `mppca` component spherical and every `mfa` comp
 data only: TF-IDF / counts / spectrograms, dense or CSR. **`"svd"`** gives a CF-weighted PCA, accepts
 signed data, and is the one-call text pipeline — see *Text: reduce and cluster in one call* below.
 After a fit, `components_` gives the `(projection_dim, dim)` parts and `reconstruction_err_` the
-relative fit error), `refine` (BIRCH Phase 4 — see below), `leaf_refit` (Lloyd on the leaves — see below), `canonical_order` (order-independent build — see below), `seed`. `n_clusters=0` ⇒ automatic `k` for every parametric head (BIC for
+relative fit error), `refine` (BIRCH Phase 4 — see below), `leaf_refit` (Lloyd on the leaves — see below), `canonical_order` (order-independent build — see below), `route_beam` (widen the routing descent — see below), `seed`. `n_clusters=0` ⇒ automatic `k` for every parametric head (BIC for
 k-means/GMM, dendrogram cut for Ward). `threshold="auto"` (dense only) drops the one knob users most
 often have to guess: a subsample pilot estimates a warm-start absorption radius, so the full fit
 starts near-converged instead of growing the threshold from zero.
@@ -970,6 +970,66 @@ equivalent. That requires the column indices to be sorted and unique within each
 scipy canonical form, but not an invariant of the format — so a matrix that is not in canonical form
 raises `ValueError` naming `X.sort_indices()` rather than being silently mis-ordered. The `sparse=`
 leader path (`fit_predict_sparse`) is a different algorithm and takes no `canonical_order`.
+
+### Widening the descent — `route_beam`
+
+Routing a row to its microcluster is a greedy descent: one child per level, no backtracking. What it
+returns is therefore the nearest entry *in the leaf it reached*, which is not the nearest entry in
+the tree — and the gap is not small. Against an exact scan at `max_leaves = 4000`, between **24.6 %
+(2-D blobs) and 44.4 % (covtype)** of rows get a different answer, and a microcluster's own centre
+fed back through the tree finds its own entry only 48–71 % of the time. The full measurement is in
+[`bench/RESULTS.md`](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md).
+
+`route_beam=b` keeps the `b` nearest nodes at each level instead of one, then scans the entries of
+every leaf the frontier ends on. `b = 1` is the plain descent and the default; large enough `b` is
+the exact scan, reached in practice well before `b` gets near the leaf count.
+
+`ward`, `max_leaves = 4000`, ARI the median of seeds 0/1/2, *moved* the share of rows that route to a
+different microcluster than at `b = 1`, *route* the cost of `assign_microclusters` relative to `b = 1`:
+
+| dataset | d | ARI `b`=1 | 2 | 4 | 8 | 16 | moved @16 | exact misroute | route ×16 |
+|---|---|---|---|---|---|---|---|---|---|
+| blobs | 2 | 0.9795 | 0.9795 | 0.9795 | 0.9795 | 0.9795 | 24.6 % | 24.6 % | 14.9× |
+| highdim | 20 | 1.0000 | 1.0000 | 1.0000 | 1.0000 | 1.0000 | 39.8 % | 39.9 % | 11.3× |
+| digits | 64 | 0.6428 | **0.6677** | 0.6643 | 0.6643 | 0.6643 | 29.9 % | 30.0 % | 11.6× |
+| mnist | 784 | 0.3452 | 0.3653 | 0.3766 | **0.3801** | 0.3797 | 26.2 % | 26.8 % | **3.0×** |
+| covtype | 54 | 0.0911 | 0.0906 | 0.0905 | 0.0905 | 0.0905 | 43.6 % | 44.4 % | 11.0× |
+
+Three things that table is doing. The *moved* column converges to the independently measured
+exact-scan misroute rate on every dataset (within 0.1–0.8 points), which is what confirms the beam
+reaches the exact answer rather than merely a different one. The ARI column shows the width buying
+something on exactly the two datasets where the microclusters of different classes interleave —
+**+0.035 on mnist and +0.025 on digits** — and nothing anywhere else; `digits` peaking at `b = 2` and
+settling 0.003 lower is the reminder that ARI is a proxy, not the objective, so routing more exactly
+is not monotone in it. And the cost is lowest where the gain is: mnist pays 3.0× on the route where
+the others pay 11–15×, because at `d = 784` the node features are far larger than the cache and the
+descent is already stalled on memory, so the extra nodes ride along on traffic the narrow descent was
+paying for anyway. End to end it is small either way: routing is 0.53 s of a 5.82 s mnist fit at
+`b = 1`, so `b = 8` adds roughly 0.6 s.
+
+**The default stays at 1**, and not for compatibility alone: there is no width that is right for
+every dataset. Above, `b = 8` costs 6–10× the routing time for zero ARI on three of five sets and
+buys a tenth of the achievable score on one. Raise it when the data is high-dimensional and the
+classes are known to interleave; leave it alone otherwise, and measure rather than assume.
+
+Two scoping rules. Only the heads that assign **by microcluster** — `ward`, `spectral`, `leiden`,
+`hdbscan` — can see the parameter at all: `kmeans` and every mixture head install a rule that labels
+from the `k` cluster centres (or the mixture posterior) and never consults the tree, so their labels
+are bit-identical at any width. And it applies to routing, not to building: insertion, the leaf
+clustering and `leaf_refit` are untouched, so the tree and the head are identical across widths and
+only the final row → microcluster map moves. `predict`, `predict_proba`, `assign_microclusters` and
+`outlier_scores` all honour it, including the sparse CSR path.
+
+**It is an estimator parameter.** The free `fit_predict` / `fit_predict_sparse` are the engine
+functions re-exported verbatim and route with the plain descent; use `Betula(route_beam=b)` to widen
+it. Same split as the fractional `max_leaves` above, and for the same reason.
+
+That second rule has one edge worth stating plainly rather than leaving to be discovered: `leaf_refit`
+reassigns its rows with the **plain descent**, whatever `route_beam` is set to. Combining the two
+gives leaves fitted against a narrow routing and then queried with a wide one. That is deliberate —
+letting the width reshape the tree would make it a build parameter and put it in the same class as
+`threshold` — but it means the two knobs do not compose into "a Lloyd step under the routing you
+actually use".
 
 ## Streaming / out-of-core — the `Betula` estimator
 

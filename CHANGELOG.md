@@ -6,6 +6,36 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- **`route_beam` — a wider routing descent, off by default.** The tree descent commits to one child
+  per level and never backtracks, which is why a quarter to a half of all rows do not reach their
+  nearest microcluster (see *Fixed*, below). `route_beam=b` keeps the `b` nearest nodes at each level
+  instead of one and scans the entries of every leaf the frontier ends on. It reaches every routing
+  entry point — `predict`, `predict_proba`, `assign_microclusters`, `outlier_scores`, and the sparse
+  CSR path — and nothing else: insertion, the leaf clustering and `leaf_refit` are untouched, so the
+  tree and the head are identical at every width and only the row → microcluster map moves.
+
+  **The default is `1`, which is the descent this library has always done**, so no label changes
+  unless the parameter is set. Measured on `ward` at `max_leaves=4000`, median of seeds 0/1/2: the
+  share of re-routed rows converges to the independently measured exact-scan misroute rate on all
+  five datasets (within 0.1–0.8 points), which is what shows the beam finds the exact nearest entry
+  rather than merely a different one. ARI moves on the two datasets whose classes interleave —
+  **mnist +0.035 (0.3452 → 0.3801 at `b=8`)** and **digits +0.025 at `b=2`** — and does not move at
+  all on `blobs`, `highdim` or `covtype`, where re-routing 25–44 % of rows lands them in a different
+  microcluster of the same cluster.
+
+  The cost inverts the usual trade: `blobs`/`highdim`/`digits`/`covtype` pay **11–15×** on routing at
+  `b=16`, `mnist` pays **3.0×**, because at `d=784` the node features are 24 MB against a 16 MB L3
+  and the narrow descent is already stalled on memory. End to end that is small: routing is 0.53 s of
+  a 5.82 s mnist fit, so `b=8` adds about 0.6 s.
+  **The default stays at 1 on the measurement, not on compatibility**: `b=8` costs 6–10×
+  the routing for zero ARI on three of five datasets, so no single width is right for the table and
+  the choice belongs to the caller. Only heads that assign by microcluster (`ward`, `spectral`,
+  `leiden`, `hdbscan`) can see the parameter at all, and it is an **estimator** parameter — the free
+  `fit_predict` / `fit_predict_sparse` route with the plain descent. Full sweep in
+  [`bench/RESULTS.md`](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md);
+  `CFTree::nearest_entry_beam` is public on the Rust side.
+
 ### Changed
 - **The ELKI cross-check of the GMM head is re-run at five seeds, and it costs the E-step page one
   cell.** `research/RESULTS-estep.md` claimed the shipped head "leads at the median in all four
@@ -42,11 +72,11 @@ All notable changes to this project are documented here. The format follows
   **`mnist` is the exception: 9.5 % of labels change and exact routing is worth +0.037 ARI (0.3533 →
   0.3902, a 10 % relative gain).** At `d = 784` the excess is the smallest in the table (0.06
   spacings) and still crosses cluster boundaries — concentration of measure makes the wrong answer
-  cheap in distance and expensive in labels at once. No fix is taken here: an unconditional exact scan
+  cheap in distance and expensive in labels at once. No unconditional fix is taken: an exact scan
   costs 0.7× the fit on mnist but **8.9× on covtype** (and covtype's scan is the cheaper of the two in
   FLOPs, so the cost is `n × m` memory traffic, worst exactly where betula's advantage lives). An
-  exact scan below an `m₀`, or a beam at descent, both change mnist labels and so are type-1 doors.
-  Full table in `bench/RESULTS.md`.
+  exact scan below an `m₀`, or a beam at descent, both change mnist labels and so are type-1 doors —
+  the beam is the one taken, as the opt-in `route_beam` above. Full table in `bench/RESULTS.md`.
 
 - **A published claim retracted: the +7.9 MB peak-RSS move on full covtype is not reproducible.**
   `bench/RESULTS.md` called it "a real, reproducible move in the wrong direction" on the strength of

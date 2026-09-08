@@ -2634,12 +2634,58 @@ and expensive in labels at the same time.
 **4.97 s on mnist against a 7.32 s fit** (0.7×) but **15.23 s on covtype against a 1.72 s fit**
 (8.9×) — and covtype's scan is the *cheaper* of the two in floating-point work (1.19 vs 2.13 × 10¹¹),
 so the cost is memory traffic over `n × m`, not arithmetic, and it grows worst exactly where betula's
-own advantage lives. Two designs stay open: an exact scan below a microcluster count `m₀`, or a beam
-of width `b` at descent, which multiplies only the descent. Both change labels on `mnist`, so both
-are type-1 doors and neither is taken here on the strength of one seed and one dataset.
+own advantage lives. Two designs stayed open: an exact scan below a microcluster count `m₀`, or a beam
+of width `b` at descent, which multiplies only the descent. Both change labels on `mnist`, so both are
+type-1 doors; the beam is now available as `route_beam=b` with the door held shut by a default of 1,
+and the section below is what it measures.
 
 Reproduce: `local/scratch/t9_misroute.py` (local-only), which calls nothing but the public wrapper —
 `fit_predict`, `microcluster_centers_`, `assign_microclusters`.
+
+### The beam converges to the exact answer, and costs least where it is worth most
+
+`route_beam=b` keeps the `b` nearest nodes at each level of the descent instead of one. Same datasets
+and budget as the table above, `ward`, ARI the median of seeds 0/1/2; *moved* is the share of rows
+routing to a different microcluster than at `b = 1`, *route* the wall time of `assign_microclusters`
+relative to `b = 1` (median of three calls on one fitted model, so the ratio is measured back to back
+on the same tree). Full sweep in `local/scratch/t9_beam_sweep.out`.
+
+| dataset | d | `b`=1 | 2 | 4 | 8 | 16 | Δ best | moved @16 | exact misroute | route ×2 | ×8 | ×16 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| blobs | 2 | 0.9795 | 0.9795 | 0.9795 | 0.9795 | 0.9795 | 0.0000 | 24.6 % | 24.6 % | 3.2 | 10.1 | 14.9 |
+| highdim | 20 | 1.0000 | 1.0000 | 1.0000 | 1.0000 | 1.0000 | 0.0000 | 39.8 % | 39.9 % | 2.3 | 7.5 | 11.3 |
+| digits | 64 | 0.6428 | **0.6677** | 0.6643 | 0.6643 | 0.6643 | **+0.0249** | 29.9 % | 30.0 % | 2.3 | 6.8 | 11.6 |
+| mnist | 784 | 0.3452 | 0.3653 | 0.3766 | **0.3801** | 0.3797 | **+0.0349** | 26.2 % | 26.8 % | 1.1 | 2.1 | **3.0** |
+| covtype | 54 | 0.0911 | 0.0906 | 0.0905 | 0.0905 | 0.0905 | −0.0006 | 43.6 % | 44.4 % | 1.7 | 6.2 | 11.0 |
+
+**The two instruments agree.** *moved @16* and the *exact misroute* column come from different code
+paths — a widening tree descent against a chunked BLAS scan over every centre — and land within 0.1
+to 0.8 points of each other on all five datasets. That is the evidence that the beam converges to the
+exact nearest entry rather than merely to a different one; the Rust side asserts the same property
+directly (`a_beam_wider_than_the_tree_is_the_exact_scan`).
+
+**The gain is confined to interleaved data.** `mnist` recovers +0.035 ARI and `digits` +0.025 — the
+two sets where microclusters of different classes sit inside each other's neighbourhoods. `blobs` and
+`highdim` do not move a digit despite a quarter and two fifths of their rows re-routing, because the
+new microcluster belongs to the same cluster. `covtype` loses 0.0006, which is a wash and not a cost.
+`digits` peaking at `b = 2` and settling 0.003 lower is worth noticing rather than smoothing over:
+routing more exactly is not monotone in ARI, because ARI is not the objective the routing optimises.
+
+**The cost is not uniform, and it inverts the usual trade.** Four datasets pay 11–15× on the route at
+`b = 16`; `mnist` pays 3.0×. At `d = 784` the 3875 node features are 24 MB against a 16 MB L3, so the
+narrow descent is already stalled on memory and the extra nodes ride along on traffic it was paying
+anyway — the same concentration-of-measure regime that makes the misroutes expensive in labels makes
+the fix cheap in time. End to end that is small: routing is 0.533 s of a 5.82 s mnist fit at `b = 1`,
+so `b = 8` should add about 0.6 s, and the measured fit medians (5.82 → 6.58 s) agree to within their
+own noise — which is ±0.5 s here, since the `b = 4` fit reads 5.56 s, *below* the `b = 1` arm. The
+routing column is the one to read: it is three back-to-back calls on a single fitted model, while the
+fit column is one median of three seeds per row and cannot resolve a difference this size.
+
+**Why the default stays at 1.** Not compatibility alone: no single width is right across this table.
+`b = 8` costs 6–10× the routing for exactly zero ARI on three of five datasets and buys a tenth of
+the achievable score on one. A width that helps has to be chosen against the data, which is what a
+parameter is for. The heuristic the table supports — raise it when `d` is large and the classes are
+known to interleave — rests on two datasets and is documented as a heuristic, not wired in.
 
 ## Conclusions
 

@@ -1976,12 +1976,14 @@ impl<R: Real> TreeState<R> {
         }
     }
 
-    fn nearest_entry(&self, row: &[R]) -> usize {
+    /// `beam` is the descent width: `0` and `1` are both the plain one-child-per-level descent,
+    /// which is what every caller outside the estimator passes.
+    fn nearest_entry(&self, row: &[R], beam: usize) -> usize {
         match self {
-            TreeState::Spherical(t) => t.nearest_entry(row),
-            TreeState::Diagonal(t) => t.nearest_entry(row),
-            TreeState::Full(t) => t.nearest_entry(row),
-            TreeState::Fd(t) => t.nearest_entry(row),
+            TreeState::Spherical(t) => t.nearest_entry_beam(row, beam),
+            TreeState::Diagonal(t) => t.nearest_entry_beam(row, beam),
+            TreeState::Full(t) => t.nearest_entry_beam(row, beam),
+            TreeState::Fd(t) => t.nearest_entry_beam(row, beam),
         }
     }
 
@@ -2109,9 +2111,9 @@ impl<R: Real> TreeState<R> {
     }
 
     /// Route `n` rows of `flat` to their nearest leaf and read the cached labels.
-    fn route(&self, labels: &[i64], flat: &[R], n: usize, dim: usize) -> Vec<i64> {
+    fn route(&self, labels: &[i64], flat: &[R], n: usize, dim: usize, beam: usize) -> Vec<i64> {
         map_rows(n, |i| {
-            labels[self.nearest_entry(&flat[i * dim..(i + 1) * dim])]
+            labels[self.nearest_entry(&flat[i * dim..(i + 1) * dim], beam)]
         })
     }
 
@@ -2173,6 +2175,7 @@ impl<R: Real> TreeState<R> {
         indices: &[i64],
         indptr: &[i64],
         dim: usize,
+        beam: usize,
     ) -> Vec<i64> {
         let mut buf = vec![R::zero(); dim];
         let mut out = Vec::with_capacity(indptr.len().saturating_sub(1));
@@ -2181,7 +2184,7 @@ impl<R: Real> TreeState<R> {
             for k in lo..hi {
                 buf[indices[k] as usize] = data[k];
             }
-            out.push(labels[self.nearest_entry(&buf)]);
+            out.push(labels[self.nearest_entry(&buf, beam)]);
             for k in lo..hi {
                 buf[indices[k] as usize] = R::zero();
             }
@@ -2337,6 +2340,7 @@ impl<R: Real> TreeState<R> {
 
     /// For each row: the deviation from its assigned cluster centroid, normalized by `scale`. Points
     /// routed to a noise microcluster score `+inf`.
+    #[allow(clippy::too_many_arguments)] // the row triple plus the head's labels/centers/scale
     fn outlier_scores(
         &self,
         labels: &[i64],
@@ -2345,10 +2349,11 @@ impl<R: Real> TreeState<R> {
         flat: &[R],
         n: usize,
         dim: usize,
+        beam: usize,
     ) -> Vec<f64> {
         map_rows(n, |i| {
             let x = &flat[i * dim..(i + 1) * dim];
-            let lab = labels[self.nearest_entry(x)];
+            let lab = labels[self.nearest_entry(x, beam)];
             if lab < 0 {
                 return f64::INFINITY;
             }
@@ -2383,9 +2388,9 @@ impl<R: Real> TreeState<R> {
     }
 
     /// For each row: the index of its nearest leaf (microcluster) within [`Self::leaf_stats`] order.
-    fn assign_microclusters(&self, flat: &[R], n: usize, dim: usize) -> Vec<i64> {
+    fn assign_microclusters(&self, flat: &[R], n: usize, dim: usize, beam: usize) -> Vec<i64> {
         map_rows(n, |i| {
-            self.nearest_entry(&flat[i * dim..(i + 1) * dim]) as i64
+            self.nearest_entry(&flat[i * dim..(i + 1) * dim], beam) as i64
         })
     }
 }
@@ -2432,7 +2437,7 @@ fn constrained_labels<R: Real>(
             )));
         }
         let i = idx as usize;
-        Ok(tree.nearest_entry(&flat[i * dim..(i + 1) * dim]))
+        Ok(tree.nearest_entry(&flat[i * dim..(i + 1) * dim], 1))
     };
     let mut leaf_must: Vec<(usize, usize)> = Vec::with_capacity(must.len());
     for &(a, b) in must {
@@ -2594,6 +2599,11 @@ struct Betula {
     /// BIRCH Phase-4 Lloyd sweeps over the raw rows after the leaf clustering; `0` disables it.
     #[serde(default)]
     refine: usize,
+    /// Descent width for every route this estimator performs. `0` and `1` are both the plain
+    /// one-child-per-level descent, so a model persisted before this field existed deserializes to
+    /// the behaviour it was saved with.
+    #[serde(default)]
+    route_beam: usize,
     /// Lloyd passes at the *micro-cluster* level, before the head runs; `0` disables it. Needs the
     /// rows, so `fit` / `fit_predict` honour it and a `partial_fit` stream cannot.
     #[serde(default)]
@@ -2813,7 +2823,7 @@ impl Betula {
             .ok_or_else(|| PyValueError::new_err("no fitted float64 tree for sparse predict"))?;
         match self.rule.as_ref() {
             Some(rule) => Ok(rule.label_csr(data, indices, indptr, n_features)),
-            None => Ok(t.route_csr(labels, data, indices, indptr, n_features)),
+            None => Ok(t.route_csr(labels, data, indices, indptr, n_features, self.route_beam)),
         }
     }
 
@@ -3054,7 +3064,7 @@ impl Betula {
             Ok(py
                 .detach(|| match rule {
                     Some(r) => r.label_rows(flat, n, dim),
-                    None => t.route(labels, flat, n, dim),
+                    None => t.route(labels, flat, n, dim, self.route_beam),
                 })
                 .into_pyarray(py))
         } else if let Some(t) = &self.state32 {
@@ -3064,7 +3074,7 @@ impl Betula {
             Ok(py
                 .detach(|| match rule {
                     Some(r) => r.label_rows(flat, n, dim),
-                    None => t.route(labels, flat, n, dim),
+                    None => t.route(labels, flat, n, dim, self.route_beam),
                 })
                 .into_pyarray(py))
         } else {
@@ -3094,7 +3104,7 @@ impl Betula {
                 "predict_proba is only available after fit with method='gmm', 'gmm-full', 'mppca', 'mfa', 'vmf', 'watson', 'gmm-toeplitz', 'gmm-toeplitz-full', 'gmm-toeplitz-gs' or 'fuzzy-cmeans'",
             )
         })?;
-        let idx = py.detach(|| tree.assign_microclusters(flat, n, dim));
+        let idx = py.detach(|| tree.assign_microclusters(flat, n, dim, self.route_beam));
         let mut out = Vec::with_capacity(n * k);
         for &i in &idx {
             let lo = i as usize * k;
@@ -3200,7 +3210,8 @@ impl Betula {
         normalize = false, huber_k = None, resolution = 1.0, covariance_weight = 0.0,
         tangent_weight = 0.0, tangent_rank = 2, projection = "none", projection_dim = 64,
         projection_max_iter = 100, refine = 0, rank = 2, graph_degree = 0, balance = None,
-        auto_k_max = 0, fuzzifier = 2.0, leaf_refit = 0, canonical_order = false
+        auto_k_max = 0, fuzzifier = 2.0, leaf_refit = 0, canonical_order = false,
+        route_beam = 1
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -3237,6 +3248,7 @@ impl Betula {
         fuzzifier: f64,
         leaf_refit: usize,
         canonical_order: bool,
+        route_beam: usize,
     ) -> PyResult<Self> {
         let kind = parse_method(
             method,
@@ -3330,6 +3342,7 @@ impl Betula {
             nmf_reconstruction_err: None,
             rule: None,
             refine,
+            route_beam,
             leaf_refit,
             canonical_order,
         })
@@ -3743,7 +3756,7 @@ impl Betula {
             let flat = src.as_slice();
             self.check_dim(dim)?;
             Ok(py
-                .detach(|| t.outlier_scores(labels, &centers, scale, flat, n, dim))
+                .detach(|| t.outlier_scores(labels, &centers, scale, flat, n, dim, self.route_beam))
                 .into_pyarray(py))
         } else if let Some(t) = &self.state32 {
             let (centers, radii, _w, _d) = t.cluster_stats(labels, k);
@@ -3761,7 +3774,7 @@ impl Betula {
             let flat = src.as_slice();
             self.check_dim(dim)?;
             Ok(py
-                .detach(|| t.outlier_scores(labels, &centers, scale, flat, n, dim))
+                .detach(|| t.outlier_scores(labels, &centers, scale, flat, n, dim, self.route_beam))
                 .into_pyarray(py))
         } else {
             Err(PyValueError::new_err("call fit() before outlier_scores()"))
@@ -3779,14 +3792,14 @@ impl Betula {
             let flat = src.as_slice();
             self.check_dim(dim)?;
             Ok(py
-                .detach(|| t.assign_microclusters(flat, n, dim))
+                .detach(|| t.assign_microclusters(flat, n, dim, self.route_beam))
                 .into_pyarray(py))
         } else if let Some(t) = &self.state32 {
             let (src, n, dim) = flat_as::<f32>(data, self.row_prep())?;
             let flat = src.as_slice();
             self.check_dim(dim)?;
             Ok(py
-                .detach(|| t.assign_microclusters(flat, n, dim))
+                .detach(|| t.assign_microclusters(flat, n, dim, self.route_beam))
                 .into_pyarray(py))
         } else {
             Err(PyValueError::new_err(
@@ -4010,6 +4023,7 @@ impl Betula {
         d.set_item("refine", self.refine)?;
         d.set_item("leaf_refit", self.leaf_refit)?;
         d.set_item("canonical_order", self.canonical_order)?;
+        d.set_item("route_beam", self.route_beam)?;
         Ok(d)
     }
 
