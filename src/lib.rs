@@ -6,6 +6,7 @@
 //! positive semi-definite by construction.
 
 pub mod adwin;
+pub mod assign;
 pub mod bregman;
 pub mod clustering;
 pub mod coreset;

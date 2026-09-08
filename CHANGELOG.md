@@ -7,6 +7,30 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **`assign::AssignPlan` — pruned exact nearest-centroid assignment (Rust).** A squared Euclidean
+  distance is a sum of non-negative terms, so any prefix of it is a lower bound on the whole, and a
+  candidate whose prefix already exceeds the best distance so far cannot win. `AssignPlan` walks the
+  dimensions in stages and drops candidates as soon as that happens. It returns the argmin a full
+  scan returns, ties broken by the lower index; there is no error budget and no parameter to tune.
+
+  Two levers, both measured. A **hint** (the row's label from a previous iteration) starts the
+  threshold at that candidate's distance instead of infinity, which takes the dimensions read from
+  45–60 % down to about 20 %. A **dimension order** by descending between-centroid variance prunes
+  soonest — on mnist at `k=10`, 42.7 % of the dimensions read against 66.6 % in the natural order.
+
+  Fewer reads is not automatically less time and the module documentation says where it is not.
+  `cargo bench --bench assign` on a Ryzen 7 5800HS, single-threaded, hinted, against a full scan:
+  **0.3–0.8× below `d = 128`** (the branchless AVX2 row kernel wins outright), **1.8–2.1× at
+  `d = 784–1024` for `k ≥ 100`**, **8.2× at `d = 1024, k = 1000`**, and 3.0–3.9× when the clusters
+  are well separated. The dimension order is a `k` decision rather than a `d` one: below about
+  `k = 100` the per-point gather costs more than the extra pruning buys, and `identity_order` is
+  faster. Nothing in the library calls it yet — this is the kernel, and each call site gets its own
+  measurement before it is wired in.
+
+  The statistical alternative was measured and rejected: SuperKMeans (arXiv 2603.20009) rotates the
+  data and prunes on a Beta tail, reading 34.1 % of the dimensions on mnist at `k=10`, but the
+  rotation costs `d²` per point, which at a CF summary's `k` is more than the assignment it
+  accelerates. Its own code disables the path below `d = 128` or `k ≤ 256`.
 - **`route_beam` — a wider routing descent, off by default.** The tree descent commits to one child
   per level and never backtracks, which is why a quarter to a half of all rows do not reach their
   nearest microcluster (see *Fixed*, below). `route_beam=b` keeps the `b` nearest nodes at each level

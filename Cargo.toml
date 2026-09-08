@@ -58,6 +58,10 @@ harness = false
 name = "canonical_order"
 harness = false
 
+[[bench]]
+name = "assign"
+harness = false
+
 [features]
 default = ["parallel"]
 parallel = ["dep:rayon"]
