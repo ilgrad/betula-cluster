@@ -152,3 +152,55 @@ One number for the still-open `n_init` question: ELKI's 4-restart k-means buys *
 digits/D4/R** (0.6856 against 0.5482 for a single restart of the same initialiser) and **nothing on
 covtype** (0.0951 both at D0/D0, 0.0943 both at D4/R), while lowering WCSS on both. Restarts pay
 where the objective and the labels agree.
+
+## The tree layer of the same cross-check (2026-09-09)
+
+`cross_check.py` has always run three layers, and only the head layers were ever written up. Layer 1
+— ELKI's `BetulaLeafPreClustering` against `Betula.assign_microclusters`, no head in the way — is the
+half of Q5 that reads "and the tree", and it needs one correction before it can be read at all.
+
+**At an equal `maxleaves` *budget* the two implementations do not build the same-sized tree.** Both
+undershoot, and ELKI undershoots harder (seed 0, branching 32, `threshold=0`, `feature="diagonal"` ↔
+`VVIFeature`; `local/scratch/elki/tree_curve.out`):
+
+| dataset | geometry | budget | ELKI leaves | betula leaves |
+|---|---|---:|---:|---:|
+| digits | D0/D0 | 200 | 98 (49 %) | 156 (78 %) |
+| digits | D4/R | 200 | 156 (78 %) | 164 (82 %) |
+| covtype-50k | D0/D0 | 2000 | 1264 (63 %) | 1437 (72 %) |
+| covtype-50k | D4/R | 2000 | 926 (46 %) | 1583 (79 %) |
+
+A within-cluster sum of squares read off partitions of different sizes is not a comparison of tree
+quality — more leaves buy a lower WCSS mechanically — so the equal-budget layer-1 table, where this
+library's leaf partition reaches the lower WCSS in three of four cells, says only that it fills the
+budget it was given. That is worth having (the budget is what bounds memory, and it is what the user
+sets), but it is not the tree-quality claim it looks like.
+
+**At an equal *realised* leaf count the answer splits by geometry, not by implementation.** ELKI's
+budget was binary-searched until its leaf count matched betula's to within 1 %
+(`local/scratch/elki/tree_matched.out`):
+
+| dataset | geometry | leaves (ELKI / betula) | ELKI WCSS | betula WCSS | ratio | partition agreement |
+|---|---|---|---:|---:|---:|---:|
+| digits | D0/D0 | 155 / 156 | **6.533e5** | 7.087e5 | 1.085 | 0.530 |
+| digits | D4/R | 162 / 164 | 5.373e5 | **5.250e5** | 0.977 | 0.492 |
+| covtype-50k | D0/D0 | 1460 / 1437 | **8.029e4** | 8.642e4 | 1.076 | 0.393 |
+| covtype-50k | D4/R | 1590 / 1583 | 6.904e4 | **6.859e4** | 0.993 | 0.393 |
+
+So **on D4/R the two trees are level** — within 2.3 %, in both directions — and **on D0/D0, this
+library's own default geometry, ELKI's tree is 7.6–8.5 % tighter at the same leaf count**. The
+curve sweep agrees where it can be read without interpolation: at budget 100 on digits/D4/R both
+implementations realise exactly 89 leaves, and the WCSS there is 6.601e5 against ELKI's 6.802e5, a
+3 % lead for this library on the geometry where the matched test also calls it level.
+
+That D0/D0 gap is a finding, not a formality: the *default* geometry is the one almost every user
+gets, and 8 % of the summarisation objective is more than the E-step differences this page spends
+its length on. It is also narrow enough to be one policy — a split rule, a rebuild threshold, an
+absorption tie-break — rather than a difference in kind. Chasing it is **T27**.
+
+Two things this does *not* say. The partitions agree with each other at ARI 0.39–0.53 even where
+their WCSS matches to 1 %, so "the same tree quality" is not "the same tree" — the leaf boundaries
+land in genuinely different places, and a downstream head sees different summaries. And the timing
+column is unusable as a speed comparison: ELKI's 0.5–5.5 s per run is a JVM start plus CSV parsing
+plus a result write, against 0.01–0.14 s for an in-process call. Nothing here measures the
+summarisation loop against ELKI's.

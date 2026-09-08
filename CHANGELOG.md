@@ -195,6 +195,17 @@ All notable changes to this project are documented here. The format follows
   sits after `max_iter`, and `0` asks for `KMEANS_N_INIT` — the value they used before — so the
   fix at every call site is to pass `0`. `spectral`'s private `N_INIT` and the Python layer's
   `COP_N_INIT` are gone, both being the same constant under two names. No fit changes.
+- **The ELKI cross-check now covers the tree, and at equal leaf count the default geometry is 8 %
+  behind.** `cross_check.py` always ran a tree-only layer and it was never written up. Read at an
+  equal `maxleaves` *budget* it flatters this library — both implementations undershoot the budget
+  and ELKI undershoots harder (926 leaves against 1583 at a budget of 2000 on covtype/D4/R), so its
+  lower WCSS is bought with leaves rather than with a better summary. Binary-searching ELKI's budget
+  until the realised counts match to within 1 % splits the answer by *geometry*: on D4/R the two
+  trees are level (ratios 0.977 and 0.993), and on **D0/D0 — this library's own default — ELKI's
+  leaf partition reaches 7.6–8.5 % lower within-cluster sum of squares**. The partitions agree with
+  each other at only ARI 0.39–0.53 even where their WCSS matches, so a matching objective is not a
+  matching tree. `research/RESULTS-estep.md` records both tables and the timing column that must
+  *not* be read as a speed comparison (ELKI's seconds are JVM start plus CSV parsing).
 - **The ELKI cross-check of the GMM head is re-run at five seeds, and it costs the E-step page one
   cell.** `research/RESULTS-estep.md` claimed the shipped head "leads at the median in all four
   cells" of an ELKI 0.8.0 comparison; three seeds could not separate a 0.02 ARI gap from its spread.
