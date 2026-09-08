@@ -884,9 +884,22 @@ which chains straight through the overlap. Raising `min_samples` past the leaf m
 `max_leaves` until the leaf mass drops below `min_samples`, restores the estimate; both columns of the
 table move for that one reason.
 
-That points at the fix rather than at a tuning note: the leaf is not a point, and its own mass should
-be enclosed at its own radius, which the cluster feature already carries as `√(ssd/weight)`. Task #72
-owns it.
+That looked like it pointed at a fix rather than a tuning note: the leaf is not a point, and its own
+mass should be enclosed at its own radius, which the cluster feature already carries as
+`√(ssd/weight)`. **Measured, it is not the mechanism.** Replacing the self-pair's zero with the
+enclosed-mass radius of a uniform ball — `ρ = r_rms·√((d+2)/d)·(m/w)^(1/d)`, the closed form behind
+Data Bubbles' `nnDist` — reproduces every cell of the table above **to four decimals**, at
+`max_leaves` 200, 500, 2 000 and 8 000 and `min_samples` 10, 100 and 1 000, over the same three
+seeds. Not a small improvement: no label moved at all.
+
+The scale is why. Mutual reachability is `max(core_i, core_j, dist(i,j))`, so a core distance only
+matters if it exceeds the distance to the leaves it competes with, and the leaves here are far
+smaller than the gaps between them — median RMS extent **0.0198 against a 0.0441 median
+nearest-centroid distance** at 2 000 leaves, and 0.0075 against 0.0187 at 8 000. The own-mass radius
+clears its own nearest neighbour for 8–18 % of leaves and never by enough to change an edge. The
+within-leaf density is real, and it is simply not the quantity the overlap is decided by; what the
+summary loses at these budgets is the *between*-leaf density contrast, which no per-leaf radius can
+put back.
 
 The units trap found on the way is fixed as of this edition, and was the more serious half. On the
 summary route `min_cluster_size` and `min_samples` used to be counted in **leaves**: `hdbscan.rs`
