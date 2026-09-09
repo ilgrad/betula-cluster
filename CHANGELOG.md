@@ -17,6 +17,25 @@ All notable changes to this project are documented here. The format follows
   subprocess test pins it. The documented promise that the thread count does not enter the answer
   was true everywhere else and is now true here; `components_` values shift in their last few bits
   against 0.8.0.
+- **The symmetric eigensolver's convergence test is relative to the matrix, not to `1e-15`.**
+  `jacobi_eigen`'s fixed absolute tolerance answered two questions wrongly at once. Below a
+  `‖A‖_F` of about `1e-15` it was satisfied *before the first rotation*, so the untouched diagonal
+  came back as the spectrum: on a 4×4 fixture scaled by `1e-18`, `octave-cli`'s `eig` reads
+  `[-0.4755, 3.3895, 4.0718, 7.2641]` after rescaling and the old code read
+  `[-0.890, -0.812, -0.440, -0.114]` — four wrong values, no error, no warning. At unit scale it was
+  unreachable instead: `off(A)` sums `n(n−1)/2` entries, so every one of them has to fall below
+  `1e-15/n` first, and the loop always spent its whole 100-sweep budget in `f64` and in `f32`, where
+  `eps` is `1.2e-7` and the threshold is meaningless. The test is now `off(A) ≤ eps_R · ‖A‖_F`
+  (Golub & Van Loan, Alg. 8.4.3), which makes the answer invariant under scaling the input by a
+  positive constant, and a golden test pins five scales from `1e18` to `1e-30` against `octave-cli`
+  at 13 significant digits. A 32×32 `f32` decomposition drops from ~520 µs to ~348 µs on the
+  measurement machine (three alternating repetitions); `f64` is unchanged within noise. **No label
+  moves**: `spectral` and `leiden` on `digits` at seeds 0/1/2 in both precisions return
+  byte-identical labels before and after.
+- **`cholesky_lower` rejects a non-finite partial sum.** `NaN <= 0.0` is false, so a non-finite
+  entry passed the positive-definiteness test, `sqrt` propagated it, and every `logdet` and
+  Mahalanobis distance downstream came back `NaN` — a full-covariance GMM component with a `NaN`
+  scatter looked like a valid factorisation rather than a rejected one.
 - **`threshold="auto"` no longer breaks the `canonical_order` guarantee.** `canonical_order=True`
   promises a summary that is a function of the row multiset; the automatic threshold is piloted on a
   bounded subsample, and that subsample was drawn by row *position*, so a permutation handed the

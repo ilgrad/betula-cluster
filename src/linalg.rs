@@ -7,7 +7,9 @@
 use crate::types::Real;
 
 /// Lower-triangular Cholesky factor `L` (dense, row-major) with `A = L Lᵀ`.
-/// `None` if `A` is not positive-definite (e.g. fewer points than dimensions, or a flat cluster).
+/// `None` if `A` is not positive-definite (e.g. fewer points than dimensions, or a flat cluster),
+/// and equally if a partial sum is not finite: `NaN <= 0` is false, so a non-finite entry passed
+/// the definiteness test and left every downstream `logdet` and Mahalanobis distance `NaN`.
 pub fn cholesky_lower<R: Real>(a: &[Vec<R>]) -> Option<Vec<Vec<R>>> {
     let d = a.len();
     let mut l = vec![vec![R::zero(); d]; d];
@@ -15,6 +17,9 @@ pub fn cholesky_lower<R: Real>(a: &[Vec<R>]) -> Option<Vec<Vec<R>>> {
         for j in 0..=i {
             let dot: R = (0..j).map(|k| l[i][k] * l[j][k]).sum();
             let sum = a[i][j] - dot;
+            if !sum.is_finite() {
+                return None;
+            }
             if i == j {
                 if sum <= R::zero() {
                     return None;
@@ -88,6 +93,12 @@ pub fn inv_from_chol<R: Real>(l: &[Vec<R>]) -> Vec<Vec<R>> {
 /// algorithm. Returns `(eigenvalues, V)` where column `j` of `V` is the (unit) eigenvector for
 /// `eigenvalues[j]`; values are not sorted. Robust and accurate for the small (a few dozen rows)
 /// symmetric matrices used by the Frequent-Directions sketch.
+///
+/// Sweeps stop when `off(A) <= eps_R · ‖A‖_F`, so the answer is invariant under scaling the input
+/// by a positive constant, in `f32` as in `f64`. A cap of 100 sweeps bounds the work; cyclic Jacobi
+/// converges quadratically and reaches the tolerance in well under ten sweeps for every matrix this
+/// crate builds, so the cap is a guard against a malformed (non-finite) input rather than a
+/// documented iteration budget.
 #[allow(clippy::needless_range_loop)] // matrix rotation is inherently (p, q)-index based
 pub fn jacobi_eigen<R: Real>(matrix: &[Vec<R>]) -> (Vec<R>, Vec<Vec<R>>) {
     let n = matrix.len();
@@ -100,7 +111,23 @@ pub fn jacobi_eigen<R: Real>(matrix: &[Vec<R>]) -> (Vec<R>, Vec<Vec<R>>) {
         let eig = (0..n).map(|i| a[i][i]).collect();
         return (eig, v);
     }
-    let tol = R::from_f64(1e-15).unwrap();
+    // The convergence test is relative to the matrix, not absolute: `off(A) <= eps_R * ‖A‖_F`
+    // (Golub & Van Loan, Alg. 8.4.3). A fixed 1e-15 answered two different questions wrongly at
+    // once — it is unreachable for a unit-scale matrix in either precision, since `off` sums
+    // n(n-1)/2 entries and each has to fall to 1e-15/n first, so the loop always ran to the sweep
+    // cap; and it is satisfied *before the first rotation* for a matrix whose entries are smaller
+    // than 1e-15, where it returned the untouched diagonal as the spectrum.
+    // `‖A‖_F` is invariant under the rotations, so it is computed once.
+    let frob = a
+        .iter()
+        .flat_map(|row| row.iter())
+        .map(|&x| x * x)
+        .sum::<R>()
+        .sqrt();
+    let tol = R::epsilon() * frob;
+    // An entry below `tol/n` cannot lift `off` above `tol`, so a sweep that rotates nothing is
+    // immediately followed by the exit test above.
+    let entry_tol = tol / R::from_usize(n).unwrap();
     let half = R::from_f64(0.5).unwrap();
     let one = R::one();
     for _sweep in 0..100 {
@@ -116,7 +143,7 @@ pub fn jacobi_eigen<R: Real>(matrix: &[Vec<R>]) -> (Vec<R>, Vec<Vec<R>>) {
         for p in 0..n {
             for q in (p + 1)..n {
                 let apq = a[p][q];
-                if apq.abs() <= tol {
+                if apq.abs() <= entry_tol {
                     continue;
                 }
                 // Rotation angle that zeros a[p][q] (Numerical Recipes form).
@@ -300,6 +327,73 @@ mod tests {
         assert!(close(inv[0][1], -2.0 / 8.0));
         assert!(close(inv[1][0], -2.0 / 8.0));
         assert!(close(inv[1][1], 4.0 / 8.0));
+    }
+
+    /// `octave-cli`'s `eig` on the same matrix, at 17 significant digits, unscaled and at 1e-18.
+    /// A second engine rather than a tolerance: the failure this pins is a *silent* one — the
+    /// scaled matrix used to come back with its own diagonal as the spectrum, which no
+    /// reconstruction test on the unscaled matrix can see.
+    const OCTAVE_EIG: [f64; 4] = [
+        -0.47549823443677247,
+        3.389_528_888_999_065,
+        4.071833859146313,
+        7.2641354862913925,
+    ];
+
+    fn e6_matrix(scale: f64) -> Vec<Vec<f64>> {
+        [
+            [4.0, 1.0, -2.0, 0.5],
+            [1.0, 3.0, 0.75, -1.25],
+            [-2.0, 0.75, 5.5, 2.0],
+            [0.5, -1.25, 2.0, 1.75],
+        ]
+        .iter()
+        .map(|row| row.iter().map(|&v| v * scale).collect())
+        .collect()
+    }
+
+    #[test]
+    fn jacobi_agrees_with_octave_at_every_scale() {
+        for scale in [1e18, 1.0, 1e-9, 1e-18, 1e-30] {
+            let (mut eig, _) = jacobi_eigen(&e6_matrix(scale));
+            eig.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            for (got, want) in eig.iter().zip(OCTAVE_EIG.iter()) {
+                let rel = (got / scale - want).abs() / want.abs();
+                assert!(
+                    rel < 1e-13,
+                    "scale {scale:e}: {got:e} vs {want} (rel {rel:e})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn jacobi_converges_in_f32_where_an_absolute_tolerance_could_not() {
+        // `eps_f32` is 1.2e-7, so a 1e-15 threshold was unreachable for a unit-scale f32 matrix and
+        // the loop always spent its whole sweep budget. It reached the right answer anyway, so this
+        // pins an invariant the module had no `f32` coverage for rather than the defect itself.
+        let a: Vec<Vec<f32>> = e6_matrix(1.0)
+            .iter()
+            .map(|row| row.iter().map(|&v| v as f32).collect())
+            .collect();
+        let (mut eig, _) = jacobi_eigen(&a);
+        eig.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        for (got, want) in eig.iter().zip(OCTAVE_EIG.iter()) {
+            assert!(
+                ((*got as f64) - want).abs() / want.abs() < 1e-6,
+                "{got} vs {want}"
+            );
+        }
+    }
+
+    #[test]
+    fn cholesky_rejects_a_non_finite_entry() {
+        // `NaN <= 0.0` is false, so the definiteness test passed it straight through and every
+        // `logdet` and Mahalanobis distance downstream came back NaN.
+        for bad in [f64::NAN, f64::INFINITY] {
+            let a = vec![vec![4.0, bad], vec![bad, 3.0]];
+            assert!(cholesky_lower(&a).is_none(), "accepted {bad}");
+        }
     }
 
     #[test]
