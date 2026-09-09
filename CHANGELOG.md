@@ -17,6 +17,20 @@ All notable changes to this project are documented here. The format follows
   subprocess test pins it. The documented promise that the thread count does not enter the answer
   was true everywhere else and is now true here; `components_` values shift in their last few bits
   against 0.8.0.
+- **Three documentation claims that were no longer true, and a check so the counts cannot rot
+  again.** The README and the JOSS paper quoted a 457-case Python suite and 728 Rust tests against
+  an actual 547 and 807, and the README's two sentences disagreed with each other; the counts are
+  now derived by `scripts/check_test_counts.py`, which collects both suites without running them
+  (`cargo test -- --list`, `pytest --collect-only`) and fails on any published number that has
+  drifted. The README's "always faster — the unconditional win … this holds for *every* method at
+  *every* size" is now scoped to what was measured — faster and lighter than scikit-learn at every
+  published size and budget — with the two rows we lose named next to it: scikit-learn's sparse SVD
+  pipeline is 4.2× faster on 20-newsgroups at a better ARI, and `fast-hdbscan` reads 0.910 against
+  our 0.478 on 100 k blobs. The paper's "every benchmark figure is the median of three seeds" is
+  true of the quality tables only, and now says so; its mutation-baseline sentence no longer claims
+  an argument for *every surviving mutant* when what exists is an argument for every *recorded*
+  one. `Betula.save`'s docstring said bincode; the format has been CBOR since `ciborium` replaced
+  it.
 - **The symmetric eigensolver's convergence test is relative to the matrix, not to `1e-15`.**
   `jacobi_eigen`'s fixed absolute tolerance answered two questions wrongly at once. Below a
   `‖A‖_F` of about `1e-15` it was satisfied *before the first rotation*, so the untouched diagonal

@@ -4552,7 +4552,7 @@ impl Betula {
         Ok(d)
     }
 
-    /// Save the (fitted or partial) estimator to a file — bincode, version-tagged.
+    /// Save the (fitted or partial) estimator to a file — CBOR (`ciborium`), version-tagged.
     fn save(&self, path: &str) -> PyResult<()> {
         let bytes = encode(self)?;
         std::fs::write(path, bytes).map_err(|e| PyValueError::new_err(format!("write failed: {e}")))

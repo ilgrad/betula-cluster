@@ -22,7 +22,7 @@
 pip install betula-cluster
 ```
 
-**Verified:** a **457-case** Python suite at **100% wrapper coverage** + **728** Rust tests,
+**Verified:** a **547-case** Python suite at **100% wrapper coverage** + **807** Rust tests,
 `clippy -D warnings` + `fmt` clean across all feature sets, CI on CPython 3.11–3.14 (one abi3 wheel)
 plus free-threaded 3.14t.
 
@@ -38,10 +38,14 @@ with peak RSS sampled from `/proc/self/statm`. Full methodology, every metric, a
 > `bench/results_*_spread.csv`; on the synthetic sets every row moves by more than 0.05 ARI across the
 > three seeds, so a margin below that is a tie and is written as one here.
 
-- ⚡🪶 **Always faster — and lighter — at scale (the unconditional win).** betula labels **1 M points
-  in 0.28 s**: 8.7× faster than scikit-learn KMeans, 14× vs GaussianMixture, 29× vs Birch — and
-  streams **10 M in a flat ~53 MB** where an in-core KMeans needs **~5.0 GB** (**94× less**, and the
-  gap grows without bound). This holds for *every* method at *every* size.
+- ⚡🪶 **Faster and lighter than scikit-learn at every published size and compression budget.**
+  betula labels **1 M points in 0.28 s**: 8.7× faster than scikit-learn KMeans, 14× vs
+  GaussianMixture, 29× vs Birch — and streams **10 M in a flat ~53 MB** where an in-core KMeans
+  needs **~5.0 GB** (**94× less**, and the gap grows without bound). Two rows are not ours, and both
+  are in the tables: on sparse 20-newsgroups scikit-learn's SVD pipeline is **4.2× faster**
+  (0.41 s vs 1.70 s) at a better ARI (0.056 vs 0.038), and `fast-hdbscan` recovers the 100 k-point
+  blobs at **ARI 0.910 against our 0.478** — where we are 9× faster on half the memory. A specialist
+  at its own contest is a different claim from a general-purpose library at every size.
 - 🎯 **Parity on the centroid heads, ahead on the structured ones.** betula's k-means ties
   scikit-learn (blobs 0.793 vs 0.794, `digits` 0.467 vs 0.468); full-covariance GMM **beats** it on
   anisotropic data (**0.961 vs 0.902**) and on real 64-D `digits` (**0.575 vs 0.463**, via the
@@ -335,7 +339,7 @@ And six **end-to-end use cases** (each scored against ground truth):
 - [**Benchmarks**](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md) — methodology, every metric, all tables, honest wins & losses.
 - [**Design**](https://github.com/ilgrad/betula-cluster/blob/main/DESIGN.md) — internal design, invariants, and testing strategy.
 
-Verified: **713** Rust unit + 15 integration tests (plus 8 for the CLI binary) + a **457-case**
+Verified: **807** Rust tests (library, equivariance, integration and CLI) + a **547-case**
 Python suite at **100%** wrapper coverage (Rust ≥95%, CI-enforced), `clippy -D warnings` + `fmt`
 clean across all feature sets, on Python 3.11–3.14 (single abi3 wheel) and free-threaded 3.14t.
 
