@@ -3615,6 +3615,27 @@ def test_the_functional_entry_point_refuses_the_same_pairs(blobs, keyword, value
         betula_cluster.fit_predict(x, n_clusters=4, method=ignorer, **{keyword: value})
 
 
+def test_a_zero_iteration_fit_is_refused_at_every_entry_point(blobs):
+    """`max_iter=0` used to run the GMM E-step zero times and label every point 0 -- a successful
+    fit of one cluster, reported as if it were an answer."""
+    x, _ = blobs
+    # The wrappers build their engine at `fit`, so that is where the boundary check lands.
+    for call in (
+        lambda: betula_cluster.Betula(n_clusters=4, max_iter=0).fit(x),
+        lambda: betula_cluster.fit_predict(x, n_clusters=4, max_iter=0),
+        lambda: betula_cluster.BregmanBetula(n_clusters=4, max_iter=0).fit(np.abs(x)),
+        lambda: betula_cluster.KPrototypes(n_clusters=4, categorical=[0], max_iter=0).fit(x),
+    ):
+        with pytest.raises(ValueError, match="max_iter must be >= 1"):
+            call()
+
+
+def test_one_iteration_is_accepted_and_is_a_fit(blobs):
+    x, _ = blobs
+    labels = betula_cluster.Betula(n_clusters=4, method="gmm", max_iter=1, seed=0).fit_predict(x)
+    assert len(np.unique(labels)) > 1
+
+
 def test_a_head_specific_keyword_left_at_its_default_is_not_a_request(blobs):
     """The default cannot be evidence of intent: `rank=2` is what every caller passes who never
     thought about `rank` at all, so only a changed value is an error."""

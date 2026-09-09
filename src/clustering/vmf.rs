@@ -349,7 +349,7 @@ fn spherical_lloyd<R: Real>(
     let mut high = vec![f64::INFINITY; m];
     let mut drift = vec![1.0f64; k];
     let mut served = vec![R::neg_infinity(); m];
-    for it in 0..max_iter.max(1) {
+    for it in 0..max_iter {
         // Loosen every bound by how far the centers turned in the previous update. Successive
         // shifts compose: each is a valid relaxation of the one before, so a leaf keeps a usable
         // bound across as many iterations as it goes without being recomputed.

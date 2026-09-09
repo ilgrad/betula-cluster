@@ -290,6 +290,22 @@ fn parse_balance(value: Option<&Bound<'_, PyAny>>) -> PyResult<(Option<f64>, boo
     Ok((Some(b), false))
 }
 
+/// Reject `max_iter = 0` at the boundary that takes it from a caller.
+///
+/// A zero-iteration EM or Lloyd returns its own initialisation: for the GMM heads that is a
+/// responsibility matrix of zeros and a labelling of all-zero, which reads as a successful fit of
+/// one cluster. The engine floors it at one iteration for a direct Rust caller
+/// (`model::fit_head`), and here — where a human typed it — it is a mistake worth naming.
+fn parse_max_iter(max_iter: usize) -> PyResult<usize> {
+    if max_iter == 0 {
+        return Err(PyValueError::new_err(
+            "max_iter must be >= 1: a zero-iteration fit returns its own initialisation, which for \
+             the mixture heads is every point in cluster 0",
+        ));
+    }
+    Ok(max_iter)
+}
+
 /// `min_samples` as the density heads take it: an explicit point count, or the `0` sentinel that
 /// asks for [`auto_min_samples`] once the leaf features exist.
 ///
@@ -2078,6 +2094,7 @@ fn fit_predict<'py>(
     )?;
     let nmf_dim = parse_projection(projection, projection_dim, projection_max_iter)?;
     let n_init = parse_n_init(n_init, kind, method)?;
+    let max_iter = parse_max_iter(max_iter)?;
     require_dimensionwise_feature(feature, kind, method)?;
     let (balance, auto_balance) = parse_balance(balance)?;
     let (labels, leaves) = if let Ok(a) = data.extract::<PyReadonlyArray2<'py, f64>>() {
@@ -3771,6 +3788,7 @@ impl Betula {
         }
         let (balance, balance_auto) = parse_balance(balance)?;
         parse_n_init(n_init, kind, method)?; // validated here, lowered to the sentinel at use
+        parse_max_iter(max_iter)?;
         Ok(Self {
             feature: feature.to_string(),
             kind,
@@ -5470,8 +5488,9 @@ impl PyBregmanBetula {
         max_iter: usize,
         n_init: usize,
         seed: u64,
-    ) -> Self {
-        Self {
+    ) -> PyResult<Self> {
+        parse_max_iter(max_iter)?;
+        Ok(Self {
             n_clusters,
             divergence,
             method,
@@ -5485,7 +5504,7 @@ impl PyBregmanBetula {
             seed,
             labels: None,
             leaves: 0,
-        }
+        })
     }
 
     /// Construction params as a dict (read by the Python wrapper's scikit-learn `get_params`).
@@ -5613,8 +5632,9 @@ impl PyKPrototypes {
         max_iter: usize,
         n_init: usize,
         seed: u64,
-    ) -> Self {
-        Self {
+    ) -> PyResult<Self> {
+        parse_max_iter(max_iter)?;
+        Ok(Self {
             n_clusters,
             categorical,
             directional,
@@ -5626,7 +5646,7 @@ impl PyKPrototypes {
             n_init,
             seed,
             model: None,
-        }
+        })
     }
 
     /// Construction params as a dict (read by the Python wrapper's scikit-learn `get_params`).
@@ -6065,6 +6085,7 @@ fn fit_predict_sparse<'py>(
 ) -> PyResult<Bound<'py, PyArray1<i64>>> {
     let m = parse_parametric(method)?;
     let n_init = parse_n_init(n_init, Kind::Parametric(m), method)?;
+    let max_iter = parse_max_iter(max_iter)?;
     let spec = parse_projection(projection, projection_dim, projection_max_iter)?;
     let data = data.as_slice()?;
     if matches!(spec.map(|s| s.kind), Some(ProjectionKind::Nmf { .. })) {

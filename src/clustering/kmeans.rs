@@ -184,6 +184,8 @@ pub fn cop_kmeans<R: Real, C: ClusterFeature<R>>(
         let mut centers = kmeans_plus_plus(&cmean, &cw, &css, k, &mut rng);
         let mut assign = vec![usize::MAX; g];
         let mut feasible = true;
+        // COP-KMeans is reached through `fit_constrained`, not `fit_head`, and a zero-iteration
+        // run would return the `usize::MAX` sentinel assignment rather than a labelling.
         for _ in 0..max_iter.max(1) {
             let mut members: Vec<Vec<usize>> = vec![Vec::new(); k];
             let mut next = vec![usize::MAX; g];

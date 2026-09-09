@@ -216,6 +216,8 @@ fn mean_shift(
     let ker = widths(n, var, h, d);
     let tol = 1e-4 * h;
     let mut pts = mu.to_vec();
+    // This head is dispatched outside `fit_head`, so the one-iteration floor is normalised here
+    // instead — see the note there for why zero iterations is never what a caller meant.
     for _ in 0..max_iter.max(1) {
         let mut moved = false;
         for i in 0..m {

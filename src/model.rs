@@ -614,6 +614,12 @@ pub(crate) fn fit_head<R: Real, C: ClusterFeature<R>>(
     auto_k_max: usize,
 ) -> HeadFit<R> {
     let nlv = features.len();
+    // One iteration is the floor for every head, normalised here rather than in nine loop bounds:
+    // a zero-iteration EM or Lloyd returns its own initialisation, which for the GMM heads is a
+    // responsibility matrix of zeros and a labelling of all-zero. Five heads used to defend
+    // against that and four did not, so the same argument had two answers depending on `method`.
+    // The Python and CLI boundaries reject `0` outright; this keeps a direct Rust caller safe.
+    let max_iter = max_iter.max(1);
     let n_init = if n_init == 0 { KMEANS_N_INIT } else { n_init };
     let hi = auto_k_ceiling(method, nlv, auto_k_max);
     let kk = k.min(nlv).max(1);
@@ -782,6 +788,40 @@ mod tests {
             "restarts are selected by inertia: {} restarts scored {} against one draw's {}",
             32,
             ari(&many, &truth),
+            ari(&one, &truth)
+        );
+    }
+
+    #[test]
+    fn a_zero_iteration_request_is_one_iteration_for_every_head() {
+        // The defect this closes: `max_iter = 0` ran the GMM E-step zero times, left every
+        // responsibility at zero and labelled every leaf 0. Five heads clamped to one iteration and
+        // four did not, so the same request meant different things depending on `method`.
+        let (feats, truth) = blob_leaves(3, 2, 40, 5);
+        for method in [
+            Method::KMeans,
+            Method::Gmm,
+            Method::GmmFull,
+            Method::FuzzyCMeans { fuzzifier: 2.0 },
+            Method::Movmf,
+        ] {
+            let zero = fit_head(&feats, 3, method, 0, 0, 7, 0).labels;
+            let one = fit_head(&feats, 3, method, 1, 0, 7, 0).labels;
+            assert_eq!(
+                zero, one,
+                "{method:?} does not floor max_iter at one iteration"
+            );
+            assert!(
+                zero.iter().collect::<std::collections::HashSet<_>>().len() > 1,
+                "{method:?} answered one cluster for {} leaves",
+                feats.len()
+            );
+        }
+        // ...and one iteration is a fit, not a formality: it already recovers the three blobs.
+        let one = fit_head(&feats, 3, Method::Gmm, 1, 0, 7, 0).labels;
+        assert!(
+            ari(&one, &truth) > 0.5,
+            "one EM step scored {}",
             ari(&one, &truth)
         );
     }

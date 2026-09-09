@@ -172,6 +172,15 @@ All notable changes to this project are documented here. The format follows
   **Labels change** for `method="hdbscan"` / `"dc-center"` / `"dc-median"` fits that did not name a
   `min_samples`; an explicit integer is used exactly as before. `get_params()` reports `None` for the
   automatic state, and `auto_min_samples` / `AUTO_MIN_SAMPLES_LEAVES` are public on the Rust side.
+- **`max_iter=0` is refused, and one iteration is the floor everywhere it was not.** A
+  zero-iteration EM returns its own initialisation: for the GMM heads a responsibility matrix of
+  zeros and a labelling of all-zero, reported as a successful fit of one cluster. Nine head loops
+  ran `0..max_iter` and five of them clamped to one iteration first, so the same request meant
+  different things depending on `method`. The floor now lives once in `model::fit_head`, where every
+  parametric head passes, and the three heads dispatched outside it (`scale-space`, COP-KMeans and
+  the Bregman pair) carry it at their own entry with a comment saying why. On top of that,
+  `max_iter=0` raises at every boundary a caller can reach: `Betula`, `fit_predict`,
+  `fit_predict_sparse`, `BregmanBetula`, `KPrototypes` and the CLI's `--max-iter`.
 - **A head-specific keyword on a head that ignores it now raises.** `rank=8` with
   `method="ward"`, `min_samples=25` with `method="kmeans"`, `resolution=1.5` with anything but
   Leiden — each configured nothing and said nothing. Nine keywords are now checked against the head

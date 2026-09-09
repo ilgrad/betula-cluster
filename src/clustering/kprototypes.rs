@@ -438,6 +438,8 @@ pub fn kprototypes<R: Real>(
             .map(|s| micros[s].clone())
             .collect();
         let mut labels = vec![usize::MAX; n];
+        // `KPrototypes` has its own entry point rather than `fit_head`'s, so it carries the same
+        // one-iteration floor here.
         for _ in 0..max_iter.max(1) {
             let proto: Vec<Prototype<R>> = centers.iter().map(Prototype::of).collect();
             let mut changed = false;

@@ -39,7 +39,9 @@ ELKI's `-cftree.maxleaves` convention, whose own default is `0.05`. A fraction i
 `memory_budget_mb` overrides either form, being the harder constraint. **The fraction is the
 estimator's**: resolving it lives in the Python wrapper, and the free `fit_predict` /
 `fit_predict_sparse` are the engine functions re-exported verbatim, so those two take the integer
-and raise `TypeError` on a float), `max_iter`, `n_init` (k-means++ restarts, kept by lowest inertia;
+and raise `TypeError` on a float), `max_iter` (**≥ 1**; a zero-iteration fit
+returns its own initialisation, which for the mixture heads is a responsibility matrix of zeros and
+every point in cluster 0, so `0` raises rather than answering), `n_init` (k-means++ restarts, kept by lowest inertia;
 `None` leaves each head on its own count of 4. Only the heads whose labels come from an
 inertia-selected k-means take it — `"kmeans"`, `"spherical-kmeans"`, `"spectral"`, and the
 COP-KMeans of `fit_constrained` — and passing it to any other head raises rather than being ignored;

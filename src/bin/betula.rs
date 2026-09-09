@@ -122,7 +122,14 @@ fn parse_args<I: Iterator<Item = String>>(args: I) -> Result<Parsed, String> {
             "--branching" => cfg.branching = int(&need(&mut args, &arg)?, "--branching")?,
             "--leaf-cap" => cfg.leaf_cap = int(&need(&mut args, &arg)?, "--leaf-cap")?,
             "--max-leaves" => cfg.max_leaves = int(&need(&mut args, &arg)?, "--max-leaves")?,
-            "--max-iter" => cfg.max_iter = int(&need(&mut args, &arg)?, "--max-iter")?,
+            "--max-iter" => {
+                cfg.max_iter = int(&need(&mut args, &arg)?, "--max-iter")?;
+                if cfg.max_iter == 0 {
+                    // A zero-iteration fit returns its own initialisation, which for the mixture
+                    // heads is every point in cluster 0. The engine floors it; the CLI names it.
+                    return Err("--max-iter expects a positive integer, got '0'".to_string());
+                }
+            }
             "--seed" => {
                 let v = need(&mut args, &arg)?;
                 cfg.seed = v
@@ -301,6 +308,18 @@ mod tests {
         assert!(parse_rows("1,x\n", b',', false).is_err());
         assert!(parse_rows("1,inf\n", b',', false).is_err());
         assert!(parse_rows("", b',', false).is_err()); // no rows
+    }
+
+    #[test]
+    fn parse_args_rejects_a_zero_iteration_fit() {
+        // Zero iterations returns the initialisation, which for the mixture heads is one cluster.
+        let a = ["--max-iter", "0"].map(String::from);
+        let err = match parse_args(a.into_iter()) {
+            Err(e) => e,
+            Ok(_) => panic!("--max-iter 0 was accepted"),
+        };
+        assert!(err.contains("--max-iter"), "{err}");
+        assert!(parse_args(["--max-iter", "1"].map(String::from).into_iter()).is_ok());
     }
 
     #[test]

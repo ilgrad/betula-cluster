@@ -230,7 +230,7 @@ pub fn hyperbolic_kmeans<R: Real, C: ClusterFeature<R>>(
         let mut centers = seed_centers(&pts, &w, k, seed ^ (restart as u64).wrapping_mul(0x9E37));
         let mut labels = vec![0usize; m];
         let mut cost = R::infinity();
-        for _ in 0..max_iter.max(1) {
+        for _ in 0..max_iter {
             let mut moved = false;
             for (i, s) in sums.iter().enumerate() {
                 // `argmin_c −2n_i − 2⟨R_i, c⟩_L` is `argmax_c ⟨R_i, c⟩_L`, and since

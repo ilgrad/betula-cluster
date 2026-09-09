@@ -131,7 +131,7 @@ fn fcm_from(lv: &Leaves, mut centers: Vec<Vec<f64>>, m: f64, max_iter: usize) ->
     let (n, k, dim) = (lv.len(), centers.len(), lv.mu[0].len());
     let mut u = vec![vec![0.0; k]; n];
     let mut loss = f64::INFINITY;
-    for _ in 0..max_iter.max(1) {
+    for _ in 0..max_iter {
         let mut next = 0.0;
         for (i, row) in u.iter_mut().enumerate() {
             next += lv.w[i] * membership_row(lv, i, &centers, m, row);

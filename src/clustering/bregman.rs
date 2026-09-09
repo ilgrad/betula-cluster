@@ -123,6 +123,8 @@ fn lloyd<R: Real, B: BregmanDivergence<R>>(
     let k = centers.len();
     let mut labels = vec![0usize; m];
 
+    // The Bregman heads have their own entry point rather than `fit_head`'s, so they carry the
+    // one-iteration floor here — a zero-iteration run would return the initialisation.
     for _ in 0..max_iter.max(1) {
         let mut moved = false;
         for (i, mu) in means.iter().enumerate() {
@@ -336,6 +338,8 @@ pub fn bregman_em<R: Real, B: BregmanDivergence<R>>(
     // competing rather than poisoning the normalisation.
     let floor = R::from_f64(1e-300).unwrap();
 
+    // The Bregman heads have their own entry point rather than `fit_head`'s, so they carry the
+    // one-iteration floor here — a zero-iteration run would return the initialisation.
     for _ in 0..max_iter.max(1) {
         let mut bound = R::zero();
         for i in 0..m {
