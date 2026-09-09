@@ -117,6 +117,7 @@ def consensus(
     n_runs: int = ...,
     seed: int = ...,
     n_jobs: int = ...,
+    vary: Literal["order", "seed", "both"] = ...,
     **fit_kwargs: object,
 ) -> ConsensusResult: ...
 

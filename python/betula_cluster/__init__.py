@@ -264,41 +264,132 @@ class ConsensusResult:
         return float(self.confidence.mean())
 
 
+def _max_weight_bijection(weight: np.ndarray) -> np.ndarray:
+    """Row → column assignment maximising the total weight, one column per row.
+
+    The Jonker–Volgenant shortest-augmenting-path form of the Hungarian algorithm, ``O(n³)`` with
+    the inner scan vectorised, on the square padding of ``weight``. Written here rather than taken
+    from ``scipy.optimize.linear_sum_assignment`` because the wrapper's only dependency is NumPy;
+    the test suite checks it against SciPy and against brute-force enumeration.
+    """
+    rows, cols = weight.shape
+    size = max(rows, cols)
+    cost = np.zeros((size, size), dtype=np.float64)
+    cost[:rows, :cols] = -weight  # maximise the weight = minimise its negation
+    u = np.zeros(size + 1)
+    v = np.zeros(size + 1)
+    # `match[j]` is the row currently assigned to column `j`; index 0 is the algorithm's sentinel.
+    match = np.zeros(size + 1, dtype=np.int64)
+    way = np.zeros(size + 1, dtype=np.int64)
+    for i in range(1, size + 1):
+        match[0] = i
+        j0 = 0
+        minv = np.full(size + 1, np.inf)
+        used = np.zeros(size + 1, dtype=bool)
+        while True:
+            used[j0] = True
+            i0 = match[j0]
+            free = ~used
+            free[0] = False
+            cur = cost[i0 - 1, :] - u[i0] - v[1:]
+            better = free.copy()
+            better[1:] &= cur < minv[1:]
+            minv[better] = cur[better[1:]]
+            way[better] = j0
+            j1 = int(np.argmin(np.where(free, minv, np.inf)))
+            delta = minv[j1]
+            u[match[used]] += delta
+            v[used] -= delta
+            minv[free] -= delta
+            j0 = j1
+            if match[j0] == 0:
+                break
+        while j0:
+            j1 = way[j0]
+            match[j0] = match[j1]
+            j0 = j1
+    assignment = np.zeros(size, dtype=np.int64)
+    for j in range(1, size + 1):
+        assignment[match[j] - 1] = j - 1
+    return assignment[:rows]
+
+
 def _align_labels(labels: np.ndarray, reference: np.ndarray) -> np.ndarray:
-    """Relabel ``labels`` into ``reference``'s id space by maximum cluster overlap so votes from
-    different runs refer to the same clusters. Not a strict bijection — when two runs genuinely
-    disagree, the merge surfaces as reduced consensus, which is the point."""
+    """Relabel ``labels`` into ``reference``'s id space so votes from different runs refer to the
+    same clusters, one cluster to one cluster.
+
+    The map is a **bijection**, chosen to maximise the overlap. The alternative — sending each
+    cluster to whichever reference cluster it overlaps most — is cheaper and biased: a run that
+    splits one reference cluster maps both halves back onto it, so the split is invisible while the
+    merge it forces at fixed ``k`` is counted once. Measured on a split/merge fixture that reports
+    agreement 0.750 where the bijection reports 0.625, and +0.03…+0.13 over random disagreements.
+    A run with more clusters than the reference keeps its surplus as fresh ids rather than folding
+    them onto a matched one.
+    """
     ref_ids, ref_pos = np.unique(reference, return_inverse=True)
     lab_ids, lab_pos = np.unique(labels, return_inverse=True)
     contingency = np.zeros((lab_ids.size, ref_ids.size), dtype=np.int64)
     np.add.at(contingency, (lab_pos, ref_pos), 1)
-    best = ref_ids[contingency.argmax(axis=1)]  # lab cluster → best-overlap ref cluster
+    assignment = _max_weight_bijection(contingency.astype(np.float64))
+    fresh = int(ref_ids.max()) + 1
+    best = np.empty(lab_ids.size, dtype=np.int64)
+    for i, col in enumerate(assignment):
+        if col < ref_ids.size:
+            best[i] = ref_ids[col]
+        else:  # padded column: this cluster has no counterpart in the reference
+            best[i] = fresh
+            fresh += 1
     lut = np.zeros(int(lab_ids.max()) + 1, dtype=np.int64)
     lut[lab_ids] = best
     return lut[labels]
 
 
 def consensus(
-    X, n_clusters: int, *, n_runs: int = 5, seed: int = 0, n_jobs: int = 1, **fit_kwargs
+    X,
+    n_clusters: int,
+    *,
+    n_runs: int = 5,
+    seed: int = 0,
+    n_jobs: int = 1,
+    vary: str = "order",
+    **fit_kwargs,
 ) -> ConsensusResult:
-    """Cluster ``X`` under ``n_runs`` random insertion-order permutations; return the consensus
-    labelling and a per-point stability score (see :class:`ConsensusResult`).
+    """Cluster ``X`` ``n_runs`` times under a varying nuisance, and return the consensus labelling
+    with a per-point stability score (see :class:`ConsensusResult`).
+
+    ``vary`` names what is allowed to differ between runs, and therefore what the stability score is
+    a score *of*:
+
+    ``"order"`` (default)
+        the insertion order, with the head's seed held fixed — the CF-tree's own sensitivity, which
+        is what this function is documented to measure.
+    ``"seed"``
+        the head's seed, over one fixed insertion order — the head's initialisation sensitivity
+        (k-means++ draws, EM restarts); a deterministic head such as ``ward`` returns confidence 1.
+    ``"both"``
+        both at once. The behaviour before 0.9.0, and the one that cannot say which of the two a
+        low score came from.
 
     Extra keyword arguments are forwarded to :func:`fit_predict` (``feature`` / ``method`` /
     ``threshold`` / …). Intended for the partitional heads (``kmeans`` / ``gmm`` / ``ward`` /
     ``spectral``) at a fixed ``n_clusters``; density heads (``hdbscan``) emit noise / variable
-    counts the vote cannot align, and are rejected. ``n_jobs`` runs the (independent) permutations
+    counts the vote cannot align, and are rejected. ``n_jobs`` runs the (independent) runs
     in parallel threads — the Rust core releases the GIL, so this scales — with `<0` meaning all
     cores; each run is seeded independently, so the result is identical regardless of ``n_jobs``.
     """
     if n_runs < 1:
         raise ValueError("n_runs must be >= 1")
+    if vary not in ("order", "seed", "both"):
+        raise ValueError(f"vary must be 'order', 'seed' or 'both', got {vary!r}")
     x = np.asarray(X)
     n = x.shape[0]
 
     def run(r: int) -> np.ndarray:
-        perm = np.random.default_rng([seed, r]).permutation(n)  # independent per run, order-free
-        labels_perm = np.asarray(fit_predict(x[perm], n_clusters, seed=seed + r, **fit_kwargs))
+        # `"seed"` holds one fixed order and moves only the head's seed; the other two permute.
+        order = np.random.default_rng([seed, r]).permutation(n)
+        perm = np.arange(n) if vary == "seed" else order
+        head_seed = seed if vary == "order" else seed + r
+        labels_perm = np.asarray(fit_predict(x[perm], n_clusters, seed=head_seed, **fit_kwargs))
         if labels_perm.min() < 0:
             raise ValueError("consensus requires a partitional method (got noise labels < 0)")
         original = np.empty(n, dtype=np.int64)

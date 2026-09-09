@@ -3835,6 +3835,66 @@ def test_consensus_rejects_density_method(blobs):
         betula_cluster.consensus(np.vstack([x, outliers]), 4, method="hdbscan", threshold=0.05)
 
 
+def test_the_alignment_is_a_bijection_and_costs_the_split_it_used_to_hide():
+    """The §2.1 fixture of the 2026-09-08 review: a run that splits one cluster and merges two
+    others, at fixed k. Mapping each cluster to its best-overlap reference counts the split as
+    agreement; a bijection cannot, and the difference is 0.750 against 0.625."""
+    reference = np.repeat(np.arange(4), 1000)
+    other = reference.copy()
+    other[:500] = 0  # A splits in two...
+    other[500:1000] = 4
+    other[2000:3000] = 1  # ...and C is merged into B
+    aligned = betula_cluster._align_labels(other, reference)
+    assert float((aligned == reference).mean()) == pytest.approx(0.625)
+
+
+def test_a_run_with_more_clusters_than_the_reference_keeps_its_surplus():
+    """A bijection cannot place every cluster when a run finds more of them, and folding the
+    surplus onto a matched cluster would count a disagreement as agreement."""
+    reference = np.repeat(np.arange(2), 100)
+    other = np.repeat(np.arange(3), [100, 50, 50])
+    aligned = betula_cluster._align_labels(other, reference)
+    assert len(np.unique(aligned)) == 3
+    assert set(np.unique(aligned)) - set(np.unique(reference))  # the surplus got a fresh id
+
+
+def test_the_bijection_matches_brute_force_and_scipy():
+    from itertools import permutations
+
+    optimize = pytest.importorskip("scipy.optimize")
+    rng = np.random.default_rng(3)
+    for _ in range(60):
+        rows, cols = int(rng.integers(1, 7)), int(rng.integers(1, 7))
+        w = rng.integers(0, 20, size=(rows, cols)).astype(np.float64)
+        got = betula_cluster._max_weight_bijection(w)
+        mine = sum(w[i, j] for i, j in enumerate(got) if j < cols)
+        # brute force over every injection of rows into columns
+        size = max(rows, cols)
+        brute = max(
+            sum(w[i, j] for i, j in enumerate(p[:rows]) if j < cols)
+            for p in permutations(range(size))
+        )
+        r, c = optimize.linear_sum_assignment(-w)
+        assert mine == brute == pytest.approx(w[r, c].sum())
+
+
+def test_vary_names_which_nuisance_the_score_is_about():
+    # Overlapping blobs, so the insertion order has something to disagree about.
+    rng = np.random.default_rng(0)
+    x = np.vstack([rng.normal(c, 2.0, (400, 2)) for c in ([0, 0], [3, 0], [0, 3])])
+    kw = dict(n_runs=4, method="ward", threshold=0.1, max_leaves=300, seed=0)
+    # `ward` has no seed of its own, so holding the order fixed leaves nothing to disagree about.
+    assert betula_cluster.consensus(x, 3, vary="seed", **kw).mean_confidence == 1.0
+    # The insertion order is a real nuisance for the same head on the same data.
+    assert betula_cluster.consensus(x, 3, vary="order", **kw).mean_confidence < 1.0
+
+
+def test_consensus_rejects_an_unknown_nuisance(blobs):
+    x, _ = blobs
+    with pytest.raises(ValueError, match="vary must be"):
+        betula_cluster.consensus(x, 4, vary="everything")
+
+
 def test_consensus_parallel_matches_serial(blobs):
     x, _ = blobs
     kw = dict(n_runs=4, method="kmeans", threshold=0.1, max_leaves=300, seed=0)

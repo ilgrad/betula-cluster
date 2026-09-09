@@ -172,6 +172,20 @@ All notable changes to this project are documented here. The format follows
   **Labels change** for `method="hdbscan"` / `"dc-center"` / `"dc-median"` fits that did not name a
   `min_samples`; an explicit integer is used exactly as before. `get_params()` reports `None` for the
   automatic state, and `auto_min_samples` / `AUTO_MIN_SAMPLES_LEAVES` are public on the Rust side.
+- **`consensus` measures one nuisance at a time, and its vote is a bijection — scores move.** Two
+  defects, both label- and score-changing. It permuted the insertion order *and* moved the head's
+  seed on every run while documenting itself as measuring the insertion order; `vary` now names the
+  choice — `"order"` (new default: permute, hold the seed), `"seed"` (one order, move the seed),
+  `"both"` (the old behaviour). And runs were aligned to the reference by sending each cluster to
+  whichever reference cluster it overlapped most, which is not a bijection: a run that splits a
+  reference cluster maps both halves back onto it, so the split scored as agreement while the merge
+  it forces at fixed `k` was counted once. The bias has one sign — measured at **+0.125** on a
+  split/merge fixture (0.750 against the bijection's 0.625) and +0.03…+0.13 over random
+  disagreements. Alignment is now a maximum-weight bijection (a ~40-line Jonker–Volgenant in NumPy,
+  since the wrapper's only dependency is NumPy; tested against SciPy and against brute-force
+  enumeration at `k ≤ 6`), and a run with more clusters than the reference keeps its surplus as
+  fresh ids instead of folding them onto a matched cluster. **Confidence scores from 0.8.0 and
+  earlier were too high and are not comparable with these.**
 - **Rust API (breaking): the point entry points are checked.** `CFTree::insert`, `Model::predict`,
   `DenStream` / `DbStream`'s `insert` / `predict` and `WindowStream::insert` took a `&[R]` and
   trusted its length. The SIMD kernels compare `a.len().min(b.len())` coordinates, so a row one

@@ -1948,6 +1948,21 @@ stable = X[res.confidence == 1.0]   # points every insertion order agrees on
 For the partitional heads (`kmeans` / `gmm` / `ward` / `spectral`) at a fixed `n_clusters`; extra
 kwargs are forwarded to `fit_predict`.
 
+**`vary` names the nuisance the score is about.** `"order"` (the default) permutes the rows and holds
+the head's seed fixed, which is the CF-tree's own sensitivity and what the paragraph above describes;
+`"seed"` holds one insertion order and moves the head's seed, which is the initialisation
+sensitivity (k-means++ draws, EM restarts) and returns confidence 1 for a deterministic head like
+`ward`; `"both"` moves both at once and cannot say which one a low score came from. Before 0.9.0
+there was only `"both"`, under the documentation of `"order"`.
+
+**The vote aligns one cluster to one cluster.** Runs are matched to the first run by a
+maximum-overlap **bijection**. Sending each cluster to whichever reference cluster it overlaps most
+is cheaper and biased in one direction: a run that splits a reference cluster maps both halves back
+onto it, so the split scores as agreement while the merge it forces at fixed `k` is counted once. On
+a split/merge fixture that reads 0.750 where the bijection reads 0.625, and +0.03…+0.13 over random
+disagreements. **Scores from 0.8.0 and earlier are therefore not comparable with these**; they were
+too high.
+
 ## Rust
 
 ```rust
