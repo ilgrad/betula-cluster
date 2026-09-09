@@ -112,6 +112,17 @@ All notable changes to this project are documented here. The format follows
   non-monotone on all three datasets, so `n_init` on a head that would ignore it raises a
   `ValueError` instead of passing silently. Rust: `Model::fit` and the `kmeans_auto` / `spectral`
   entry points take the count (`0` = the default), and `KMEANS_N_INIT` is public.
+- **The ELKI tree gap has a mechanism: how the final leaf set is chosen.** Q5 left our default
+  D0/D0 geometry 7.6–8.5 % behind `BetulaLeafPreClustering` in WCSS at a matched leaf count, with
+  three candidates on file (split rule, rebuild threshold, absorption tie-break). It is none of
+  those: it is that `CFTree::rebuild` merges only the closest pairs *inside one leaf node*. Priced
+  exactly in cluster-feature arithmetic — a merge-only compaction is a closed form, so an offline
+  globally-cheapest-pair merge is a bound — a summary of exactly the same size built from a 2×
+  finer tree reads **0.72× our WCSS on `digits` and 0.68× on covtype-50k**, i.e. 0.78× and 0.73× of
+  ELKI's. The 8 % is the small end of what the lever is worth. Not a free fix: the finer build holds
+  2× the leaves and the global merge is `O(m²)`, which is the trade the current policy was chosen
+  under. Written up in `research/RESULTS-estep.md` with the numbers and the shape of a fix that
+  keeps both bounds.
 - **`absorb="chi2"` is documented as an operating point, with the measurement that says it is not a
   general win.** T22 turned up the gate reading 0.1199 with 46 leaves on covtype where the six
   radius criteria read 0.086 with ~3 600, which looked like a lever nobody had written down. Swept

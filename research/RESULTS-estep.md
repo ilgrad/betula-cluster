@@ -198,6 +198,48 @@ gets, and 8 % of the summarisation objective is more than the E-step differences
 its length on. It is also narrow enough to be one policy — a split rule, a rebuild threshold, an
 absorption tie-break — rather than a difference in kind. Chasing it is **T27**.
 
+### Where the D0/D0 gap comes from (T27, 2026-09-09)
+
+Three candidates were on file — the split rule, the rebuild threshold, the absorption tie-break —
+and the fourth is written in `CFTree::rebuild`'s own doc comment: the rebuild merges the `k` closest
+**sibling** pairs, meaning pairs inside one leaf *node*, because that is one `O(Σ child²)` scan
+instead of a descent per entry. "Compaction cannot reach pairs that landed in different leaves" is a
+policy, and it can be priced without touching the engine. A cluster feature merges exactly, so for
+any grouping of the leaves
+
+    WCSS = Σᵢ Sᵢ + Σ_merges (w_a w_b)/(w_a + w_b) ‖μ_a − μ_b‖²,   Sᵢ = wᵢ rᵢ²
+
+which makes an offline *globally* cheapest-pair merge exact, and therefore a bound on what any
+merge-only compaction could reach. Build at a finer budget, merge back down to the same final leaf
+count, and compare (`local/scratch/elki/t27_compaction.py`; the tree build is seed-independent, so
+the three seeds are identical by construction and are reported once):
+
+| dataset | final leaves | source tree | WCSS (nearest-centroid) | of ours | of ELKI |
+|---|---:|---:|---:|---:|---:|
+| digits | 195 | ours, built at the budget | 7.087e5 | 1.000 | 1.085 |
+| digits | 195 | 391 leaves, merged globally | **5.117e5** | 0.722 | 0.783 |
+| digits | 195 | 732 leaves, merged globally | 4.502e5 | 0.635 | 0.689 |
+| digits | 195 | 1456 leaves, merged globally | 4.303e5 | 0.607 | 0.659 |
+| covtype-50k | 1950 | ours, built at the budget | 8.642e4 | 1.000 | 1.076 |
+| covtype-50k | 1950 | 3939 leaves, merged globally | **5.894e4** | 0.682 | 0.734 |
+| covtype-50k | 1950 | 7283 leaves, merged globally | 5.144e4 | 0.595 | 0.641 |
+
+So the gap is in **how the final leaf set is chosen**, not in the routing or the split: a merge-only
+policy producing a summary of exactly the same size reaches 0.73–0.78 of ELKI's WCSS from a tree
+built at twice the budget. The 8 % we lose to ELKI is the small end of what this lever is worth; the
+same measurement says a further ~25 % is available beyond ELKI's own policy.
+
+Two costs keep this from being a free fix, and they are why the current policy exists. Building at
+2× the budget holds 2× the leaves *during* the build, which is the memory bound the library sells;
+and the global merge is `O(m²)` in the leaf count against the sibling scan's `O(Σ child²)` — 1.6 GB
+of cost matrix at 14 000 leaves, which is what killed the ×8 covtype cell of this very probe. The
+shape of a fix that keeps both bounds is **E13**: rank candidate pairs by ΔSSE from the approximate
+kNN graph the library already builds over leaves, rather than by node membership, at rebuild time
+where the tree is already at its budget. What is *not* yet separated is how much of the 0.72 is the
+finer build (more information before compacting) and how much is global-versus-sibling merging at a
+fixed tree size; that separation needs the merge policy swapped inside the rebuild, which is E13's
+own experiment.
+
 Two things this does *not* say. The partitions agree with each other at ARI 0.39–0.53 even where
 their WCSS matches to 1 %, so "the same tree quality" is not "the same tree" — the leaf boundaries
 land in genuinely different places, and a downstream head sees different summaries. And the timing
