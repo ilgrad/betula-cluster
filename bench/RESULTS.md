@@ -1121,6 +1121,45 @@ two-pass recovers +0.167 to +0.251. And the parameter does *not* reach the `covt
 was once hoped to: in the published configuration that cell's `top1` is **0.041** and a fixed cap
 moves its ARI by **−0.0001**, so whatever the 0.086-against-0.131 gap is, it is not this.
 
+#### What the `covtype` / `ward` gap actually is (2026-09-09)
+
+Four candidates were separated, each on the published fixture (`feature="diagonal"`,
+`method="ward"`, `max_leaves=4000`, medians of seeds 0/1/2), and three of them are not it:
+
+- **Not the leaf budget.** 500 / 1000 / 2000 / 4000 / 8000 / 16000 leaves read 0.0862, 0.0900,
+  0.0862, 0.0861, 0.0861, 0.0857 — flat over a 32× range, with `top1` falling 0.149 → 0.001.
+- **Not the leaf feature.** `spherical` and `diagonal` agree to four decimals at every budget, which
+  is expected: the ward linkage reads mass, mean and total scatter, none of which the feature
+  changes.
+- **Not the absorption criterion, within the radius family.** All six of `euclidean`, `manhattan`,
+  `average`, `diameter`, `ward` and `radius` read **0.0859–0.0864**. The two mass-invariant gates do
+  move it: `chi2` (and `subspace`, which falls back to it) reads **0.1199 with 46 leaves** against
+  the radius family's ~3 600 — the rival's score at a 78× smaller summary, and a lever worth knowing
+  about on data of this shape.
+- **It is the fixture, and the sensitivity is ours alone.** `bench/leaf_budget.py` reads
+  **0.1412–0.1430** for a ward head on "covtype-20k" at every budget it sweeps, which is *above* the
+  rival. The two harnesses build that fixture differently: `bench/comprehensive.py` draws 20 000
+  rows with `rng(0).choice` and standardises *those rows*; `bench/_worker.py` standardises all
+  581 012 and then takes `rng(0).permutation(...)[:20000]`. Crossing the two choices, ward reads:
+
+  | draw | standardised on | ward | `sklearn-birch` |
+  |---|---|---|---|
+  | `choice` | the 20 000 subsample *(published)* | 0.0861 | 0.1306 |
+  | `choice` | all 581 012 | 0.1176 | 0.1265 |
+  | `permutation` | the 20 000 subsample | 0.1059 | 0.1267 |
+  | `permutation` | all 581 012 | **0.1416** | 0.1278 |
+
+  Both ingredients matter and they are roughly additive (+0.031 for the population scaler, +0.020
+  for the draw). **Birch does not move at all** (0.1265–0.1306 over the four), so this is not "a
+  harder or easier subsample"; it is our arm reacting to a re-scaling that the rival absorbs. The 44
+  binary one-hot columns are what carries it: on the 10 continuous columns alone both arms collapse
+  to 0.010–0.027 and the fixture effect goes with them.
+
+The scoreboard cell stands as published — the rival is measured on the same rows, so the comparison
+is fair — but the mechanism on record is now this rather than mass imbalance, and the open question
+it leaves is why a ward head over 44 rare binary columns is that sensitive to whose σ scaled them.
+Probes: `local/scratch/t22_covtype_*.py`.
+
 ### It is the CF-tree family, not this implementation (task #47)
 
 scikit-learn's Birch issue #22854 reports the same shape from the other implementation, so the

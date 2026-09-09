@@ -112,6 +112,19 @@ All notable changes to this project are documented here. The format follows
   non-monotone on all three datasets, so `n_init` on a head that would ignore it raises a
   `ValueError` instead of passing silently. Rust: `Model::fit` and the `kmeans_auto` / `spectral`
   entry points take the count (`0` = the default), and `KMEANS_N_INIT` is public.
+- **The `covtype` / `ward` benchmark loss has a mechanism on record, and it is not the one that was
+  filed.** The cell (`betula-ward` 0.086 against `sklearn-birch` 0.131) was attributed to mass
+  imbalance; Q1 measured that absent, and this separates the rest. Not the leaf budget — 500 to
+  16 000 leaves reads 0.0857–0.0900, flat over a 32× range. Not the leaf feature — `spherical` and
+  `diagonal` agree to four decimals, as the ward linkage's inputs say they must. Not the absorption
+  criterion within the radius family — six of them read 0.0859–0.0864 — though the mass-invariant
+  `chi2` gate reads **0.1199 with 46 leaves**, the rival's score at a 78× smaller summary. It is the
+  *fixture*: `bench/comprehensive.py` standardises the 20 000-row subsample, `bench/_worker.py`
+  standardises all 581 012 rows and then subsamples, and the two draws differ as well. Crossed, ward
+  reads 0.0861 / 0.1176 / 0.1059 / **0.1416** while `sklearn-birch` sits at 0.1265–0.1306 throughout
+  — the sensitivity is ours, and the 44 binary one-hot columns carry it. The scoreboard cell stands
+  (the rival is measured on the same rows), with the new mechanism written next to it in
+  `bench/RESULTS.md`.
 - **The spectral head's restart count is measured, and the default stays 4.** `n_init` became
   reachable on `method="spectral"` in 0.8.0's successor without ever being swept there. It is the
   one head where a restart is nearly free — its k-means runs on a `k`-dimensional embedding of at
