@@ -217,10 +217,19 @@ fn run<C: ClusterFeature<f64>>(rows: &[Vec<f64>], cfg: &Cfg) -> Vec<usize> {
         CentroidEuclidean,
     );
     for r in rows {
-        tree.insert(r);
+        // `parse_rows` rejects a ragged file, so every row is `dim` wide by here; the checked entry
+        // is what the library exposes and the cost is one length compare per point.
+        tree.try_insert(r)
+            .expect("parse_rows guarantees every row has the same width");
     }
     let model = Model::fit(tree, cfg.clusters, cfg.method, cfg.max_iter, 0, cfg.seed, 0);
-    rows.iter().map(|r| model.predict(r)).collect()
+    rows.iter()
+        .map(|r| {
+            model
+                .try_predict(r)
+                .expect("parse_rows guarantees every row has the same width")
+        })
+        .collect()
 }
 
 fn cluster(rows: &[Vec<f64>], cfg: &Cfg) -> Vec<usize> {

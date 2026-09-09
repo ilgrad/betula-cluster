@@ -20,7 +20,7 @@
 use crate::adwin::Adwin;
 use crate::feature::ClusterFeature;
 use crate::kernels::sq_euclidean;
-use crate::types::Real;
+use crate::types::{Real, ShapeError};
 use std::collections::HashMap;
 use std::marker::PhantomData;
 
@@ -281,8 +281,15 @@ impl<R: Real, C: ClusterFeature<R>> DenStream<R, C> {
         }
     }
 
-    /// Absorb one point.
-    pub fn insert(&mut self, x: &[R]) {
+    /// Absorb one point of exactly the configured dimension, or return [`ShapeError`].
+    pub fn try_insert(&mut self, x: &[R]) -> Result<(), ShapeError> {
+        ShapeError::check(self.dim, x.len())?;
+        self.insert(x);
+        Ok(())
+    }
+
+    /// Absorb one point, trusting the caller for its length (see [`crate::tree::CFTree::insert`]).
+    pub(crate) fn insert(&mut self, x: &[R]) {
         debug_assert!(x.len() >= self.dim);
         self.labels.clear(); // new data invalidates the offline clustering
         let (t, lambda, eps2) = (self.t, self.lambda, self.eps2);
@@ -391,9 +398,16 @@ impl<R: Real, C: ClusterFeature<R>> DenStream<R, C> {
             .collect();
     }
 
+    /// Cluster label of a point of exactly the configured dimension, or [`ShapeError`].
+    pub fn try_predict(&self, x: &[R]) -> Result<i64, ShapeError> {
+        ShapeError::check(self.dim, x.len())?;
+        Ok(self.predict(x))
+    }
+
     /// Cluster label of `x`: the label of its nearest potential micro-cluster if `x` is within `ε`
-    /// of it, else `-1` (noise). Requires a prior [`DenStream::cluster`].
-    pub fn predict(&self, x: &[R]) -> i64 {
+    /// of it, else `-1` (noise). Requires a prior [`DenStream::cluster`]. Unchecked; see
+    /// [`DenStream::try_predict`].
+    pub(crate) fn predict(&self, x: &[R]) -> i64 {
         if self.labels.len() != self.p.len() {
             return -1;
         }
@@ -558,7 +572,14 @@ impl<R: Real, C: ClusterFeature<R>> DbStream<R, C> {
     /// Absorb one point: every micro-cluster within `r` of it absorbs `x` (the centroid is
     /// decay-invariant, so the neighbour test needs no fading); each co-absorbing pair's shared
     /// density is bumped. If no micro-cluster is within `r`, a new one is seeded.
-    pub fn insert(&mut self, x: &[R]) {
+    pub fn try_insert(&mut self, x: &[R]) -> Result<(), ShapeError> {
+        ShapeError::check(self.dim, x.len())?;
+        self.insert(x);
+        Ok(())
+    }
+
+    /// The same, trusting the caller for the point's length (see [`crate::tree::CFTree::insert`]).
+    pub(crate) fn insert(&mut self, x: &[R]) {
         debug_assert!(x.len() >= self.dim);
         self.labels.clear();
         let (t, lambda, r2) = (self.t, self.lambda, self.radius2);
@@ -686,9 +707,16 @@ impl<R: Real, C: ClusterFeature<R>> DbStream<R, C> {
         best.map(|(i, _)| i)
     }
 
+    /// Cluster label of a point of exactly the configured dimension, or [`ShapeError`].
+    pub fn try_predict(&self, x: &[R]) -> Result<i64, ShapeError> {
+        ShapeError::check(self.dim, x.len())?;
+        Ok(self.predict(x))
+    }
+
     /// Cluster label of `x`: the label of its nearest micro-cluster if `x` is within `r` of it, else
-    /// `-1` (noise). Requires a prior [`DbStream::cluster`].
-    pub fn predict(&self, x: &[R]) -> i64 {
+    /// `-1` (noise). Requires a prior [`DbStream::cluster`]. Unchecked; see
+    /// [`DbStream::try_predict`].
+    pub(crate) fn predict(&self, x: &[R]) -> i64 {
         if self.labels.len() != self.micros.len() {
             return -1;
         }

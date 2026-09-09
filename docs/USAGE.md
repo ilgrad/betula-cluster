@@ -1959,10 +1959,11 @@ use betula_cluster::tree::CFTree;
 let mut tree: CFTree<f64, Spherical<f64>, _, _> =
     CFTree::new(2, 32, 32, 0.0, 2000, CentroidEuclidean, CentroidEuclidean);
 for p in &points {
-    tree.insert(p);
+    tree.try_insert(p)?;                       // Err(ShapeError) if p is not `dim` wide
 }
-let model = Model::fit(tree, 4, Method::Gmm, 100, 0);
-let label = model.predict(&points[0]);
+// (tree, k, method, max_iter, n_init, seed, auto_k_max); `0` takes the default for the last three.
+let model = Model::fit(tree, 4, Method::Gmm, 100, 0, 0, 0);
+let label = model.try_predict(&points[0])?;
 ```
 
 ## Command line

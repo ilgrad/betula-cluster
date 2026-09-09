@@ -56,7 +56,8 @@ fn bench(n: usize, d: usize, max_leaves: usize) {
             CFTree::new(d, 50, 50, 0.0, max_leaves, CentroidEuclidean, Radius);
         let t0 = Instant::now();
         for i in 0..n {
-            tree.insert(black_box(&data[i * d..(i + 1) * d]));
+            tree.try_insert(black_box(&data[i * d..(i + 1) * d]))
+                .unwrap();
         }
         rounds.push(t0.elapsed());
         leaves = tree.leaf_features().len();

@@ -16,7 +16,7 @@
 
 use crate::distance::CFDistance;
 use crate::feature::ClusterFeature;
-use crate::types::Real;
+use crate::types::{Real, ShapeError};
 use core::cmp::Ordering;
 
 #[cfg_attr(feature = "persistence", derive(serde::Serialize, serde::Deserialize))]
@@ -819,8 +819,29 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> CF
         }
     }
 
-    /// Insert a point.
-    pub fn insert(&mut self, x: &[R]) {
+    /// The dimension every point handed to this tree must have.
+    pub fn dim(&self) -> usize {
+        self.dim
+    }
+
+    /// Insert a point of exactly [`CFTree::dim`] coordinates, or return [`ShapeError`].
+    ///
+    /// The checked entry point. The tree is left untouched on error — the length is read before
+    /// anything is absorbed — so a caller streaming a mixed batch can skip a bad row and keep the
+    /// summary it has.
+    pub fn try_insert(&mut self, x: &[R]) -> Result<(), ShapeError> {
+        ShapeError::check(self.dim, x.len())?;
+        self.insert(x);
+        Ok(())
+    }
+
+    /// Insert a point, trusting the caller for its length.
+    ///
+    /// Unchecked and crate-internal: the kernels take `a.len().min(b.len())` coordinates, so a
+    /// short row is clustered on its prefix and a long one loses its tail, in both cases silently.
+    /// The Python boundary validates the whole array once and then calls this per row; everyone
+    /// else gets [`CFTree::try_insert`].
+    pub(crate) fn insert(&mut self, x: &[R]) {
         debug_assert!(x.len() >= self.dim);
         self.tick_auto_balance();
         if let Some(k) = self.huber_k {

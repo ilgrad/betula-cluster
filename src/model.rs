@@ -14,7 +14,7 @@ use crate::feature::ClusterFeature;
 use crate::kernels::sq_euclidean;
 use crate::mixture::Mixture;
 use crate::tree::CFTree;
-use crate::types::Real;
+use crate::types::{Real, ShapeError};
 
 /// Default ceiling on `k` for the automatic selectors that **sweep** — those that refit the whole
 /// head at every candidate `k` and keep the best score. Their work is `Σ_{k≤K} k = O(K²)`, so the
@@ -317,8 +317,17 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> Mo
         }
     }
 
-    /// Cluster label of point `x` under the head's own assignment rule.
-    pub fn predict(&self, x: &[R]) -> usize {
+    /// Cluster label of a point of exactly the fitted dimension, or [`ShapeError`].
+    pub fn try_predict(&self, x: &[R]) -> Result<usize, ShapeError> {
+        ShapeError::check(self.tree.dim(), x.len())?;
+        Ok(self.predict(x))
+    }
+
+    /// Cluster label of point `x` under the head's own assignment rule, trusting its length.
+    ///
+    /// Unchecked and crate-internal for the same reason as [`crate::tree::CFTree::insert`]; the
+    /// checked entry is [`Model::try_predict`].
+    pub(crate) fn predict(&self, x: &[R]) -> usize {
         match &self.assign {
             Assignment::Centers { centers, .. } => nearest_center(centers, x),
             Assignment::Posterior(mixture) => mixture.assign(x),

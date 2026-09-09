@@ -74,7 +74,8 @@ fn build(
         CFTree::new(d, 50, 50, 0.0, max_leaves, CentroidEuclidean, Radius);
     for rank in 0..n {
         let i = order.map_or(rank, |o| o[rank] as usize);
-        tree.insert(black_box(&data[i * d..(i + 1) * d]));
+        tree.try_insert(black_box(&data[i * d..(i + 1) * d]))
+            .unwrap();
     }
     (tree.leaf_features().len(), tree.rebuilds())
 }

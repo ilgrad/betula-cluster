@@ -55,7 +55,7 @@ use crate::distance::CentroidEuclidean;
 use crate::feature::ClusterFeature;
 use crate::kernels::sq_euclidean;
 use crate::tree::CFTree;
-use crate::types::Real;
+use crate::types::{Real, ShapeError};
 
 /// Time support of a summary: the same `(weight, mean, ssd)` contract the spatial feature uses,
 /// applied to timestamps, so a windowed summary can say *when* it is from.
@@ -415,7 +415,14 @@ impl<R: Real, C: ClusterFeature<R>> WindowStream<R, C> {
     /// point lands in the open frame rather than being rejected, which keeps a late arrival in the
     /// summary at the cost of widening that frame's span — the span records it, so a query can see
     /// what happened.
-    pub fn insert(&mut self, x: &[R], t: f64) {
+    pub fn try_insert(&mut self, x: &[R], t: f64) -> Result<(), ShapeError> {
+        ShapeError::check(self.dim, x.len())?;
+        self.insert(x, t);
+        Ok(())
+    }
+
+    /// The same, trusting the caller for the point's length (see [`crate::tree::CFTree::insert`]).
+    pub(crate) fn insert(&mut self, x: &[R], t: f64) {
         match self.frame_end {
             None => self.frame_end = Some(t + self.frame_width),
             Some(end) if t >= end => {

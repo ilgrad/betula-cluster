@@ -337,7 +337,7 @@ A capability-by-capability reference. For runnable code see [`USAGE.md`](USAGE.m
 | `sparse` | `O(nnz)` sparse-native summarisation (`fit_predict_sparse`) |
 | `sketch` | KLL + DDSketch mergeable quantile sketches |
 | `topology` | Mapper nerve + 0-D persistence |
-| `model` | end-to-end `Model::fit` / `predict`; the `Method` enum and the per-head assignment rule |
+| `model` | end-to-end `Model::fit` / `try_predict`; the `Method` enum and the per-head assignment rule |
 | `python` | PyO3 bindings: one-shot `fit_predict` + streaming `Betula` estimator |
 
 See [`DESIGN.md`](https://github.com/ilgrad/betula-cluster/blob/main/DESIGN.md) for the full design and the verified mathematical foundation.

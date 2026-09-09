@@ -35,8 +35,10 @@ use crate::types::Real;
 /// have checked `is_x86_feature_detected!` for both features. Every load is `loadu` — no alignment
 /// precondition — and every index is bounded by the loop condition against `n`, which the callers
 /// below set to `a.len().min(b.len())` so that the contract matches `zip`'s truncation exactly.
-/// That `min` is load-bearing rather than defensive: `CFTree::insert` accepts a point *longer* than
-/// the tree's dimension and relies on the truncation.
+/// That `min` is now purely defensive: the public entry points check `x.len() == dim`
+/// ([`crate::tree::CFTree::try_insert`]) and every internal caller slices exactly `dim` coordinates,
+/// so the two lengths always agree by the time a kernel sees them. It is kept because the kernels
+/// are `unsafe` and a length assumption is the wrong thing to leave to a future caller.
 // `unused_unsafe` fires on the arithmetic intrinsics from Rust 1.87, which made them safe to call
 // inside a matching `#[target_feature]` function. The crate's declared MSRV is 1.85, where they are
 // still `unsafe fn` and the blocks are mandatory, so they stay and the lint is silenced here rather

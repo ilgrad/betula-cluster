@@ -51,7 +51,7 @@ fn cf_tree_summarises_all_points() {
     let mut tree: CFTree<f64, Spherical<f64>, _, _> =
         CFTree::new(2, 16, 16, 0.05, 100, CentroidEuclidean, CentroidEuclidean);
     for p in &pts {
-        tree.insert(p);
+        tree.try_insert(p).unwrap();
     }
     assert!(tree.num_leaves() >= 4 && tree.num_leaves() <= pts.len());
     assert!((tree.summary().weight() - pts.len() as f64).abs() < 1e-9);
@@ -65,11 +65,11 @@ fn model_fit_predict_kmeans_and_gmm() {
         let mut tree: CFTree<f64, Diagonal<f64>, _, _> =
             CFTree::new(2, 16, 16, 0.05, 100, CentroidEuclidean, CentroidEuclidean);
         for p in &pts {
-            tree.insert(p);
+            tree.try_insert(p).unwrap();
         }
         let model = Model::fit(tree, 4, method, 100, 0, 1, 0);
         assert_eq!(model.n_clusters(), 4);
-        let labels: Vec<usize> = pts.iter().map(|p| model.predict(p)).collect();
+        let labels: Vec<usize> = pts.iter().map(|p| model.try_predict(p).unwrap()).collect();
         assert_recovered(&labels, &truth, 4);
     }
 }
@@ -81,7 +81,7 @@ fn clustering_heads_on_leaf_features() {
     let mut tree: CFTree<f64, Diagonal<f64>, _, _> =
         CFTree::new(2, 8, 8, 0.0, 100, CentroidEuclidean, CentroidEuclidean);
     for p in &pts {
-        tree.insert(p);
+        tree.try_insert(p).unwrap();
     }
     let feats = tree.leaf_features();
     let km = kmeans(feats, 4, 100, 4, 1);
@@ -111,4 +111,29 @@ fn feature_models_and_distance_api() {
     // Distance: feature-to-point and feature-to-feature are the squared Euclidean centroid forms.
     assert!((CentroidEuclidean.point(&s, &[4.0, 0.0]) - 9.0).abs() < 1e-12);
     assert!((CentroidEuclidean.between(&s, &s2) - 1.0).abs() < 1e-12);
+}
+
+#[test]
+fn a_row_of_the_wrong_width_is_rejected_and_changes_nothing() {
+    // The kernels compare `a.len().min(b.len())` coordinates, so a row one column short used to be
+    // clustered on its prefix and a row one column long used to drop its tail — both silently. The
+    // checked entry reads the length before anything is absorbed, so the summary is untouched.
+    let (pts, _) = blobs();
+    let mut tree: CFTree<f64, Spherical<f64>, _, _> =
+        CFTree::new(2, 16, 16, 0.05, 100, CentroidEuclidean, CentroidEuclidean);
+    for p in &pts {
+        tree.try_insert(p).unwrap();
+    }
+    let (weight, leaves) = (tree.summary().weight(), tree.num_leaves());
+    for bad in [vec![1.0], vec![1.0, 2.0, 3.0]] {
+        let err = tree.try_insert(&bad).unwrap_err();
+        assert_eq!(err.expected, 2);
+        assert_eq!(err.got, bad.len());
+    }
+    assert_eq!(tree.summary().weight(), weight);
+    assert_eq!(tree.num_leaves(), leaves);
+
+    let model = Model::fit(tree, 4, Method::KMeans, 100, 0, 1, 0);
+    assert!(model.try_predict(&[1.0]).is_err());
+    assert!(model.try_predict(&pts[0]).is_ok());
 }

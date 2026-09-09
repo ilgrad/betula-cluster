@@ -172,6 +172,20 @@ All notable changes to this project are documented here. The format follows
   **Labels change** for `method="hdbscan"` / `"dc-center"` / `"dc-median"` fits that did not name a
   `min_samples`; an explicit integer is used exactly as before. `get_params()` reports `None` for the
   automatic state, and `auto_min_samples` / `AUTO_MIN_SAMPLES_LEAVES` are public on the Rust side.
+- **Rust API (breaking): the point entry points are checked.** `CFTree::insert`, `Model::predict`,
+  `DenStream` / `DbStream`'s `insert` / `predict` and `WindowStream::insert` took a `&[R]` and
+  trusted its length. The SIMD kernels compare `a.len().min(b.len())` coordinates, so a row one
+  column short was clustered on its prefix and a row one column long dropped its tail — both
+  silently, and a `debug_assert` is not a release check. Each now has a `try_*` counterpart
+  returning `Result<_, ShapeError>` (new, in `types`, with `expected` / `got` and a `Display`), and
+  the unchecked bodies are `pub(crate)`: the Python boundary validates a whole array once and then
+  calls them per row, which is the one caller that should not pay per point. The tree is untouched
+  when a row is rejected, which an integration test pins in both profiles.
+
+  For a Rust caller the fix is `tree.insert(p)` → `tree.try_insert(p)?`. `CFTree::dim()` is now
+  public, since a caller that has to match the dimension should be able to read it. The truncation
+  in `kernels.rs` is no longer load-bearing — every internal caller slices exactly `dim` — and its
+  comment says so rather than claiming an insert relies on it.
 - **`max_iter=0` is refused, and one iteration is the floor everywhere it was not.** A
   zero-iteration EM returns its own initialisation: for the GMM heads a responsibility matrix of
   zeros and a labelling of all-zero, reported as a successful fit of one cluster. Nine head loops
