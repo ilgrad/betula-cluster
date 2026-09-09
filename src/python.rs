@@ -355,7 +355,65 @@ fn warn_f32_mass_ceiling(py: Python<'_>, peak: f64) -> PyResult<()> {
     PyErr::warn(py, &py.get_type::<PyUserWarning>(), &msg, 1)
 }
 
-/// Map the `method` keyword (+ HDBSCAN params) to an internal [`Kind`].
+/// Defaults of the head-specific keywords, in one place. The PyO3 signatures, the `serde` defaults
+/// and the "did the caller name it?" test in [`require_head_reads_its_keywords`] all read these, so
+/// a default cannot drift between the three and turn "unset" into an error.
+const DEFAULT_MIN_CLUSTER_SIZE: usize = 5;
+const DEFAULT_RESOLUTION: f64 = 1.0;
+const DEFAULT_COVARIANCE_WEIGHT: f64 = 0.0;
+const DEFAULT_TANGENT_WEIGHT: f64 = 0.0;
+const DEFAULT_TANGENT_RANK: usize = 2;
+const DEFAULT_RANK: usize = 2;
+const DEFAULT_FUZZIFIER: f64 = 2.0;
+
+/// Which heads read each head-specific keyword. Everything not listed against a keyword ignores it
+/// outright: `rank=8` on `method="ward"` configured nothing and said nothing.
+const HEAD_KEYWORDS: &[(&str, &[&str])] = &[
+    ("min_samples", &["hdbscan", "dc-center", "dc-median"]),
+    ("min_cluster_size", &["hdbscan"]),
+    ("graph_degree", &["hdbscan", "dc-center", "dc-median"]),
+    ("resolution", &["leiden", "leiden-cpm"]),
+    ("covariance_weight", &["leiden", "leiden-cpm"]),
+    ("tangent_weight", &["leiden", "leiden-cpm"]),
+    ("tangent_rank", &["leiden", "leiden-cpm"]),
+    ("rank", &["mppca", "mfa"]),
+    ("fuzzifier", &["fuzzy-cmeans"]),
+];
+
+/// Reject a head-specific keyword the named head does not read.
+///
+/// `given` carries one flag per keyword: whether the caller moved it off its default. A default is
+/// not evidence of intent — passing `rank=2` to `method="ward"` is indistinguishable from not
+/// passing it — so only a changed value is an error, and the error names the heads that would have
+/// used it.
+fn require_head_reads_its_keywords(method: &str, given: &[(&str, bool)]) -> PyResult<()> {
+    for &(name, is_given) in given {
+        if !is_given {
+            continue;
+        }
+        let heads = HEAD_KEYWORDS
+            .iter()
+            .find(|(keyword, _)| *keyword == name)
+            .map(|(_, heads)| *heads)
+            .expect("every flag passed here names a keyword in HEAD_KEYWORDS");
+        if !heads.contains(&method) {
+            let list = heads
+                .iter()
+                .map(|h| format!("'{h}'"))
+                .collect::<Vec<_>>()
+                .join(" / ");
+            return Err(PyValueError::new_err(format!(
+                "{name} has no effect on method='{method}': it is read only by {list}. Drop it, or \
+                 name a head that reads it — a keyword the fit ignores is a question the answer was \
+                 never going to address."
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Map the `method` keyword and its head-specific parameters to an internal [`Kind`], rejecting any
+/// of those parameters that the named head does not read.
 #[allow(clippy::too_many_arguments)] // one parameter per head-specific keyword, as the callers have
 fn parse_method(
     method: &str,
@@ -369,6 +427,26 @@ fn parse_method(
     graph_degree: usize,
     fuzzifier: f64,
 ) -> PyResult<Kind> {
+    require_head_reads_its_keywords(
+        method,
+        &[
+            ("min_samples", min_samples != 0),
+            (
+                "min_cluster_size",
+                min_cluster_size != DEFAULT_MIN_CLUSTER_SIZE,
+            ),
+            ("graph_degree", graph_degree != 0),
+            ("resolution", resolution != DEFAULT_RESOLUTION),
+            (
+                "covariance_weight",
+                covariance_weight != DEFAULT_COVARIANCE_WEIGHT,
+            ),
+            ("tangent_weight", tangent_weight != DEFAULT_TANGENT_WEIGHT),
+            ("tangent_rank", tangent_rank != DEFAULT_TANGENT_RANK),
+            ("rank", rank != DEFAULT_RANK),
+            ("fuzzifier", fuzzifier != DEFAULT_FUZZIFIER),
+        ],
+    )?;
     match method {
         "kmeans" => Ok(Kind::Parametric(Method::KMeans)),
         "xmeans" => Ok(Kind::Parametric(Method::XMeans)),
@@ -1927,11 +2005,11 @@ fn run_oneshot<R: Real + Element>(
 #[pyo3(signature = (
     data, n_clusters = 8, feature = "diagonal", method = "gmm", threshold = 0.0,
     branching = 32, leaf_cap = 32, max_leaves = 2000, max_iter = 100, n_init = None,
-    min_samples = None, min_cluster_size = 5, seed = 0, distance = "euclidean",
+    min_samples = None, min_cluster_size = DEFAULT_MIN_CLUSTER_SIZE, seed = 0, distance = "euclidean",
     absorb = "euclidean", chi2_p = 0.95, chi2_scale = 0.0, n_shards = None, normalize = false,
-    resolution = 1.0, covariance_weight = 0.0, tangent_weight = 0.0, tangent_rank = 2,
-    projection = "none", projection_dim = 64, projection_max_iter = 100, refine = 0, rank = 2,
-    graph_degree = 0, balance = None, auto_k_max = 0, fuzzifier = 2.0, leaf_refit = 0,
+    resolution = DEFAULT_RESOLUTION, covariance_weight = DEFAULT_COVARIANCE_WEIGHT, tangent_weight = DEFAULT_TANGENT_WEIGHT, tangent_rank = DEFAULT_TANGENT_RANK,
+    projection = "none", projection_dim = 64, projection_max_iter = 100, refine = 0, rank = DEFAULT_RANK,
+    graph_degree = 0, balance = None, auto_k_max = 0, fuzzifier = DEFAULT_FUZZIFIER, leaf_refit = 0,
     canonical_order = false
 ))]
 #[allow(clippy::too_many_arguments)]
@@ -2788,15 +2866,15 @@ struct StreamCfg<'a> {
 /// (re)builds from one array; `predict` labels new points via their nearest leaf. The covariance
 /// model and dimensionality are locked in at the first `partial_fit` / `fit`.
 fn default_resolution() -> f64 {
-    1.0
+    DEFAULT_RESOLUTION
 }
 
 fn default_covariance_weight() -> f64 {
-    0.0
+    DEFAULT_COVARIANCE_WEIGHT
 }
 
 fn default_tangent_rank() -> usize {
-    2
+    DEFAULT_TANGENT_RANK
 }
 
 fn default_projection_max_iter() -> usize {
@@ -2804,11 +2882,11 @@ fn default_projection_max_iter() -> usize {
 }
 
 fn default_rank() -> usize {
-    2
+    DEFAULT_RANK
 }
 
 fn default_fuzzifier() -> f64 {
-    2.0
+    DEFAULT_FUZZIFIER
 }
 
 #[pyclass(name = "Betula", module = "betula_cluster._core")]
@@ -3601,12 +3679,12 @@ impl Betula {
     #[pyo3(signature = (
         n_clusters = 8, feature = "diagonal", method = "gmm", threshold = 0.0,
         branching = 32, leaf_cap = 32, max_leaves = 2000, max_iter = 100, n_init = None,
-        min_samples = None, min_cluster_size = 5, seed = 0,
+        min_samples = None, min_cluster_size = DEFAULT_MIN_CLUSTER_SIZE, seed = 0,
         distance = "euclidean", absorb = "euclidean", chi2_p = 0.95, chi2_scale = 0.0, decay = 1.0,
-        normalize = false, huber_k = None, resolution = 1.0, covariance_weight = 0.0,
-        tangent_weight = 0.0, tangent_rank = 2, projection = "none", projection_dim = 64,
-        projection_max_iter = 100, refine = 0, rank = 2, graph_degree = 0, balance = None,
-        auto_k_max = 0, fuzzifier = 2.0, leaf_refit = 0, canonical_order = false,
+        normalize = false, huber_k = None, resolution = DEFAULT_RESOLUTION, covariance_weight = DEFAULT_COVARIANCE_WEIGHT,
+        tangent_weight = DEFAULT_TANGENT_WEIGHT, tangent_rank = DEFAULT_TANGENT_RANK, projection = "none", projection_dim = 64,
+        projection_max_iter = 100, refine = 0, rank = DEFAULT_RANK, graph_degree = 0, balance = None,
+        auto_k_max = 0, fuzzifier = DEFAULT_FUZZIFIER, leaf_refit = 0, canonical_order = false,
         route_beam = 1
     ))]
     #[allow(clippy::too_many_arguments)]

@@ -1158,7 +1158,9 @@ def test_mfa_reads_a_quiet_axis_an_isotropic_residual_drowns(heteroscedastic):
             n_clusters=3,
             feature="full",
             method=method,
-            rank=1,
+            # `rank` is the subspace dimension of the two factor heads and nothing to the other
+            # two, which now refuse it rather than ignoring it.
+            **({"rank": 1} if method in ("mfa", "mppca") else {}),
             threshold=0.05,
             max_leaves=1000,
             seed=0,
@@ -3578,6 +3580,52 @@ def test_tune_can_select_on_a_leaf_silhouette(blobs, objective):
     assert est.validity()[objective] == pytest.approx(result.best_score)
 
 
+#: One row per head-specific keyword: the keyword, a value that is not its default, a head that
+#: reads it and a head that does not.
+_HEAD_KEYWORDS = [
+    ("min_samples", 25, "hdbscan", "kmeans"),
+    ("min_cluster_size", 25, "hdbscan", "kmeans"),
+    ("graph_degree", 16, "hdbscan", "kmeans"),
+    ("resolution", 1.5, "leiden", "kmeans"),
+    ("covariance_weight", 0.5, "leiden", "kmeans"),
+    ("tangent_weight", 0.5, "leiden", "kmeans"),
+    ("tangent_rank", 3, "leiden", "kmeans"),
+    ("rank", 1, "mppca", "ward"),
+    ("fuzzifier", 1.5, "fuzzy-cmeans", "kmeans"),
+]
+
+
+@pytest.mark.parametrize("keyword,value,reader,ignorer", _HEAD_KEYWORDS)
+def test_a_head_specific_keyword_raises_on_a_head_that_ignores_it(
+    blobs, keyword, value, reader, ignorer
+):
+    x, _ = blobs
+    with pytest.raises(ValueError, match=f"{keyword} has no effect on method='{ignorer}'"):
+        betula_cluster.Betula(n_clusters=4, method=ignorer, **{keyword: value}).fit(x)
+    # ...and the same keyword on the head that reads it is a fit, not an error.
+    betula_cluster.Betula(
+        n_clusters=4, method=reader, max_leaves=200, **{keyword: value}
+    ).fit_predict(x)
+
+
+@pytest.mark.parametrize("keyword,value,reader,ignorer", _HEAD_KEYWORDS)
+def test_the_functional_entry_point_refuses_the_same_pairs(blobs, keyword, value, reader, ignorer):
+    x, _ = blobs
+    with pytest.raises(ValueError, match="has no effect on method"):
+        betula_cluster.fit_predict(x, n_clusters=4, method=ignorer, **{keyword: value})
+
+
+def test_a_head_specific_keyword_left_at_its_default_is_not_a_request(blobs):
+    """The default cannot be evidence of intent: `rank=2` is what every caller passes who never
+    thought about `rank` at all, so only a changed value is an error."""
+    x, _ = blobs
+    defaults = betula_cluster._DEFAULTS
+    for keyword, _value, _reader, ignorer in _HEAD_KEYWORDS:
+        betula_cluster.Betula(
+            n_clusters=4, method=ignorer, max_leaves=200, **{keyword: defaults[keyword]}
+        ).fit(x)
+
+
 def test_tune_unknown_objective_raises(blobs):
     x, _ = blobs
     with pytest.raises(ValueError, match="unknown objective"):
@@ -5350,8 +5398,11 @@ def blobs_with_stragglers():
 
 
 def _dc(data, method, k=5, **kw):
+    # `min_samples` belongs to the density heads; the `ward` control below shares the summary, not
+    # the keyword, and the engine now says so.
+    density = {"min_samples": 5} if method in ("hdbscan", "dc-center", "dc-median") else {}
     return betula_cluster.Betula(
-        n_clusters=k, method=method, threshold=0.0, max_leaves=400, min_samples=5, seed=0, **kw
+        n_clusters=k, method=method, threshold=0.0, max_leaves=400, seed=0, **density, **kw
     ).fit_predict(data)
 
 

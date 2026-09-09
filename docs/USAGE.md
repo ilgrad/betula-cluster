@@ -70,6 +70,25 @@ k-means/GMM, dendrogram cut for Ward). `threshold="auto"` (dense only) drops the
 often have to guess: a subsample pilot estimates a warm-start absorption radius, so the full fit
 starts near-converged instead of growing the threshold from zero.
 
+**A head-specific keyword handed to a head that does not read it raises.** Nine of the keywords above
+belong to one family of heads and configure nothing anywhere else, so `rank=8` with `method="ward"`
+is a request the fit was never going to honour:
+
+| keyword | read by |
+|---|---|
+| `min_samples`, `graph_degree` | `hdbscan`, `dc-center`, `dc-median` |
+| `min_cluster_size` | `hdbscan` |
+| `resolution`, `covariance_weight`, `tangent_weight`, `tangent_rank` | `leiden`, `leiden-cpm` |
+| `rank` | `mppca`, `mfa` |
+| `fuzzifier` | `fuzzy-cmeans` |
+
+Leaving one at its default is not a request — `rank=2` is what every caller who never thought about
+`rank` passes — so only a value you changed is an error. `n_init` follows the same rule against its
+own three heads. Everything else on the list is either tree-level (it configures the summary, which
+every head then reads) or general to the parametric heads (`max_iter`, `auto_k_max`), and those are
+not checked against the head: their applicability depends on `n_clusters` too, not on the head
+alone.
+
 ### Absorption criteria
 
 `absorb` decides when a point joins an existing leaf rather than starting a new one — the single

@@ -172,6 +172,19 @@ All notable changes to this project are documented here. The format follows
   **Labels change** for `method="hdbscan"` / `"dc-center"` / `"dc-median"` fits that did not name a
   `min_samples`; an explicit integer is used exactly as before. `get_params()` reports `None` for the
   automatic state, and `auto_min_samples` / `AUTO_MIN_SAMPLES_LEAVES` are public on the Rust side.
+- **A head-specific keyword on a head that ignores it now raises.** `rank=8` with
+  `method="ward"`, `min_samples=25` with `method="kmeans"`, `resolution=1.5` with anything but
+  Leiden — each configured nothing and said nothing. Nine keywords are now checked against the head
+  that would read them: `min_samples` / `graph_degree` (`hdbscan`, `dc-center`, `dc-median`),
+  `min_cluster_size` (`hdbscan`), `resolution` / `covariance_weight` / `tangent_weight` /
+  `tangent_rank` (`leiden`, `leiden-cpm`), `rank` (`mppca`, `mfa`) and `fuzzifier`
+  (`fuzzy-cmeans`), with the error naming the heads that do read the keyword.
+
+  A keyword left at its default is not a request — `rank=2` is what every caller who never thought
+  about `rank` passes — so only a changed value is an error, and the three defaults now live in one
+  place (`DEFAULT_RANK` and its siblings) that the PyO3 signatures, the `serde` defaults and the
+  check all read. `max_iter` and `auto_k_max` are deliberately **not** checked: they are general to
+  the parametric heads and their applicability depends on `n_clusters` as well as on the head.
 - **A covariance head with `feature="spherical"` is now refused, not warned about.** `Spherical`
   keeps one scalar of within-leaf scatter, and `cov_dense` hands it back as `ssd/(w·dim) · I` — so a
   head reading a per-component covariance gets the *same* isotropic term added to every component,
