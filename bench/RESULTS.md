@@ -1272,7 +1272,14 @@ the published zero-compression row is on the wrong side of the peak.
 `covtype-20k` behaves differently and more usefully: the `ward` head holds 0.1412–0.1430 from ×11.1
 all the way to **×202** (99 leaves, maximum leaf weight 5773), and the order study below reads
 0.1416 for the same head at ×1.0 — two orders of magnitude of compression cost nothing measurable,
-and the best `covtype` cell in the whole sweep (0.1430) is the *most* compressed one. `mnist-10k` degrades gently to ×5.5 (k-means 0.2900 → 0.2725, ward 0.3419 → 0.3228)
+and the best `covtype` cell in the whole sweep (0.1430) is the *most* compressed one.
+
+> **These `covtype-20k` cells are not the `covtype` rows of the quality tables, and must not be read
+> against them.** This sweep and the order study take their 20 000 rows from
+> `bench/_worker.py` — standardised on all 581 012 rows, then `rng(0).permutation(...)[:20000]` —
+> while `bench/comprehensive.py` draws with `rng(0).choice` and standardises *that* subsample. The
+> same ward head reads **0.1416** here and **0.0861** there, and the difference is the fixture, not
+> the budget: the cross that shows it is under "What the `covtype` / `ward` gap actually is" above. `mnist-10k` degrades gently to ×5.5 (k-means 0.2900 → 0.2725, ward 0.3419 → 0.3228)
 and then falls off a cliff between ×10 and ×22.
 
 Two further readings the sweep settles:
