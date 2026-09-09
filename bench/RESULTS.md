@@ -1199,8 +1199,11 @@ shipped harness.
 
 ## Quality against the leaf budget — the knob the tables never varied
 
-`bench/leaf_budget.py`, median of seeds 0/1/2, `feature="spherical"`, `threshold=0.0`, crossed over
-the four routing distances; `bench/results_budget.csv` holds all 252 cells. Every table above this
+`bench/leaf_budget.py`, median of seeds 0/1/2, `threshold=0.0`, crossed over the four routing
+distances; `bench/results_budget.csv` holds all 252 cells, **re-run 2026-09-09**. The feature is
+`spherical` for the centroid heads and `diagonal` for `gmm`, which is the pair the library now
+accepts — the earlier edition of this table put `gmm` on `spherical` too, and the difference is the
+subject of the two subsections below. Every table above this
 one fixes `max_leaves` and varies the head, which answers the wrong question for a summarization
 library: the user's knob is the budget.
 
@@ -1216,12 +1219,12 @@ decline:
 | `max_leaves` | leaves | compression | max leaf weight | mean sq radius | ward | k-means | gmm |
 |---|---|---|---|---|---|---|---|
 | 4000 / 1797 | 1797 | ×1.0 | 1 | 0.000 | 0.6428 | 0.4670 | 0.4613 |
-| 900 | 898 | **×2.0** | 54 | 4.689 | **0.6819** | **0.5600** | 0.0088 |
-| 450 | 427 | ×4.2 | 160 | 12.47 | 0.6197 | 0.5241 | 0.2139 |
-| 225 | 218 | ×8.2 | 243 | 20.77 | 0.3909 | 0.5628 | 0.4105 |
-| 112 | 111 | ×16.2 | 605 | 30.72 | 0.2870 | 0.1903 | 0.2897 |
-| 90 | 89 | ×20.2 | 1102 | 34.64 | 0.1101 | 0.1786 | 0.2124 |
-| 45 | 44 | ×40.8 | 1251 | 39.21 | 0.1778 | 0.1198 | 0.1666 |
+| 900 | 898 | **×2.0** | 54 | 4.689 | **0.6819** | **0.5600** | 0.4403 |
+| 450 | 427 | ×4.2 | 160 | 12.47 | 0.6197 | 0.5241 | **0.5485** |
+| 225 | 218 | ×8.2 | 243 | 20.77 | 0.3909 | 0.5628 | 0.5190 |
+| 112 | 111 | ×16.2 | 605 | 30.72 | 0.2870 | 0.1903 | 0.2517 |
+| 90 | 89 | ×20.2 | 1102 | 34.64 | 0.1101 | 0.1786 | 0.2091 |
+| 45 | 44 | ×40.8 | 1251 | 39.21 | 0.1778 | 0.1198 | 0.2566 |
 
 Halving the leaf count **improves** ward (0.6428 → 0.6819) and k-means (0.4670 → 0.5600). The
 summary is not a lossy approximation of the point-level answer there; it is a denoising step, and
@@ -1235,12 +1238,21 @@ and then falls off a cliff between ×10 and ×22.
 
 Two further readings the sweep settles:
 
-- **The `gmm` head is the fragile one, and the cause is a feature/head mismatch (task #89).** It
-  collapses to 0.0088 on `digits` at ×2.0 and to 0.0618 / 0.0512 on MNIST at ×5.5 / ×10, in cells
-  where k-means and ward are still near their best. Nothing in the fixed-budget tables exposed this,
-  because they never crossed the region where it happens. The mechanism is below.
+- **The `gmm` head was the fragile one, and the cause was a feature/head mismatch (task #89) that
+  is now refused.** On `feature="spherical"` it collapsed to 0.0088 on `digits` at ×2.0 and to
+  0.0618 / 0.0512 on MNIST at ×5.5 / ×10, in cells where k-means and ward were near their best; on
+  the `diagonal` feature the same cells read **0.4403** and **0.2850 / 0.2213**. The collapse was
+  the pair, not the head, and the re-run is the confirmation: with a per-dimension scatter to read,
+  `gmm` is the *strongest* head on `digits` at ×4.2 (0.5485 against k-means 0.5241) and on MNIST
+  below ×20, where k-means and ward have fallen to 0.08–0.16 and it holds 0.15–0.19. Nothing in the
+  fixed-budget tables exposed either fact, because they never crossed the region where it happens.
+  The mechanism is below.
 
-### Why `gmm` collapses under compression, and why `k-means` does not
+### Why `gmm` collapsed under compression, and why `k-means` did not
+
+**Every number in this subsection is `feature="spherical"`, measured before the pair was refused
+(2026-09-09).** It is kept because it is the evidence for the refusal, not because it describes a
+fit anyone can run today: `method="gmm"` with `feature="spherical"` now raises.
 
 Three measurements, each ruling out the previous explanation.
 
@@ -1314,17 +1326,27 @@ than no answer, and the caller cannot tell which they got.
 
 The three studies that swept `("kmeans", "gmm", "ward")` on `feature="spherical"` —
 `bench/leaf_budget.py`, `bench/size_imbalance.py`, `bench/insertion_order.py` — now put the `gmm`
-head on `feature="diagonal"`. **Their published `gmm` columns, including the ×2.0 collapse above,
-were measured on the pair the library no longer accepts**; they stand as the evidence for the
-refusal and will move when those tables are next re-run.
+head on `feature="diagonal"`, and **all three were re-run on 2026-09-09**; every table in this
+document that draws on them is the new run. What moved is exactly the `gmm` cells and nothing else,
+which is also the control: of the 252 budget cells, 76 of the 92 `gmm` cells changed and **0 of the
+160 others**, to the last digit.
+
+- **`results_budget.csv`** — the large moves are the collapses reversing (`digits` at 900 leaves
+  0.0088 → 0.4403, at 450 0.2139 → 0.5485; MNIST at 2000 0.0618 → 0.2850), against losses of at
+  most 0.053 elsewhere. Median change over the 92 cells: +0.0009.
+- **`results_imbalance.csv`** — six `gmm` cells moved, all by ≤ 0.0015. The fixture's finding is
+  about the absorption criterion and does not touch the leaf feature, so this is the expected
+  result and the section is unchanged.
+- **`results_order.csv`** — 18 of 81 cells moved, all `gmm`, and this one **changes a published
+  conclusion**: see "The cure — `canonical_order=True`" below.
 - **The routing distance only exists under compression, mechanically.** At ×1.0 the spread across
   `euclidean` / `manhattan` / `ward` / `average` is exactly **0.0000** on all three datasets: the four
   distances build the identical singleton leaf set, so there is nothing left to differ. The spread
-  grows with compression (`digits` gmm: 0.0000 → 0.2745 at ×2.2 → 0.6300 at ×8.2). Task 27 measured
-  the routing lever at one budget and found it small; this says the budget it was measured at is the
-  one regime where it provably cannot matter. Counting wins per cell, `ward` routing takes 13/23 on
-  `digits` and 13/19 on MNIST — and only 2/21 on `covtype`, where `manhattan` (8) and `average` (7)
-  lead. The default stays `euclidean`; the recommendation is now data-dependent and measured.
+  grows with compression (`digits` gmm: 0.0000 → 0.0884 at ×2.0 → 0.1701 at ×8.2, and 0.4785 at
+  ×40.8). Task 27 measured the routing lever at one budget and found it small; this says the budget
+  it was measured at is the one regime where it provably cannot matter. Counting wins per cell,
+  `ward` routing takes 13/23 on `digits` and 13/19 on MNIST — and only 2/21 on `covtype`, where
+  `average` (9) and `manhattan` (7) lead. The default stays `euclidean`; the recommendation is now data-dependent and measured.
 
 The `mean_sq_radius` column is Σᵢwᵢrᵢ²/n, the summary's mean squared quantization error, and it is
 the input to task #60's Zador-form fit. It is monotone in the leaf count on all three datasets and is
@@ -2483,26 +2505,35 @@ asserts them rather than reporting them, so a regression fails the run instead o
 As far as we can find, this is the only order-invariance guarantee published for a BIRCH-family
 implementation.
 
-**What it costs in quality: nothing systematic, in either direction.** Against the order arm's median
-draw, over 27 cells: mean **+0.0136**, median **−0.0017**, non-negative in **10 of 27**, and the
-canonical value lands **inside the order arm's own [min, max] in 21 of 27**. In other words it is
-usually indistinguishable from one of the draws you would have got anyway — it fixes *which* draw you
-get, it does not move the distribution. The mean is positive only because of two cells where it
-rescues a head that the arrival order was collapsing:
+**What it costs in quality: nothing systematic, and slightly negative on average.** Against the
+order arm's median draw, over 27 cells: mean **−0.0064**, median **−0.0052**, non-negative in
+**9 of 27**, and the canonical value lands **inside the order arm's own [min, max] in 21 of 27**. In
+other words it is usually indistinguishable from one of the draws you would have got anyway — it
+fixes *which* draw you get, it does not move the distribution:
 
 | cell | order median [min, max] | canonical | Δ |
 |---|---|---|---|
-| digits, 360, gmm | 0.1738 [0.0086, 0.5702] | **0.5146** | **+0.3408** |
-| mnist-10k, 1000, gmm | 0.0551 [0.0358, 0.1757] | **0.2457** | **+0.1907** |
-| digits, 360, ward | 0.4892 [0.3427, 0.6307] | 0.5758 | +0.0866 |
-| mnist-10k, 200, ward | 0.1102 [0.0275, 0.1909] | 0.0482 | **−0.0620** |
+| digits, 360, ward | 0.4892 [0.3427, 0.6307] | 0.5758 | **+0.0866** |
+| mnist-10k, 1000, kmeans | 0.2180 [0.1905, 0.2761] | 0.2566 | +0.0387 |
+| digits, 90, gmm | 0.2268 [0.1436, 0.2779] | 0.2654 | +0.0386 |
+| digits, 360, gmm | 0.4721 [0.4151, 0.5453] | 0.4195 | −0.0526 |
 | digits, 360, kmeans | 0.5379 [0.4886, 0.5880] | 0.4771 | **−0.0608** |
+| mnist-10k, 200, ward | 0.1102 [0.0275, 0.1909] | 0.0482 | **−0.0620** |
 
-Both rescues are `gmm` at intermediate compression, which is also where the order arm's spread is
-widest (0.5616 and 0.1400) — a head that is unstable under reordering is exactly the one that gains
-most from not being reordered. The two losses are real and are published for the same reason: at
-`mnist-10k, 200` every head reads lower under the canonical order, and a reader choosing the flag at
-heavy compression on high-dimensional data should know that.
+**A correction, and the reason the mean changed sign.** Until 2026-09-09 this section reported a mean
+of **+0.0136** and attributed it to two cells where the canonical order "rescues a head the arrival
+order was collapsing": `digits, 360, gmm` at 0.1738 → 0.5146 and `mnist-10k, 1000, gmm` at
+0.0551 → 0.2457. Both were the isotropic collapse of `feature="spherical"` with `method="gmm"` — the
+pair the library now refuses — and what the canonical order was rescuing was a fit that should never
+have been offered. On the `diagonal` feature the same two cells read 0.4721 → 0.4195 and
+0.2223 → 0.2055: the arrival order is *ahead* in both, and the flag's average effect over the grid is
+a small negative. The order arm's spread at those cells collapsed with them (0.5616 → 0.1302 and
+0.1400 → 0.0545), so the old reading — "a head that is unstable under reordering gains most from not
+being reordered" — was measuring the mismatch, not the reordering.
+
+The three losses are real and are published for the same reason: at `mnist-10k, 200` every head reads
+lower under the canonical order, and a reader choosing the flag at heavy compression on
+high-dimensional data should know that.
 
 **It is not free either.** Measured separately on the extension, A-B-A-B on one build, medians of
 three: `200k × 20` **1.19×**, `200k × 128` **0.83×**, `100k × 784` **1.06×**, `20k × 784` **1.33×**

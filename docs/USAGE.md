@@ -984,12 +984,14 @@ destroys the guarantee. Sorting by squared norm fails exactly this way on intege
 **Read this before enabling it: it buys reproducibility, not accuracy.** The published sweep
 ([`bench/RESULTS.md`](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md), 27 cells,
 eight permutations each) puts the change against the arrival order's *median* draw at mean
-**+0.0136**, median **−0.0017**, non-negative in 10 of 27 — and the canonical value lands **inside
+**−0.0064**, median **−0.0052**, non-negative in 9 of 27 — and the canonical value lands **inside
 the order arm's own [min, max] in 21 of 27**. It is usually indistinguishable from one of the draws
 you would have got anyway: it fixes *which* draw you get, it does not move the distribution. The
-positive mean comes from two cells where the arrival order was collapsing a `gmm` head and the
-canonical order was not (digits at 360 leaves, 0.1738 → 0.5146; MNIST at 1000, 0.0551 → 0.2457); the
-worst losses are −0.062 and −0.061, and at `mnist-10k` with 200 leaves all three heads read lower.
+worst losses are −0.062, −0.061 and −0.053, and at `mnist-10k` with 200 leaves all three heads read
+lower. Until 2026-09-09 this paragraph reported a *positive* mean of +0.0136, coming from two cells
+where the canonical order rescued a `gmm` head the arrival order was collapsing; those two cells
+were the `spherical`+`gmm` mismatch the library now refuses, and on the `diagonal` feature the
+arrival order is ahead in both.
 
 **It is capped at `u32::MAX` rows.** A rank is four bytes rather than eight, which is 17 GB of
 index at that length and 34 GB if it were a `usize`. Past `2³² − 1` rows the flag raises a

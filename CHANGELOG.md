@@ -17,6 +17,28 @@ All notable changes to this project are documented here. The format follows
   subprocess test pins it. The documented promise that the thread count does not enter the answer
   was true everywhere else and is now true here; `components_` values shift in their last few bits
   against 0.8.0.
+- **The three studies that swept `gmm` on the refused feature are re-run, and one published
+  conclusion changes sign.** `bench/results_budget.csv`, `bench/results_imbalance.csv` and
+  `bench/results_order.csv` had their `gmm` columns measured with `feature="spherical"`, which the
+  library now rejects; all three were re-run on 2026-09-09 with the harnesses' current
+  `feature="diagonal"`. Only `gmm` cells moved — 76 of 92 in the budget study against **0 of the
+  160** others, which is the control that says the rest of the record is reproducible to the last
+  digit.
+
+  The conclusion that changes is `canonical_order`'s cost. It was published as mean **+0.0136** over
+  27 cells, "positive only because of two cells where it rescues a head the arrival order was
+  collapsing" (`digits, 360, gmm` 0.1738 → 0.5146; `mnist-10k, 1000, gmm` 0.0551 → 0.2457). Both
+  were the isotropic collapse, so the flag was being credited for rescuing a fit that is no longer
+  offered. On the diagonal feature those cells read 0.4721 → 0.4195 and 0.2223 → 0.2055 — the
+  arrival order ahead in both — and the grid-wide mean is **−0.0064**, median −0.0052, non-negative
+  in 9 of 27 (was 10). The invariance itself is untouched: 27 of 27 canonical cells still read
+  spread 0.0000 and pairwise ARI 1.0000. `docs/USAGE.md` and `bench/RESULTS.md` carry the corrected
+  numbers and say what they replaced.
+
+  The budget study's other half is the refusal's confirmation: on the diagonal feature `gmm` does
+  not collapse anywhere (`digits` at ×2.0 0.0088 → **0.4403**, MNIST at ×5.5 0.0618 → **0.2850**),
+  and it becomes the strongest head on `digits` at ×4.2 and on MNIST below ×20. The `spherical`
+  numbers are kept, dated, as the evidence for the refusal rather than as current results.
 - **`canonical_order` refuses more rows than a `u32` rank can address, rather than wrapping.**
   The permutation is a `Vec<u32>` — four bytes per row instead of eight, which is 17 GB of index at
   the ceiling — and `(0..n as u32)` truncates silently past `2³² − 1` rows: the result is a
