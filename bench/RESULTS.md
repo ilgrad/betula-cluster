@@ -2858,6 +2858,78 @@ point silhouette would add 1.5 s — 37× — and the sample is itself an approx
 it. Selecting on the leaf index is the cheap option *and* the reproducible one; what it is not is a
 number to publish next to someone else's silhouette.
 
+## The streaming heads against River, and the radius that has to be guessed (task Q7)
+
+`bench/drift.py` measured whether the alarm lands in the change window and never measured whether the
+clustering under it was any good, because nothing was there to compare it to. River ships DenStream,
+DBSTREAM and CluStream from the same papers, so `bench/stream_reference.py` runs
+implementation-against-implementation: a 4000-point 2-D stream, stationary for 2000 points and then
+changed, learned in chunks of 250, each chunk's own points labelled by the model that just saw them.
+River is pulled per invocation and is not a dependency.
+
+**At the shared radius the table is a units mismatch, not a quality gap.** At `eps = 1.0` — the
+settled value `drift.py` uses — this library's heads read ARI 0.69 (DenStream) and 0.88 (DbStream)
+against River's 0.26 and 0.19, and River answers 16–25 clusters where the truth has 3. Sweeping the
+radius shows why that number means nothing on its own (stationary, seed 0, ARI / clusters):
+
+| radius | 0.5 | 1.0 | 2.0 | 4.0 | 8.0 |
+|---|---|---|---|---|---|
+| betula `DenStream` | 0.628 / 12 | 0.731 / 3 | 0.790 / 3 | **1.000 / 3** | 0.000 / 1 |
+| river `DenStream` | 0.245 / 17 | 0.227 / 18 | 0.377 / 10 | 0.873 / 4 | **1.000 / 3** |
+| betula `DbStream` | 0.826 / 24 | 0.886 / 6 | 0.848 / 3 | **1.000 / 3** | 1.000 / 3 |
+| river `DBSTREAM` | 0.088 / 32 | 0.160 / 24 | 0.928 / 4 | **1.000 / 3** | 1.000 / 3 |
+
+Every one of the four reaches the true partition at its own radius; they simply do not agree on what
+a radius of 1 means. Any comparison that fixes the radius across libraries is measuring the units.
+
+**At each head's own best radius, chosen on the stationary prefix** (median of seeds 0/1/2, ARI
+before → after the change):
+
+| head | radius | stationary | jump (+50) | split (each cluster becomes two) |
+|---|---:|---|---|---|
+| betula `DenStream` | 4.0 | 1.000 → 1.000 | **1.000 → 1.000** | 1.000 → 0.120 |
+| river `DenStream` | 8.0 | 1.000 → 1.000 | 1.000 → 0.000 | 1.000 → **0.572** |
+| betula `DbStream` | 4.0 | 1.000 → 1.000 | **1.000 → 1.000** | 1.000 → 0.288 |
+| river `DBSTREAM` | 4.0 | 0.975 → 1.000 | 1.000 → 0.955 | 1.000 → **0.569** |
+| river `CluStream` | — (`k=3` given) | 1.000 → 1.000 | 1.000 → −0.000 | 1.000 → 0.543 |
+
+Two findings, one each way.
+
+**The translation is followed exactly here and not by two of the three River heads.** A +50 jump is
+the case every drift paper opens with, and River's `DenStream` and `CluStream` both go to zero on it
+within the 2000 points that follow — `CluStream` because its macro k-means sits on micro-clusters
+that predate the jump, `DenStream` because its potential micro-clusters have not decayed away yet at
+λ = 0.001. Both of ours hold 1.000. This is the row `drift.py` implied and never showed.
+
+**The split is a clear loss, and it is the radius that loses it.** At the radius the stationary
+prefix recommends, the two halves of a split cluster (`SEP/2 = 4` apart) fall inside one
+micro-cluster here, so the head cannot represent the new structure: 0.120 and 0.288 against River's
+0.54–0.57. Tuning the radius on the settled stream — which is the only thing a streaming user can
+tune on — costs the ability to see a cluster divide. It is not a fixable constant: a smaller radius
+that resolves the split is the same radius that reads 0.628 on the stationary fixture.
+
+**Cost, at the shared radius, per point learned:**
+
+| head | µs / point |
+|---|---:|
+| betula `DenStream` | **0.1** |
+| betula `DbStream` | 1.0–1.7 |
+| river `DenStream` | 4.7 |
+| river `DBSTREAM` | 21–23 |
+| river `CluStream` | 150–181 |
+
+That is 47× on DenStream and 13–22× on DBSTREAM, against a pure-Python reference — the comparison is
+worth exactly what "compiled against interpreted" is worth, and is recorded because the streaming
+path had no cost reference at all, not because it settles anything. Prediction cost is deliberately
+excluded: River re-runs its whole offline step on **every** `predict_one`, which is a different
+question from what it costs to learn.
+
+**The row that is a loss by construction.** CluStream's actual contribution is the pyramidal time
+frame — snapshots that let a caller ask afterwards for the clustering of an arbitrary past window.
+Nothing here does that: a `partial_fit` tree carries one summary at the current time and cannot be
+rewound. That is a capability we do not have rather than a number we lose, and it is written down
+rather than left out of the table.
+
 ## Conclusions
 
 - **Use betula** when data is large or streaming, memory is bounded, or you want one numerically

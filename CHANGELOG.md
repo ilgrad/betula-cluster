@@ -208,6 +208,19 @@ All notable changes to this project are documented here. The format follows
   sits after `max_iter`, and `0` asks for `KMEANS_N_INIT` — the value they used before — so the
   fix at every call site is to pass `0`. `spectral`'s private `N_INIT` and the Python layer's
   `COP_N_INIT` are gone, both being the same constant under two names. No fit changes.
+- **The streaming heads now have a reference, and it says the drift row is a win and the split row
+  is a loss.** `bench/stream_reference.py` runs DenStream / DBSTREAM / CluStream against River's
+  implementations of the same three papers on a 4000-point stream (River is pulled per invocation
+  and is not a dependency). At a *shared* radius the comparison is a units mismatch — every one of
+  the four density heads reaches ARI 1.000 on the stationary fixture at its own radius, and they
+  simply disagree about what a radius of 1 means. At each head's own best radius, chosen on the
+  stationary prefix: a +50 translation is followed exactly here (1.000) while River's `DenStream`
+  and `CluStream` both fall to 0.000, and a cluster **split** is resolved by River (0.54–0.57) and
+  not by us (0.120 / 0.288), because the radius the settled stream recommends is wider than the
+  halves it has to separate. Learning costs 0.1 µs/point (`DenStream`) and 1.0–1.7 µs/point
+  (`DbStream`) against River's 4.7 and 21–23, and CluStream's 150–181. CluStream's pyramidal time
+  frame — retrospective queries over an arbitrary past window — has no counterpart here at all, and
+  `bench/RESULTS.md` records that as a missing capability rather than omitting the row.
 - **The ELKI cross-check now covers the tree, and at equal leaf count the default geometry is 8 %
   behind.** `cross_check.py` always ran a tree-only layer and it was never written up. Read at an
   equal `maxleaves` *budget* it flatters this library — both implementations undershoot the budget
