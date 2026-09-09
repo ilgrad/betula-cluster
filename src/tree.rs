@@ -2208,8 +2208,11 @@ mod tests {
             c
         };
 
-        let a = build(&flat, Some(&canonical_permutation(&flat, n, 3)));
-        let b = build(&reversed, Some(&canonical_permutation(&reversed, n, 3)));
+        let a = build(&flat, Some(&canonical_permutation(&flat, n, 3).unwrap()));
+        let b = build(
+            &reversed,
+            Some(&canonical_permutation(&reversed, n, 3).unwrap()),
+        );
         assert_eq!(centres(&a), centres(&b));
         assert!(centres(&build(&flat, None)) != centres(&build(&reversed, None)));
     }
@@ -2224,7 +2227,7 @@ mod tests {
         let pts = pseudo(4000, 3);
         let n = pts.len();
         let flat: Vec<f64> = pts.iter().flatten().copied().collect();
-        let perm = canonical_permutation(&flat, n, 3);
+        let perm = canonical_permutation(&flat, n, 3).unwrap();
         let build = |shards: usize| {
             CFTree::<f64, Spherical<f64>, _, _>::build_sharded(
                 3,

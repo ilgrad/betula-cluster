@@ -17,6 +17,19 @@ All notable changes to this project are documented here. The format follows
   subprocess test pins it. The documented promise that the thread count does not enter the answer
   was true everywhere else and is now true here; `components_` values shift in their last few bits
   against 0.8.0.
+- **`canonical_order` refuses more rows than a `u32` rank can address, rather than wrapping.**
+  The permutation is a `Vec<u32>` — four bytes per row instead of eight, which is 17 GB of index at
+  the ceiling — and `(0..n as u32)` truncates silently past `2³² − 1` rows: the result is a
+  valid-looking order over the wrong rows, with the tail of the matrix never visited. Both entry
+  points now return an error there, `canonical_permutation` alongside its CSR twin, and it reaches
+  Python as a `ValueError`. **Rust API (breaking):** `order::canonical_permutation` returns
+  `Result<Vec<u32>, &'static str>`, matching `canonical_permutation_csr`, and `order::MAX_ROWS` is
+  public. The arrival-order build is unaffected and has no ceiling.
+
+  The row order is now computed once at the Python boundary and handed down, rather than inside the
+  build: `balance="auto"` builds the tree twice to decide, and was paying for the `O(n · dim)`
+  projection and the `O(n log n)` sort on both passes. No label moves — the order is a function of
+  the data, so computing it once and computing it twice give the same ranks.
 - **Three documentation claims that were no longer true, and a check so the counts cannot rot
   again.** The README and the JOSS paper quoted a 457-case Python suite and 728 Rust tests against
   an actual 547 and 807, and the README's two sentences disagreed with each other; the counts are

@@ -1643,7 +1643,7 @@ fn build_tree<R: Real, C: ClusterFeature<R>>(
     requested_shards: usize,
     balance: Option<R>,
     auto_balance: bool,
-    canonical_order: bool,
+    order: Option<&[u32]>,
 ) -> CFTree<R, C, RouteKind, AbsorbKind<R>> {
     let build = |cap: Option<R>| {
         build_once::<R, C>(
@@ -1658,7 +1658,7 @@ fn build_tree<R: Real, C: ClusterFeature<R>>(
             n,
             requested_shards,
             cap,
-            canonical_order,
+            order,
         )
     };
     let tree = build(balance);
@@ -1688,9 +1688,8 @@ fn build_once<R: Real, C: ClusterFeature<R>>(
     n: usize,
     requested_shards: usize,
     balance: Option<R>,
-    canonical_order: bool,
+    order: Option<&[u32]>,
 ) -> CFTree<R, C, RouteKind, AbsorbKind<R>> {
-    let order = canonical_order.then(|| canonical_permutation(flat, n, dim));
     // Under `canonical_order` the shard count comes from the data: the shards are the partition, so
     // letting the caller set it would leave the guarantee holding only until somebody re-tuned it.
     let shards = match order {
@@ -1699,19 +1698,8 @@ fn build_once<R: Real, C: ClusterFeature<R>>(
     };
     if shards > 1 {
         return CFTree::build_sharded(
-            dim,
-            branching,
-            leaf_cap,
-            threshold,
-            max_leaves,
-            route,
-            absorb,
-            flat,
-            n,
-            shards,
-            balance,
-            false,
-            order.as_deref(),
+            dim, branching, leaf_cap, threshold, max_leaves, route, absorb, flat, n, shards,
+            balance, false, order,
         );
     }
     let mut tree = CFTree::new(
@@ -1719,7 +1707,7 @@ fn build_once<R: Real, C: ClusterFeature<R>>(
     );
     tree.set_balance(balance);
     for rank in 0..n {
-        let i = order.as_ref().map_or(rank, |o| o[rank] as usize);
+        let i = order.map_or(rank, |o| o[rank] as usize);
         tree.insert(&flat[i * dim..(i + 1) * dim]);
     }
     tree
@@ -1748,7 +1736,7 @@ fn cluster<R: Real, C: ClusterFeature<R>>(
     balance: Option<R>,
     auto_balance: bool,
     leaf_refit: usize,
-    canonical_order: bool,
+    order: Option<&[u32]>,
 ) -> (Vec<i64>, usize) {
     let mut tree = build_tree::<R, C>(
         dim,
@@ -1763,7 +1751,7 @@ fn cluster<R: Real, C: ClusterFeature<R>>(
         shards,
         balance,
         auto_balance,
-        canonical_order,
+        order,
     );
     for _ in 0..leaf_refit {
         tree.refit_leaves(flat, n);
@@ -1886,6 +1874,13 @@ fn run_oneshot<R: Real + Element>(
     }
     let route = parse_route(distance)?;
     let balance = balance.and_then(R::from_f64);
+    // Computed here rather than inside the build: this is the boundary that can report a refusal,
+    // and `balance="auto"` builds the tree twice, which used to mean ordering the rows twice.
+    let permutation = canonical_order
+        .then(|| canonical_permutation(flat, n, dim))
+        .transpose()
+        .map_err(PyValueError::new_err)?;
+    let order = permutation.as_deref();
     py.detach(|| {
         let (gate, thr) = resolve_gate::<R>(absorb, dim, chi2_p, chi2_scale, threshold)?;
         match feature {
@@ -1911,7 +1906,7 @@ fn run_oneshot<R: Real + Element>(
                 balance,
                 auto_balance,
                 leaf_refit,
-                canonical_order,
+                order,
             )),
             "diagonal" => Ok(cluster::<R, Diagonal<R>>(
                 flat,
@@ -1935,7 +1930,7 @@ fn run_oneshot<R: Real + Element>(
                 balance,
                 auto_balance,
                 leaf_refit,
-                canonical_order,
+                order,
             )),
             "full" => Ok(cluster::<R, Full<R>>(
                 flat,
@@ -1959,7 +1954,7 @@ fn run_oneshot<R: Real + Element>(
                 balance,
                 auto_balance,
                 leaf_refit,
-                canonical_order,
+                order,
             )),
             "fd" => Ok(cluster::<R, FdSketch<R>>(
                 flat,
@@ -1983,7 +1978,7 @@ fn run_oneshot<R: Real + Element>(
                 balance,
                 auto_balance,
                 leaf_refit,
-                canonical_order,
+                order,
             )),
             _ => Err("feature must be 'spherical', 'diagonal', 'full' or 'fd'"),
         }
@@ -3157,9 +3152,11 @@ impl Betula {
         n: usize,
         dim: usize,
         arrival: Arrival,
-    ) -> Option<Vec<u32>> {
+    ) -> PyResult<Option<Vec<u32>>> {
         (self.canonical_order && arrival == Arrival::Whole)
             .then(|| canonical_permutation(flat, n, dim))
+            .transpose()
+            .map_err(PyValueError::new_err)
     }
 
     fn stream(&mut self, data: &Bound<'_, PyAny>, arrival: Arrival) -> PyResult<()> {
@@ -3193,7 +3190,7 @@ impl Betula {
                     "dimension mismatch with previously fitted data",
                 ));
             }
-            let order = self.insertion_order(flat, n, dim, arrival);
+            let order = self.insertion_order(flat, n, dim, arrival)?;
             TreeState::stream_chunk(&mut self.state32, &cfg, flat, n, dim, order.as_deref())
                 .map_err(PyValueError::new_err)?;
             if self.resummarize_capped(arrival, &self.state32) {
@@ -3216,7 +3213,7 @@ impl Betula {
                     "dimension mismatch with previously fitted data",
                 ));
             }
-            let order = self.insertion_order(flat, n, dim, arrival);
+            let order = self.insertion_order(flat, n, dim, arrival)?;
             TreeState::stream_chunk(&mut self.state64, &cfg, flat, n, dim, order.as_deref())
                 .map_err(PyValueError::new_err)?;
             if self.resummarize_capped(arrival, &self.state64) {
@@ -6297,7 +6294,7 @@ fn canonical_pilot_rows<'py>(
         return Err(PyValueError::new_err("cap must be at least 1"));
     }
     let (rows, n, dim) = flat_as::<f64>(data, RowPrep::None)?;
-    let order = canonical_permutation(rows.as_slice(), n, dim);
+    let order = canonical_permutation(rows.as_slice(), n, dim).map_err(PyValueError::new_err)?;
     let take = cap.min(n);
     // `i * n / take` walks the order in equal strides and lands on `take` distinct positions for
     // every `take <= n`, without the rounding drift a floating-point step would accumulate.

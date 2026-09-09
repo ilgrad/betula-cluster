@@ -991,6 +991,11 @@ positive mean comes from two cells where the arrival order was collapsing a `gmm
 canonical order was not (digits at 360 leaves, 0.1738 → 0.5146; MNIST at 1000, 0.0551 → 0.2457); the
 worst losses are −0.062 and −0.061, and at `mnist-10k` with 200 leaves all three heads read lower.
 
+**It is capped at `u32::MAX` rows.** A rank is four bytes rather than eight, which is 17 GB of
+index at that length and 34 GB if it were a `usize`. Past `2³² − 1` rows the flag raises a
+`ValueError` instead of wrapping the ranks, which would have produced a valid-looking order over the
+wrong rows with the tail of the matrix never visited. The arrival-order build has no such ceiling.
+
 **It reaches `threshold="auto"` too.** That estimate is piloted on a bounded subsample, and drawing
 that subsample by row position would put the order dependence back before the tree was ever built —
 on a 12-dimensional 4-blob probe one permutation moved the pilot threshold from 17.184 to 17.256 and

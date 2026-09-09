@@ -119,13 +119,13 @@ fn bench(n: usize, d: usize, max_leaves: usize) {
     // runs on a boost clock neither arm sees again.
     let mut sink = Vec::new();
     time_arrival(&data, n, d, max_leaves, &mut sink);
-    let warm = canonical_permutation(&data, n, d);
+    let warm = canonical_permutation(&data, n, d).unwrap();
     time_canonical(&data, n, d, max_leaves, &warm, &mut sink);
     drop(sink);
 
     for round in 0..ROUNDS {
         let t = Instant::now();
-        let perm = canonical_permutation(&data, n, d);
+        let perm = canonical_permutation(&data, n, d).unwrap();
         key.push(t.elapsed());
 
         // A-B-B-A, with the pair order flipped each round: a clock that drifts monotonically inside

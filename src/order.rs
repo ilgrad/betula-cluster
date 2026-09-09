@@ -66,6 +66,9 @@
 use crate::clustering::rng::SplitMix64;
 use crate::types::Real;
 
+/// The most rows a canonical order can address, since a rank is a `u32`.
+pub const MAX_ROWS: usize = u32::MAX as usize;
+
 /// Projections mixed into the code. `PROJECTIONS * BITS` is exactly 64, so a code is one `u64`.
 const PROJECTIONS: usize = 8;
 /// Quantisation levels per projection, as a bit count.
@@ -104,10 +107,24 @@ pub fn canonical_shards(n: usize) -> usize {
 /// `O(n · dim · depth)` distance evaluations — a few percent of a fit. Returns row indices, never a
 /// reordered copy of the data: at 10 M × 784 a copy is 29 GB, which is the duplicate the zero-copy
 /// ingest exists to avoid.
-pub fn canonical_permutation<R: Real>(flat: &[R], n: usize, dim: usize) -> Vec<u32> {
+///
+/// # Errors
+///
+/// A row index is a `u32`, which is four bytes per row rather than eight in a vector the length of
+/// the input. Past `u32::MAX` rows the index no longer identifies a row, and the truncation is
+/// silent: the permutation would be a valid-looking ordering of the wrong rows, with the tail of
+/// the matrix never visited. This refuses instead.
+pub fn canonical_permutation<R: Real>(
+    flat: &[R],
+    n: usize,
+    dim: usize,
+) -> Result<Vec<u32>, &'static str> {
+    if n > MAX_ROWS {
+        return Err("canonical_order needs at most u32::MAX rows");
+    }
     let mut idx: Vec<u32> = (0..n as u32).collect();
     if n <= 1 || dim == 0 {
-        return idx;
+        return Ok(idx);
     }
     let codes = morton_codes(flat, n, dim);
     idx.sort_unstable_by(|&a, &b| {
@@ -126,7 +143,7 @@ pub fn canonical_permutation<R: Real>(flat: &[R], n: usize, dim: usize) -> Vec<u
                 .unwrap_or(std::cmp::Ordering::Equal)
         })
     });
-    idx
+    Ok(idx)
 }
 
 /// The canonical permutation for CSR rows — the sparse twin of [`canonical_permutation`].
@@ -150,6 +167,9 @@ pub fn canonical_permutation_csr<R: Real>(
     dim: usize,
 ) -> Result<Vec<u32>, &'static str> {
     let n = indptr.len().saturating_sub(1);
+    if n > MAX_ROWS {
+        return Err("canonical_order needs at most u32::MAX rows");
+    }
     let mut idx: Vec<u32> = (0..n as u32).collect();
     if n <= 1 || dim == 0 {
         return Ok(idx);
@@ -335,6 +355,7 @@ mod tests {
         let flat = rows(n, dim, 11);
         let canonical = |data: &[f64]| -> Vec<Vec<f64>> {
             canonical_permutation(data, n, dim)
+                .unwrap()
                 .into_iter()
                 .map(|i| data[i as usize * dim..(i as usize + 1) * dim].to_vec())
                 .collect()
@@ -362,6 +383,7 @@ mod tests {
         let backward: Vec<f64> = [b, a, b, a].concat();
         let seq = |data: &[f64]| -> Vec<Vec<f64>> {
             canonical_permutation(data, 4, dim)
+                .unwrap()
                 .into_iter()
                 .map(|i| data[i as usize * dim..(i as usize + 1) * dim].to_vec())
                 .collect()
@@ -409,7 +431,7 @@ mod tests {
         let (n, dim) = (12, 5);
         let flat = rows(n, dim, 7);
         assert_eq!(
-            canonical_permutation(&flat, n, dim),
+            canonical_permutation(&flat, n, dim).unwrap(),
             vec![4, 9, 11, 8, 5, 6, 1, 0, 3, 2, 7, 10],
         );
     }
@@ -460,7 +482,7 @@ mod tests {
         let (data, indices, indptr) = to_csr(&flat, n, dim);
         assert_eq!(
             canonical_permutation_csr(&data, &indices, &indptr, dim).unwrap(),
-            canonical_permutation(&flat, n, dim),
+            canonical_permutation(&flat, n, dim).unwrap(),
         );
 
         // Agreeing with the dense path is not enough on its own: a comparator that answers `Equal`
@@ -540,7 +562,7 @@ mod tests {
         let (d, ix, ip) = csr(&identity);
         assert_eq!(
             canonical_permutation_csr(&d, &ix, &ip, dim).unwrap(),
-            canonical_permutation(&dense(&identity), n, dim),
+            canonical_permutation(&dense(&identity), n, dim).unwrap(),
         );
 
         // And the same sequence from any arrival order, which is what a comparator that answers
@@ -599,7 +621,7 @@ mod tests {
             }
             assert_eq!(
                 canonical_permutation_csr(&d, &ix, &ip, dim).unwrap(),
-                canonical_permutation(&flat, n, dim),
+                canonical_permutation(&flat, n, dim).unwrap(),
                 "arrival order {order:?}"
             );
         }
@@ -622,17 +644,33 @@ mod tests {
     fn the_permutation_is_a_permutation() {
         let (n, dim) = (257, 5);
         let flat = rows(n, dim, 3);
-        let mut seen = canonical_permutation(&flat, n, dim);
+        let mut seen = canonical_permutation(&flat, n, dim).unwrap();
         assert_eq!(seen.len(), n);
         seen.sort_unstable();
         assert_eq!(seen, (0..n as u32).collect::<Vec<_>>());
     }
 
     #[test]
+    fn a_canonical_order_refuses_more_rows_than_a_u32_rank_can_address() {
+        // The check precedes the index vector, so the refusal costs no allocation — which is also
+        // the only reason this case is testable at all. Past `u32::MAX` the ranks wrap: the
+        // permutation would look valid, order the wrong rows, and never visit the tail.
+        assert!(canonical_permutation::<f64>(&[], MAX_ROWS + 1, 4).is_err());
+        // No `MAX_ROWS` companion case: the accepting branch allocates the rank vector, which is
+        // 17 GB at that length.
+    }
+
+    #[test]
     fn degenerate_shapes_return_the_identity_rather_than_failing() {
-        assert_eq!(canonical_permutation::<f64>(&[], 0, 4), Vec::<u32>::new());
-        assert_eq!(canonical_permutation(&[1.0, 2.0], 1, 2), vec![0]);
-        assert_eq!(canonical_permutation::<f64>(&[], 3, 0), vec![0, 1, 2]);
+        assert_eq!(
+            canonical_permutation::<f64>(&[], 0, 4).unwrap(),
+            Vec::<u32>::new()
+        );
+        assert_eq!(canonical_permutation(&[1.0, 2.0], 1, 2).unwrap(), vec![0]);
+        assert_eq!(
+            canonical_permutation::<f64>(&[], 3, 0).unwrap(),
+            vec![0, 1, 2]
+        );
     }
 
     /// A constant column contributes a zero-span projection; ranging it must not divide by zero.
@@ -643,7 +681,7 @@ mod tests {
         let flat: Vec<f64> = (0..n * dim)
             .map(|i| if i % dim == 1 { 2.5 } else { rng.gauss() })
             .collect();
-        let perm = canonical_permutation(&flat, n, dim);
+        let perm = canonical_permutation(&flat, n, dim).unwrap();
         let mut seen = perm.clone();
         seen.sort_unstable();
         assert_eq!(seen, (0..n as u32).collect::<Vec<_>>());
@@ -684,7 +722,7 @@ mod tests {
         let (data, indices, indptr) = to_csr(&flat, n, dim);
         assert_eq!(
             canonical_permutation_csr(&data, &indices, &indptr, dim).unwrap(),
-            canonical_permutation(&flat, n, dim)
+            canonical_permutation(&flat, n, dim).unwrap()
         );
     }
 
@@ -701,7 +739,7 @@ mod tests {
         let (data, indices, indptr) = to_csr(&flat, 3, dim);
         assert_eq!(
             canonical_permutation_csr(&data, &indices, &indptr, dim).unwrap(),
-            canonical_permutation(&flat, 3, dim)
+            canonical_permutation(&flat, 3, dim).unwrap()
         );
     }
 
@@ -755,6 +793,6 @@ mod tests {
                 / (n - 1) as f64
         };
         let arrival: Vec<u32> = (0..n as u32).collect();
-        assert!(step(&canonical_permutation(&flat, n, dim)) < 0.5 * step(&arrival));
+        assert!(step(&canonical_permutation(&flat, n, dim).unwrap()) < 0.5 * step(&arrival));
     }
 }
