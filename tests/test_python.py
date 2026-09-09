@@ -3129,6 +3129,23 @@ def test_denstream_predict_before_fit_raises():
         betula_cluster.DenStream().predict(np.zeros((3, 2)))
 
 
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"eps": float("inf")},
+        {"eps": 1.0, "decay": float("inf")},
+        {"eps": 1.0, "beta": 2.0},
+        {"eps": 1.0, "beta": -0.5, "mu": -4.0},
+    ],
+)
+def test_denstream_refuses_a_param_no_micro_cluster_can_carry(kwargs):
+    # The model is built on the first partial_fit (the dimensionality is only known then), so the
+    # rejection lands there rather than in the constructor.
+    ds = betula_cluster.DenStream(**kwargs)
+    with pytest.raises(ValueError):
+        ds.partial_fit(np.zeros((3, 2)))
+
+
 def test_denstream_param_protocol():
     ds = betula_cluster.DenStream(eps=2.0)
     assert ds.get_params()["eps"] == 2.0
@@ -3219,6 +3236,20 @@ def test_dbstream_explicit_cluster(blobs):
 def test_dbstream_predict_before_fit_raises():
     with pytest.raises(AttributeError):
         betula_cluster.DbStream().predict(np.zeros((3, 2)))
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"r": float("inf")},
+        {"r": 1.0, "decay": float("inf")},
+        {"r": 1.0, "min_weight": float("inf")},
+    ],
+)
+def test_dbstream_refuses_a_param_no_micro_cluster_can_carry(kwargs):
+    ds = betula_cluster.DbStream(**kwargs)
+    with pytest.raises(ValueError):
+        ds.partial_fit(np.zeros((3, 2)))
 
 
 def test_dbstream_param_protocol():

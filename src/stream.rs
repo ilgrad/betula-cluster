@@ -193,14 +193,23 @@ impl<R: Real, C: ClusterFeature<R>> DenStream<R, C> {
         if dim == 0 {
             return Err("dim must be > 0");
         }
-        if eps.is_nan() || eps <= 0.0 {
-            return Err("eps must be > 0");
+        // Every bound is `is_finite`, not `is_nan`: an infinite radius or decay rate passes a
+        // NaN test and then poisons every distance and weight it touches, one step further from
+        // the constructor that accepted it.
+        if !eps.is_finite() || eps <= 0.0 {
+            return Err("eps must be finite and > 0");
         }
-        if lambda.is_nan() || lambda <= 0.0 {
-            return Err("lambda must be > 0");
+        if !lambda.is_finite() || lambda <= 0.0 {
+            return Err("lambda must be finite and > 0");
+        }
+        if !beta.is_finite() || beta <= 0.0 || beta > 1.0 {
+            return Err("beta must be finite and in (0, 1]");
+        }
+        if !mu.is_finite() || mu <= 0.0 {
+            return Err("mu must be finite and > 0");
         }
         let beta_mu = beta * mu;
-        if beta_mu.is_nan() || beta_mu <= 1.0 {
+        if beta_mu <= 1.0 {
             return Err("beta * mu must be > 1");
         }
         // Recommended prune interval (paper §4): Tp = ⌈(1/λ)·log2(βμ / (βμ − 1))⌉.
@@ -501,17 +510,18 @@ impl<R: Real, C: ClusterFeature<R>> DbStream<R, C> {
         if dim == 0 {
             return Err("dim must be > 0");
         }
-        if r.is_nan() || r <= 0.0 {
-            return Err("r must be > 0");
+        // See `DenStream::new` for why these are `is_finite` rather than `is_nan`.
+        if !r.is_finite() || r <= 0.0 {
+            return Err("r must be finite and > 0");
         }
-        if lambda.is_nan() || lambda <= 0.0 {
-            return Err("lambda must be > 0");
+        if !lambda.is_finite() || lambda <= 0.0 {
+            return Err("lambda must be finite and > 0");
         }
-        if alpha.is_nan() || alpha <= 0.0 || alpha > 1.0 {
-            return Err("alpha must be in (0, 1]");
+        if !alpha.is_finite() || alpha <= 0.0 || alpha > 1.0 {
+            return Err("alpha must be finite and in (0, 1]");
         }
-        if min_weight.is_nan() || min_weight <= 0.0 {
-            return Err("min_weight must be > 0");
+        if !min_weight.is_finite() || min_weight <= 0.0 {
+            return Err("min_weight must be finite and > 0");
         }
         // Clean every ~1/λ ticks; then a point's weight has faded to ≈ 2^(-1) = 0.5 — the floor below
         // which a micro-cluster holds less than half of one recent point and is treated as noise.
@@ -1000,6 +1010,28 @@ mod tests {
         // beta*mu ≤ 1
     }
 
+    #[test]
+    fn denstream_refuses_the_params_that_pass_a_product_test() {
+        // `beta * mu > 1` alone accepts a beta outside (0, 1] and even a pair of negatives, whose
+        // product is positive; and every `is_nan` bound accepts an infinity.
+        let bad = [
+            (f64::INFINITY, 0.1, 0.5, 4.0),
+            (1.0, f64::INFINITY, 0.5, 4.0),
+            (1.0, 0.1, f64::INFINITY, 4.0),
+            (1.0, 0.1, 0.5, f64::INFINITY),
+            (1.0, 0.1, 2.0, 4.0),   // beta > 1
+            (1.0, 0.1, -0.5, -4.0), // both negative, product 2.0
+            (1.0, 0.1, 0.5, 0.0),   // mu = 0 is caught by the product, mu < 0 was not
+        ];
+        for (eps, lambda, beta, mu) in bad {
+            assert!(
+                DenStream::<f64, Spherical<f64>>::new(2, eps, lambda, beta, mu).is_err(),
+                "accepted eps={eps} lambda={lambda} beta={beta} mu={mu}"
+            );
+        }
+        assert!(DenStream::<f64, Spherical<f64>>::new(2, 1.0, 0.1, 1.0, 4.0).is_ok()); // beta = 1
+    }
+
     fn db(r: f64, lambda: f64) -> DbStream<f64, Spherical<f64>> {
         DbStream::new(2, r, lambda, 0.1, 2.0).unwrap()
     }
@@ -1110,6 +1142,22 @@ mod tests {
         assert!(DbStream::<f64, Spherical<f64>>::new(2, 1.0, 0.1, 1.5, 2.0).is_err()); // alpha high
         assert!(DbStream::<f64, Spherical<f64>>::new(2, 1.0, 0.1, 0.3, 0.0).is_err());
         // min_weight
+    }
+
+    #[test]
+    fn dbstream_refuses_an_infinite_radius_or_decay() {
+        // Every bound here was `is_nan`, which an infinity passes.
+        let bad = [
+            (f64::INFINITY, 0.1, 0.3, 2.0),
+            (1.0, f64::INFINITY, 0.3, 2.0),
+            (1.0, 0.1, 0.3, f64::INFINITY),
+        ];
+        for (r, lambda, alpha, min_weight) in bad {
+            assert!(
+                DbStream::<f64, Spherical<f64>>::new(2, r, lambda, alpha, min_weight).is_err(),
+                "accepted r={r} lambda={lambda} alpha={alpha} min_weight={min_weight}"
+            );
+        }
     }
 
     #[test]

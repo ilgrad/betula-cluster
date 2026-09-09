@@ -210,6 +210,16 @@ All notable changes to this project are documented here. The format follows
   public, since a caller that has to match the dimension should be able to read it. The truncation
   in `kernels.rs` is no longer load-bearing — every internal caller slices exactly `dim` — and its
   comment says so rather than claiming an insert relies on it.
+- **The streaming constructors bound every parameter they carry, not the product of two of them.**
+  `DenStream::new` tested `eps`, `lambda` and `beta·mu` with `is_nan`, which an infinity passes, and
+  never tested `beta` or `mu` on their own. So `eps=inf` was accepted and merged the whole stream
+  into one micro-cluster; `beta=2.0` set the promotion weight above the macro floor it is defined as
+  a fraction of; and `beta=-0.5, mu=-4.0` passed the product test with `beta·mu = 2` while leaving
+  `mu` negative, and `mu` is the macro-cluster weight floor — every connected component, down to a
+  single stray point, was then reported as a cluster instead of as noise. Each bound is now
+  `is_finite` and each parameter is checked on its own (`eps > 0`, `lambda > 0`, `0 < beta <= 1`,
+  `mu > 0`, then `beta·mu > 1`); `DbStream::new` likewise for `r`, `lambda`, `alpha` and
+  `min_weight`. The rejection reaches Python at the first `partial_fit`, where the model is built.
 - **`max_iter=0` is refused, and one iteration is the floor everywhere it was not.** A
   zero-iteration EM returns its own initialisation: for the GMM heads a responsibility matrix of
   zeros and a labelling of all-zero, reported as a successful fit of one cluster. Nine head loops

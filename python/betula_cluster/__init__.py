@@ -1969,8 +1969,10 @@ class DenStream:
     For evolving streams where old data should fade: feed chunks with :meth:`partial_fit`, then
     :meth:`predict` (which finalizes the offline clustering on first call) — or both at once with
     :meth:`fit` / :meth:`fit_predict`. ``eps`` is the micro-cluster radius (tune to the data scale),
-    ``decay`` the fading rate λ, and ``beta`` × ``mu`` the promotion/pruning weight (must exceed 1).
-    Spherical micro-clusters, ``float64``; ``-1`` labels are noise.
+    ``decay`` the fading rate λ, ``beta`` the outlier fraction (in ``(0, 1]``) and ``mu`` the
+    macro-cluster weight floor, with ``beta`` × ``mu`` the promotion/pruning weight (must exceed 1).
+    All four must be finite and positive; they are checked on the first :meth:`partial_fit`, where
+    the model is built. Spherical micro-clusters, ``float64``; ``-1`` labels are noise.
     """
 
     def __init__(self, eps=1.0, decay=0.25, beta=0.2, mu=10.0):
