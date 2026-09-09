@@ -112,6 +112,16 @@ All notable changes to this project are documented here. The format follows
   non-monotone on all three datasets, so `n_init` on a head that would ignore it raises a
   `ValueError` instead of passing silently. Rust: `Model::fit` and the `kmeans_auto` / `spectral`
   entry points take the count (`0` = the default), and `KMEANS_N_INIT` is public.
+- **`absorb="chi2"` is documented as an operating point, with the measurement that says it is not a
+  general win.** T22 turned up the gate reading 0.1199 with 46 leaves on covtype where the six
+  radius criteria read 0.086 with ~3 600, which looked like a lever nobody had written down. Swept
+  over three datasets × three heads × three budgets (medians of seeds 0/1/2) it is not: the gate
+  wins on covtype-ward (+0.034) and on tight budgets (MNIST-10k ward at 500 leaves, 0.1601 →
+  0.2834), loses on `digits`-ward (0.6428 → 0.4456) and on MNIST at a generous budget (0.4275 →
+  0.3209), and is mixed on the k-means and GMM heads. What generalises is that it *chooses its own
+  resolution* — 46 leaves on covtype and 920 on MNIST whether you ask for 500 or 4 000 — which makes
+  it a cheap operating point rather than a better criterion: the MNIST cell above is 17× the wall
+  clock (7.38 s → 0.42 s) for −0.107 ARI. `docs/USAGE.md` now carries the table.
 - **The `covtype` / `ward` benchmark loss has a mechanism on record, and it is not the one that was
   filed.** The cell (`betula-ward` 0.086 against `sklearn-birch` 0.131) was attributed to mass
   imbalance; Q1 measured that absent, and this separates the rest. Not the leaf budget — 500 to

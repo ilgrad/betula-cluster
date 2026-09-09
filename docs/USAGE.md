@@ -127,6 +127,26 @@ outlier. Keep the default for roughly balanced data, where it is the cheapest an
 gate; reach for `ward` or `chi2` the moment your clusters differ wildly in mass, and for `radius` or
 `diameter` only if you want BIRCH's published behaviour specifically.
 
+**`chi2` sets its own resolution, so it is a different operating point rather than a better
+criterion.** The gate stops subdividing once a cell is described, which on real data binds long
+before `max_leaves` does: on covtype-20k it realises **46 leaves whether you ask for 500 or 4 000**,
+on `digits` 57, on MNIST-10k 920. What that buys and costs, medians of seeds 0/1/2 against the
+default `euclidean` at the same budget:
+
+| dataset | head | `euclidean` (leaves) | `chi2` (leaves) |
+|---|---|---|---|
+| covtype-20k @4000 | ward | 0.0861 (3 602) | **0.1199 (46)** |
+| covtype-20k @4000 | gmm | **0.0545** (3 602) | 0.0342 (46) |
+| digits @2000 | ward | **0.6428** (1 797) | 0.4456 (57) |
+| digits @2000 | kmeans | 0.4670 (1 797) | **0.5125** (57) |
+| MNIST-10k @500 | ward | 0.1601 (487) | **0.2834** (476) |
+| MNIST-10k @4000 | ward | **0.4275** (3 866), 7.38 s | 0.3209 (920), 0.42 s |
+
+So it is not a general win and covtype is not representative of it: the gate wins where the budget
+is tight or the columns are a mix of continuous and rare binary, and loses where a generous budget
+lets a radius resolve the data. Where it wins it is also much cheaper — the MNIST row is 17× the
+wall clock for +0.107 ARI, which is the trade to weigh, not a free choice.
+
 **`subspace` reads the same χ² gate on the leaf's own basis, and only `feature="fd"` has one.** Every
 other feature model falls back to `chi2`, so the option changes nothing unless you asked for the
 Frequent-Directions sketch. It takes the same `chi2_p` and `chi2_scale`, in the same units.
