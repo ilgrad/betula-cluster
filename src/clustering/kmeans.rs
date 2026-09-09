@@ -342,6 +342,12 @@ pub(crate) fn weighted_pick(probs: &[f64], rng: &mut SplitMix64) -> usize {
 
 /// Brute-force exact Lloyd — kept as the reference implementation that [`lloyd_hamerly`] is tested
 /// against (the accelerated version must produce identical output).
+///
+/// It ends with an assignment step, so the labels it returns are nearest to the centres it returns
+/// at **any** `max_iter`, not only at convergence. Without that the two implementations pair the
+/// steps differently at a hard cutoff — `[E, M] × iters` returns the labels of the *previous*
+/// centres, where Hamerly's `E + [M, E] × iters` returns the current ones — and the equivalence
+/// only held because the test ran at `max_iter = 100`.
 #[cfg(test)]
 fn lloyd<R: Real>(
     means: &[Vec<R>],
@@ -392,6 +398,21 @@ fn lloyd<R: Real>(
                 }
             }
         }
+    }
+
+    // The closing E-step: after the last M-step the labels are one iteration stale, and a caller
+    // that predicts from `centers` would disagree with them.
+    for (i, m) in means.iter().enumerate() {
+        let mut best = 0;
+        let mut bd = sq_euclidean(m, &centers[0]);
+        for (c, center) in centers.iter().enumerate().skip(1) {
+            let d = sq_euclidean(m, center);
+            if d < bd {
+                bd = d;
+                best = c;
+            }
+        }
+        labels[i] = best;
     }
 
     let mut inertia = R::zero();
@@ -484,7 +505,9 @@ fn argmax<R: Real>(v: &[R]) -> usize {
 
 /// Hamerly-accelerated **exact** Lloyd: per-point upper/lower distance bounds skip the full centre
 /// scan whenever an assignment provably cannot change (triangle inequality). The output is
-/// identical to brute Lloyd from the same initialisation — only faster.
+/// identical to brute [`lloyd`] from the same initialisation — only faster — and that holds at any
+/// `max_iter`, not only after convergence, because both end on an assignment step: the labels
+/// returned are the ones nearest to the centres returned, which is what `predict` assumes.
 fn lloyd_hamerly<R: Real>(
     means: &[Vec<R>],
     weights: &[R],
@@ -633,13 +656,39 @@ mod tests {
         let ssd: Vec<f64> = micros.iter().map(|f| f.ssd()).collect();
         let mut r = SplitMix64::new(7);
         let init = kmeans_plus_plus(&means, &weights, &ssd, 5, &mut r);
-        let brute = lloyd(&means, &weights, &ssd, init.clone(), 100, 2);
-        let fast = lloyd_hamerly(&means, &weights, &ssd, init, 100, 2);
-        assert_eq!(
-            brute.labels, fast.labels,
-            "Hamerly diverged from brute Lloyd"
-        );
-        assert!((brute.inertia - fast.inertia).abs() < 1e-9);
+        // Every cutoff, not only convergence: the two implementations pair the E and M steps
+        // differently, so a hard `max_iter` is exactly where an "identical output" claim breaks.
+        for max_iter in [1, 2, 3, 100] {
+            let brute = lloyd(&means, &weights, &ssd, init.clone(), max_iter, 2);
+            let fast = lloyd_hamerly(&means, &weights, &ssd, init.clone(), max_iter, 2);
+            assert_eq!(
+                brute.labels, fast.labels,
+                "Hamerly diverged from brute Lloyd at max_iter = {max_iter}"
+            );
+            assert!((brute.inertia - fast.inertia).abs() < 1e-9);
+            for (b, f) in brute.centers.iter().zip(&fast.centers) {
+                for (x, y) in b.iter().zip(f) {
+                    assert!(
+                        (x - y).abs() < 1e-12,
+                        "centres differ at max_iter = {max_iter}"
+                    );
+                }
+            }
+            // ...and both return labels that are nearest to the centres they return.
+            for (i, m) in means.iter().enumerate() {
+                let nearest = (0..fast.centers.len())
+                    .min_by(|&a, &b| {
+                        sq_euclidean(m, &fast.centers[a])
+                            .partial_cmp(&sq_euclidean(m, &fast.centers[b]))
+                            .unwrap()
+                    })
+                    .unwrap();
+                assert_eq!(
+                    fast.labels[i], nearest,
+                    "stale label at max_iter = {max_iter}"
+                );
+            }
+        }
     }
 
     #[test]

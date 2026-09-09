@@ -172,6 +172,16 @@ All notable changes to this project are documented here. The format follows
   **Labels change** for `method="hdbscan"` / `"dc-center"` / `"dc-median"` fits that did not name a
   `min_samples`; an explicit integer is used exactly as before. `get_params()` reports `None` for the
   automatic state, and `auto_min_samples` / `AUTO_MIN_SAMPLES_LEAVES` are public on the Rust side.
+- **The Hamerly/brute-Lloyd equivalence claim is now true at a cutoff, and tested there.** The
+  accelerated k-means is documented as producing output identical to brute Lloyd, and the test that
+  checked it ran only at `max_iter = 100`, where both have converged. They pair the steps
+  differently — brute is `[E, M] × iters` and returns the labels of the *previous* centres, Hamerly
+  is `E + [M, E] × iters` and returns the current ones — so at `max_iter = 1` they disagreed. The
+  reference implementation (test-only) now ends with an assignment step, which is also
+  scikit-learn's contract and the one `predict` assumes, and the differential test runs at
+  `max_iter ∈ {1, 2, 3, 100}` comparing labels, centres and inertia, plus asserting that the labels
+  returned are nearest to the centres returned. No shipped path changes: `lloyd_hamerly` already had
+  the consistent pairing.
 - **`consensus` measures one nuisance at a time, and its vote is a bijection — scores move.** Two
   defects, both label- and score-changing. It permuted the insertion order *and* moved the head's
   seed on every run while documenting itself as measuring the insertion order; `vary` now names the
