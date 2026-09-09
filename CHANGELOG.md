@@ -112,6 +112,11 @@ All notable changes to this project are documented here. The format follows
   non-monotone on all three datasets, so `n_init` on a head that would ignore it raises a
   `ValueError` instead of passing silently. Rust: `Model::fit` and the `kmeans_auto` / `spectral`
   entry points take the count (`0` = the default), and `KMEANS_N_INIT` is public.
+- **`betula --n-init N` (CLI).** The binary passed the `0` sentinel, so `--method kmeans` was stuck
+  on four restarts while both Python entry points could choose. It carries the same head rule as
+  the library: `--n-init` on `gmm`, `gmm-full` or `ward` is an error rather than a silently ignored
+  flag, and `--n-init 0` is refused because zero is the engine's "take the default" sentinel and
+  not a fit anyone means to ask for.
 - **`simplified_silhouette` — the silhouette a summary can actually carry.** `validity()` now
   reports a fourth index: Hruschka's simplified silhouette, mass-weighted over leaves, measuring to
   the cluster **centroid** rather than to the members. The classical silhouette needs `Σ‖x − y‖`,

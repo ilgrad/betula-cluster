@@ -27,6 +27,7 @@ OPTIONS:
         --leaf-cap N      max entries per leaf [default: 32]
         --max-leaves N    leaf bound that triggers a rebuild [default: 2000]
         --max-iter N      max Lloyd / EM iterations [default: 100]
+        --n-init N        k-means restarts, best inertia wins; kmeans only [default: 4]
         --seed N          RNG seed [default: 0]
         --delimiter C     field delimiter character [default: ,]
         --header          skip the first (header) line
@@ -43,6 +44,7 @@ struct Cfg {
     leaf_cap: usize,
     max_leaves: usize,
     max_iter: usize,
+    n_init: usize,
     seed: u64,
     delimiter: u8,
     header: bool,
@@ -60,6 +62,7 @@ impl Default for Cfg {
             leaf_cap: 32,
             max_leaves: 2000,
             max_iter: 100,
+            n_init: 0, // 0 = the engine's KMEANS_N_INIT
             seed: 0,
             delimiter: b',',
             header: false,
@@ -130,6 +133,15 @@ fn parse_args<I: Iterator<Item = String>>(args: I) -> Result<Parsed, String> {
                     return Err("--max-iter expects a positive integer, got '0'".to_string());
                 }
             }
+            "--n-init" => {
+                cfg.n_init = int(&need(&mut args, &arg)?, "--n-init")?;
+                if cfg.n_init == 0 {
+                    // `0` is the engine's "take the default" sentinel, but a caller who types it
+                    // is asking for zero restarts, which is not a fit anyone wants silently
+                    // reinterpreted.
+                    return Err("--n-init expects a positive integer, got '0'".to_string());
+                }
+            }
             "--seed" => {
                 let v = need(&mut args, &arg)?;
                 cfg.seed = v
@@ -154,6 +166,15 @@ fn parse_args<I: Iterator<Item = String>>(args: I) -> Result<Parsed, String> {
                 cfg.input = Some(arg);
             }
         }
+    }
+    // Same rule as the Python boundary: `n_init` selects a restart by inertia, which only the
+    // k-means head does. The EM heads select by likelihood and would ignore it silently.
+    if cfg.n_init != 0 && !matches!(cfg.method, Method::KMeans) {
+        return Err(
+            "--n-init is the k-means restart count and does nothing under --method gmm, \
+                    gmm-full or ward"
+                .to_string(),
+        );
     }
     Ok(Parsed::Run(cfg))
 }
@@ -222,7 +243,15 @@ fn run<C: ClusterFeature<f64>>(rows: &[Vec<f64>], cfg: &Cfg) -> Vec<usize> {
         tree.try_insert(r)
             .expect("parse_rows guarantees every row has the same width");
     }
-    let model = Model::fit(tree, cfg.clusters, cfg.method, cfg.max_iter, 0, cfg.seed, 0);
+    let model = Model::fit(
+        tree,
+        cfg.clusters,
+        cfg.method,
+        cfg.max_iter,
+        cfg.n_init,
+        cfg.seed,
+        0,
+    );
     rows.iter()
         .map(|r| {
             model
@@ -329,6 +358,28 @@ mod tests {
         };
         assert!(err.contains("--max-iter"), "{err}");
         assert!(parse_args(["--max-iter", "1"].map(String::from).into_iter()).is_ok());
+    }
+
+    #[test]
+    fn parse_args_takes_the_restart_count_only_where_it_is_read() {
+        let ok = ["--method", "kmeans", "--n-init", "25"].map(String::from);
+        match parse_args(ok.into_iter()) {
+            Ok(Parsed::Run(cfg)) => assert_eq!(cfg.n_init, 25),
+            _ => panic!("--n-init 25 on the k-means head was not accepted"),
+        }
+        // Zero is the engine's "take the default" sentinel, so a caller who types it must be told
+        // rather than handed four restarts.
+        assert!(parse_args(["--n-init", "0"].map(String::from).into_iter()).is_err());
+        // The EM heads select their restarts by likelihood and would ignore it silently.
+        let err = match parse_args(
+            ["--method", "gmm", "--n-init", "25"]
+                .map(String::from)
+                .into_iter(),
+        ) {
+            Err(e) => e,
+            Ok(_) => panic!("--n-init on gmm was accepted"),
+        };
+        assert!(err.contains("--n-init"), "{err}");
     }
 
     #[test]

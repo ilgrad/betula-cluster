@@ -2001,7 +2001,9 @@ betula --help                                   # all options
 ```
 
 Flags mirror the library: `--feature`, `--threshold`, `--branching`, `--leaf-cap`, `--max-leaves`,
-`--max-iter`, `--seed`, `--delimiter`, `--header`.
+`--max-iter`, `--n-init`, `--seed`, `--delimiter`, `--header`. `--n-init` is the k-means restart
+count and is refused on the other heads, exactly as the Python boundary refuses it: they select
+their restarts by likelihood, not by inertia.
 
 ## Build from source
 
