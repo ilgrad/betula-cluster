@@ -112,6 +112,15 @@ All notable changes to this project are documented here. The format follows
   non-monotone on all three datasets, so `n_init` on a head that would ignore it raises a
   `ValueError` instead of passing silently. Rust: `Model::fit` and the `kmeans_auto` / `spectral`
   entry points take the count (`0` = the default), and `KMEANS_N_INIT` is public.
+- **The spectral head's restart count is measured, and the default stays 4.** `n_init` became
+  reachable on `method="spectral"` in 0.8.0's successor without ever being swept there. It is the
+  one head where a restart is nearly free — its k-means runs on a `k`-dimensional embedding of at
+  most `max_leaves` rows — and the measurement says so: a hundred restarts cost 0.20 s → 0.28 s on
+  `digits` and 0.39 s → 0.44 s on covtype-20k, putting the default four at 0.5–2 % of the fit. It
+  also says the restarts buy nothing, which is why the default does not move: `moons` 0.9999 and
+  `circles` 1.0000 are identical to four decimals at 4, 10, 25 and 100, `digits` moves +0.0009, and
+  covtype-20k's −0.0103 sits well inside its own 0.0657–0.0992 seed spread. Documented in
+  `docs/USAGE.md` next to the k-means table, where the curve is *not* flat.
 - **`betula --n-init N` (CLI).** The binary passed the `0` sentinel, so `--method kmeans` was stuck
   on four restarts while both Python entry points could choose. It carries the same head rule as
   the library: `--n-init` on `gmm`, `gmm-full` or `ward` is an error rather than a silently ignored

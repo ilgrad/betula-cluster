@@ -246,6 +246,17 @@ restart is chosen by inertia, which is not ARI: more draws reliably buy a lower 
 sometimes buy better labels. Raise it when the head is the bottleneck and you can afford the linear
 cost, and check the result rather than assuming it.
 
+**On `"spectral"` it is close to free and buys nothing, which is why the default does not move.**
+Its k-means runs on a `k`-dimensional embedding of at most `max_leaves` rows rather than on the leaf
+features, so a restart is cheap: measured at `n_init ∈ {4, 10, 25, 100}`, medians of seeds 0/1/2, the
+whole default allotment of four restarts is **0.5–2 % of the fit** (digits 0.20 s → 0.28 s and
+covtype-20k 0.39 s → 0.44 s at a hundred restarts, i.e. ~0.8 ms and ~0.5 ms each). The quality curve
+is flat: `moons` 0.9999 and `circles` 1.0000 identical to four decimals at every count, `digits`
+0.6688 → 0.6697 → 0.6697 → 0.6695, and `covtype-20k` moves 0.0798 → 0.0696 inside a seed spread of
+0.0657–0.0992 at the default. The eigensolve is deterministic and its embedded clusters are
+well-separated, so every restart lands in the same optimum — the restart count is not the lever on
+this head.
+
 Only the heads whose labels come from an inertia-selected k-means take it — `"kmeans"`,
 `"spherical-kmeans"`, `"spectral"` (its embedding k-means) and the COP-KMeans behind
 `fit_constrained`. The EM heads restart too, but they select by likelihood, and moving their count
