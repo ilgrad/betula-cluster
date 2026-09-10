@@ -39,11 +39,11 @@ with peak RSS sampled from `/proc/self/statm`. Full methodology, every metric, a
 > three seeds, so a margin below that is a tie and is written as one here.
 
 - ⚡🪶 **Faster and lighter than scikit-learn at every published size and compression budget.**
-  betula labels **1 M points in 0.28 s**: 8.7× faster than scikit-learn KMeans, 14× vs
-  GaussianMixture, 29× vs Birch — and streams **10 M in a flat ~53 MB** where an in-core KMeans
+  betula labels **1 M points in 0.22 s**: 10.8× faster than scikit-learn KMeans, 17× vs
+  GaussianMixture, 37× vs Birch — and streams **10 M in a flat ~53 MB** where an in-core KMeans
   needs **~5.0 GB** (**94× less**, and the gap grows without bound). Two rows are not ours, and both
-  are in the tables: on sparse 20-newsgroups scikit-learn's SVD pipeline is **4.2× faster**
-  (0.41 s vs 1.70 s) at a better ARI (0.056 vs 0.038), and `fast-hdbscan` recovers the 100 k-point
+  are in the tables: on sparse 20-newsgroups scikit-learn is **3.1× faster** on raw TF-IDF
+  (0.54 s vs 1.67 s) at a better ARI (0.056 vs 0.038), and `fast-hdbscan` recovers the 100 k-point
   blobs at **ARI 0.910 against our 0.478** — where we are 9× faster on half the memory. A specialist
   at its own contest is a different claim from a general-purpose library at every size.
 - 🎯 **Parity on the centroid heads, ahead on the structured ones.** betula's k-means ties
@@ -67,7 +67,7 @@ with peak RSS sampled from `/proc/self/statm`. Full methodology, every metric, a
 
 | ![Fit time vs N](https://raw.githubusercontent.com/ilgrad/betula-cluster/main/bench/plots/scaling_time.png) | ![Peak memory vs N](https://raw.githubusercontent.com/ilgrad/betula-cluster/main/bench/plots/memory_streaming.png) |
 |:--:|:--:|
-| Phase-3 clusters only the ~2 000 leaf microclusters, not the raw points, so every head finishes 1 M points in **under 0.55 s** (k-means in 0.28 s). | The CF-tree is capped by `max_leaves`, so streaming memory stays **flat** — it clusters data larger than RAM. |
+| Phase-3 clusters only the ~2 000 leaf microclusters, not the raw points, so every head finishes 1 M points in **under 0.45 s** (k-means in 0.22 s). | The CF-tree is capped by `max_leaves`, so streaming memory stays **flat** — it clusters data larger than RAM. |
 
 ## Why
 

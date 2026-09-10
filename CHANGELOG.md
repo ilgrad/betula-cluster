@@ -59,8 +59,8 @@ All notable changes to this project are documented here. The format follows
   (`cargo test -- --list`, `pytest --collect-only`) and fails on any published number that has
   drifted. The README's "always faster — the unconditional win … this holds for *every* method at
   *every* size" is now scoped to what was measured — faster and lighter than scikit-learn at every
-  published size and budget — with the two rows we lose named next to it: scikit-learn's sparse SVD
-  pipeline is 4.2× faster on 20-newsgroups at a better ARI, and `fast-hdbscan` reads 0.910 against
+  published size and budget — with the two rows we lose named next to it: scikit-learn is faster on
+  raw-TF-IDF 20-newsgroups at a better ARI, and `fast-hdbscan` reads 0.910 against
   our 0.478 on 100 k blobs. The paper's "every benchmark figure is the median of three seeds" is
   true of the quality tables only, and now says so; its mutation-baseline sentence no longer claims
   an argument for *every surviving mutant* when what exists is an argument for every *recorded*
@@ -136,6 +136,27 @@ All notable changes to this project are documented here. The format follows
   quoting the old ones, and none of them changed: the tree they measure did. Full write-up, including the five
   non-default geometries and the ten-seed spectral control, in
   [research/RESULTS-estep.md](https://github.com/ilgrad/betula-cluster/blob/main/research/RESULTS-estep.md).
+- **The speed half of the benchmark is re-timed on the same tree, and the headline number moves from
+  8.7× to 10.8×.** The rebuild change removes work — rebuilds fall 27 → 5 on covtype-50k and 23 → 8
+  on digits — and the previous edition published that as an argument for keeping stale timings. It is
+  now a measurement: `results_scaling`, `results_memory`, `results_real_scale` and `results_sparse`
+  re-run under the page's own contention gate with **zero contention sightings**, and betula's fit
+  time at a million points is **0.763–0.816×** the 2026-09-07 edition across five heads while the
+  scikit-learn column moves 0.952–0.984×, which is machine drift and the control. The effect grows
+  with `N`: at 10 000 points three of the five heads are *slower*. 1 M k-means reads **0.216 s**, so
+  `README.md`, `docs/MATH.md` and `paper/paper.md` now say 10.8× against `KMeans` and 37× against
+  `Birch`; full covtype is 1.006 → **0.746 s** at ARI 0.070 → **0.087**.
+
+  Resident memory did not move at four significant figures, which retires the **+7.9 MB covtype
+  regression** the 0.8.0 edition recorded: 905.3 → 904.9 MB against an unmoved 931 MB, agreeing with
+  the eight paired runs that already refuted it. The control on the whole re-run is exact — over the
+  117 rows of `results_quality.csv` + `results_real.csv` **every metric column reproduced bit for
+  bit** and only `time_s` moved. The scoreboard moves speed 32/1/5 → **30/1/7** and memory 28/6/0 →
+  **30/4/0**; both demotions are the same 10 M row counted twice, where betula got faster (8.26 →
+  7.66 s) and scikit-learn's one-shot path returned to the allocator artefact this page has withdrawn
+  twice (8.96 → **6.43 s**, faster at 10 M than at 5 M). They are accepted as measured and named as
+  unreliable in
+  [bench/RESULTS.md](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md).
 
 ### Added
 - **`n_init` — the k-means restart count is a parameter.** Lloyd converges to a local optimum of the
