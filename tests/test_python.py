@@ -1429,33 +1429,30 @@ def _stream_identical_float32_rows(est, rows, chunk=524_288):
     return est
 
 
-def test_a_saturating_float32_tree_warns_before_its_weights_stop_counting():
-    """An ``f32`` leaf stops counting at ``2^24``: binary32 spaces its values 2 apart from there
-    up, so a unit-weight row leaves the weight unchanged while the mean and the scatter keep
-    moving — the leaf under-reports its mass and inflates its radius, silently. The estimator warns
-    at half that mass, while every summary it holds is still exact.
+def test_a_float32_leaf_keeps_counting_past_two_to_the_twenty_fourth():
+    """An ``f32`` leaf used to stop counting at ``2^24``: binary32 spaces its values 2 apart from
+    there up, so a unit-weight row left the weight unchanged while the mean and the scatter kept
+    moving, and the leaf silently under-reported its mass and inflated its radius. The cluster
+    features accumulate in ``f64`` whatever the tree's element type, so the rows past the old
+    ceiling land — and the estimator has nothing left to warn about.
     """
+    rows = 2**24 + 2**21
     est = betula_cluster.Betula(n_clusters=2, max_leaves=4, threshold=10.0)
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        _stream_identical_float32_rows(est, 2**23 + 524_288)
-    saturation = [w for w in caught if "stops counting" in str(w.message)]
-    assert len(saturation) == 1, "the ceiling is reported once, not once per chunk"
-    assert "16777216" in str(saturation[0].message)
-    assert issubclass(saturation[0].category, UserWarning)
-    assert est.microcluster_weights_.max() >= 2**23
+        _stream_identical_float32_rows(est, rows)
+    assert est.microcluster_weights_.max() == rows, "every row is in the leaf's weight"
+    assert [w for w in caught if issubclass(w.category, UserWarning)] == []
 
 
-def test_a_float64_tree_of_the_same_mass_says_nothing():
-    """The control: `f64` counts to `2^53`, so the same stream in the wider dtype says nothing."""
+def test_a_float64_tree_of_the_same_mass_counts_the_same():
+    """The control that was already exact before the accumulators widened, and still is."""
+    rows = 2**24 + 2**21
     est = betula_cluster.Betula(n_clusters=2, max_leaves=4, threshold=10.0)
     block = np.zeros((524_288, 1), dtype=np.float64)
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        for _ in range(2**23 // 524_288 + 1):
-            est.partial_fit(block)
-    assert [w for w in caught if "stops counting" in str(w.message)] == []
-    assert est.microcluster_weights_.max() >= 2**23
+    for start in range(0, rows, 524_288):
+        est.partial_fit(block[: min(524_288, rows - start)])
+    assert est.microcluster_weights_.max() == rows
 
 
 def test_save_load_roundtrip(blobs, tmp_path):
@@ -1479,6 +1476,10 @@ def test_a_snapshot_written_by_0_6_0_still_loads():
     break -- it would pass just as happily if `SCHEMA_VERSION` had been bumped and every older file
     rejected. `CFTree` gained a field after 0.6.0 (`merged_since_rebalance`, `#[serde(default)]`),
     and the claim that older snapshots survive it is only worth what a foreign-version file proves.
+
+    Since 2026-09-10 it proves a second thing: the cluster features' running totals are `f64` where
+    this file wrote `f32`, and it still loads, because CBOR tags a float with its width and serde's
+    `f64` visitor takes an `f32` value. That is why widening them needed no schema bump.
 
     Regenerate with `tests/data/gen_snapshot.py`, whose docstring carries the invocation.
     """

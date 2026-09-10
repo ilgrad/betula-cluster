@@ -7,6 +7,45 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Fixed
+- **An `f32` tree stopped counting rows at `2^24`, and its reported variance drifted for every row
+  after that.** A cluster feature accumulates `w ← w + wᵢ`, and binary32 spaces its values 2 apart
+  from 16 777 216 upward, so a unit-weight row left the weight exactly where it was. Nothing else in
+  the summary stopped with it: the mean went on moving at `2^-24` per row and the scatter went on
+  accumulating against a weight that no longer grew, so the variance drifted with the fraction of
+  rows the weight had dropped — **1.0058** on unit-variance data 200 000 rows past the ceiling,
+  against 1.0000 in `f64`. `microcluster_weights_`, `cluster_sizes_` and every mass-weighted head
+  read the frozen total.
+
+  The weight is now an `f64` running total whatever the tree's element type, in all four cluster
+  features, and `spherical`'s scalar scatter with it. That is the split the arithmetic asks for
+  rather than a concession to `f32`: a weight's precision is set by how many rows a leaf absorbs,
+  which the caller does not choose, while a mean and a per-coordinate scatter are bounded by the
+  data, which the caller picked the dtype for. Both widened fields are `O(1)` per leaf, so an `f32`
+  tree still costs half the memory of an `f64` one. What a caller reads back is rounded to the tree's
+  own type on the way out — one part in 16 777 216 of a total that is itself exact. The `UserWarning`
+  that used to name the approaching ceiling is gone with the defect it warned about.
+
+  **Nothing already measured moved, and that was checked rather than argued.** Across 48 cells
+  (2 fixtures × 2 dtypes × 6 feature/head pairs × 2 leaf budgets) **no `f64` cell changed at all**
+  and **no labels changed anywhere**, `f32` included; the only movement is `heaviest_leaf_width` in
+  18 of the 24 `f32` cells, by at most **6.5e-7** relative, since the width is derived from the
+  totals that widened. Every published table in
+  [`bench/RESULTS.md`](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md) — all
+  `f64` — therefore stands unchanged. The on-disk format needed no bump either: CBOR tags a float
+  with its width and serde's `f64` visitor accepts an `f32` value, so `SCHEMA_VERSION` stays **2**
+  and a model written by the released 0.6.0 wheel still loads, which a test asserts. Insert-path
+  cost, three sessions per arm alternating builds on 200 000 × 32 at `max_leaves = 2000`:
+  `f32`/`spherical` **+1.5 %**, `f32`/`full` **+1.8 %**, `f32`/`diagonal` and all three `f64` cells
+  unchanged.
+
+  **One residual is left in deliberately.** The per-axis and full-matrix scatters of `diagonal`,
+  `full` and `fd` stay in the tree's element type, so past `2^24` rows in a single leaf the scatter
+  is now the term that saturates and the variance comes back **0.89 % low** where the defect had it
+  0.58 % high. Widening those was implemented and measured before being rejected: **+11 %** on the
+  insert path and an `f32` tree three quarters the size of the `f64` one instead of half, charged to
+  every `f32` user to correct a leaf that has to be past 16.8 M rows before it is wrong at all.
+  `an_f32_diagonal_leaf_past_the_ceiling_still_loses_scatter` pins the figure and
+  [`docs/USAGE.md`](https://github.com/ilgrad/betula-cluster/blob/main/docs/USAGE.md) states it.
 - **`leaf_refit` handed back leaf statistics for a partition the tree it returned could not
   produce, and at a large budget that misrouted 15 % of the rows.** The pass routes every row through
   the finished tree and rebuilds each leaf CF from exactly the rows it won — then, if any entry won

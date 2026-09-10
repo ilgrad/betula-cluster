@@ -1321,28 +1321,32 @@ the diagnostic is bad, pass a number.
 
 ### How much a `float32` tree can count
 
-`float32` input builds an `f32` tree, which halves the resident memory and carries one limit worth
-knowing before a long stream: **a leaf stops counting at 2²⁴ = 16 777 216 points.** Binary32 spaces
-its values 2 apart from there upward, so `w + 1 == w` and a unit-weight row leaves the leaf's weight
-exactly where it was. Measured: 16 781 312 identical `float32` rows into one leaf report a weight of
-16 777 216, while the same stream in `float64` is exact.
+`float32` input builds an `f32` tree, which halves the resident memory of the `f64` one. **It counts
+every row you give it**, and until 2026-09-10 it did not: a leaf stopped counting at
+2²⁴ = 16 777 216 points, because binary32 spaces its values 2 apart from there upward, so `w + 1 == w`
+and a unit-weight row left the leaf's weight exactly where it was. The rest of the summary did not
+stop with it — the mean kept moving at 2⁻²⁴ per row, and the scatter kept accumulating against a
+weight that no longer grew, so the reported variance drifted by roughly the fraction of rows the
+weight had dropped (1.0058 on unit-variance data 200 000 rows past the ceiling, against 1.0000 in
+`float64`).
 
-The rest of the summary does not stop with the weight, which is why this matters beyond a count. The
-mean keeps moving at 2⁻²⁴ per row — it degrades into an exponential moving average — and the scatter
-keeps accumulating against a weight that no longer grows, so the leaf's variance and radius inflate
-in proportion to the rows the weight dropped: unit-variance rows past the ceiling report a variance
-of 1.0105 after 200 000 of them, against 1.0000 in `float64`.
+The fix is that **the weight is a `f64` running total whatever the tree's element type**, because its
+precision is set by how many rows a leaf absorbs rather than by how precisely a coordinate is stored.
+The mean stays in the tree's type: it is bounded by the data, not by the row count. So
+`microcluster_weights_`, `cluster_sizes_`, every mass fraction and every mass-weighted head are exact
+at any stream length. What a caller sees is rounded to the tree's type on the way out — one part in
+16 777 216 of a total that is itself exact — which is the precision `float32` was chosen for.
 
-This is reached by mass in one leaf, not by dataset size, and the previous section is why that
-distinction is not reassuring: a heavy leaf takes a roughly constant share of the data, so a stream
-that puts half its mass in one leaf reaches the ceiling at about 2²⁵ rows. `betula` raises a
-`UserWarning` naming the heaviest leaf's mass when it passes **2²³**, one doubling short of the
-ceiling and while every summary it holds is still exact. Three ways out, in the order to try them:
-feed `float64` (the `f64` tree counts to 2⁵³, far beyond any stream), lower `threshold` or raise
-`max_leaves` so the mass spreads over more leaves, or set `balance` to cap what any one leaf takes.
-
-`fit` and `fit_predict` are not exposed to this in practice — reaching it needs 16.7 M rows resident
-in one array — and `float64` is unaffected at any size a stream can reach.
+**One residual, measured and left in.** `feature="spherical"` (the default) also keeps its scatter in
+`f64`: it is one number per leaf, so it costs nothing. The per-axis and full-matrix scatters of
+`"diagonal"`, `"full"` and `"fd"` are `d` or `d²` numbers per leaf, and they stay in the tree's type
+— so past 2²⁴ rows *in one leaf* the scatter is now the term that saturates, and the variance comes
+back about **0.89 % low** (where the original defect had it 0.58 % high). Widening them was
+implemented and measured before being rejected: **+11 %** on the insert path and an `f32` tree three
+quarters the size of the `f64` one instead of half, charged to every `f32` user, to correct a leaf
+that has to be past 16.8 M rows before it is wrong at all. If that leaf is your case, use
+`float64`, or lower `threshold` / raise `max_leaves` / set `balance` so the mass spreads over more
+leaves — the same three levers as before, now for a 0.9 % variance rather than for lost rows.
 
 ## Soft assignment, coresets, diagnostics, drift
 

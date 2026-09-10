@@ -224,15 +224,35 @@ pub trait ClusterFeature<R: Real>: Clone + Send + Sync {
     }
 }
 
+/// `R -> f64`. Infallible for both types `Real` admits.
+#[inline]
+fn wide<R: Real>(x: R) -> f64 {
+    x.to_f64().unwrap()
+}
+
+/// `f64 -> R`. Infallible for both types `Real` admits; saturates to `±inf` outside `f32`'s range.
+#[inline]
+fn narrow<R: Real>(x: f64) -> R {
+    R::from_f64(x).unwrap()
+}
+
 // ───────────────────────── Spherical (scalar SSD) ─────────────────────────
 
 /// Isotropic feature: a single scalar `S`. Covariance is `(S / (n·d)) · I`.
+///
+/// The weight and the scalar scatter are `f64` whatever `R` is, and that is not a detail: they are
+/// *running totals*, so their precision is set by how many rows a leaf absorbs rather than by how
+/// precisely each row is stored. In binary32 `w + 1 == w` from `2^24` upward, so an `f32` leaf used
+/// to stop counting after 16.8 M rows — the mean kept creeping and the scatter kept growing against
+/// a weight that did not, so the reported variance inflated. Both accumulate in `f64` now; the mean,
+/// which is bounded by the data rather than by the row count, stays in `R`, so an `f32` tree still
+/// costs `4·d` bytes per leaf plus sixteen.
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "persistence", derive(serde::Serialize, serde::Deserialize))]
 pub struct Spherical<R: Real> {
-    w: R,
+    w: f64,
     mean: Vec<R>,
-    ssd: R,
+    ssd: f64,
 }
 
 impl<R: Real> Spherical<R> {
@@ -241,9 +261,9 @@ impl<R: Real> Spherical<R> {
     /// dense feature once, at the end.
     pub fn from_moments(weight: R, mean: Vec<R>, ssd: R) -> Self {
         Self {
-            w: weight,
+            w: wide(weight),
             mean,
-            ssd,
+            ssd: wide(ssd),
         }
     }
 }
@@ -251,79 +271,89 @@ impl<R: Real> Spherical<R> {
 impl<R: Real> ClusterFeature<R> for Spherical<R> {
     fn new(dim: usize) -> Self {
         Self {
-            w: R::zero(),
+            w: 0.0,
             mean: vec![R::zero(); dim],
-            ssd: R::zero(),
+            ssd: 0.0,
         }
     }
     fn dim(&self) -> usize {
         self.mean.len()
     }
     fn weight(&self) -> R {
-        self.w
+        narrow(self.w)
     }
     fn mean(&self) -> &[R] {
         &self.mean
     }
     fn ssd(&self) -> R {
-        self.ssd
+        narrow(self.ssd)
     }
     fn variance(&self, _d: usize) -> R {
-        if self.w <= R::zero() {
+        if self.w <= 0.0 {
             R::zero()
         } else {
-            self.ssd / self.w / R::from_usize(self.mean.len()).unwrap()
+            narrow(self.ssd / self.w / self.mean.len() as f64)
         }
     }
     fn push(&mut self, x: &[R], w: R) {
         if w <= R::zero() {
             return;
         }
-        let w_new = self.w + w;
-        let factor = w / w_new;
-        let coef = w * (R::one() - factor);
+        let wi = wide(w);
+        let w_new = self.w + wi;
+        let factor: R = narrow(wi / w_new);
+        let coef: R = narrow(wi * (1.0 - wi / w_new));
         let mut normsq = R::zero();
         for (m, &xi) in self.mean.iter_mut().zip(x) {
             let d = xi - *m;
             normsq = normsq + d * d;
             *m = *m + factor * d;
         }
-        self.ssd = self.ssd + coef * normsq;
+        self.ssd += wide(coef * normsq);
         self.w = w_new;
     }
     fn merge(&mut self, other: &Self) {
-        if other.w <= R::zero() {
+        if other.w <= 0.0 {
             return;
         }
-        if self.w <= R::zero() {
+        if self.w <= 0.0 {
             *self = other.clone();
             return;
         }
         let w_new = self.w + other.w;
-        let factor = other.w / w_new;
-        let c = self.w * other.w / w_new;
+        let factor: R = narrow(other.w / w_new);
+        let c: R = narrow(self.w * other.w / w_new);
         let mut normsq = R::zero();
         for (m, &om) in self.mean.iter_mut().zip(&other.mean) {
             let d = om - *m;
             normsq = normsq + d * d;
             *m = *m + factor * d;
         }
-        self.ssd = self.ssd + other.ssd + c * normsq;
+        self.ssd = self.ssd + other.ssd + wide(c * normsq);
         self.w = w_new;
     }
     fn decay(&mut self, factor: R) {
-        self.w = self.w * factor;
-        self.ssd = self.ssd * factor;
+        let f = wide(factor);
+        self.w *= f;
+        self.ssd *= f;
     }
 }
 
 // ───────────────────────── Diagonal (per-dimension SSD) ─────────────────────────
 
 /// Axis-aligned feature: per-dimension `S`. Covariance is `diag(S_d / n)`.
+///
+/// The weight is `f64` for the reason given on [`Spherical`]. The per-axis scatter is **not**, and
+/// that is a measured trade rather than an oversight: it is `d` values per leaf touched once per
+/// (row, dimension), so widening it cost **+11 %** on the insert path (200 000 × 32,
+/// `max_leaves = 2000`, median of five, A-B-A) and took an `f32` tree from half the size of the
+/// `f64` one to three quarters — paid by every `f32` user, to correct a **0.89 %** low variance that
+/// only appears once a single leaf is past `2^24` rows. `an_f32_leaf_past_the_ceiling_pins_what_a`
+/// `_narrow_scatter_still_costs` pins the residual so it cannot drift unrecorded.
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "persistence", derive(serde::Serialize, serde::Deserialize))]
 pub struct Diagonal<R: Real> {
-    w: R,
+    w: f64,
     mean: Vec<R>,
     ssd: Vec<R>,
 }
@@ -331,7 +361,7 @@ pub struct Diagonal<R: Real> {
 impl<R: Real> ClusterFeature<R> for Diagonal<R> {
     fn new(dim: usize) -> Self {
         Self {
-            w: R::zero(),
+            w: 0.0,
             mean: vec![R::zero(); dim],
             ssd: vec![R::zero(); dim],
         }
@@ -340,7 +370,7 @@ impl<R: Real> ClusterFeature<R> for Diagonal<R> {
         self.mean.len()
     }
     fn weight(&self) -> R {
-        self.w
+        narrow(self.w)
     }
     fn mean(&self) -> &[R] {
         &self.mean
@@ -349,19 +379,20 @@ impl<R: Real> ClusterFeature<R> for Diagonal<R> {
         self.ssd.iter().copied().sum()
     }
     fn variance(&self, d: usize) -> R {
-        if self.w <= R::zero() {
+        if self.w <= 0.0 {
             R::zero()
         } else {
-            self.ssd[d] / self.w
+            self.ssd[d] / narrow(self.w)
         }
     }
     fn push(&mut self, x: &[R], w: R) {
         if w <= R::zero() {
             return;
         }
-        let w_new = self.w + w;
-        let factor = w / w_new;
-        let coef = w * (R::one() - factor);
+        let wi = wide(w);
+        let w_new = self.w + wi;
+        let factor: R = narrow(wi / w_new);
+        let coef: R = narrow(wi * (1.0 - wi / w_new));
         for ((m, s), &xi) in self.mean.iter_mut().zip(self.ssd.iter_mut()).zip(x) {
             let d = xi - *m;
             *s = *s + coef * d * d;
@@ -370,16 +401,16 @@ impl<R: Real> ClusterFeature<R> for Diagonal<R> {
         self.w = w_new;
     }
     fn merge(&mut self, other: &Self) {
-        if other.w <= R::zero() {
+        if other.w <= 0.0 {
             return;
         }
-        if self.w <= R::zero() {
+        if self.w <= 0.0 {
             *self = other.clone();
             return;
         }
         let w_new = self.w + other.w;
-        let factor = other.w / w_new;
-        let c = self.w * other.w / w_new;
+        let factor: R = narrow(other.w / w_new);
+        let c: R = narrow(self.w * other.w / w_new);
         for (((m, s), &om), &os) in self
             .mean
             .iter_mut()
@@ -394,7 +425,7 @@ impl<R: Real> ClusterFeature<R> for Diagonal<R> {
         self.w = w_new;
     }
     fn decay(&mut self, factor: R) {
-        self.w = self.w * factor;
+        self.w *= wide(factor);
         for s in &mut self.ssd {
             *s = *s * factor;
         }
@@ -405,10 +436,13 @@ impl<R: Real> ClusterFeature<R> for Diagonal<R> {
 
 /// Full-covariance feature: the scatter matrix `M = Σ w (x-μ)(x-μ)ᵀ`, stored as the flat
 /// upper triangle (row-major, including the diagonal). Covariance is `M / n`.
+///
+/// The weight is `f64` for the reason given on [`Spherical`]. The scatter stays in `R`: it is
+/// `d(d+1)/2` values per leaf, and widening those would undo the memory an `f32` tree is chosen for.
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "persistence", derive(serde::Serialize, serde::Deserialize))]
 pub struct Full<R: Real> {
-    w: R,
+    w: f64,
     mean: Vec<R>,
     scatter: Vec<R>,
     dim: usize,
@@ -433,10 +467,10 @@ impl<R: Real> Full<R> {
     /// Dense covariance matrix `Σ = M / n` (`d×d`, symmetric). Zeros for an empty feature.
     pub fn covariance(&self) -> Vec<Vec<R>> {
         let d = self.dim;
-        if self.w <= R::zero() {
+        if self.w <= 0.0 {
             return vec![vec![R::zero(); d]; d];
         }
-        let inv = R::one() / self.w;
+        let inv: R = narrow(1.0 / self.w);
         (0..d)
             .map(|i| (0..d).map(|j| self.at(i, j) * inv).collect())
             .collect()
@@ -462,7 +496,7 @@ impl<R: Real> Full<R> {
 impl<R: Real> ClusterFeature<R> for Full<R> {
     fn new(dim: usize) -> Self {
         Self {
-            w: R::zero(),
+            w: 0.0,
             mean: vec![R::zero(); dim],
             scatter: vec![R::zero(); dim * (dim + 1) / 2],
             dim,
@@ -472,7 +506,7 @@ impl<R: Real> ClusterFeature<R> for Full<R> {
         self.dim
     }
     fn weight(&self) -> R {
-        self.w
+        narrow(self.w)
     }
     fn mean(&self) -> &[R] {
         &self.mean
@@ -481,10 +515,10 @@ impl<R: Real> ClusterFeature<R> for Full<R> {
         (0..self.dim).map(|i| self.at(i, i)).sum()
     }
     fn variance(&self, d: usize) -> R {
-        if self.w <= R::zero() {
+        if self.w <= 0.0 {
             R::zero()
         } else {
-            self.at(d, d) / self.w
+            self.at(d, d) / narrow(self.w)
         }
     }
     fn cov_dense(&self) -> Vec<Vec<R>> {
@@ -494,9 +528,10 @@ impl<R: Real> ClusterFeature<R> for Full<R> {
         if w <= R::zero() {
             return;
         }
-        let w_new = self.w + w;
-        let factor = w / w_new;
-        let coef = w * (R::one() - factor);
+        let wi = wide(w);
+        let w_new = self.w + wi;
+        let factor: R = narrow(wi / w_new);
+        let coef: R = narrow(wi * (1.0 - wi / w_new));
         let d: Vec<R> = (0..self.dim).map(|i| x[i] - self.mean[i]).collect();
         for i in 0..self.dim {
             for j in 0..=i {
@@ -510,16 +545,16 @@ impl<R: Real> ClusterFeature<R> for Full<R> {
         self.w = w_new;
     }
     fn merge(&mut self, other: &Self) {
-        if other.w <= R::zero() {
+        if other.w <= 0.0 {
             return;
         }
-        if self.w <= R::zero() {
+        if self.w <= 0.0 {
             *self = other.clone();
             return;
         }
         let w_new = self.w + other.w;
-        let factor = other.w / w_new;
-        let c = self.w * other.w / w_new;
+        let factor: R = narrow(other.w / w_new);
+        let c: R = narrow(self.w * other.w / w_new);
         let d: Vec<R> = (0..self.dim)
             .map(|i| other.mean[i] - self.mean[i])
             .collect();
@@ -535,7 +570,7 @@ impl<R: Real> ClusterFeature<R> for Full<R> {
         self.w = w_new;
     }
     fn decay(&mut self, factor: R) {
-        self.w = self.w * factor;
+        self.w *= wide(factor);
         for s in &mut self.scatter {
             *s = *s * factor;
         }
@@ -566,15 +601,15 @@ pub const FD_DEFAULT_ELL: usize = 32;
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "persistence", derive(serde::Serialize, serde::Deserialize))]
 pub struct FdSketch<R: Real> {
-    w: R,
+    w: f64,
     mean: Vec<R>,
     sketch: Vec<Vec<R>>, // `ell` rows × `dim`; rows `[0, self.rows)` are live
     rows: usize,
     ell: usize,
     dim: usize,
     /// Trace of the scatter the shrinks discarded, in the same units as [`ClusterFeature::ssd`].
-    #[cfg_attr(feature = "persistence", serde(default = "R::zero"))]
-    lost: R,
+    #[cfg_attr(feature = "persistence", serde(default))]
+    lost: f64,
 }
 
 #[allow(clippy::needless_range_loop)] // sketch/gram math reads clearest with explicit indices
@@ -583,13 +618,13 @@ impl<R: Real> FdSketch<R> {
     pub fn with_ell(dim: usize, ell: usize) -> Self {
         let ell = ell.max(1).min(dim.max(1));
         Self {
-            w: R::zero(),
+            w: 0.0,
             mean: vec![R::zero(); dim],
             sketch: vec![vec![R::zero(); dim]; ell],
             rows: 0,
             ell,
             dim,
-            lost: R::zero(),
+            lost: 0.0,
         }
     }
 
@@ -606,17 +641,14 @@ impl<R: Real> FdSketch<R> {
     /// How to give the discarded trace back: a factor on the retained directions, or — only when the
     /// shrink left no direction at all — an isotropic per-dimension variance.
     fn completion(&self) -> (R, R) {
-        if self.lost <= R::zero() || self.w <= R::zero() || self.dim == 0 {
+        if self.lost <= 0.0 || self.w <= 0.0 || self.dim == 0 {
             return (R::one(), R::zero());
         }
         let kept = self.kept();
         if kept > R::zero() {
-            ((kept + self.lost) / kept, R::zero())
+            ((kept + narrow(self.lost)) / kept, R::zero())
         } else {
-            (
-                R::one(),
-                self.lost / (self.w * R::from_usize(self.dim).unwrap()),
-            )
+            (R::one(), narrow(self.lost / (self.w * self.dim as f64)))
         }
     }
 
@@ -651,7 +683,7 @@ impl<R: Real> FdSketch<R> {
             let sigma_p = (sigma2 - delta).max(R::zero()).sqrt();
             // Whatever this direction gives up — `delta`, or all of `sigma2` for a freed row — is
             // real scatter of the leaf. Bank its trace instead of dropping it on the floor.
-            self.lost = self.lost + sigma2 - sigma_p * sigma_p;
+            self.lost = self.lost + wide(sigma2) - wide(sigma_p * sigma_p);
             if sigma <= tiny || sigma_p <= tiny {
                 continue; // null or shrunk-to-zero direction → row freed
             }
@@ -690,23 +722,23 @@ impl<R: Real> ClusterFeature<R> for FdSketch<R> {
         self.dim
     }
     fn weight(&self) -> R {
-        self.w
+        narrow(self.w)
     }
     fn mean(&self) -> &[R] {
         &self.mean
     }
     fn ssd(&self) -> R {
-        self.kept() + self.lost
+        self.kept() + narrow(self.lost)
     }
     fn variance(&self, d: usize) -> R {
-        if self.w <= R::zero() {
+        if self.w <= 0.0 {
             return R::zero();
         }
         let (scale, iso) = self.completion();
         let s: R = (0..self.rows)
             .map(|i| self.sketch[i][d] * self.sketch[i][d])
             .fold(R::zero(), |a, b| a + b);
-        scale * s / self.w + iso
+        scale * s / narrow(self.w) + iso
     }
     fn cov_dense(&self) -> Vec<Vec<R>> {
         let dim = self.dim;
@@ -722,8 +754,8 @@ impl<R: Real> ClusterFeature<R> for FdSketch<R> {
             }
         }
         let (scale, iso) = self.completion();
-        if self.w > R::zero() {
-            let f = scale / self.w;
+        if self.w > 0.0 {
+            let f = scale / narrow(self.w);
             for row in m.iter_mut() {
                 for x in row.iter_mut() {
                     *x = *x * f;
@@ -741,9 +773,10 @@ impl<R: Real> ClusterFeature<R> for FdSketch<R> {
         if w <= R::zero() {
             return;
         }
-        let w_new = self.w + w;
-        let factor = w / w_new;
-        let coef = w * (R::one() - factor);
+        let wi = wide(w);
+        let w_new = self.w + wi;
+        let factor: R = narrow(wi / w_new);
+        let coef: R = narrow(wi * (1.0 - wi / w_new));
         let delta: Vec<R> = (0..self.dim).map(|i| x[i] - self.mean[i]).collect();
         let sq = coef.sqrt();
         let row: Vec<R> = delta.iter().map(|&di| sq * di).collect();
@@ -754,20 +787,20 @@ impl<R: Real> ClusterFeature<R> for FdSketch<R> {
         self.w = w_new;
     }
     fn merge(&mut self, other: &Self) {
-        if other.w <= R::zero() {
+        if other.w <= 0.0 {
             return;
         }
-        if self.w <= R::zero() {
+        if self.w <= 0.0 {
             *self = other.clone();
             return;
         }
         let w_new = self.w + other.w;
-        let factor = other.w / w_new;
-        let c = self.w * other.w / w_new;
+        let factor: R = narrow(other.w / w_new);
+        let c: R = narrow(self.w * other.w / w_new);
         let delta: Vec<R> = (0..self.dim)
             .map(|i| other.mean[i] - self.mean[i])
             .collect();
-        self.lost = self.lost + other.lost;
+        self.lost += other.lost;
         for i in 0..other.rows {
             self.insert_row(other.sketch[i].clone());
         }
@@ -780,8 +813,9 @@ impl<R: Real> ClusterFeature<R> for FdSketch<R> {
         self.w = w_new;
     }
     fn decay(&mut self, factor: R) {
-        self.w = self.w * factor;
-        self.lost = self.lost * factor; // rows scale by √factor, so their scatter scales by factor
+        let f = wide(factor);
+        self.w *= f;
+        self.lost *= f; // rows scale by √factor, so their scatter scales by factor
         let s = factor.sqrt();
         for row in self.sketch.iter_mut().take(self.rows) {
             for x in row.iter_mut() {
@@ -792,7 +826,7 @@ impl<R: Real> ClusterFeature<R> for FdSketch<R> {
     fn second_moment(&self) -> SecondMoment<R> {
         // Σ = BᵀB / n + iso·I = Σ_r (b_r/√n)(b_r/√n)ᵀ + iso·I — the sketch rows scaled by 1/√n are
         // the low-rank factors, so the GMM never reconstructs the `d×d` covariance for this leaf.
-        if self.w <= R::zero() {
+        if self.w <= 0.0 {
             return SecondMoment::LowRank {
                 rows: Vec::new(),
                 iso: R::zero(),
@@ -800,7 +834,7 @@ impl<R: Real> ClusterFeature<R> for FdSketch<R> {
             };
         }
         let (fill, iso) = self.completion();
-        let scale = (fill / self.w).sqrt();
+        let scale = (fill / narrow(self.w)).sqrt();
         let rows = self
             .sketch
             .iter()
@@ -1056,49 +1090,43 @@ mod tests {
         assert!(close(s.variance(0), sv));
     }
 
-    /// Where an `f32` leaf stops counting, stated as a test so the number in `docs/USAGE.md` and in
-    /// the estimator's warning cannot drift away from the arithmetic.
+    /// What an `f32` tree can and cannot still promise about a weight, now that the running totals
+    /// are `f64`.
     ///
-    /// `push` forms `w_new = w + wᵢ`, and binary32 spaces its values 2 apart from `2^24` upward, so
-    /// a unit-weight row leaves the weight exactly where it was. The rest of the update does not
-    /// stop with it: `factor = wᵢ / w_new` is `2^-24`, so the mean keeps creeping and degrades into
-    /// an exponential moving average of span `2^24`, and the scatter keeps accumulating against a
-    /// weight that no longer grows, so `variance = ssd / w` inflates in proportion to the rows the
-    /// weight dropped (measured in `local/scratch/e29_ceiling.py`: unit-variance rows past `2^24`
-    /// report variance 1.0105 after 200 000 of them, against 1.0000 in `f64`).
-    ///
-    /// **This test pins the defect, not the intent.** When the accumulators move to `f64` it starts
-    /// failing, and the right response is to delete it together with the documented limit — the
-    /// acceptance test for that fix is `an_f32_leaf_counts_every_row_it_absorbs`.
+    /// The *accumulator* counts every row: `w` is `f64`, so `2^24 + 1` is held exactly. The
+    /// *report* is not, because [`ClusterFeature::weight`] hands back an `R` — so a caller reading
+    /// an `f32` tree sees the nearest binary32, one part in `2^24`. That is a rounding of a correct
+    /// total, not the old defect, which lost the rows outright: every subsequent row used to add
+    /// nothing at all, and the mean and scatter went on moving against a weight that had stopped.
     #[test]
-    fn an_f32_leaf_stops_counting_at_two_to_the_24() {
+    fn an_f32_weight_is_counted_in_f64_and_reported_rounded() {
         let mut c: Spherical<f32> = Spherical::new(1);
         c.push(&[0.0], 16_777_216.0); // 2^24, reached in one weighted push
         c.push(&[1.0], 1.0);
-        assert_eq!(c.weight(), 16_777_216.0, "the 2^24-th row added no mass");
-        assert!(c.mean()[0] > 0.0, "the mean moves on regardless");
-        assert!(
-            c.ssd() > 0.0,
-            "so does the scatter, against a weight that stopped"
+        assert_eq!(
+            c.weight(),
+            16_777_216.0,
+            "binary32 cannot name 2^24 + 1, so the report rounds"
         );
-        // A weighted push above the spacing still lands, which is why the ceiling is reached by
-        // streaming rows one at a time and not by inserting summaries.
-        let mut merged: Spherical<f32> = Spherical::new(1);
-        merged.push(&[0.0], 16_777_216.0);
-        merged.push(&[1.0], 4096.0);
-        assert_eq!(merged.weight(), 16_781_312.0);
+        // But the row is in the total: 4095 more of them cross into the next representable value,
+        // which the old f32 accumulator could never reach one unit-weight row at a time.
+        for _ in 0..4095 {
+            c.push(&[1.0], 1.0);
+        }
+        assert_eq!(c.weight(), 16_781_312.0, "4096 rows, all of them counted");
+        assert!(c.mean()[0] > 0.0);
+        assert!(c.ssd() > 0.0);
     }
 
     /// The acceptance test for the `f64`-accumulator fix, by the route a user actually reaches the
     /// ceiling by: one leaf of an `f32` tree absorbing more than `2^24` unit-weight rows.
     ///
-    /// **It fails today**, reporting 16 777 216 against the 16 781 312 rows it was given, which is
-    /// why it is `#[ignore]`d rather than absent: `cargo test --lib -- --ignored
-    /// an_f32_leaf_counts_every_row_it_absorbs` is the measurement behind the limit documented in
-    /// `docs/USAGE.md`, and it is what the fix has to turn green. The `f64` control in the same
-    /// body is exact today and must stay so.
+    /// It failed until 2026-09-10, reporting 16 777 216 against the 16 781 312 rows it was given —
+    /// the measurement behind a limit `docs/USAGE.md` used to document and the estimator used to
+    /// warn about. It costs 2 s in a debug build, which is why it runs in the suite rather than
+    /// behind `#[ignore]`: a 33 M-row loop is the only way to reach the boundary honestly, and the
+    /// promise is worth two seconds. The `f64` control in the same body was exact before and after.
     #[test]
-    #[ignore]
     fn an_f32_leaf_counts_every_row_it_absorbs() {
         const ROWS: usize = 16_781_312; // 2^24 + 4096
         let mut narrow: Spherical<f32> = Spherical::new(1);
@@ -1109,6 +1137,68 @@ mod tests {
         }
         assert_eq!(wide.weight(), ROWS as f64, "the f64 control is exact");
         assert_eq!(narrow.weight(), ROWS as f32);
+    }
+
+    /// The consequence the weight ceiling actually had on an answer, and the reason the *scalar*
+    /// scatter is `f64` too.
+    ///
+    /// A frozen weight did not stop the leaf: the scatter kept accumulating against it, so
+    /// `variance = ssd / w` drifted by roughly the fraction of rows the weight had dropped — on this
+    /// fixture, 200 000 unit-variance rows past `2^24`, it read **1.0058134**. It now reads 1.0 to a
+    /// part in a million; the bound is loose only so that a different rounding mode cannot make the
+    /// test brittle about a defect three orders of magnitude larger than it.
+    ///
+    /// Widening the weight alone would have moved the ceiling rather than removed it, because `ssd`
+    /// reaches `2^24` on this fixture at the same time the weight does. That is free here — one
+    /// value per leaf — and is not free for the per-axis models, which is the subject of
+    /// [`an_f32_diagonal_leaf_past_the_ceiling_still_loses_scatter`].
+    #[test]
+    fn an_f32_leaf_past_the_ceiling_reports_the_variance_it_holds() {
+        const ROWS: usize = 16_977_216; // 2^24 + 200 000
+        let mut sph: Spherical<f32> = Spherical::new(1);
+        for i in 0..ROWS {
+            sph.push(&[if i % 2 == 0 { 1.0 } else { -1.0 }], 1.0);
+        }
+        let v = sph.variance(0);
+        assert!(
+            (v - 1.0).abs() < 1e-6,
+            "spherical reports {v} on unit-variance data past 2^24; the defect read 1.0058134"
+        );
+    }
+
+    /// What an `f32` [`Diagonal`] still gets wrong past `2^24`, stated as a test so the figure in
+    /// `docs/USAGE.md` cannot drift away from the arithmetic.
+    ///
+    /// The per-axis scatter is `d` values per leaf, touched once per (row, dimension). Widening it
+    /// was implemented and measured: **+11 %** on the insert path and an `f32` tree three quarters
+    /// the size of the `f64` one instead of half, charged to every `f32` user — to correct a leaf
+    /// that has to be past `2^24` rows before it is wrong at all. So it stays `f32`, and this is
+    /// what that costs: with the weight now exact the scatter is the term that saturates, and the
+    /// variance comes back **0.89 % low** where the original defect had it 0.58 % high.
+    ///
+    /// `spherical` (the default) and `f64` are exact; `full` and `fd` share this residual and reach
+    /// it in the same regime.
+    #[test]
+    fn an_f32_diagonal_leaf_past_the_ceiling_still_loses_scatter() {
+        const ROWS: usize = 16_977_216; // 2^24 + 200 000
+        let mut diag: Diagonal<f32> = Diagonal::new(1);
+        let mut control: Diagonal<f64> = Diagonal::new(1);
+        for i in 0..ROWS {
+            let x = if i % 2 == 0 { 1.0 } else { -1.0 };
+            diag.push(&[x], 1.0);
+            control.push(&[f64::from(x)], 1.0);
+        }
+        assert_eq!(diag.weight(), ROWS as f32, "the weight itself is exact");
+        assert!(
+            (control.variance(0) - 1.0).abs() < 1e-12,
+            "the f64 control is exact: {}",
+            control.variance(0)
+        );
+        let v = diag.variance(0);
+        assert!(
+            (0.985..0.995).contains(&v),
+            "the f32 per-axis scatter loses about 0.9 % here; it read {v}"
+        );
     }
 
     #[test]
