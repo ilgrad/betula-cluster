@@ -4484,19 +4484,45 @@ impl Betula {
 /// wider ones with the same values. `test_a_snapshot_written_by_0_6_0_still_loads` is the proof.
 const SCHEMA_VERSION: u32 = 2;
 
+/// Leading bytes of a gzip member (RFC 1952 §2.3.1), which is how [`decode`] tells a compressed
+/// model from one written before `save` framed them.
+const GZIP_MAGIC: [u8; 2] = [0x1f, 0x8b];
+
 /// Serialize an estimator with its schema version prepended (CBOR via `ciborium`, a compact,
-/// maintained serde format).
+/// maintained serde format), gzip-framed.
+///
+/// **Why gzip and not a stronger codec**, measured on saved models rather than on the centroid
+/// payload — the file is CBOR, which tags every float with its width, so a payload ratio does not
+/// carry over. Over digits\@300, covtype\@2000 and mnist\@2000 (spherical and diagonal), gzip takes
+/// **2.0–4.8×** off the file. `zstd -19`, `brotli -q9` and `xz -6` beat it, by **12–22 %** — and
+/// cost 4–13 s per save on the 14 MB mnist model against gzip's 0.6 s. `save` and `load` are
+/// interactive calls, `flate2`'s default backend is pure Rust so every wheel target still
+/// cross-compiles without a C toolchain, and a `.betula` file stays readable by `gzip -d`.
 fn encode(est: &Betula) -> PyResult<Vec<u8>> {
-    let mut buf = Vec::new();
-    ciborium::into_writer(&(SCHEMA_VERSION, est), &mut buf)
+    let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    ciborium::into_writer(&(SCHEMA_VERSION, est), &mut gz)
         .map_err(|e| PyValueError::new_err(format!("serialize failed: {e}")))?;
-    Ok(buf)
+    gz.finish()
+        .map_err(|e| PyValueError::new_err(format!("compress failed: {e}")))
 }
 
 /// Deserialize an estimator, rejecting an unknown schema version.
+///
+/// Decoding streams straight out of the gzip member instead of inflating to a `Vec` first: an
+/// untrusted file is a trust boundary, and a buffer sized by the *decompressed* length would let a
+/// small file ask for an arbitrarily large allocation. Streaming caps the cost at the model the
+/// CBOR actually describes, which is the same exposure an uncompressed file has always had.
+///
+/// A file that does not start with [`GZIP_MAGIC`] is read as bare CBOR, which is what 0.8.0 and
+/// earlier wrote. The schema inside is unchanged, so those files still load rather than failing on
+/// a container they predate.
 fn decode(bytes: &[u8]) -> PyResult<Betula> {
-    let (version, est): (u32, Betula) = ciborium::from_reader(bytes)
-        .map_err(|e| PyValueError::new_err(format!("deserialize failed: {e}")))?;
+    let (version, est): (u32, Betula) = if bytes.starts_with(&GZIP_MAGIC) {
+        ciborium::from_reader(std::io::BufReader::new(flate2::read::GzDecoder::new(bytes)))
+    } else {
+        ciborium::from_reader(bytes)
+    }
+    .map_err(|e| PyValueError::new_err(format!("deserialize failed: {e}")))?;
     if version != SCHEMA_VERSION {
         return Err(PyValueError::new_err(format!(
             "unsupported model version {version} (this build expects {SCHEMA_VERSION})"

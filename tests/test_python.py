@@ -1469,6 +1469,38 @@ def test_save_load_roundtrip(blobs, tmp_path):
     assert loaded.n_clusters_ == est.n_clusters_
 
 
+def test_save_writes_a_gzip_member_and_a_smaller_file(tmp_path):
+    """The container is a plain gzip member, and on data with structure it more than halves.
+
+    Both halves matter. That the container is *plain gzip* rather than a private framing is what a
+    user depends on: ``gzip -dc model.betula`` yields the CBOR, so the file stays inspectable
+    without this library.
+
+    The fixture is 8 informative dimensions padded with 56 dead ones, because what compresses in a
+    model is repetition down the leaves -- dead dimensions, shared zeros, near-duplicate centroids
+    -- and not float entropy. The ratio is therefore a property of the data, not of the codec:
+    real models measure 2.0-4.8x (digits, covtype, mnist), this fixture 3.2x, and a standardized
+    Gaussian blob with no dead dimension only 1.1-1.4x. Asserting a strong ratio on the plain
+    ``blobs`` fixture would be asserting something that is not true.
+    """
+    import gzip
+
+    from sklearn.datasets import make_blobs
+
+    x, _ = make_blobs(n_samples=3000, n_features=8, centers=5, random_state=0)
+    padded = np.ascontiguousarray(np.hstack([x, np.zeros((len(x), 56))]))
+    est = betula_cluster.Betula(n_clusters=4, max_leaves=300, threshold=0.0, seed=1).fit(padded)
+    path = tmp_path / "model.betula"
+    est.save(str(path))
+    blob = path.read_bytes()
+
+    assert blob[:2] == b"\x1f\x8b", "not a gzip member"
+    plain = gzip.decompress(blob)
+    assert len(blob) * 2 < len(plain), f"{len(plain)} -> {len(blob)} is not worth the codec"
+    # The version tag is the first item of the CBOR pair, encoded as a small unsigned integer.
+    assert plain[0] == 0x82 and plain[1] == 0x02, "the schema tag is not where load expects it"
+
+
 def test_a_snapshot_written_by_0_6_0_still_loads():
     """A committed snapshot from the released 0.6.0 wheel, loaded by the current build.
 
@@ -1477,9 +1509,11 @@ def test_a_snapshot_written_by_0_6_0_still_loads():
     rejected. `CFTree` gained a field after 0.6.0 (`merged_since_rebalance`, `#[serde(default)]`),
     and the claim that older snapshots survive it is only worth what a foreign-version file proves.
 
-    Since 2026-09-10 it proves a second thing: the cluster features' running totals are `f64` where
-    this file wrote `f32`, and it still loads, because CBOR tags a float with its width and serde's
-    `f64` visitor takes an `f32` value. That is why widening them needed no schema bump.
+    Since 2026-09-10 it proves two more things. The cluster features' running totals are `f64`
+    where this file wrote `f32`, and it still loads, because CBOR tags a float with its width and
+    serde's `f64` visitor takes an `f32` value -- which is why widening them needed no schema bump.
+    And it is bare CBOR, written before `save` gzip-framed the file, so it is also the fixture that
+    holds `load` to reading an unframed model.
 
     Regenerate with `tests/data/gen_snapshot.py`, whose docstring carries the invocation.
     """

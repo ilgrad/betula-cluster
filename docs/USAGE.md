@@ -1348,6 +1348,51 @@ that has to be past 16.8 M rows before it is wrong at all. If that leaf is your 
 `float64`, or lower `threshold` / raise `max_leaves` / set `balance` so the mass spreads over more
 leaves — the same three levers as before, now for a 0.9 % variance rather than for lost rows.
 
+## Saving and loading a model
+
+```python
+est.save("model.betula")
+again = Betula.load("model.betula")          # fitted, ready to predict
+```
+
+The file is a **gzip-framed, version-tagged CBOR** document — a plain gzip member, so
+`gzip -dc model.betula` yields the CBOR and the model stays inspectable without this library.
+Pickle goes through the same bytes, so `pickle.dumps(est)` and `joblib.dump` are compressed too.
+
+**How much the framing saves is a property of your data, not of the codec.** What compresses in a
+model is repetition down the leaves — dead dimensions, shared zeros, near-duplicate centroids — and
+not float entropy, so:
+
+| model | file | gzipped | ratio |
+|---|---:|---:|---:|
+| digits (1797 × 64), `max_leaves=300`, spherical | 0.18 MB | 0.09 MB | **2.0×** |
+| covtype (581 012 × 54), `max_leaves=2000`, spherical | 1.06 MB | 0.22 MB | **4.8×** |
+| mnist (70 000 × 784), `max_leaves=2000`, spherical | 14.35 MB | 5.29 MB | **2.7×** |
+| mnist (70 000 × 784), `max_leaves=2000`, diagonal | 22.28 MB | 9.44 MB | **2.4×** |
+| Gaussian blobs (20 000 × 64), no dead dimension | 1.17 MB | 1.03 MB | 1.1× |
+
+The last row is the honest floor: a full-entropy synthetic fixture has nothing to repeat. Writing
+the 14 MB mnist model costs **0.6 s**. `zstd -19`, `brotli -q9` and `xz -6` were measured on the same
+files and beat gzip by **12–22 %**, for 4–13 s per save — the wrong trade for a call a user makes
+interactively, and `flate2`'s pure-Rust backend also keeps every wheel target cross-compiling without
+a C toolchain.
+
+A column-major leaf layout was implemented as a prototype and **rejected**: on the saved file it is
+worth only **1.06–1.17×**, because CBOR tags every float with its width and the tag bytes dilute the
+column similarity that makes the layout pay on a raw array.
+
+**Compatibility.** A saved model is **not portable across major versions**. `load` accepts one schema
+version and refuses every other, naming the version it found:
+
+```
+ValueError: unsupported model version 3 (this build expects 2)
+```
+
+Re-save with the version that wrote the file before upgrading, or keep the training code and re-fit.
+The alternative — a reader for every past layout — would pin the internals of the CF-tree for the
+whole 1.x line, and the tree is where the research happens. Within a major version the format is
+stable, and a file written before the gzip framing existed still loads.
+
 ## Soft assignment, coresets, diagnostics, drift
 
 All over the microclusters the tree already holds (no extra data passes):

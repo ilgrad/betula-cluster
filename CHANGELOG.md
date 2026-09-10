@@ -184,6 +184,42 @@ All notable changes to this project are documented here. The format follows
   arrival-order path keeps the uniform draw and is untouched.
 
 ### Changed
+- **`save` gzip-frames the file, and what `load` promises across versions is now written down.** A
+  model was bare CBOR, and the bulk of one is a leaf centroid matrix that repeats heavily down the
+  leaves — dead dimensions, shared zeros, near-duplicate centroids. Framing it in gzip takes
+  **2.0–4.8×** off a real model: digits 0.18 → **0.09 MB**, covtype (581 012 × 54) 1.06 →
+  **0.22 MB**, mnist (70 000 × 784) 14.35 → **5.29 MB** spherical and 22.28 → **9.44 MB** diagonal,
+  the largest of them in **0.6 s**. Pickle goes through the same bytes, so `pickle.dumps` and
+  `joblib.dump` shrink with it, and the container is a plain gzip member rather than a private
+  framing: `gzip -dc model.betula` still yields the CBOR.
+
+  The codec was picked on the artefact rather than on a fragment. `zstd -19`, `brotli -q9` and
+  `xz -6` all beat gzip on the same four files — by **12–22 %**, for **4–13 s** per save against
+  gzip's 0.6 s, which is the wrong trade for a call a user makes interactively — and `flate2`'s
+  default backend is pure Rust, so every wheel target still cross-compiles without a C toolchain.
+  The ratio is a property of the data and is published as one: a standardized Gaussian fixture with
+  no dead dimension compresses **1.1–1.4×**, and saying "2–5×" without that row would be quoting the
+  fixtures that flatter the change.
+
+  `SCHEMA_VERSION` stays **2**. The CBOR inside is unchanged, so a bump would have refused every
+  existing file to gain nothing; `load` reads both framings and still rejects any other schema
+  version. That rejection is now a **contract** rather than an implementation detail — stated in the
+  `save`/`load` docstrings, in a new *Compatibility* section of
+  [`README.md`](https://github.com/ilgrad/betula-cluster/blob/main/README.md) and in a new *Saving
+  and loading a model* section of
+  [`docs/USAGE.md`](https://github.com/ilgrad/betula-cluster/blob/main/docs/USAGE.md). Models are
+  not portable across major versions, and the alternative — a reader for every past layout — would
+  pin the internals of the CF-tree for the whole 1.x line.
+
+  **The column-major leaf layout planned alongside this is rejected, and the measurement that
+  motivated it no longer reproduces.** On a raw centroid array, column-major moved `gzip -6` from
+  3.97× to 6.15× (mnist at 2000 leaves, 2026-09-08). On the file `save` actually writes it is worth
+  **1.06–1.17×**, because CBOR tags every float with its width and that byte between values dilutes
+  the column similarity the layout exists to exploit. Re-measuring the array itself now reads
+  **2.88×** row-major and **3.35×** column-major, not 3.97 and 6.15 — the rebuild policy changed
+  which siblings merge, so different centroids end up adjacent. Encoding each per-dimension vector
+  as one CBOR byte string instead of a float array was measured on the same files and is rejected
+  too: **8 %**. Neither buys a permanent format complication.
 - **A rebuild now merges the *cheapest* sibling pairs, not the closest ones — the leaf summary is
   21 % tighter and every published label may move.** `CFTree::rebuild` picked each entry's partner
   under the routing measure and ranked the pairs by the absorption gap. Under the default D0/D0

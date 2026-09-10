@@ -226,7 +226,7 @@ Python end-to-end + scikit-learn benchmark (`README.md`, `bench/RESULTS.md`):
 - `model` (end-to-end fit/predict); `python` (PyO3 abi3 wheel: one-shot `fit_predict`, float32 or
   float64 with no upcast, + streaming `Betula` estimator (f64 *or* f32 tree, picked at first fit)
   with `partial_fit` / `fit` / `predict` / `fit_predict`, plus `save` / `load` + pickle persistence
-  via serde + CBOR (`ciborium`), schema-versioned). The compiled module is the private `_core`; the public
+  via serde + CBOR (`ciborium`), schema-versioned and gzip-framed). The compiled module is the private `_core`; the public
   `betula_cluster.Betula` is a thin Python estimator over it so the scikit-learn parameter protocol
   (`get_params` / `set_params`) returns the identity-stable objects `clone` / `Pipeline` /
   `GridSearchCV` require — a compiled getter rebuilds Python objects each call and fails that check.

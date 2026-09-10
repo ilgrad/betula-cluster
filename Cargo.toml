@@ -37,6 +37,9 @@ num-traits = "0.2"
 rayon = { version = "1", optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
 ciborium = { version = "0.2", optional = true }
+# Default features only: the `miniz_oxide` backend is pure Rust, so a wheel cross-compiles for every
+# target the release job builds without a C toolchain. `zlib`/`zlib-ng` would trade that away.
+flate2 = { version = "1", optional = true }
 pyo3 = { version = "0.29", features = ["extension-module", "abi3-py311"], optional = true }
 numpy = { version = "0.29", optional = true }
 
@@ -65,7 +68,7 @@ harness = false
 [features]
 default = ["parallel"]
 parallel = ["dep:rayon"]
-persistence = ["dep:serde", "dep:ciborium"]
+persistence = ["dep:serde", "dep:ciborium", "dep:flate2"]
 python = ["dep:pyo3", "dep:numpy", "persistence"]
 cli = []
 

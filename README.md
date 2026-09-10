@@ -22,7 +22,7 @@
 pip install betula-cluster
 ```
 
-**Verified:** a **547-case** Python suite at **100% wrapper coverage** + **814** Rust tests,
+**Verified:** a **548-case** Python suite at **100% wrapper coverage** + **814** Rust tests,
 `clippy -D warnings` + `fmt` clean across all feature sets, CI on CPython 3.11–3.14 (one abi3 wheel)
 plus free-threaded 3.14t.
 
@@ -340,7 +340,7 @@ And six **end-to-end use cases** (each scored against ground truth):
 - [**Benchmarks**](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md) — methodology, every metric, all tables, honest wins & losses.
 - [**Design**](https://github.com/ilgrad/betula-cluster/blob/main/DESIGN.md) — internal design, invariants, and testing strategy.
 
-Verified: **814** Rust tests (library, equivariance, integration and CLI) + a **547-case**
+Verified: **814** Rust tests (library, equivariance, integration and CLI) + a **548-case**
 Python suite at **100%** wrapper coverage (Rust ≥95%, CI-enforced), `clippy -D warnings` + `fmt`
 clean across all feature sets, on Python 3.11–3.14 (single abi3 wheel) and free-threaded 3.14t.
 
@@ -373,6 +373,17 @@ Honest scope — inherent to a CF-compression + streaming design, not bugs:
    per-dimension penalties for 784 correlated pixels. At a coarser budget (`max_leaves=300`) the
    posterior wins for both GMM heads. For raw images prefer `kmeans` or a `projection`; the full
    derivation is in [`docs/MATH.md`](https://github.com/ilgrad/betula-cluster/blob/main/docs/MATH.md).
+
+## Compatibility
+
+**Saved models are not portable across major versions.** `Betula.save` writes a gzip-framed,
+version-tagged CBOR file; `Betula.load` accepts one schema version and refuses every other, naming
+the version it found. Re-save with the version that wrote the file before upgrading, or keep the
+training code and re-fit. The alternative — a reader for every past layout — would pin the internals
+of the CF-tree for the whole 1.x line, and the tree is where the research happens. Within a major
+version the format is stable, and a file written before the gzip framing existed still loads. Sizes,
+codec measurements and the rejected column-major layout are in
+[`docs/USAGE.md`](https://github.com/ilgrad/betula-cluster/blob/main/docs/USAGE.md#saving-and-loading-a-model).
 
 ## How to cite
 
