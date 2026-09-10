@@ -2115,7 +2115,7 @@ kwargs are forwarded to `fit_predict`.
 the head's seed fixed, which is the CF-tree's own sensitivity and what the paragraph above describes;
 `"seed"` holds one insertion order and moves the head's seed, which is the initialisation
 sensitivity (k-means++ draws, EM restarts) and returns confidence 1 for a deterministic head like
-`ward`; `"both"` moves both at once and cannot say which one a low score came from. Before 0.9.0
+`ward`; `"both"` moves both at once and cannot say which one a low score came from. Before 1.0.0
 there was only `"both"`, under the documentation of `"order"`.
 
 **The vote aligns one cluster to one cluster.** Runs are matched to the first run by a

@@ -6,208 +6,256 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
-### Fixed
-- **A corrupt model file loaded, and the panic arrived three calls later.** `load` checked the schema
-  version and nothing else, so any CBOR document that *deserialized* became a `Betula` — including
-  documents describing a tree no insert could have produced. That is the cause: a schema version says
-  which fields exist, not that their values address each other, and a file is input. Of seven
-  structural corruptions built by hand, **four panicked**: a root index past the arena, a child index
-  past it, a parent index past it and an empty arena all reached `index out of bounds` inside the
-  next `partial_fit`, and an entry whose mean was one coordinate wide reached it inside
-  `cluster_centers_`. A panic crossing the FFI boundary surfaces as `pyo3_runtime.PanicException`,
-  which is not a `ValueError` and is not something a caller can be asked to catch.
+## [1.0.0] — 2026-09-10
 
-  `load` now validates every tree it deserializes and raises `ValueError: corrupt model: …` naming
-  what disagrees. `CFTree::validate` checks that the arena is non-empty and `root` addresses it, that
-  every parent and child index is in range and points at the right arena, that no node is reachable
-  twice — which is what rules out a cycle — that every feature is self-consistent and carries the
-  tree's dimension, and that `branching`, `leaf_cap`, `max_leaves`, `threshold`, `huber_k` and
-  `balance` cannot leave an insert unable to terminate. All seven corruptions now fail at the
-  boundary that produced them. The check is a no-op for a tree this process built, which a test pins
-  across fresh, rebuilt, sharded and empty trees and all four feature models — a validator that
-  rejects a real tree would be worse than none.
+**1.0 is a promise about compatibility, not a claim about features.** Three things are frozen from
+this release on, and the rest of the crate is explicitly not:
 
-  Two things it deliberately does not do. Unreachable nodes and unreferenced entries are **not** an
-  error: compaction leaves both behind and they cost only memory. And the decompression bomb the
-  gzip framing invites was checked rather than assumed — `decode` streams out of the gzip member
-  instead of inflating to a `Vec` first, and a CBOR length header claiming `2^40` elements is
-  refused without reserving for it. Over **4 000** randomly corrupted files, every failure is a
-  `ValueError` and none is a panic.
-- **An `f32` tree stopped counting rows at `2^24`, and its reported variance drifted for every row
-  after that.** A cluster feature accumulates `w ← w + wᵢ`, and binary32 spaces its values 2 apart
-  from 16 777 216 upward, so a unit-weight row left the weight exactly where it was. Nothing else in
-  the summary stopped with it: the mean went on moving at `2^-24` per row and the scatter went on
-  accumulating against a weight that no longer grew, so the variance drifted with the fraction of
-  rows the weight had dropped — **1.0058** on unit-variance data 200 000 rows past the ceiling,
-  against 1.0000 in `f64`. `microcluster_weights_`, `cluster_sizes_` and every mass-weighted head
-  read the frozen total.
+- **The Python package is the supported surface.** Every keyword of `Betula`, every free function
+  and every fitted attribute is covered by semantic versioning.
+  `python/betula_cluster/__init__.pyi` pins the signatures and `mypy.stubtest` checks the compiled
+  module against it on every run of the gate, so a wrapper signature cannot drift without failing.
+- **The Rust crate's contract is thirteen modules** — `tree`, `feature`, `distance`, `bregman`,
+  `model`, `clustering`, `types`, `sparse`, `order`, `coreset`, `stream`, `window`, `validity`.
+  Everything else is `#[doc(hidden)]`: still reachable, because this repository's own benchmarks
+  call into it, and free to change shape in any release. `cargo semver-checks` now runs against
+  the last version published on crates.io on every pull request.
+- **A model file written by 1.x loads in every later 1.y.** `save` writes a gzip-framed,
+  version-tagged CBOR document; `load` accepts one schema version, refuses every other by name, and
+  validates the tree it decodes instead of trusting it.
 
-  The weight is now an `f64` running total whatever the tree's element type, in all four cluster
-  features, and `spherical`'s scalar scatter with it. That is the split the arithmetic asks for
-  rather than a concession to `f32`: a weight's precision is set by how many rows a leaf absorbs,
-  which the caller does not choose, while a mean and a per-coordinate scatter are bounded by the
-  data, which the caller picked the dtype for. Both widened fields are `O(1)` per leaf, so an `f32`
-  tree still costs half the memory of an `f64` one. What a caller reads back is rounded to the tree's
-  own type on the way out — one part in 16 777 216 of a total that is itself exact. The `UserWarning`
-  that used to name the approaching ceiling is gone with the defect it warned about.
+What the promise costs is stated rather than hidden. `cargo semver-checks` reports **six** breaking
+classes against 0.8.0: three from curating the surface (`enum_now_doc_hidden`,
+`function_now_doc_hidden`, `struct_now_doc_hidden`) and three from signatures that gained a
+parameter or moved to a `try_` form (`function_parameter_count_changed`,
+`method_parameter_count_changed`, `inherent_method_missing`). On top of those, an `f32` tree past
+2²⁴ rows now computes a different — correct — weight and variance, where it used to stop counting.
+All of it is below, and this is the release to take it in.
 
-  **Nothing already measured moved, and that was checked rather than argued.** Across 48 cells
-  (2 fixtures × 2 dtypes × 6 feature/head pairs × 2 leaf budgets) **no `f64` cell changed at all**
-  and **no labels changed anywhere**, `f32` included; the only movement is `heaviest_leaf_width` in
-  18 of the 24 `f32` cells, by at most **6.5e-7** relative, since the width is derived from the
-  totals that widened. Every published table in
-  [`bench/RESULTS.md`](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md) — all
-  `f64` — therefore stands unchanged. The on-disk format needed no bump either: CBOR tags a float
-  with its width and serde's `f64` visitor accepts an `f32` value, so `SCHEMA_VERSION` stays **2**
-  and a model written by the released 0.6.0 wheel still loads, which a test asserts. Insert-path
-  cost, three sessions per arm alternating builds on 200 000 × 32 at `max_leaves = 2000`:
-  `f32`/`spherical` **+1.5 %**, `f32`/`full` **+1.8 %**, `f32`/`diagonal` and all three `f64` cells
-  unchanged.
+Explicitly **not** part of 1.0: being fastest, having every head, or matching a specialist library
+on its own contest. `README.md` names the three cases where a different tool is the right answer.
 
-  **One residual is left in deliberately.** The per-axis and full-matrix scatters of `diagonal`,
-  `full` and `fd` stay in the tree's element type, so past `2^24` rows in a single leaf the scatter
-  is now the term that saturates and the variance comes back **0.89 % low** where the defect had it
-  0.58 % high. Widening those was implemented and measured before being rejected: **+11 %** on the
-  insert path and an `f32` tree three quarters the size of the `f64` one instead of half, charged to
-  every `f32` user to correct a leaf that has to be past 16.8 M rows before it is wrong at all.
-  `an_f32_diagonal_leaf_past_the_ceiling_still_loses_scatter` pins the figure and
-  [`docs/USAGE.md`](https://github.com/ilgrad/betula-cluster/blob/main/docs/USAGE.md) states it.
-- **`leaf_refit` handed back leaf statistics for a partition the tree it returned could not
-  produce, and at a large budget that misrouted 15 % of the rows.** The pass routes every row through
-  the finished tree and rebuilds each leaf CF from exactly the rows it won — then, if any entry won
-  none, it dropped those and rebuilt the node structure from the survivors. That rebalance replaces
-  the tree that did the routing, so the CFs describe a partition `predict` no longer returns: a row
-  descends the *new* structure and is handed an entry accumulated from different rows. Measured on
-  4 000 8-D points at `max_leaves = 160`, the routed codebook error read **26.54 against an exact
-  4.72**, 14.8 % of rows on the wrong entry, p99 244 — while the entries themselves were fine, a
-  beam-4 route reading the exact answer with no misroutes at all.
+### Added
+- **A "choosing a head" table in the README, and the three cases where the answer is a different
+  library.** `docs/USAGE.md` has documented every head for several releases and its twenty-row table
+  answers "which one" — but only once you are already reading it. The README said which *datasets*
+  betula-cluster is for and never which of the twenty-seven `method` values to type, so the first
+  question a new reader has was answered two clicks away. It now carries a five-family table
+  (centroid / probabilistic / density / graph / directional) naming a head to start from and what to
+  reach for next, above a link to the full one.
 
-  A rebalance is now always followed by another route, so the statistics and the structure describe
-  the same partition. Over 150 cells (5 budgets × 10 blob fixtures × `leaf_refit` 1/2/3) the routed
-  error rises by more than 5 % in **2** of them against 8, worst **1.33×** against **5.25×**, and the
-  worst exact nearest-centre ratio falls 1.32 → **1.13**; on the cell that blew up every one of the
-  107 surviving prototypes now wins a row, where the un-refit tree leaves 19 of 144 winning none.
-  `bench/results_refit.csv` is re-run: the pass pays in 6 of 12 column-pairs with mean +0.006
-  (arrival) and +0.009 (`canonical_order`), against +0.005 / −0.001. **Labels move** wherever
-  `leaf_refit > 0`, and a pass that drops an entry now costs two routes rather than one — measured at
-  **1.8–2.5×** a plain fit for `leaf_refit=1` against 1.4–1.8×.
+  The exclusions are written in the same place rather than left implicit, each with the measurement
+  behind it. `N` in the low thousands: the tree stops compressing — on `digits` (1 797 points) it
+  holds **1 797 leaves and rebuilds zero times**, at `max_leaves` of both 2 000 and 4 000, one leaf
+  per point — which is why that row is a tie (0.467 against scikit-learn's 0.468) rather than a win.
+  Density structure that overlaps: `fast-hdbscan` recovers the 100 k blob fixture at ARI **0.910
+  against our 0.478**, and being 9× faster on half the memory is the trade, not a rebuttal. And a
+  mixture whose likelihood has to be a raw-point likelihood: responsibilities are tied within a leaf
+  and every `ln p` is computed from `(n, μ, S)`, so a per-point density, a BIC against a model
+  fitted to raw points, or a likelihood-ratio test are not what comes out.
 
-  How many discretionary rebalances to take is a cap on work with both extremes measured, recorded on
-  `REFIT_REBALANCE_ROUNDS` in `src/tree.rs`: never rebalancing lets a shallow tree drift until its own
-  descent cannot reach its prototypes (39 → 12 entries, exact error **tripled**, on 1 of 50 fixtures),
-  and rebalancing on every drop cascades to 59 routing passes and prunes 314 entries to 120. One is
-  the best of the five policies measured on every column.
-- **`projection="weighted-nmf"` no longer depends on how the threads interleaved.** The
-  transpose-product `WᵀX` is the projection's hot loop and was summed with a rayon
-  `fold`/`reduce`, which splits by work-stealing and merges in completion order. Floating-point
-  addition does not associate, so the result was a function of the run, not of the input: measured
-  on a 19 998-row fixture, **20 runs at `RAYON_NUM_THREADS=8` produced 20 different `components_`
-  bit patterns**, while the single-threaded run was stable. The sum is now taken over fixed 64-row
-  chunks and merged in index order, which is one order for one input at any pool size, and a
-  subprocess test pins it. The documented promise that the thread count does not enter the answer
-  was true everywhere else and is now true here; `components_` values shift in their last few bits
-  against 0.8.0.
-- **Every `bench/` harness now loads its real-data fixture from one module, and the Zador control
-  stops describing data no cell in its own table had seen.** A "20 000-row draw from covtype" was
-  spelled out inline in five separate files, and one-off scripts had written further variants: the
-  quality tables draw with `rng(seed).choice` and standardize *that* subsample, while the order and
-  budget studies standardize all 581 012 rows and then take a fixed `rng(0)` permutation. The same
-  `ward` head reads **0.0861** under the first rule and **0.1416** under the second, and
-  `bench/RESULTS.md` printed both under the label `covtype-20k`. `bench/_fixtures.py` is now the only
-  definition of any of them and every harness loads through it; the rules are named (**sub** /
-  **pop** / **raw**), tabulated in `bench/RESULTS.md`, and the three sections that publish a **sub**
-  fixture under a 20 k label say so in place. All five rewired loaders return **bit-identical** arrays
-  to the ones they replace across 16 (dataset × seed) cells, so nothing published moved for the
-  refactor.
+- **`n_init` — the k-means restart count is a parameter.** Lloyd converges to a local optimum of the
+  inertia, so the k-means heads have always kept the best of four k-means++ draws; the count was a
+  constant. On MNIST-20k it is worth choosing: 25 restarts read ARI **0.3303** against the
+  four-restart default's 0.3069 and `sklearn.cluster.KMeans`'s 0.3244, in half scikit-learn's wall
+  clock and 3.0× the default fit's (median of seeds 0/1/2, the published harness). It is not a free
+  win and the docs say so — on `digits` the same 25 restarts score *below* 10, and on covtype-20k the
+  column has no direction, because the draw is selected by inertia and inertia is not ARI. The
+  default is unchanged, so no existing fit moves.
 
-  One number did move, and it was a defect: `bench/zador_fit.py`'s TWO-NN cross-check built its own
-  subsample — unstandardized, `rng(0).choice` against the sweep's `rng(0).permutation`, and MNIST
-  taken off the front of the file rather than drawn at all — so it estimated the intrinsic dimension
-  of data the budget sweep never summarised. It now loads through the loader `bench/leaf_budget.py`
-  itself fits: **4.61 → 5.28** on covtype, 12.91 → 12.94 on
-  digits, 18.65 → **18.50** on MNIST. Re-fitting that table against the `results_budget.csv` the
-  rebuild change rewrote also retires a published reading: `digits` `ward` was the shallowest slope
-  of the four (`d_eff` 3.67 ± 0.48 against euclidean's 2.85 ± 0.42) and is now the steeper of the
-  pair (3.47 ± 0.39 against 3.73 ± 0.43) — under one standard error either way, so the fit never
-  resolved a routing effect on `digits`.
-- **The three studies that swept `gmm` on the refused feature are re-run, and one published
-  conclusion changes sign.** `bench/results_budget.csv`, `bench/results_imbalance.csv` and
-  `bench/results_order.csv` had their `gmm` columns measured with `feature="spherical"`, which the
-  library now rejects; all three were re-run on 2026-09-09 with the harnesses' current
-  `feature="diagonal"`. Only `gmm` cells moved — 76 of 92 in the budget study against **0 of the
-  160** others, which is the control that says the rest of the record is reproducible to the last
-  digit.
+  Only the heads whose labels come from an inertia-selected k-means take it (`kmeans`,
+  `spherical-kmeans`, `spectral`, and the COP-KMeans behind `fit_constrained`). The EM heads select
+  their restarts by likelihood, and the same sweep over the GMM restart count was measured
+  non-monotone on all three datasets, so `n_init` on a head that would ignore it raises a
+  `ValueError` instead of passing silently. Rust: `Model::fit` and the `kmeans_auto` / `spectral`
+  entry points take the count (`0` = the default), and `KMEANS_N_INIT` is public.
 
-  The conclusion that changes is `canonical_order`'s cost. It was published as mean **+0.0136** over
-  27 cells, "positive only because of two cells where it rescues a head the arrival order was
-  collapsing" (`digits, 360, gmm` 0.1738 → 0.5146; `mnist-10k, 1000, gmm` 0.0551 → 0.2457). Both
-  were the isotropic collapse, so the flag was being credited for rescuing a fit that is no longer
-  offered. On the diagonal feature those cells read 0.4721 → 0.4195 and 0.2223 → 0.2055 — the
-  arrival order ahead in both — and the grid-wide mean is **−0.0064**, median −0.0052, non-negative
-  in 9 of 27 (was 10). The invariance itself is untouched: 27 of 27 canonical cells still read
-  spread 0.0000 and pairwise ARI 1.0000. `docs/USAGE.md` and `bench/RESULTS.md` carry the corrected
-  numbers and say what they replaced.
+- **The ELKI tree gap has a mechanism: how the final leaf set is chosen.** Q5 left our default
+  D0/D0 geometry 7.6–8.5 % behind `BetulaLeafPreClustering` in WCSS at a matched leaf count, with
+  three candidates on file (split rule, rebuild threshold, absorption tie-break). It is none of
+  those: it is how `CFTree::rebuild` chooses the final leaf set — it merges the *closest* pairs, and
+  only pairs *inside one leaf node*. Priced
+  exactly in cluster-feature arithmetic — a merge-only compaction is a closed form, so an offline
+  globally-cheapest-pair merge is a bound — a summary of exactly the same size built from a 2×
+  finer tree reads **0.72× our WCSS on `digits` and 0.68× on covtype-50k**, i.e. 0.78× and 0.73× of
+  ELKI's. The 8 % is the small end of what the lever is worth. Not a free fix: the finer build holds
+  2× the leaves and the global merge is `O(m²)`, which is the trade the current policy was chosen
+  under. Written up in `research/RESULTS-estep.md` with the numbers and the shape of a fix that
+  keeps both bounds. E13 then separated the two halves of that policy: the ranking is 21 of the 28
+  points and the locality is 7, so the fix in **Changed** above needs neither the finer build nor the
+  global merge.
 
-  The budget study's other half is the refusal's confirmation: on the diagonal feature `gmm` does
-  not collapse anywhere (`digits` at ×2.0 0.0088 → **0.4403**, MNIST at ×5.5 0.0618 → **0.2850**),
-  and it becomes the strongest head on `digits` at ×4.2 and on MNIST below ×20. The `spherical`
-  numbers are kept, dated, as the evidence for the refusal rather than as current results.
-- **`canonical_order` refuses more rows than a `u32` rank can address, rather than wrapping.**
-  The permutation is a `Vec<u32>` — four bytes per row instead of eight, which is 17 GB of index at
-  the ceiling — and `(0..n as u32)` truncates silently past `2³² − 1` rows: the result is a
-  valid-looking order over the wrong rows, with the tail of the matrix never visited. Both entry
-  points now return an error there, `canonical_permutation` alongside its CSR twin, and it reaches
-  Python as a `ValueError`. **Rust API (breaking):** `order::canonical_permutation` returns
-  `Result<Vec<u32>, &'static str>`, matching `canonical_permutation_csr`, and `order::MAX_ROWS` is
-  public. The arrival-order build is unaffected and has no ceiling.
+- **`absorb="chi2"` is documented as an operating point, with the measurement that says it is not a
+  general win.** T22 turned up the gate reading 0.1199 with 46 leaves on covtype where the six
+  radius criteria read 0.086 with ~3 600, which looked like a lever nobody had written down. Swept
+  over three datasets × three heads × three budgets (medians of seeds 0/1/2) it is not: the gate
+  wins on covtype-ward (+0.034) and on tight budgets (MNIST-10k ward at 500 leaves, 0.1601 →
+  0.2834), loses on `digits`-ward (0.6428 → 0.4456) and on MNIST at a generous budget (0.4275 →
+  0.3209), and is mixed on the k-means and GMM heads. What generalises is that it *chooses its own
+  resolution* — 46 leaves on covtype and 920 on MNIST whether you ask for 500 or 4 000 — which makes
+  it a cheap operating point rather than a better criterion: the MNIST cell above is 17× the wall
+  clock (7.38 s → 0.42 s) for −0.107 ARI. `docs/USAGE.md` now carries the table.
 
-  The row order is now computed once at the Python boundary and handed down, rather than inside the
-  build: `balance="auto"` builds the tree twice to decide, and was paying for the `O(n · dim)`
-  projection and the `O(n log n)` sort on both passes. No label moves — the order is a function of
-  the data, so computing it once and computing it twice give the same ranks.
-- **Three documentation claims that were no longer true, and a check so the counts cannot rot
-  again.** The README and the JOSS paper quoted a 457-case Python suite and 728 Rust tests against
-  an actual 547 and 807, and the README's two sentences disagreed with each other; the counts are
-  now derived by `scripts/check_test_counts.py`, which collects both suites without running them
-  (`cargo test -- --list`, `pytest --collect-only`) and fails on any published number that has
-  drifted. The README's "always faster — the unconditional win … this holds for *every* method at
-  *every* size" is now scoped to what was measured — faster and lighter than scikit-learn at every
-  published size and budget — with the two rows we lose named next to it: scikit-learn is faster on
-  raw-TF-IDF 20-newsgroups at a better ARI, and `fast-hdbscan` reads 0.910 against
-  our 0.478 on 100 k blobs. The paper's "every benchmark figure is the median of three seeds" is
-  true of the quality tables only, and now says so; its mutation-baseline sentence no longer claims
-  an argument for *every surviving mutant* when what exists is an argument for every *recorded*
-  one. `Betula.save`'s docstring said bincode; the format has been CBOR since `ciborium` replaced
-  it.
-- **The symmetric eigensolver's convergence test is relative to the matrix, not to `1e-15`.**
-  `jacobi_eigen`'s fixed absolute tolerance answered two questions wrongly at once. Below a
-  `‖A‖_F` of about `1e-15` it was satisfied *before the first rotation*, so the untouched diagonal
-  came back as the spectrum: on a 4×4 fixture scaled by `1e-18`, `octave-cli`'s `eig` reads
-  `[-0.4755, 3.3895, 4.0718, 7.2641]` after rescaling and the old code read
-  `[-0.890, -0.812, -0.440, -0.114]` — four wrong values, no error, no warning. At unit scale it was
-  unreachable instead: `off(A)` sums `n(n−1)/2` entries, so every one of them has to fall below
-  `1e-15/n` first, and the loop always spent its whole 100-sweep budget in `f64` and in `f32`, where
-  `eps` is `1.2e-7` and the threshold is meaningless. The test is now `off(A) ≤ eps_R · ‖A‖_F`
-  (Golub & Van Loan, Alg. 8.4.3), which makes the answer invariant under scaling the input by a
-  positive constant, and a golden test pins five scales from `1e18` to `1e-30` against `octave-cli`
-  at 13 significant digits. A 32×32 `f32` decomposition drops from ~520 µs to ~348 µs on the
-  measurement machine (three alternating repetitions); `f64` is unchanged within noise. **No label
-  moves**: `spectral` and `leiden` on `digits` at seeds 0/1/2 in both precisions return
-  byte-identical labels before and after.
-- **`cholesky_lower` rejects a non-finite partial sum.** `NaN <= 0.0` is false, so a non-finite
-  entry passed the positive-definiteness test, `sqrt` propagated it, and every `logdet` and
-  Mahalanobis distance downstream came back `NaN` — a full-covariance GMM component with a `NaN`
-  scatter looked like a valid factorisation rather than a rejected one.
-- **`threshold="auto"` no longer breaks the `canonical_order` guarantee.** `canonical_order=True`
-  promises a summary that is a function of the row multiset; the automatic threshold is piloted on a
-  bounded subsample, and that subsample was drawn by row *position*, so a permutation handed the
-  pilot different rows and it converged to a different threshold — the order dependence was back
-  before the tree was built. Measured on a 12-dimensional 4-blob probe, one permutation moved the
-  pilot from 17.184 to 17.256 and the realised tree from 284 leaves to 279, with the labels no
-  longer identical. The pilot rows are now taken evenly spaced along the canonical order, which is a
-  function of the content, so the threshold, the leaf count and the labels are all invariant again.
-  Only `canonical_order=True` with `threshold="auto"` is affected, and its labels change; the
-  arrival-order path keeps the uniform draw and is untouched.
+- **The `covtype` / `ward` benchmark loss has a mechanism on record, and it is not the one that was
+  filed.** The cell (`betula-ward` 0.086 against `sklearn-birch` 0.131) was attributed to mass
+  imbalance; Q1 measured that absent, and this separates the rest. Not the leaf budget — 500 to
+  16 000 leaves reads 0.0857–0.0900, flat over a 32× range. Not the leaf feature — `spherical` and
+  `diagonal` agree to four decimals, as the ward linkage's inputs say they must. Not the absorption
+  criterion within the radius family — six of them read 0.0859–0.0864 — though the mass-invariant
+  `chi2` gate reads **0.1199 with 46 leaves**, the rival's score at a 78× smaller summary. It is the
+  *fixture*: `bench/comprehensive.py` standardises the 20 000-row subsample, `bench/_worker.py`
+  standardises all 581 012 rows and then subsamples, and the two draws differ as well. Crossed, ward
+  reads 0.0861 / 0.1176 / 0.1059 / **0.1416** while `sklearn-birch` sits at 0.1265–0.1306 throughout
+  — the sensitivity is ours, and the 44 binary one-hot columns carry it. The scoreboard cell stands
+  (the rival is measured on the same rows), with the new mechanism written next to it in
+  `bench/RESULTS.md`.
+
+- **The spectral head's restart count is measured, and the default stays 4.** `n_init` became
+  reachable on `method="spectral"` in 0.8.0's successor without ever being swept there. It is the
+  one head where a restart is nearly free — its k-means runs on a `k`-dimensional embedding of at
+  most `max_leaves` rows — and the measurement says so: a hundred restarts cost 0.20 s → 0.28 s on
+  `digits` and 0.39 s → 0.44 s on covtype-20k, putting the default four at 0.5–2 % of the fit. It
+  also says the restarts buy nothing, which is why the default does not move: `moons` 0.9999 and
+  `circles` 1.0000 are identical to four decimals at 4, 10, 25 and 100, `digits` moves +0.0009, and
+  covtype-20k's −0.0103 sits well inside its own 0.0657–0.0992 seed spread. Documented in
+  `docs/USAGE.md` next to the k-means table, where the curve is *not* flat.
+
+- **`betula --n-init N` (CLI).** The binary passed the `0` sentinel, so `--method kmeans` was stuck
+  on four restarts while both Python entry points could choose. It carries the same head rule as
+  the library: `--n-init` on `gmm`, `gmm-full` or `ward` is an error rather than a silently ignored
+  flag, and `--n-init 0` is refused because zero is the engine's "take the default" sentinel and
+  not a fit anyone means to ask for.
+
+- **`simplified_silhouette` — the silhouette a summary can actually carry.** `validity()` now
+  reports a fourth index: Hruschka's simplified silhouette, mass-weighted over leaves, measuring to
+  the cluster **centroid** rather than to the members. The classical silhouette needs `Σ‖x − y‖`,
+  which is degree 1 in the norm and provably not a function of a cluster feature (a Z3 witness:
+  `{−1, −7/12, 0, 1}` and `{−4/3, 0, 0, 3/4}` share `n`, `Σx`, `Σx²` and differ in `Σ|xᵢ − xⱼ|` by
+  more than 0.1), so this is a declared surrogate, not an approximation that tightens.
+
+  The two losses are measured separately and are not the same size. The *summary* costs 0.0004 on
+  covtype-20k at 5.6 points per leaf, at most 0.013 over the `k`-grid on 784-dimensional MNIST, and
+  exactly nothing on a tree with one leaf per point, where a unit test pins it to the point-level
+  definition. The *surrogate class* shifts the level a long way — 0.4393 against scikit-learn's
+  0.1420 on digits — so the number ranks configurations of one dataset and must not be compared to
+  a published `silhouette_score`. Rank agreement with a 10 000-point sampled classical silhouette
+  is τ = +0.71 on covtype, +0.62 on digits and −0.24 on MNIST, where the *point-level* surrogate
+  disagrees harder still (−0.43): the disagreement is the surrogate, not the summary.
+
+  `tune()` can now select on it — `objective="simplified_silhouette"` or `"medoid_silhouette"` —
+  scoring off the leaves at 39 ms per trial on MNIST-20k against 1456 ms for the sampled point
+  silhouette, with no sampling seed in the answer. Rust: `validity::simplified_silhouette` is
+  public.
+
+- **`balance="auto"` — the mass cap as a decision the data makes.** `balance` bounds how much of the
+  total mass one leaf may hold, and it has a known domain: over 27 cells (digits / covtype-20k /
+  mnist-10k × `kmeans`/`ward`/`gmm` × three budgets) a fixed cap gains **+0.08 to +0.25 ARI on all
+  six cells where the heaviest leaf holds more than half the mass**, and stays inside seed noise on
+  the twelve below 0.1. That statistic is now readable by the estimator itself: `"auto"` summarises
+  once, reads the share off the finished tree and, only if it passes 0.5, summarises the same rows
+  again with the cap on from the first point. Re-measured over the same 27 cells, it is
+  **bit-identical to `balance=None` on all 21 non-firing cells** and lands on the `balance=4.0`
+  answer on all six that fire (+0.0785 to +0.2514). The price is one extra pass, paid only where it
+  fires.
+
+  `partial_fit` cannot summarise the same rows twice, so a stream gets a weaker mechanism instead:
+  the tree watches its own mass distribution as it builds and arms the cap when a leaf passes half
+  the mass. A cluster feature does not split back into points, so a leaf that has already absorbed
+  the core keeps it — measured on mnist-10k at 250 leaves the streaming arming recovers +0.006 to
+  +0.037 where the two-pass recovers +0.167 to +0.251. Both are documented in `docs/USAGE.md`; the
+  default is still `None`.
+
+  Not everything the parameter was hoped to fix is a mass problem: the published `covtype`/`ward`
+  cell (ARI 0.086 against sklearn-birch's 0.131) has a heaviest-leaf share of **0.041**, and a fixed
+  cap moves it by −0.0001. `"auto"` correctly does nothing there.
+
+- **`CFTree::top1_mass`** (Rust) — the heaviest leaf's share of the mass, the diagnostic the docs
+  already told readers to compute by hand.
+
+- **A `float32` tree now warns before its weights stop counting.** An `f32` leaf saturates at
+  2²⁴ = 16 777 216 points: binary32 spaces its values 2 apart from there upward, so a unit-weight
+  row leaves the weight exactly where it was. Measured, 16 781 312 identical `float32` rows into one
+  leaf report a weight of 16 777 216 against an exact `float64` control. The mean and the scatter do
+  not stop with it — the mean becomes an exponential moving average of span 2²⁴ and the variance
+  inflates in proportion to the rows the weight dropped (1.0105 against 1.0000 after 200 000 rows
+  past the ceiling) — so the summary degrades silently rather than erroring. The estimator now
+  raises a `UserWarning` naming the heaviest leaf's mass when it passes 2²³, one doubling short of
+  the ceiling and while every summary is still exact, and `docs/USAGE.md` documents the limit and
+  the three ways out. This is a warning, not a fix: the accumulators are still `f32`, and widening
+  them is a persisted-format change.
+
+- **`assign::AssignPlan` — pruned exact nearest-centroid assignment (Rust).** A squared Euclidean
+  distance is a sum of non-negative terms, so any prefix of it is a lower bound on the whole, and a
+  candidate whose prefix already exceeds the best distance so far cannot win. `AssignPlan` walks the
+  dimensions in stages and drops candidates as soon as that happens. It returns the argmin a full
+  scan returns, ties broken by the lower index; there is no error budget and no parameter to tune.
+
+  Two levers, both measured. A **hint** (the row's label from a previous iteration) starts the
+  threshold at that candidate's distance instead of infinity, which takes the dimensions read from
+  45–60 % down to about 20 %. A **dimension order** by descending between-centroid variance prunes
+  soonest — on mnist at `k=10`, 42.7 % of the dimensions read against 66.6 % in the natural order.
+
+  Fewer reads is not automatically less time and the module documentation says where it is not.
+  `cargo bench --bench assign` on a Ryzen 7 5800HS, single-threaded, hinted, against a full scan:
+  **0.3–0.8× below `d = 128`** (the branchless AVX2 row kernel wins outright), **1.8–2.1× at
+  `d = 784–1024` for `k ≥ 100`**, **8.2× at `d = 1024, k = 1000`**, and 3.0–3.9× when the clusters
+  are well separated. The dimension order is a `k` decision rather than a `d` one: below about
+  `k = 100` the per-point gather costs more than the extra pruning buys, and `identity_order` is
+  faster. Nothing in the library calls it yet — this is the kernel, and each call site gets its own
+  measurement before it is wired in.
+
+  The statistical alternative was measured and rejected: SuperKMeans (arXiv 2603.20009) rotates the
+  data and prunes on a Beta tail, reading 34.1 % of the dimensions on mnist at `k=10`, but the
+  rotation costs `d²` per point, which at a CF summary's `k` is more than the assignment it
+  accelerates. Its own code disables the path below `d = 128` or `k ≤ 256`.
+
+- **`route_beam` — a wider routing descent, off by default.** The tree descent commits to one child
+  per level and never backtracks, which is why a quarter to a half of all rows do not reach their
+  nearest microcluster (see *Fixed*, below). `route_beam=b` keeps the `b` nearest nodes at each level
+  instead of one and scans the entries of every leaf the frontier ends on. It reaches every routing
+  entry point — `predict`, `predict_proba`, `assign_microclusters`, `outlier_scores`, and the sparse
+  CSR path — and nothing else: insertion, the leaf clustering and `leaf_refit` are untouched, so the
+  tree and the head are identical at every width and only the row → microcluster map moves.
+
+  **The default is `1`, which is the descent this library has always done**, so no label changes
+  unless the parameter is set. Measured on `ward` at `max_leaves=4000`, median of seeds 0/1/2: the
+  share of re-routed rows converges to the independently measured exact-scan misroute rate on all
+  five datasets (within 0.1–0.8 points), which is what shows the beam finds the exact nearest entry
+  rather than merely a different one. ARI moves on the two datasets whose classes interleave —
+  **mnist +0.035 (0.3452 → 0.3801 at `b=8`)** and **digits +0.025 at `b=2`** — and does not move at
+  all on `blobs`, `highdim` or `covtype`, where re-routing 25–44 % of rows lands them in a different
+  microcluster of the same cluster.
+
+  The cost inverts the usual trade: `blobs`/`highdim`/`digits`/`covtype` pay **11–15×** on routing at
+  `b=16`, `mnist` pays **3.0×**, because at `d=784` the node features are 24 MB against a 16 MB L3
+  and the narrow descent is already stalled on memory. End to end that is small: routing is 0.53 s of
+  a 5.82 s mnist fit, so `b=8` adds about 0.6 s.
+  **The default stays at 1 on the measurement, not on compatibility**: `b=8` costs 6–10×
+  the routing for zero ARI on three of five datasets, so no single width is right for the table and
+  the choice belongs to the caller. Only heads that assign by microcluster (`ward`, `spectral`,
+  `leiden`, `hdbscan`) can see the parameter at all, and it is an **estimator** parameter — the free
+  `fit_predict` / `fit_predict_sparse` route with the plain descent. Full sweep in
+  [`bench/RESULTS.md`](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md);
+  `CFTree::nearest_entry_beam` is public on the Rust side.
+
+- **A wheel for free-threaded CPython (3.14t), and a CI gate on what it claims.** abi3 cannot express
+  a `Py_GIL_DISABLED` build — such an interpreter exposes SOABI `cpython-314t` and no abi3 tag at all
+  — so the single `cp311-abi3` wheel matched nothing on 3.14t and `pip install betula-cluster` there
+  fell back to compiling from source, which needs a Rust toolchain the user did not ask for. maturin
+  drops abi3 for these on its own ("abi3 does not yet support CPython 3.14t … artifacts will be
+  version-specific"), so all that was missing was the build arm: Linux x86-64 + aarch64, macOS arm64
+  and Windows x64. macOS x86-64 is deliberately absent — the abi3 arm cross-builds it on an arm64
+  runner precisely because abi3 needs no interpreter at build time, and a version-specific build does.
+
+  Measured on cpython-3.14.7+freethreaded before adding any of it: the module imports without
+  re-enabling the GIL, labels are correct, and four Python threads each running a full `fit_predict`
+  over 6000×8 finish in **0.26 s** against **0.22 s** for one — 4× the work for 1.2× the time,
+  alternated A-B-A-B. The GIL check is now a CI assertion rather than a note, because a `#[pymodule]`
+  declaring `Py_MOD_GIL_USED` turns free threading back off for the *whole process* on import and
+  does it with a warning rather than an error; a wheel that did that would be worse than no wheel.
+  The `Free Threading :: 2 - Beta` classifier is deliberately not `3 - Stable`: this is one
+  interpreter on one platform, and no test yet drives the extension from several threads at once.
+
 
 ### Changed
 - **The Rust crate's public surface is curated, and the crate now says which modules the contract
@@ -233,7 +281,8 @@ All notable changes to this project are documented here. The format follows
   all of them already in this section: `insert` / `predict` renamed to their `try_` forms on
   `CFTree`, `Model`, `DenStream`, `DbStream` and `WindowStream`; the arity of `Model::fit`,
   `CFTree::build_sharded`, `clustering::spectral` and `clustering::kmeans_auto`; and this hiding.
-  That is what makes the next release a major one.
+  That is what makes this release a major one.
+
 - **`save` gzip-frames the file, and what `load` promises across versions is now written down.** A
   model was bare CBOR, and the bulk of one is a leaf centroid matrix that repeats heavily down the
   leaves — dead dimensions, shared zeros, near-duplicate centroids. Framing it in gzip takes
@@ -270,6 +319,7 @@ All notable changes to this project are documented here. The format follows
   which siblings merge, so different centroids end up adjacent. Encoding each per-dimension vector
   as one CBOR byte string instead of a float array was measured on the same files and is rejected
   too: **8 %**. Neither buys a permanent format complication.
+
 - **A rebuild now merges the *cheapest* sibling pairs, not the closest ones — the leaf summary is
   21 % tighter and every published label may move.** `CFTree::rebuild` picked each entry's partner
   under the routing measure and ranked the pairs by the absorption gap. Under the default D0/D0
@@ -309,6 +359,7 @@ All notable changes to this project are documented here. The format follows
   quoting the old ones, and none of them changed: the tree they measure did. Full write-up, including the five
   non-default geometries and the ten-seed spectral control, in
   [research/RESULTS-estep.md](https://github.com/ilgrad/betula-cluster/blob/main/research/RESULTS-estep.md).
+
 - **The speed half of the benchmark is re-timed on the same tree, and the headline number moves from
   8.7× to 10.8×.** The rebuild change removes work — rebuilds fall 27 → 5 on covtype-50k and 23 → 8
   on digits — and the previous edition published that as an argument for keeping stale timings. It is
@@ -331,198 +382,6 @@ All notable changes to this project are documented here. The format follows
   unreliable in
   [bench/RESULTS.md](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md).
 
-### Added
-- **A "choosing a head" table in the README, and the three cases where the answer is a different
-  library.** `docs/USAGE.md` has documented every head for several releases and its twenty-row table
-  answers "which one" — but only once you are already reading it. The README said which *datasets*
-  betula-cluster is for and never which of the twenty-seven `method` values to type, so the first
-  question a new reader has was answered two clicks away. It now carries a five-family table
-  (centroid / probabilistic / density / graph / directional) naming a head to start from and what to
-  reach for next, above a link to the full one.
-
-  The exclusions are written in the same place rather than left implicit, each with the measurement
-  behind it. `N` in the low thousands: the tree stops compressing — on `digits` (1 797 points) it
-  holds **1 797 leaves and rebuilds zero times**, at `max_leaves` of both 2 000 and 4 000, one leaf
-  per point — which is why that row is a tie (0.467 against scikit-learn's 0.468) rather than a win.
-  Density structure that overlaps: `fast-hdbscan` recovers the 100 k blob fixture at ARI **0.910
-  against our 0.478**, and being 9× faster on half the memory is the trade, not a rebuttal. And a
-  mixture whose likelihood has to be a raw-point likelihood: responsibilities are tied within a leaf
-  and every `ln p` is computed from `(n, μ, S)`, so a per-point density, a BIC against a model
-  fitted to raw points, or a likelihood-ratio test are not what comes out.
-- **`n_init` — the k-means restart count is a parameter.** Lloyd converges to a local optimum of the
-  inertia, so the k-means heads have always kept the best of four k-means++ draws; the count was a
-  constant. On MNIST-20k it is worth choosing: 25 restarts read ARI **0.3303** against the
-  four-restart default's 0.3069 and `sklearn.cluster.KMeans`'s 0.3244, in half scikit-learn's wall
-  clock and 3.0× the default fit's (median of seeds 0/1/2, the published harness). It is not a free
-  win and the docs say so — on `digits` the same 25 restarts score *below* 10, and on covtype-20k the
-  column has no direction, because the draw is selected by inertia and inertia is not ARI. The
-  default is unchanged, so no existing fit moves.
-
-  Only the heads whose labels come from an inertia-selected k-means take it (`kmeans`,
-  `spherical-kmeans`, `spectral`, and the COP-KMeans behind `fit_constrained`). The EM heads select
-  their restarts by likelihood, and the same sweep over the GMM restart count was measured
-  non-monotone on all three datasets, so `n_init` on a head that would ignore it raises a
-  `ValueError` instead of passing silently. Rust: `Model::fit` and the `kmeans_auto` / `spectral`
-  entry points take the count (`0` = the default), and `KMEANS_N_INIT` is public.
-- **The ELKI tree gap has a mechanism: how the final leaf set is chosen.** Q5 left our default
-  D0/D0 geometry 7.6–8.5 % behind `BetulaLeafPreClustering` in WCSS at a matched leaf count, with
-  three candidates on file (split rule, rebuild threshold, absorption tie-break). It is none of
-  those: it is how `CFTree::rebuild` chooses the final leaf set — it merges the *closest* pairs, and
-  only pairs *inside one leaf node*. Priced
-  exactly in cluster-feature arithmetic — a merge-only compaction is a closed form, so an offline
-  globally-cheapest-pair merge is a bound — a summary of exactly the same size built from a 2×
-  finer tree reads **0.72× our WCSS on `digits` and 0.68× on covtype-50k**, i.e. 0.78× and 0.73× of
-  ELKI's. The 8 % is the small end of what the lever is worth. Not a free fix: the finer build holds
-  2× the leaves and the global merge is `O(m²)`, which is the trade the current policy was chosen
-  under. Written up in `research/RESULTS-estep.md` with the numbers and the shape of a fix that
-  keeps both bounds. E13 then separated the two halves of that policy: the ranking is 21 of the 28
-  points and the locality is 7, so the fix in **Changed** above needs neither the finer build nor the
-  global merge.
-- **`absorb="chi2"` is documented as an operating point, with the measurement that says it is not a
-  general win.** T22 turned up the gate reading 0.1199 with 46 leaves on covtype where the six
-  radius criteria read 0.086 with ~3 600, which looked like a lever nobody had written down. Swept
-  over three datasets × three heads × three budgets (medians of seeds 0/1/2) it is not: the gate
-  wins on covtype-ward (+0.034) and on tight budgets (MNIST-10k ward at 500 leaves, 0.1601 →
-  0.2834), loses on `digits`-ward (0.6428 → 0.4456) and on MNIST at a generous budget (0.4275 →
-  0.3209), and is mixed on the k-means and GMM heads. What generalises is that it *chooses its own
-  resolution* — 46 leaves on covtype and 920 on MNIST whether you ask for 500 or 4 000 — which makes
-  it a cheap operating point rather than a better criterion: the MNIST cell above is 17× the wall
-  clock (7.38 s → 0.42 s) for −0.107 ARI. `docs/USAGE.md` now carries the table.
-- **The `covtype` / `ward` benchmark loss has a mechanism on record, and it is not the one that was
-  filed.** The cell (`betula-ward` 0.086 against `sklearn-birch` 0.131) was attributed to mass
-  imbalance; Q1 measured that absent, and this separates the rest. Not the leaf budget — 500 to
-  16 000 leaves reads 0.0857–0.0900, flat over a 32× range. Not the leaf feature — `spherical` and
-  `diagonal` agree to four decimals, as the ward linkage's inputs say they must. Not the absorption
-  criterion within the radius family — six of them read 0.0859–0.0864 — though the mass-invariant
-  `chi2` gate reads **0.1199 with 46 leaves**, the rival's score at a 78× smaller summary. It is the
-  *fixture*: `bench/comprehensive.py` standardises the 20 000-row subsample, `bench/_worker.py`
-  standardises all 581 012 rows and then subsamples, and the two draws differ as well. Crossed, ward
-  reads 0.0861 / 0.1176 / 0.1059 / **0.1416** while `sklearn-birch` sits at 0.1265–0.1306 throughout
-  — the sensitivity is ours, and the 44 binary one-hot columns carry it. The scoreboard cell stands
-  (the rival is measured on the same rows), with the new mechanism written next to it in
-  `bench/RESULTS.md`.
-- **The spectral head's restart count is measured, and the default stays 4.** `n_init` became
-  reachable on `method="spectral"` in 0.8.0's successor without ever being swept there. It is the
-  one head where a restart is nearly free — its k-means runs on a `k`-dimensional embedding of at
-  most `max_leaves` rows — and the measurement says so: a hundred restarts cost 0.20 s → 0.28 s on
-  `digits` and 0.39 s → 0.44 s on covtype-20k, putting the default four at 0.5–2 % of the fit. It
-  also says the restarts buy nothing, which is why the default does not move: `moons` 0.9999 and
-  `circles` 1.0000 are identical to four decimals at 4, 10, 25 and 100, `digits` moves +0.0009, and
-  covtype-20k's −0.0103 sits well inside its own 0.0657–0.0992 seed spread. Documented in
-  `docs/USAGE.md` next to the k-means table, where the curve is *not* flat.
-- **`betula --n-init N` (CLI).** The binary passed the `0` sentinel, so `--method kmeans` was stuck
-  on four restarts while both Python entry points could choose. It carries the same head rule as
-  the library: `--n-init` on `gmm`, `gmm-full` or `ward` is an error rather than a silently ignored
-  flag, and `--n-init 0` is refused because zero is the engine's "take the default" sentinel and
-  not a fit anyone means to ask for.
-- **`simplified_silhouette` — the silhouette a summary can actually carry.** `validity()` now
-  reports a fourth index: Hruschka's simplified silhouette, mass-weighted over leaves, measuring to
-  the cluster **centroid** rather than to the members. The classical silhouette needs `Σ‖x − y‖`,
-  which is degree 1 in the norm and provably not a function of a cluster feature (a Z3 witness:
-  `{−1, −7/12, 0, 1}` and `{−4/3, 0, 0, 3/4}` share `n`, `Σx`, `Σx²` and differ in `Σ|xᵢ − xⱼ|` by
-  more than 0.1), so this is a declared surrogate, not an approximation that tightens.
-
-  The two losses are measured separately and are not the same size. The *summary* costs 0.0004 on
-  covtype-20k at 5.6 points per leaf, at most 0.013 over the `k`-grid on 784-dimensional MNIST, and
-  exactly nothing on a tree with one leaf per point, where a unit test pins it to the point-level
-  definition. The *surrogate class* shifts the level a long way — 0.4393 against scikit-learn's
-  0.1420 on digits — so the number ranks configurations of one dataset and must not be compared to
-  a published `silhouette_score`. Rank agreement with a 10 000-point sampled classical silhouette
-  is τ = +0.71 on covtype, +0.62 on digits and −0.24 on MNIST, where the *point-level* surrogate
-  disagrees harder still (−0.43): the disagreement is the surrogate, not the summary.
-
-  `tune()` can now select on it — `objective="simplified_silhouette"` or `"medoid_silhouette"` —
-  scoring off the leaves at 39 ms per trial on MNIST-20k against 1456 ms for the sampled point
-  silhouette, with no sampling seed in the answer. Rust: `validity::simplified_silhouette` is
-  public.
-- **`balance="auto"` — the mass cap as a decision the data makes.** `balance` bounds how much of the
-  total mass one leaf may hold, and it has a known domain: over 27 cells (digits / covtype-20k /
-  mnist-10k × `kmeans`/`ward`/`gmm` × three budgets) a fixed cap gains **+0.08 to +0.25 ARI on all
-  six cells where the heaviest leaf holds more than half the mass**, and stays inside seed noise on
-  the twelve below 0.1. That statistic is now readable by the estimator itself: `"auto"` summarises
-  once, reads the share off the finished tree and, only if it passes 0.5, summarises the same rows
-  again with the cap on from the first point. Re-measured over the same 27 cells, it is
-  **bit-identical to `balance=None` on all 21 non-firing cells** and lands on the `balance=4.0`
-  answer on all six that fire (+0.0785 to +0.2514). The price is one extra pass, paid only where it
-  fires.
-
-  `partial_fit` cannot summarise the same rows twice, so a stream gets a weaker mechanism instead:
-  the tree watches its own mass distribution as it builds and arms the cap when a leaf passes half
-  the mass. A cluster feature does not split back into points, so a leaf that has already absorbed
-  the core keeps it — measured on mnist-10k at 250 leaves the streaming arming recovers +0.006 to
-  +0.037 where the two-pass recovers +0.167 to +0.251. Both are documented in `docs/USAGE.md`; the
-  default is still `None`.
-
-  Not everything the parameter was hoped to fix is a mass problem: the published `covtype`/`ward`
-  cell (ARI 0.086 against sklearn-birch's 0.131) has a heaviest-leaf share of **0.041**, and a fixed
-  cap moves it by −0.0001. `"auto"` correctly does nothing there.
-- **`CFTree::top1_mass`** (Rust) — the heaviest leaf's share of the mass, the diagnostic the docs
-  already told readers to compute by hand.
-- **A `float32` tree now warns before its weights stop counting.** An `f32` leaf saturates at
-  2²⁴ = 16 777 216 points: binary32 spaces its values 2 apart from there upward, so a unit-weight
-  row leaves the weight exactly where it was. Measured, 16 781 312 identical `float32` rows into one
-  leaf report a weight of 16 777 216 against an exact `float64` control. The mean and the scatter do
-  not stop with it — the mean becomes an exponential moving average of span 2²⁴ and the variance
-  inflates in proportion to the rows the weight dropped (1.0105 against 1.0000 after 200 000 rows
-  past the ceiling) — so the summary degrades silently rather than erroring. The estimator now
-  raises a `UserWarning` naming the heaviest leaf's mass when it passes 2²³, one doubling short of
-  the ceiling and while every summary is still exact, and `docs/USAGE.md` documents the limit and
-  the three ways out. This is a warning, not a fix: the accumulators are still `f32`, and widening
-  them is a persisted-format change.
-- **`assign::AssignPlan` — pruned exact nearest-centroid assignment (Rust).** A squared Euclidean
-  distance is a sum of non-negative terms, so any prefix of it is a lower bound on the whole, and a
-  candidate whose prefix already exceeds the best distance so far cannot win. `AssignPlan` walks the
-  dimensions in stages and drops candidates as soon as that happens. It returns the argmin a full
-  scan returns, ties broken by the lower index; there is no error budget and no parameter to tune.
-
-  Two levers, both measured. A **hint** (the row's label from a previous iteration) starts the
-  threshold at that candidate's distance instead of infinity, which takes the dimensions read from
-  45–60 % down to about 20 %. A **dimension order** by descending between-centroid variance prunes
-  soonest — on mnist at `k=10`, 42.7 % of the dimensions read against 66.6 % in the natural order.
-
-  Fewer reads is not automatically less time and the module documentation says where it is not.
-  `cargo bench --bench assign` on a Ryzen 7 5800HS, single-threaded, hinted, against a full scan:
-  **0.3–0.8× below `d = 128`** (the branchless AVX2 row kernel wins outright), **1.8–2.1× at
-  `d = 784–1024` for `k ≥ 100`**, **8.2× at `d = 1024, k = 1000`**, and 3.0–3.9× when the clusters
-  are well separated. The dimension order is a `k` decision rather than a `d` one: below about
-  `k = 100` the per-point gather costs more than the extra pruning buys, and `identity_order` is
-  faster. Nothing in the library calls it yet — this is the kernel, and each call site gets its own
-  measurement before it is wired in.
-
-  The statistical alternative was measured and rejected: SuperKMeans (arXiv 2603.20009) rotates the
-  data and prunes on a Beta tail, reading 34.1 % of the dimensions on mnist at `k=10`, but the
-  rotation costs `d²` per point, which at a CF summary's `k` is more than the assignment it
-  accelerates. Its own code disables the path below `d = 128` or `k ≤ 256`.
-- **`route_beam` — a wider routing descent, off by default.** The tree descent commits to one child
-  per level and never backtracks, which is why a quarter to a half of all rows do not reach their
-  nearest microcluster (see *Fixed*, below). `route_beam=b` keeps the `b` nearest nodes at each level
-  instead of one and scans the entries of every leaf the frontier ends on. It reaches every routing
-  entry point — `predict`, `predict_proba`, `assign_microclusters`, `outlier_scores`, and the sparse
-  CSR path — and nothing else: insertion, the leaf clustering and `leaf_refit` are untouched, so the
-  tree and the head are identical at every width and only the row → microcluster map moves.
-
-  **The default is `1`, which is the descent this library has always done**, so no label changes
-  unless the parameter is set. Measured on `ward` at `max_leaves=4000`, median of seeds 0/1/2: the
-  share of re-routed rows converges to the independently measured exact-scan misroute rate on all
-  five datasets (within 0.1–0.8 points), which is what shows the beam finds the exact nearest entry
-  rather than merely a different one. ARI moves on the two datasets whose classes interleave —
-  **mnist +0.035 (0.3452 → 0.3801 at `b=8`)** and **digits +0.025 at `b=2`** — and does not move at
-  all on `blobs`, `highdim` or `covtype`, where re-routing 25–44 % of rows lands them in a different
-  microcluster of the same cluster.
-
-  The cost inverts the usual trade: `blobs`/`highdim`/`digits`/`covtype` pay **11–15×** on routing at
-  `b=16`, `mnist` pays **3.0×**, because at `d=784` the node features are 24 MB against a 16 MB L3
-  and the narrow descent is already stalled on memory. End to end that is small: routing is 0.53 s of
-  a 5.82 s mnist fit, so `b=8` adds about 0.6 s.
-  **The default stays at 1 on the measurement, not on compatibility**: `b=8` costs 6–10×
-  the routing for zero ARI on three of five datasets, so no single width is right for the table and
-  the choice belongs to the caller. Only heads that assign by microcluster (`ward`, `spectral`,
-  `leiden`, `hdbscan`) can see the parameter at all, and it is an **estimator** parameter — the free
-  `fit_predict` / `fit_predict_sparse` route with the plain descent. Full sweep in
-  [`bench/RESULTS.md`](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md);
-  `CFTree::nearest_entry_beam` is public on the Rust side.
-
-### Changed
 - **`min_samples` now defaults to the leaf mass, not to a point count.** HDBSCAN\*'s core distance
   is the radius enclosing `min_samples` points, and over a leaf summary a single leaf already holds
   `N / max_leaves` of them at one coordinate — so any count below that mass is enclosed at radius
@@ -543,6 +402,7 @@ All notable changes to this project are documented here. The format follows
   **Labels change** for `method="hdbscan"` / `"dc-center"` / `"dc-median"` fits that did not name a
   `min_samples`; an explicit integer is used exactly as before. `get_params()` reports `None` for the
   automatic state, and `auto_min_samples` / `AUTO_MIN_SAMPLES_LEAVES` are public on the Rust side.
+
 - **The Hamerly/brute-Lloyd equivalence claim is now true at a cutoff, and tested there.** The
   accelerated k-means is documented as producing output identical to brute Lloyd, and the test that
   checked it ran only at `max_iter = 100`, where both have converged. They pair the steps
@@ -553,6 +413,7 @@ All notable changes to this project are documented here. The format follows
   `max_iter ∈ {1, 2, 3, 100}` comparing labels, centres and inertia, plus asserting that the labels
   returned are nearest to the centres returned. No shipped path changes: `lloyd_hamerly` already had
   the consistent pairing.
+
 - **`consensus` measures one nuisance at a time, and its vote is a bijection — scores move.** Two
   defects, both label- and score-changing. It permuted the insertion order *and* moved the head's
   seed on every run while documenting itself as measuring the insertion order; `vary` now names the
@@ -567,6 +428,7 @@ All notable changes to this project are documented here. The format follows
   enumeration at `k ≤ 6`), and a run with more clusters than the reference keeps its surplus as
   fresh ids instead of folding them onto a matched cluster. **Confidence scores from 0.8.0 and
   earlier were too high and are not comparable with these.**
+
 - **Rust API (breaking): the point entry points are checked.** `CFTree::insert`, `Model::predict`,
   `DenStream` / `DbStream`'s `insert` / `predict` and `WindowStream::insert` took a `&[R]` and
   trusted its length. The SIMD kernels compare `a.len().min(b.len())` coordinates, so a row one
@@ -581,6 +443,7 @@ All notable changes to this project are documented here. The format follows
   public, since a caller that has to match the dimension should be able to read it. The truncation
   in `kernels.rs` is no longer load-bearing — every internal caller slices exactly `dim` — and its
   comment says so rather than claiming an insert relies on it.
+
 - **The streaming constructors bound every parameter they carry, not the product of two of them.**
   `DenStream::new` tested `eps`, `lambda` and `beta·mu` with `is_nan`, which an infinity passes, and
   never tested `beta` or `mu` on their own. So `eps=inf` was accepted and merged the whole stream
@@ -591,6 +454,7 @@ All notable changes to this project are documented here. The format follows
   `is_finite` and each parameter is checked on its own (`eps > 0`, `lambda > 0`, `0 < beta <= 1`,
   `mu > 0`, then `beta·mu > 1`); `DbStream::new` likewise for `r`, `lambda`, `alpha` and
   `min_weight`. The rejection reaches Python at the first `partial_fit`, where the model is built.
+
 - **`max_iter=0` is refused, and one iteration is the floor everywhere it was not.** A
   zero-iteration EM returns its own initialisation: for the GMM heads a responsibility matrix of
   zeros and a labelling of all-zero, reported as a successful fit of one cluster. Nine head loops
@@ -600,6 +464,7 @@ All notable changes to this project are documented here. The format follows
   the Bregman pair) carry it at their own entry with a comment saying why. On top of that,
   `max_iter=0` raises at every boundary a caller can reach: `Betula`, `fit_predict`,
   `fit_predict_sparse`, `BregmanBetula`, `KPrototypes` and the CLI's `--max-iter`.
+
 - **A head-specific keyword on a head that ignores it now raises.** `rank=8` with
   `method="ward"`, `min_samples=25` with `method="kmeans"`, `resolution=1.5` with anything but
   Leiden — each configured nothing and said nothing. Nine keywords are now checked against the head
@@ -613,6 +478,7 @@ All notable changes to this project are documented here. The format follows
   place (`DEFAULT_RANK` and its siblings) that the PyO3 signatures, the `serde` defaults and the
   check all read. `max_iter` and `auto_k_max` are deliberately **not** checked: they are general to
   the parametric heads and their applicability depends on `n_clusters` as well as on the head.
+
 - **A covariance head with `feature="spherical"` is now refused, not warned about.** `Spherical`
   keeps one scalar of within-leaf scatter, and `cov_dense` hands it back as `ssd/(w·dim) · I` — so a
   head reading a per-component covariance gets the *same* isotropic term added to every component,
@@ -632,10 +498,12 @@ All notable changes to this project are documented here. The format follows
   cannot tell which one they got. `bench/leaf_budget.py`, `bench/size_imbalance.py` and
   `bench/insertion_order.py` measured their `gmm` column on that pair; they now pass `"diagonal"`,
   and those published tables will move when next re-run.
+
 - **Rust API (breaking): `Model::fit`, `kmeans_auto` and `spectral` take the restart count.** It
   sits after `max_iter`, and `0` asks for `KMEANS_N_INIT` — the value they used before — so the
   fix at every call site is to pass `0`. `spectral`'s private `N_INIT` and the Python layer's
   `COP_N_INIT` are gone, both being the same constant under two names. No fit changes.
+
 - **The streaming heads now have a reference, and it says the drift row is a win and the split row
   is a loss.** `bench/stream_reference.py` runs DenStream / DBSTREAM / CluStream against River's
   implementations of the same three papers on a 4000-point stream (River is pulled per invocation
@@ -649,6 +517,7 @@ All notable changes to this project are documented here. The format follows
   (`DbStream`) against River's 4.7 and 21–23, and CluStream's 150–181. CluStream's pyramidal time
   frame — retrospective queries over an arbitrary past window — has no counterpart here at all, and
   `bench/RESULTS.md` records that as a missing capability rather than omitting the row.
+
 - **The ELKI cross-check now covers the tree, and at equal leaf count the default geometry is 8 %
   behind.** `cross_check.py` always ran a tree-only layer and it was never written up. Read at an
   equal `maxleaves` *budget* it flatters this library — both implementations undershoot the budget
@@ -660,6 +529,7 @@ All notable changes to this project are documented here. The format follows
   each other at only ARI 0.39–0.53 even where their WCSS matches, so a matching objective is not a
   matching tree. `research/RESULTS-estep.md` records both tables and the timing column that must
   *not* be read as a speed comparison (ELKI's seconds are JVM start plus CSV parsing).
+
 - **The ELKI cross-check of the GMM head is re-run at five seeds, and it costs the E-step page one
   cell.** `research/RESULTS-estep.md` claimed the shipped head "leads at the median in all four
   cells" of an ELKI 0.8.0 comparison; three seeds could not separate a 0.02 ARI gap from its spread.
@@ -676,7 +546,240 @@ All notable changes to this project are documented here. The format follows
   k-means-shaped. And one number for the open `n_init` question: ELKI's 4 restarts buy **+0.137 ARI
   on digits** (0.6856 vs 0.5482) and **nothing on covtype**.
 
+- **The uniform 1–12 % slowdown across the scaling and streaming suites is measured, and it is not
+  the insert path.** `bench/RESULTS.md` recorded the shift honestly but could not attribute it,
+  because the compiler moved with the code (rustc 1.98.0 → 1.98.1, kernel 7.1.9 → 7.1.13). Two A/Bs,
+  each varying one thing: the **toolchain** costs 8.9 % on the kmeans probe, 4.1 % on ward and 7.7 %
+  on streaming, with gmm a wash; the **source** (0.7.0 → 0.8.0, compiler pinned at 1.98.0, 15 clean
+  samples per cell and 0 dirty of 120) costs 4.1 % on ward and ~2.5 % on streaming, while kmeans and
+  gmm flip sign between cycles and are a wash.
+
+  Both probes run `bench/_worker.py` directly, so the cell measured is the cell published rather than
+  a proxy, and each arm's compiler is read back out of the built `.so` instead of trusted from the
+  environment variable meant to select it. The second arm nearly measured something else entirely:
+  a fresh `uv venv` in the baseline worktree resolves the repo's `3.14` pin to uv's managed
+  *free-threaded* build, not the system CPython the repo's own venv uses, and would have compared two
+  pyo3 configurations rather than two revisions. Both arms now assert the interpreter as well.
+
+  What the source change did buy: this edition is **4–12 % lighter in peak RSS on all four probes**
+  (88.1 vs 91.4 MB, 88.2 vs 95.5, 52.0 vs 54.8, 52.9 vs 60.1). The kernel could not be varied and so
+  is not excluded, only unnecessary; the reading that *is* excluded is the one the old note pointed
+  at, since kmeans — the purest insert-bound probe of the four — is 1.5 % **faster** on the new tree.
+
+
 ### Fixed
+- **A corrupt model file loaded, and the panic arrived three calls later.** `load` checked the schema
+  version and nothing else, so any CBOR document that *deserialized* became a `Betula` — including
+  documents describing a tree no insert could have produced. That is the cause: a schema version says
+  which fields exist, not that their values address each other, and a file is input. Of seven
+  structural corruptions built by hand, **four panicked**: a root index past the arena, a child index
+  past it, a parent index past it and an empty arena all reached `index out of bounds` inside the
+  next `partial_fit`, and an entry whose mean was one coordinate wide reached it inside
+  `cluster_centers_`. A panic crossing the FFI boundary surfaces as `pyo3_runtime.PanicException`,
+  which is not a `ValueError` and is not something a caller can be asked to catch.
+
+  `load` now validates every tree it deserializes and raises `ValueError: corrupt model: …` naming
+  what disagrees. `CFTree::validate` checks that the arena is non-empty and `root` addresses it, that
+  every parent and child index is in range and points at the right arena, that no node is reachable
+  twice — which is what rules out a cycle — that every feature is self-consistent and carries the
+  tree's dimension, and that `branching`, `leaf_cap`, `max_leaves`, `threshold`, `huber_k` and
+  `balance` cannot leave an insert unable to terminate. All seven corruptions now fail at the
+  boundary that produced them. The check is a no-op for a tree this process built, which a test pins
+  across fresh, rebuilt, sharded and empty trees and all four feature models — a validator that
+  rejects a real tree would be worse than none.
+
+  Two things it deliberately does not do. Unreachable nodes and unreferenced entries are **not** an
+  error: compaction leaves both behind and they cost only memory. And the decompression bomb the
+  gzip framing invites was checked rather than assumed — `decode` streams out of the gzip member
+  instead of inflating to a `Vec` first, and a CBOR length header claiming `2^40` elements is
+  refused without reserving for it. Over **4 000** randomly corrupted files, every failure is a
+  `ValueError` and none is a panic.
+
+- **An `f32` tree stopped counting rows at `2^24`, and its reported variance drifted for every row
+  after that.** A cluster feature accumulates `w ← w + wᵢ`, and binary32 spaces its values 2 apart
+  from 16 777 216 upward, so a unit-weight row left the weight exactly where it was. Nothing else in
+  the summary stopped with it: the mean went on moving at `2^-24` per row and the scatter went on
+  accumulating against a weight that no longer grew, so the variance drifted with the fraction of
+  rows the weight had dropped — **1.0058** on unit-variance data 200 000 rows past the ceiling,
+  against 1.0000 in `f64`. `microcluster_weights_`, `cluster_sizes_` and every mass-weighted head
+  read the frozen total.
+
+  The weight is now an `f64` running total whatever the tree's element type, in all four cluster
+  features, and `spherical`'s scalar scatter with it. That is the split the arithmetic asks for
+  rather than a concession to `f32`: a weight's precision is set by how many rows a leaf absorbs,
+  which the caller does not choose, while a mean and a per-coordinate scatter are bounded by the
+  data, which the caller picked the dtype for. Both widened fields are `O(1)` per leaf, so an `f32`
+  tree still costs half the memory of an `f64` one. What a caller reads back is rounded to the tree's
+  own type on the way out — one part in 16 777 216 of a total that is itself exact. The `UserWarning`
+  that used to name the approaching ceiling is gone with the defect it warned about.
+
+  **Nothing already measured moved, and that was checked rather than argued.** Across 48 cells
+  (2 fixtures × 2 dtypes × 6 feature/head pairs × 2 leaf budgets) **no `f64` cell changed at all**
+  and **no labels changed anywhere**, `f32` included; the only movement is `heaviest_leaf_width` in
+  18 of the 24 `f32` cells, by at most **6.5e-7** relative, since the width is derived from the
+  totals that widened. Every published table in
+  [`bench/RESULTS.md`](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md) — all
+  `f64` — therefore stands unchanged. The on-disk format needed no bump either: CBOR tags a float
+  with its width and serde's `f64` visitor accepts an `f32` value, so `SCHEMA_VERSION` stays **2**
+  and a model written by the released 0.6.0 wheel still loads, which a test asserts. Insert-path
+  cost, three sessions per arm alternating builds on 200 000 × 32 at `max_leaves = 2000`:
+  `f32`/`spherical` **+1.5 %**, `f32`/`full` **+1.8 %**, `f32`/`diagonal` and all three `f64` cells
+  unchanged.
+
+  **One residual is left in deliberately.** The per-axis and full-matrix scatters of `diagonal`,
+  `full` and `fd` stay in the tree's element type, so past `2^24` rows in a single leaf the scatter
+  is now the term that saturates and the variance comes back **0.89 % low** where the defect had it
+  0.58 % high. Widening those was implemented and measured before being rejected: **+11 %** on the
+  insert path and an `f32` tree three quarters the size of the `f64` one instead of half, charged to
+  every `f32` user to correct a leaf that has to be past 16.8 M rows before it is wrong at all.
+  `an_f32_diagonal_leaf_past_the_ceiling_still_loses_scatter` pins the figure and
+  [`docs/USAGE.md`](https://github.com/ilgrad/betula-cluster/blob/main/docs/USAGE.md) states it.
+
+- **`leaf_refit` handed back leaf statistics for a partition the tree it returned could not
+  produce, and at a large budget that misrouted 15 % of the rows.** The pass routes every row through
+  the finished tree and rebuilds each leaf CF from exactly the rows it won — then, if any entry won
+  none, it dropped those and rebuilt the node structure from the survivors. That rebalance replaces
+  the tree that did the routing, so the CFs describe a partition `predict` no longer returns: a row
+  descends the *new* structure and is handed an entry accumulated from different rows. Measured on
+  4 000 8-D points at `max_leaves = 160`, the routed codebook error read **26.54 against an exact
+  4.72**, 14.8 % of rows on the wrong entry, p99 244 — while the entries themselves were fine, a
+  beam-4 route reading the exact answer with no misroutes at all.
+
+  A rebalance is now always followed by another route, so the statistics and the structure describe
+  the same partition. Over 150 cells (5 budgets × 10 blob fixtures × `leaf_refit` 1/2/3) the routed
+  error rises by more than 5 % in **2** of them against 8, worst **1.33×** against **5.25×**, and the
+  worst exact nearest-centre ratio falls 1.32 → **1.13**; on the cell that blew up every one of the
+  107 surviving prototypes now wins a row, where the un-refit tree leaves 19 of 144 winning none.
+  `bench/results_refit.csv` is re-run: the pass pays in 6 of 12 column-pairs with mean +0.006
+  (arrival) and +0.009 (`canonical_order`), against +0.005 / −0.001. **Labels move** wherever
+  `leaf_refit > 0`, and a pass that drops an entry now costs two routes rather than one — measured at
+  **1.8–2.5×** a plain fit for `leaf_refit=1` against 1.4–1.8×.
+
+  How many discretionary rebalances to take is a cap on work with both extremes measured, recorded on
+  `REFIT_REBALANCE_ROUNDS` in `src/tree.rs`: never rebalancing lets a shallow tree drift until its own
+  descent cannot reach its prototypes (39 → 12 entries, exact error **tripled**, on 1 of 50 fixtures),
+  and rebalancing on every drop cascades to 59 routing passes and prunes 314 entries to 120. One is
+  the best of the five policies measured on every column.
+
+- **`projection="weighted-nmf"` no longer depends on how the threads interleaved.** The
+  transpose-product `WᵀX` is the projection's hot loop and was summed with a rayon
+  `fold`/`reduce`, which splits by work-stealing and merges in completion order. Floating-point
+  addition does not associate, so the result was a function of the run, not of the input: measured
+  on a 19 998-row fixture, **20 runs at `RAYON_NUM_THREADS=8` produced 20 different `components_`
+  bit patterns**, while the single-threaded run was stable. The sum is now taken over fixed 64-row
+  chunks and merged in index order, which is one order for one input at any pool size, and a
+  subprocess test pins it. The documented promise that the thread count does not enter the answer
+  was true everywhere else and is now true here; `components_` values shift in their last few bits
+  against 0.8.0.
+
+- **Every `bench/` harness now loads its real-data fixture from one module, and the Zador control
+  stops describing data no cell in its own table had seen.** A "20 000-row draw from covtype" was
+  spelled out inline in five separate files, and one-off scripts had written further variants: the
+  quality tables draw with `rng(seed).choice` and standardize *that* subsample, while the order and
+  budget studies standardize all 581 012 rows and then take a fixed `rng(0)` permutation. The same
+  `ward` head reads **0.0861** under the first rule and **0.1416** under the second, and
+  `bench/RESULTS.md` printed both under the label `covtype-20k`. `bench/_fixtures.py` is now the only
+  definition of any of them and every harness loads through it; the rules are named (**sub** /
+  **pop** / **raw**), tabulated in `bench/RESULTS.md`, and the three sections that publish a **sub**
+  fixture under a 20 k label say so in place. All five rewired loaders return **bit-identical** arrays
+  to the ones they replace across 16 (dataset × seed) cells, so nothing published moved for the
+  refactor.
+
+  One number did move, and it was a defect: `bench/zador_fit.py`'s TWO-NN cross-check built its own
+  subsample — unstandardized, `rng(0).choice` against the sweep's `rng(0).permutation`, and MNIST
+  taken off the front of the file rather than drawn at all — so it estimated the intrinsic dimension
+  of data the budget sweep never summarised. It now loads through the loader `bench/leaf_budget.py`
+  itself fits: **4.61 → 5.28** on covtype, 12.91 → 12.94 on
+  digits, 18.65 → **18.50** on MNIST. Re-fitting that table against the `results_budget.csv` the
+  rebuild change rewrote also retires a published reading: `digits` `ward` was the shallowest slope
+  of the four (`d_eff` 3.67 ± 0.48 against euclidean's 2.85 ± 0.42) and is now the steeper of the
+  pair (3.47 ± 0.39 against 3.73 ± 0.43) — under one standard error either way, so the fit never
+  resolved a routing effect on `digits`.
+
+- **The three studies that swept `gmm` on the refused feature are re-run, and one published
+  conclusion changes sign.** `bench/results_budget.csv`, `bench/results_imbalance.csv` and
+  `bench/results_order.csv` had their `gmm` columns measured with `feature="spherical"`, which the
+  library now rejects; all three were re-run on 2026-09-09 with the harnesses' current
+  `feature="diagonal"`. Only `gmm` cells moved — 76 of 92 in the budget study against **0 of the
+  160** others, which is the control that says the rest of the record is reproducible to the last
+  digit.
+
+  The conclusion that changes is `canonical_order`'s cost. It was published as mean **+0.0136** over
+  27 cells, "positive only because of two cells where it rescues a head the arrival order was
+  collapsing" (`digits, 360, gmm` 0.1738 → 0.5146; `mnist-10k, 1000, gmm` 0.0551 → 0.2457). Both
+  were the isotropic collapse, so the flag was being credited for rescuing a fit that is no longer
+  offered. On the diagonal feature those cells read 0.4721 → 0.4195 and 0.2223 → 0.2055 — the
+  arrival order ahead in both — and the grid-wide mean is **−0.0064**, median −0.0052, non-negative
+  in 9 of 27 (was 10). The invariance itself is untouched: 27 of 27 canonical cells still read
+  spread 0.0000 and pairwise ARI 1.0000. `docs/USAGE.md` and `bench/RESULTS.md` carry the corrected
+  numbers and say what they replaced.
+
+  The budget study's other half is the refusal's confirmation: on the diagonal feature `gmm` does
+  not collapse anywhere (`digits` at ×2.0 0.0088 → **0.4403**, MNIST at ×5.5 0.0618 → **0.2850**),
+  and it becomes the strongest head on `digits` at ×4.2 and on MNIST below ×20. The `spherical`
+  numbers are kept, dated, as the evidence for the refusal rather than as current results.
+
+- **`canonical_order` refuses more rows than a `u32` rank can address, rather than wrapping.**
+  The permutation is a `Vec<u32>` — four bytes per row instead of eight, which is 17 GB of index at
+  the ceiling — and `(0..n as u32)` truncates silently past `2³² − 1` rows: the result is a
+  valid-looking order over the wrong rows, with the tail of the matrix never visited. Both entry
+  points now return an error there, `canonical_permutation` alongside its CSR twin, and it reaches
+  Python as a `ValueError`. **Rust API (breaking):** `order::canonical_permutation` returns
+  `Result<Vec<u32>, &'static str>`, matching `canonical_permutation_csr`, and `order::MAX_ROWS` is
+  public. The arrival-order build is unaffected and has no ceiling.
+
+  The row order is now computed once at the Python boundary and handed down, rather than inside the
+  build: `balance="auto"` builds the tree twice to decide, and was paying for the `O(n · dim)`
+  projection and the `O(n log n)` sort on both passes. No label moves — the order is a function of
+  the data, so computing it once and computing it twice give the same ranks.
+
+- **Three documentation claims that were no longer true, and a check so the counts cannot rot
+  again.** The README and the JOSS paper quoted a 457-case Python suite and 728 Rust tests against
+  an actual 547 and 807, and the README's two sentences disagreed with each other; the counts are
+  now derived by `scripts/check_test_counts.py`, which collects both suites without running them
+  (`cargo test -- --list`, `pytest --collect-only`) and fails on any published number that has
+  drifted. The README's "always faster — the unconditional win … this holds for *every* method at
+  *every* size" is now scoped to what was measured — faster and lighter than scikit-learn at every
+  published size and budget — with the two rows we lose named next to it: scikit-learn is faster on
+  raw-TF-IDF 20-newsgroups at a better ARI, and `fast-hdbscan` reads 0.910 against
+  our 0.478 on 100 k blobs. The paper's "every benchmark figure is the median of three seeds" is
+  true of the quality tables only, and now says so; its mutation-baseline sentence no longer claims
+  an argument for *every surviving mutant* when what exists is an argument for every *recorded*
+  one. `Betula.save`'s docstring said bincode; the format has been CBOR since `ciborium` replaced
+  it.
+
+- **The symmetric eigensolver's convergence test is relative to the matrix, not to `1e-15`.**
+  `jacobi_eigen`'s fixed absolute tolerance answered two questions wrongly at once. Below a
+  `‖A‖_F` of about `1e-15` it was satisfied *before the first rotation*, so the untouched diagonal
+  came back as the spectrum: on a 4×4 fixture scaled by `1e-18`, `octave-cli`'s `eig` reads
+  `[-0.4755, 3.3895, 4.0718, 7.2641]` after rescaling and the old code read
+  `[-0.890, -0.812, -0.440, -0.114]` — four wrong values, no error, no warning. At unit scale it was
+  unreachable instead: `off(A)` sums `n(n−1)/2` entries, so every one of them has to fall below
+  `1e-15/n` first, and the loop always spent its whole 100-sweep budget in `f64` and in `f32`, where
+  `eps` is `1.2e-7` and the threshold is meaningless. The test is now `off(A) ≤ eps_R · ‖A‖_F`
+  (Golub & Van Loan, Alg. 8.4.3), which makes the answer invariant under scaling the input by a
+  positive constant, and a golden test pins five scales from `1e18` to `1e-30` against `octave-cli`
+  at 13 significant digits. A 32×32 `f32` decomposition drops from ~520 µs to ~348 µs on the
+  measurement machine (three alternating repetitions); `f64` is unchanged within noise. **No label
+  moves**: `spectral` and `leiden` on `digits` at seeds 0/1/2 in both precisions return
+  byte-identical labels before and after.
+
+- **`cholesky_lower` rejects a non-finite partial sum.** `NaN <= 0.0` is false, so a non-finite
+  entry passed the positive-definiteness test, `sqrt` propagated it, and every `logdet` and
+  Mahalanobis distance downstream came back `NaN` — a full-covariance GMM component with a `NaN`
+  scatter looked like a valid factorisation rather than a rejected one.
+
+- **`threshold="auto"` no longer breaks the `canonical_order` guarantee.** `canonical_order=True`
+  promises a summary that is a function of the row multiset; the automatic threshold is piloted on a
+  bounded subsample, and that subsample was drawn by row *position*, so a permutation handed the
+  pilot different rows and it converged to a different threshold — the order dependence was back
+  before the tree was built. Measured on a 12-dimensional 4-blob probe, one permutation moved the
+  pilot from 17.184 to 17.256 and the realised tree from 284 leaves to 279, with the labels no
+  longer identical. The pilot rows are now taken evenly spaced along the canonical order, which is a
+  function of the content, so the threshold, the leaf count and the labels are all invariant again.
+  Only `canonical_order=True` with `threshold="auto"` is affected, and its labels change; the
+  arrival-order path keeps the uniform draw and is untouched.
+
 - **A loaded model reported `projection="none"` however it was fitted.** `Betula.load` rebuilds the
   wrapper with `cls(**core.get_params())`, and the engine's `get_params` never reported `projection`,
   `projection_dim` or `projection_max_iter` — so a model fitted with `projection="svd",
@@ -725,47 +828,6 @@ All notable changes to this project are documented here. The format follows
   published, **1.005 s against 1.158 s (13 %)** where the table reads 1.06 → 1.01 s. The scoreboard
   cell is a tie either way; what changes is that there is no unattributed memory regression to chase.
 
-### Changed
-- **The uniform 1–12 % slowdown across the scaling and streaming suites is measured, and it is not
-  the insert path.** `bench/RESULTS.md` recorded the shift honestly but could not attribute it,
-  because the compiler moved with the code (rustc 1.98.0 → 1.98.1, kernel 7.1.9 → 7.1.13). Two A/Bs,
-  each varying one thing: the **toolchain** costs 8.9 % on the kmeans probe, 4.1 % on ward and 7.7 %
-  on streaming, with gmm a wash; the **source** (0.7.0 → 0.8.0, compiler pinned at 1.98.0, 15 clean
-  samples per cell and 0 dirty of 120) costs 4.1 % on ward and ~2.5 % on streaming, while kmeans and
-  gmm flip sign between cycles and are a wash.
-
-  Both probes run `bench/_worker.py` directly, so the cell measured is the cell published rather than
-  a proxy, and each arm's compiler is read back out of the built `.so` instead of trusted from the
-  environment variable meant to select it. The second arm nearly measured something else entirely:
-  a fresh `uv venv` in the baseline worktree resolves the repo's `3.14` pin to uv's managed
-  *free-threaded* build, not the system CPython the repo's own venv uses, and would have compared two
-  pyo3 configurations rather than two revisions. Both arms now assert the interpreter as well.
-
-  What the source change did buy: this edition is **4–12 % lighter in peak RSS on all four probes**
-  (88.1 vs 91.4 MB, 88.2 vs 95.5, 52.0 vs 54.8, 52.9 vs 60.1). The kernel could not be varied and so
-  is not excluded, only unnecessary; the reading that *is* excluded is the one the old note pointed
-  at, since kmeans — the purest insert-bound probe of the four — is 1.5 % **faster** on the new tree.
-
-### Added
-- **A wheel for free-threaded CPython (3.14t), and a CI gate on what it claims.** abi3 cannot express
-  a `Py_GIL_DISABLED` build — such an interpreter exposes SOABI `cpython-314t` and no abi3 tag at all
-  — so the single `cp311-abi3` wheel matched nothing on 3.14t and `pip install betula-cluster` there
-  fell back to compiling from source, which needs a Rust toolchain the user did not ask for. maturin
-  drops abi3 for these on its own ("abi3 does not yet support CPython 3.14t … artifacts will be
-  version-specific"), so all that was missing was the build arm: Linux x86-64 + aarch64, macOS arm64
-  and Windows x64. macOS x86-64 is deliberately absent — the abi3 arm cross-builds it on an arm64
-  runner precisely because abi3 needs no interpreter at build time, and a version-specific build does.
-
-  Measured on cpython-3.14.7+freethreaded before adding any of it: the module imports without
-  re-enabling the GIL, labels are correct, and four Python threads each running a full `fit_predict`
-  over 6000×8 finish in **0.26 s** against **0.22 s** for one — 4× the work for 1.2× the time,
-  alternated A-B-A-B. The GIL check is now a CI assertion rather than a note, because a `#[pymodule]`
-  declaring `Py_MOD_GIL_USED` turns free threading back off for the *whole process* on import and
-  does it with a warning rather than an error; a wheel that did that would be worse than no wheel.
-  The `Free Threading :: 2 - Beta` classifier is deliberately not `3 - Stable`: this is one
-  interpreter on one platform, and no test yet drives the extension from several threads at once.
-
-### Fixed
 - **The weekly mutation run was sharded 96 ways on a mutant count that has since grown 2.1×, and
   more than half of its shards are being cancelled at the timeout.** Found by
   `scripts/check_mutants_baseline.py`, which prints the live count as a side effect: `cargo mutants
@@ -3569,7 +3631,8 @@ First public release.
   far below `max_leaves`), and rebuilds reinsert in reverse-DFS leaf order. The CF-tree build is now
   byte-for-byte the reference (`betulars`) tree shape and at speed parity with matched build flags.
 
-[Unreleased]: https://github.com/ilgrad/betula-cluster/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/ilgrad/betula-cluster/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/ilgrad/betula-cluster/compare/v0.8.0...v1.0.0
 [0.8.0]: https://github.com/ilgrad/betula-cluster/compare/v0.6.0...v0.8.0
 [0.6.0]: https://github.com/ilgrad/betula-cluster/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/ilgrad/betula-cluster/compare/v0.4.0...v0.5.0

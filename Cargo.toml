@@ -1,6 +1,6 @@
 [package]
 name = "betula-cluster"
-version = "0.8.0"
+version = "1.0.0"
 edition = "2024"
 rust-version = "1.85"
 license = "MIT"
@@ -21,6 +21,8 @@ exclude = [
     "python/",
     "*.ipynb",
     "uv.lock",
+    "public-api.txt",
+    "mutants-baseline.txt",
 ]
 
 [lib]

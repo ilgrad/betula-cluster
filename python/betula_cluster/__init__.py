@@ -367,7 +367,7 @@ def consensus(
         the head's seed, over one fixed insertion order — the head's initialisation sensitivity
         (k-means++ draws, EM restarts); a deterministic head such as ``ward`` returns confidence 1.
     ``"both"``
-        both at once. The behaviour before 0.9.0, and the one that cannot say which of the two a
+        both at once. The behaviour before 1.0.0, and the one that cannot say which of the two a
         low score came from.
 
     Extra keyword arguments are forwarded to :func:`fit_predict` (``feature`` / ``method`` /
