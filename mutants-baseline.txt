@@ -61,9 +61,10 @@
 # entries against 9236 listed mutants -- 139 moved, 26 vanished, **52 % of the file stale**. The
 # script made the two edits it can justify and no others: **50 unambiguous moves re-anchored, 26
 # vanished entries deleted**. 289 entries remain, 89 of them still stale and all of them ambiguous
-# moves -- scalespace.rs 22, feature.rs 16, stream.rs 15, mixture.rs 8, vmf.rs 7, gmm.rs 6,
-# kmeans.rs 4, linalg.rs 3, tree.rs 2, graph.rs 2, order.rs 2, kprototypes.rs 1, sparse.rs 1. Those
-# files need a whole-file run; nothing else will resolve them.
+# moves -- scalespace.rs 22, stream.rs 15, mixture.rs 8, vmf.rs 7, gmm.rs 6, kmeans.rs 4,
+# linalg.rs 3, tree.rs 2, graph.rs 2, order.rs 2, kprototypes.rs 1, sparse.rs 1. Those files need
+# a whole-file run; nothing else will resolve them. `src/feature.rs`, which had 16 of them, got
+# exactly that on 2026-09-11 -- see its section.
 #
 # **Re-anchoring is not re-measuring, and the trade is deliberate.** A stale entry fails *safe*: it
 # matches nothing, so the survivor at its new line reads as new and the job goes red. But a file
@@ -596,24 +597,48 @@ src/clustering/gmm.rs:674:18: replace < with <= in gmm_full_auto
 #          in the suite observes.
 src/clustering/hdbscan.rs:104:31: replace += with *= in UnionFind::union
 
-# ── src/feature.rs (16) ──
-# Debt: `SecondMoment::add_scaled` and `trace_under`, plus the FD sketch.
-src/feature.rs:39:31: replace + with * in SecondMoment<R>::trace_under
-src/feature.rs:39:31: replace + with - in SecondMoment<R>::trace_under
-src/feature.rs:47:43: replace + with * in SecondMoment<R>::trace_under
-src/feature.rs:47:43: replace + with - in SecondMoment<R>::trace_under
-src/feature.rs:495:38: replace / with % in FdSketch<R>::reduce
-src/feature.rs:512:41: replace + with - in FdSketch<R>::reduce
-src/feature.rs:560:39: replace + with * in <impl ClusterFeature<R> for FdSketch<R>>::variance
-src/feature.rs:560:39: replace + with - in <impl ClusterFeature<R> for FdSketch<R>>::variance
-src/feature.rs:57:37: replace * with + in SecondMoment<R>::add_scaled
-src/feature.rs:65:37: replace * with + in SecondMoment<R>::add_scaled
-src/feature.rs:65:37: replace * with / in SecondMoment<R>::add_scaled
-src/feature.rs:66:32: replace != with == in SecondMoment<R>::add_scaled
-src/feature.rs:68:61: replace + with * in SecondMoment<R>::add_scaled
-src/feature.rs:68:61: replace + with - in SecondMoment<R>::add_scaled
-src/feature.rs:68:67: replace * with + in SecondMoment<R>::add_scaled
-src/feature.rs:68:67: replace * with / in SecondMoment<R>::add_scaled
+# ── src/feature.rs (3) ──
+# Re-measured **2026-09-11 whole-file** at `f521df0`, locally at -j4 under a 10 GB cap: 512 mutants
+# in 2 h, 467 caught / 6 missed / 39 unviable / 0 timeouts. The 16 entries this replaces came from
+# the whole-crate sweep and were describing a third of the hole -- the run before this one, at
+# `ba10363`, measured **48** survivors in this file.
+#
+# The 48 were two untested regimes, not 48 separate holes. Every FD test fed the sketch data of rank
+# <= `ell`, so `lost` stayed 0, `completion` returned from its first line and nothing below it ever
+# ran; and `SecondMoment` was only ever exercised at `iso = 0`. Four tests in `f521df0` build the
+# missing states -- a sketch that really loses a direction (n=30, d=6, ell=3), a sketch shrunk to no
+# direction at all, the row count a reduce actually leaves behind, and the low-rank products
+# carrying a non-zero floor through `cholesky_lower` / `inv_from_chol` -- and took 48 to 6. They
+# closed all 27 `SecondMoment` entries (`trace_under` 8, `add_scaled` 12, `trace` 2, `apply_rows` 5)
+# and 15 of the 21 in `FdSketch`.
+#
+# Three of the remaining 6 sat on the two lines of `cov_dense` that put the banked trace back on the
+# diagonal, and survived only because nothing reached that code with `iso != 0`. The assertion in
+# `0b4ba6f` closes them, verified rather than assumed: each of the three was hand-applied to this
+# file and `a_sketch_shrunk_to_no_direction_reports_an_isotropic_variance` fails on all three. A
+# targeted re-run over `cov_dense|completion|reduce` at `0b4ba6f` independently reported the two
+# `completion` entries below as still surviving.
+#
+# Believed equivalent, with the argument:
+#   666:29, 666:46  the guard `lost <= 0.0 || w <= 0.0 || dim == 0`, with either `||` as `&&`.
+#          `lost` is a monotone sum of discarded squared singular values, so `lost <= 0` is exactly
+#          `lost == 0` -- and at `lost == 0` the code below the guard returns `(1, 0)` as well:
+#          `kept > 0` gives `(kept + 0) / kept = 1`, and `kept == 0` gives
+#          `(1, narrow(0 / (w · dim))) = (1, 0)`. In the other direction `lost > 0` implies a
+#          `reduce`, which implies a push, which implies `w > 0` and `dim >= 1`, so the two clauses
+#          the mutants weaken are unreachable whenever `lost > 0`. No state tells either mutant
+#          apart from the original.
+#   718:41 `dst[d] = dst[d] + coef * self.sketch[j][d]` -> `-`. `dst` starts at zero and this loop
+#          is its only writer, so the mutant yields exactly `-dst`: the rotated sketch comes out
+#          negated row for row. A Frequent-Directions sketch is a square root, and every consumer
+#          reads it as `BᵀB` -- `kept` and `ssd` square it, `cov_dense` forms
+#          `sketch[i][a] · sketch[i][b]`, the Gram matrix the next `reduce` decomposes is `BBᵀ`, and
+#          the low-rank factors reach `SecondMoment::apply_rows` / `add_scaled` / `trace_under` only
+#          through outer products, and `distance::subspace_sq` only through `fyᵀ G⁻¹ fy`. A per-row
+#          sign is gauge, not information.
+src/feature.rs:666:29: replace || with && in FdSketch<R>::completion
+src/feature.rs:666:46: replace || with && in FdSketch<R>::completion
+src/feature.rs:718:41: replace + with - in FdSketch<R>::reduce
 
 # ── src/clustering/nmf.rs (12) ──
 # Re-measured 2026-08-24, whole file, together with the new `src/clustering/pca.rs` beside it:
