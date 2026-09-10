@@ -22,7 +22,7 @@
 pip install betula-cluster
 ```
 
-**Verified:** a **547-case** Python suite at **100% wrapper coverage** + **811** Rust tests,
+**Verified:** a **547-case** Python suite at **100% wrapper coverage** + **812** Rust tests,
 `clippy -D warnings` + `fmt` clean across all feature sets, CI on CPython 3.11–3.14 (one abi3 wheel)
 plus free-threaded 3.14t.
 
@@ -32,7 +32,7 @@ Measured against scikit-learn on `StandardScaler`-normalized data, each method i
 with peak RSS sampled from `/proc/self/statm`. Full methodology, every metric, and all tables (wins
 **and** losses) live in [**`bench/RESULTS.md`**](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md).
 
-> **Re-measured 2026-09-07 against the 0.8.0 tree, on a machine gated to be idle.** Every quality figure is the
+> **Re-measured 2026-09-10 against the current tree, on a machine gated to be idle.** Every quality figure is the
 > **median of seeds 0, 1, 2** — clustering
 > quality is seed-dependent and a single run is not a result. Ranges per cell are in
 > `bench/results_*_spread.csv`; on the synthetic sets every row moves by more than 0.05 ARI across the
@@ -49,19 +49,20 @@ with peak RSS sampled from `/proc/self/statm`. Full methodology, every metric, a
 - 🎯 **Parity on the centroid heads, ahead on the structured ones.** betula's k-means ties
   scikit-learn (blobs 0.793 vs 0.794, `digits` 0.467 vs 0.468); full-covariance GMM **beats** it on
   anisotropic data (**0.961 vs 0.902**) and on real 64-D `digits` (**0.575 vs 0.463**, via the
-  high-dimensional covariance floor); betula-ward clusters 1 M in 0.42 s where `O(N²)` sklearn-ward
+  high-dimensional covariance floor); betula-ward clusters 1 M in 0.34 s where `O(N²)` sklearn-ward
   can't run past ~10 k; and on non-convex moons & circles the **spectral** and HDBSCAN heads hit
   **ARI 1.00**. Spectral matches `SpectralClustering`'s quality; the speed ratio is not worth quoting
   — it has read 3–5×, 1.0–1.5× and 2.4–2.5× across editions and the movement is in scikit-learn's arm,
   not ours. The durable claim is *scaling*: cost set by `max_leaves`, not `N`.
-- 🌍 **Real data, and two losses stated plainly.** betula's diagonal GMM overtakes scikit-learn on hard
-  `covtype` (**0.104 vs 0.080** at adequate leaf resolution — at the default 4 000-leaf budget the two
-  are a tie inside their seed spreads) and it clusters **full covtype (581 k rows) 5.5× faster** at no
-  worse ARI (0.070 vs 0.049). But `sklearn-birch` beats **every** betula
-  head on both `covtype` (0.131) and MNIST (0.426 vs 0.377). On `covtype` that is a loss on the merits
-  — tested in both directions, and the mechanism is the leaf budget's unequal cell *mass*; on MNIST
-  Birch simply does not compress (20 000 subclusters for 20 000 points), and at equal compression the
-  gap falls from 0.059 to 0.010. HDBSCAN-on-CF likewise trails raw HDBSCAN on overlapping density.
+- 🌍 **Real data, and two losses stated plainly.** betula's diagonal GMM ties scikit-learn on hard
+  `covtype` at adequate leaf resolution (**0.0801 vs 0.0801** at 16 000 leaves — it used to be
+  recorded as a win, and the rebuild change made it an exact tie), and it clusters **full covtype
+  (581 k rows) 6.4× faster** at a better ARI (0.087 vs 0.049). But `sklearn-birch` beats **every**
+  betula head on both `covtype` (0.131) and MNIST (0.426 vs 0.394). On `covtype` that is a loss on the
+  merits — tested in both directions, and the mechanism is the leaf budget's unequal cell *mass*; on
+  MNIST Birch simply does not compress (20 000 subclusters for 20 000 points), and at equal
+  compression the 0.032 gap falls to 0.010. HDBSCAN-on-CF likewise trails raw HDBSCAN on overlapping
+  density.
   [`bench/RESULTS.md`](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md) reports
   both rather than hiding them.
 
@@ -339,7 +340,7 @@ And six **end-to-end use cases** (each scored against ground truth):
 - [**Benchmarks**](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md) — methodology, every metric, all tables, honest wins & losses.
 - [**Design**](https://github.com/ilgrad/betula-cluster/blob/main/DESIGN.md) — internal design, invariants, and testing strategy.
 
-Verified: **811** Rust tests (library, equivariance, integration and CLI) + a **547-case**
+Verified: **812** Rust tests (library, equivariance, integration and CLI) + a **547-case**
 Python suite at **100%** wrapper coverage (Rust ≥95%, CI-enforced), `clippy -D warnings` + `fmt`
 clean across all feature sets, on Python 3.11–3.14 (single abi3 wheel) and free-threaded 3.14t.
 

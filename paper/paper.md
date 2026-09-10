@@ -94,7 +94,7 @@ tuning. Prebuilt `abi3` wheels ship for Linux, macOS, and Windows, and the Rust
 core is separately reusable.
 
 Correctness is covered by a 547-case Python test suite held at 100% statement
-coverage of the wrapper, 811 Rust tests, and a mutation-testing baseline in
+coverage of the wrapper, 812 Rust tests, and a mutation-testing baseline in
 which every recorded survivor carries either a killing test or a written
 equivalence argument, checked against the mutations the current source can
 produce rather than assumed to still apply. Every **quality** figure is the

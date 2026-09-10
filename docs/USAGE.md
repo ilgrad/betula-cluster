@@ -970,19 +970,19 @@ so every cell below can be checked without re-running anything:
 
 | | arrival, `leaf_refit=0` | arrival, `=1` | canonical, `=0` | canonical, `=1` |
 |---|---|---|---|---|
-| `digits`, `max_leaves=90`, kmeans | 0.625 | 0.644 | 0.617 | 0.636 |
-| `digits`, `max_leaves=90`, ward | **0.678** | 0.647 | 0.725 | **0.725** |
-| `digits`, `max_leaves=90`, gmm | 0.520 | **0.621** | 0.597 | 0.575 |
-| MNIST, `max_leaves=200`, kmeans | **0.359** | 0.335 | 0.355 | 0.339 |
-| MNIST, `max_leaves=200`, ward | **0.409** | 0.368 | 0.349 | 0.351 |
-| MNIST, `max_leaves=200`, gmm | 0.347 | 0.352 | 0.324 | **0.333** |
+| `digits`, `max_leaves=90`, kmeans | 0.625 | **0.650** | 0.617 | 0.636 |
+| `digits`, `max_leaves=90`, ward | **0.678** | 0.642 | 0.725 | **0.725** |
+| `digits`, `max_leaves=90`, gmm | 0.520 | **0.599** | 0.597 | 0.575 |
+| MNIST, `max_leaves=200`, kmeans | **0.359** | 0.343 | 0.355 | 0.348 |
+| MNIST, `max_leaves=200`, ward | **0.409** | 0.367 | 0.349 | **0.406** |
+| MNIST, `max_leaves=200`, gmm | 0.347 | **0.375** | 0.324 | **0.330** |
 
-**The pass now pays in 6 of those 12 column-pairs, loses in 5 and ties in 1**, and its mean effect is
-+0.005 on the arrival order and −0.001 under `canonical_order`. The 2026-09-06 edition of this table
-read 11 of 12 with means +0.032 and +0.082. Nothing about the pass changed; the tree it runs on did.
-Ranking rebuild merges by what they cost leaves each leaf CF already close to the cell the finished
-tree routes, so one more Lloyd step over it has little to move — every `leaf_refit=0` cell in the
-table above rose (MNIST ward 0.216 → 0.409, `digits` ward 0.533 → 0.678), and the pass is what
+**The pass pays in 6 of those 12 column-pairs, loses in 5 and ties in 1**, and its mean effect is
++0.006 on the arrival order and +0.009 under `canonical_order`. The 2026-09-06 edition of this table
+read 11 of 12 with means +0.032 and +0.082. Nothing about the pass changed there; the tree it runs on
+did. Ranking rebuild merges by what they cost leaves each leaf CF already close to the cell the
+finished tree routes, so one more Lloyd step over it has little to move — every `leaf_refit=0` cell in
+the table above rose (MNIST ward 0.216 → 0.409, `digits` ward 0.533 → 0.678), and the pass is what
 absorbed the loss.
 
 The old reading — that `leaf_refit` and `canonical_order` **compose**, because the canonical order
@@ -1000,23 +1000,28 @@ prototype summarises; it cannot fix where the prototypes are, because it re-rout
 insertion order already built. That is what `canonical_order` below does instead, by choosing the
 order rather than by routing more cleverly against it.
 
-Three more properties before turning it on. **Passes are not monotone past two or three** — each one
-re-routes against the tree the previous one produced, so the worst leaf's distance from the centroid
-of its rows runs 2.25 → 1.55 → 0.89 → 0.44 → 1.63 over `n = 0..4` on a 4000 × 8 blob fixture. And **a
-leaf budget above `N` is not a free no-op**, unlike `refine`, which is genuinely idempotent there:
-the partition is the one the tree's greedy descent produces, descent is not the inverse of
-absorption, and 600 rows at one row per leaf come back as 436 leaves carrying the same total weight.
+Three more properties before turning it on. **Passes are not monotone** — each one re-routes against
+the tree the previous one produced, so the worst leaf's distance from the centroid of its rows runs
+1.26 → 1.85 → 1.79 → 1.80 → 1.12 over `n = 0..4` at `max_leaves=40` on a 4000 × 8 blob fixture, and
+1.44 → 1.30 → 1.25 → 1.26 → 1.26 at 320. And **a leaf budget above `N` is not a free no-op**, unlike
+`refine`, which is genuinely idempotent there: the partition is the one the tree's greedy descent
+produces, descent is not the inverse of absorption, and 600 rows at one row per leaf come back as 354
+leaves carrying the same total weight.
 
-**And at a large leaf budget the pass can leave the tree routing badly, which is the failure to watch
-for.** It drops the entries that win no row and rebuilds the tree from the survivors, and the greedy
-descent through that rebuilt structure is not guaranteed to reach the entry a row belongs to. Over
+**It also costs more than one route.** A pass that drops an entry re-routes once more, because the
+rebalance it triggers replaces the tree the leaf CFs were just accumulated against; the ceiling is
+two routes and the measured price of `leaf_refit=1` is **1.8–2.5×** a plain fit on `digits`,
+MNIST-10k and 200 000 × 8 blobs, against 1.4–1.8× for the single-route version that shipped in 0.8.0.
+
+*What that bought (2026-09-10).* Until this change the pass could leave the tree routing badly at a
+large budget: it dropped the entries that won no row, rebuilt the tree from the survivors, and handed
+back leaf CFs that were the exact statistics of a partition the rebuilt tree no longer produced. Over
 150 cells (5 budgets × 10 blob fixtures × `leaf_refit` 1/2/3, 4000 × 8) the routed codebook error —
-what `assign_microclusters` returns — falls at a median ratio of 0.98 but **rises by more than 5 % in
-8 of them**, all at `max_leaves` 160 and 320, once by 5.25× with 15 % of rows misrouted. The
-prototypes are not the problem there: the exact nearest-centre error still *improves* in that cell,
-and `route_beam=4` brings the routed error back down to it with zero misroutes. If you use
-`leaf_refit` at a budget in the hundreds, compare against `leaf_refit=0` on your own data — or widen
-the descent.
+what `assign_microclusters` returns — rose by more than 5 % in **8** of them, once by **5.25×** with
+15 % of rows misrouted and a p99 19× the median. It now rises in **2**, worst **1.33×**, and the
+worst exact nearest-centre ratio falls from 1.32 to 1.13. On the cell that blew up, the routed error
+reads 4.66 against 5.06 without the pass, the misroute rate 2.0 % against 7.2 %, and every one of the
+107 surviving prototypes wins at least one row where the un-refit tree leaves 19 of 144 winning none.
 
 ### Making the answer independent of the row order — `canonical_order`
 
@@ -1199,7 +1204,9 @@ reassigns its rows with the **plain descent**, whatever `route_beam` is set to. 
 gives leaves fitted against a narrow routing and then queried with a wide one. That is deliberate —
 letting the width reshape the tree would make it a build parameter and put it in the same class as
 `threshold` — but it means the two knobs do not compose into "a Lloyd step under the routing you
-actually use".
+actually use". Since 2026-09-10 the pass *is* consistent with the routing it uses — it re-routes
+after the rebalance that used to invalidate it — so a widened beam is now the only way to ask it for
+a partition it did not optimise.
 
 ## Streaming / out-of-core — the `Betula` estimator
 

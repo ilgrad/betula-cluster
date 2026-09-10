@@ -4541,7 +4541,9 @@ def test_leaf_refit_moves_every_leaf_towards_the_centroid_of_the_rows_it_wins():
     cost leaves the leaf CF already close to the cell the tree routes, and one more Lloyd step over
     it moves almost nothing. What the pass recomputes is the *descent* partition, so the exact
     nearest-centre error measured here is not guaranteed to fall at all — at 40 leaves and above it
-    sometimes rises (up to 1.018 over the same seeds), which is why this fixture is coarse."""
+    still rises in 2 of the 18 cells of seeds 0-5 x 40/80/160 leaves, reading 0.968-1.017, which is
+    why this fixture is coarse. Re-routing the pass after a rebalance barely moved that band: what
+    it fixed is the *descent* partition and this assertion is about the exact one."""
     x = _blobs(n=4000, d=8, k=6, seed=3)
     kw = dict(feature="spherical", method="kmeans", n_clusters=6, max_leaves=20, seed=0)
     plain = betula_cluster.Betula(leaf_refit=0, **kw).fit(x)
@@ -4572,8 +4574,8 @@ def test_leaf_refit_reroutes_even_at_a_leaf_budget_above_n():
     still growing are not the ones it descends past at the end, so a row can route to a neighbour's
     leaf instead of its own. The entry it abandoned wins nothing and is dropped.
 
-    So the observable is a *smaller* leaf set carrying merged weight — measured here at 600 -> 436,
-    and 454 / 455 on two neighbouring fixtures. Total weight is conserved exactly, which is the
+    So the observable is a *smaller* leaf set carrying merged weight — measured here at 600 -> 354,
+    and 365 / 340 on two neighbouring fixtures. Total weight is conserved exactly, which is the
     invariant that would actually be broken by a bug in the drop-and-reinsert path."""
     x = _blobs(n=600, d=6, k=4, seed=5)
     kw = dict(feature="spherical", method="kmeans", n_clusters=4, max_leaves=4000, seed=0)

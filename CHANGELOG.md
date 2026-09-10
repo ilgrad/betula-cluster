@@ -7,6 +7,31 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Fixed
+- **`leaf_refit` handed back leaf statistics for a partition the tree it returned could not
+  produce, and at a large budget that misrouted 15 % of the rows.** The pass routes every row through
+  the finished tree and rebuilds each leaf CF from exactly the rows it won — then, if any entry won
+  none, it dropped those and rebuilt the node structure from the survivors. That rebalance replaces
+  the tree that did the routing, so the CFs describe a partition `predict` no longer returns: a row
+  descends the *new* structure and is handed an entry accumulated from different rows. Measured on
+  4 000 8-D points at `max_leaves = 160`, the routed codebook error read **26.54 against an exact
+  4.72**, 14.8 % of rows on the wrong entry, p99 244 — while the entries themselves were fine, a
+  beam-4 route reading the exact answer with no misroutes at all.
+
+  A rebalance is now always followed by another route, so the statistics and the structure describe
+  the same partition. Over 150 cells (5 budgets × 10 blob fixtures × `leaf_refit` 1/2/3) the routed
+  error rises by more than 5 % in **2** of them against 8, worst **1.33×** against **5.25×**, and the
+  worst exact nearest-centre ratio falls 1.32 → **1.13**; on the cell that blew up every one of the
+  107 surviving prototypes now wins a row, where the un-refit tree leaves 19 of 144 winning none.
+  `bench/results_refit.csv` is re-run: the pass pays in 6 of 12 column-pairs with mean +0.006
+  (arrival) and +0.009 (`canonical_order`), against +0.005 / −0.001. **Labels move** wherever
+  `leaf_refit > 0`, and a pass that drops an entry now costs two routes rather than one — measured at
+  **1.8–2.5×** a plain fit for `leaf_refit=1` against 1.4–1.8×.
+
+  How many discretionary rebalances to take is a cap on work with both extremes measured, recorded on
+  `REFIT_REBALANCE_ROUNDS` in `src/tree.rs`: never rebalancing lets a shallow tree drift until its own
+  descent cannot reach its prototypes (39 → 12 entries, exact error **tripled**, on 1 of 50 fixtures),
+  and rebalancing on every drop cascades to 59 routing passes and prunes 314 entries to 120. One is
+  the best of the five policies measured on every column.
 - **`projection="weighted-nmf"` no longer depends on how the threads interleaved.** The
   transpose-product `WᵀX` is the projection's hot loop and was summed with a rayon
   `fold`/`reduce`, which splits by work-stealing and merges in completion order. Floating-point

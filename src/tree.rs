@@ -81,6 +81,31 @@ pub(crate) const AUTO_BALANCE_MULTIPLE: f64 = 4.0;
 /// against (avoids winsorizing wildly against a 1–2-point estimate during warm-up).
 const ROBUST_MIN_WEIGHT: f64 = 5.0;
 
+/// How many times one [`CFTree::refit_leaves`] pass will rebalance the tree because the Lloyd update
+/// moved its entries out from under it — over and above the rebalances it has no choice about,
+/// which are the ones that repair a leaf node left with no children.
+///
+/// It is a cap on work, and it is one because both extremes and the wider caps are measurably worse.
+/// Scored over 150 cells (5 budgets × 10 blob fixtures × `leaf_refit` 1/2/3, 4000 × 8), worst ratio
+/// against `leaf_refit=0` on the routed codebook error and on the exact one, with the fit cost of a
+/// single pass beside it:
+///
+/// | rebalance policy | worst routed | cells > +5 % | worst exact | cost of `leaf_refit=1` |
+/// |---|---|---|---|---|
+/// | never | 1.59 | 6 | **3.14** | 1.4–2.4× |
+/// | **once (this)** | **1.33** | **2** | **1.13** | 1.8–2.5× |
+/// | twice | 1.33 | 8 | 1.20 | 2.1–3.2× |
+/// | three times | 1.33 | 4 | 1.16 | 2.4–3.9× |
+/// | on every drop | 1.33 | 9 | 1.21 | 3.2–9.9× |
+///
+/// Both failure modes are structural rather than noise. Never rebalancing lets a shallow tree drift
+/// until its own descent cannot reach most of its prototypes — on 1 of the 50 fixtures at
+/// `max_leaves = 40` the codebook fell 39 → 12 entries and the exact error tripled. Rebalancing on
+/// every drop cascades the other way: each reinsert shadows a *different* prototype, one drop at a
+/// time, so the loop ran to **59** routing passes and pruned 314 entries to 120. One round is where
+/// the tree gets re-matched to the entries the update moved and the cascade has not started.
+const REFIT_REBALANCE_ROUNDS: usize = 1;
+
 impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> CFTree<R, C, D, A> {
     /// New empty tree. `branching` = max children per internal node, `leaf_cap` = max entries
     /// per leaf, `threshold` = absorption limit (units of `abs`, squared for euclidean),
@@ -454,26 +479,68 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> CF
     /// order-dependent is where those prototypes ended up, which is the part a single pass cannot
     /// fix; measure the remainder rather than assuming it is small.
     ///
-    /// An entry that wins no row is dropped — and *only then* are the survivors re-routed through a
-    /// fresh tree ([`Self::reinsert`]).
+    /// An entry that wins no row is dropped. Dropping it is invisible to every other row — its CF
+    /// is empty, so it contributes nothing to any node CF, and no row was routing to it — with one
+    /// exception, and that exception is the only thing the rebalance below exists for.
     ///
-    /// That rebalance is not tidiness, it is the fix for a crash this pass would otherwise cause.
     /// [`Self::drop_merged`] deletes entries from their leaves' child lists, and its other caller —
     /// compaction — structurally cannot empty a leaf, because it merges *within* a leaf and a merge
     /// keeps the absorbing entry alive. Here every prototype in a leaf can lose its rows at once,
     /// and a leaf node with no children is one `descend` away from indexing `children[0]` of an
-    /// empty slice. Rebuilding the node structure from the survivors removes that state rather than
-    /// guarding the read of it.
+    /// empty slice. Rebuilding the node structure from the survivors ([`Self::reinsert`]) removes
+    /// that state rather than guarding the read of it.
     ///
-    /// The condition matters as much as the rebalance. Reinserting unconditionally also *reorders*
-    /// the entries, and the head reads them in order — so a pass that changed nothing else still
-    /// moved a `kmeans++` draw and relabelled the data, which made this pass observable even at a
-    /// leaf budget above `n`, where it has nothing to do. Gated on a drop, a pass that loses no
-    /// entry leaves the structure exactly as it was and only the CFs change.
+    /// **A rebalance is always followed by another route, and that is the point of the loop.** It
+    /// invalidates the accumulation that caused it: the CFs are the exact statistics of the rows
+    /// *the old tree* routed to them, `reinsert` then replaces that tree, and the caller is handed
+    /// the statistics of a partition it can no longer obtain — `predict` descends the new structure
+    /// and gives a row an entry built from different rows. Measured on 4 000 8-D points at
+    /// `max_leaves = 160` (fixture seed 8), that put the routed codebook error at **26.54 against an
+    /// exact 4.72**, 14.8 % of rows on the wrong entry and a p99 of 244 where the entries themselves
+    /// were fine — a beam-4 route read the exact answer with no misroutes at all.
+    ///
+    /// The Lloyd update also moves the entries out from under the structure that routed them, so one
+    /// discretionary rebalance is taken to re-match the two ([`REFIT_REBALANCE_ROUNDS`], where the
+    /// grid that sets it at one is recorded). Past that the drops are applied without one, which is
+    /// sound because a dropped entry is invisible; the exception is the empty leaf, and that
+    /// rebalance is not discretionary at any point in the loop.
+    ///
+    /// Reinserting is also *observable* beyond its cost: it reorders the entries, and the head reads
+    /// them in order, so a pass that changed nothing else still moved a `kmeans++` draw and
+    /// relabelled the data — even at a leaf budget above `n`, where the pass has nothing to do.
+    /// A pass that loses no entry still leaves the structure exactly as it was.
+    ///
+    /// The loop terminates: an iteration only repeats after dropping at least one entry, and at
+    /// least one entry always survives (every row is assigned to some entry, and `n > 0`), so it
+    /// runs at most `entries.len()` times. Two routes is the ceiling in practice, and one pass costs
+    /// 1.8–2.5× a plain fit on `digits`, MNIST-10k and 200 000 × 8 blobs.
     pub fn refit_leaves(&mut self, flat: &[R], n: usize) {
         if self.entries.is_empty() || n == 0 || self.dim == 0 {
             return;
         }
+        let mut rebalances = 0usize;
+        loop {
+            let alive = self.reaccumulate(flat, n);
+            if alive.iter().all(|&a| a) {
+                break;
+            }
+            self.drop_merged(&alive);
+            let emptied_a_leaf = self
+                .nodes
+                .iter()
+                .any(|nd| nd.leaf && nd.children.is_empty());
+            if !emptied_a_leaf && rebalances >= REFIT_REBALANCE_ROUNDS {
+                break;
+            }
+            self.reinsert();
+            rebalances += 1;
+        }
+        self.refold_node_cfs();
+    }
+
+    /// Route every row against the tree as it stands and replace each entry with the exact
+    /// sufficient statistic of the rows it won, returning which entries won any.
+    fn reaccumulate(&mut self, flat: &[R], n: usize) -> Vec<bool> {
         let dim = self.dim;
         let assign: Vec<usize> = (0..n)
             .map(|i| self.nearest_entry(&flat[i * dim..(i + 1) * dim]))
@@ -484,11 +551,7 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> CF
         }
         let alive: Vec<bool> = fresh.iter().map(|c| c.weight() > R::zero()).collect();
         self.entries = fresh;
-        if alive.iter().any(|a| !a) {
-            self.drop_merged(&alive);
-            self.reinsert();
-        }
-        self.refold_node_cfs();
+        alive
     }
 
     /// Insert an existing feature (used when rebuilding with a larger threshold).
@@ -2886,50 +2949,44 @@ mod tests {
     /// The point of `refit_leaves`: after it, an entry is the exact sufficient statistic of the rows
     /// that routed to it — not of the rows that happened to be absorbed into it on the way past.
     ///
-    /// Computed here from the assignment taken *before* the call, which is the assignment the pass
-    /// itself uses; `drop_merged` compacts in ascending order, so the surviving entries line up with
-    /// the surviving old indices. Reverting the pass leaves the insertion-history CFs in place and
-    /// this fails on the first entry with any merge behind it.
+    /// The comparison is against the assignment taken *before* the call, which is exactly the one
+    /// the pass used, and the budget is chosen so that no entry loses all of its rows: with no drop
+    /// there is no rebalance, so the tree that routed is the tree the caller keeps and the equality
+    /// is exact rather than approximate. Reverting the pass leaves the insertion-history CFs in
+    /// place and this fails on the first entry with any merge behind it. What happens when a
+    /// rebalance *does* fire is a different claim, and
+    /// [`refit_leaves_leaves_the_tree_routing_rows_to_the_entries_it_built`] is where it is tested.
     #[test]
     fn refit_leaves_replaces_the_absorption_history_with_the_routed_partition() {
         let (d, n) = (3usize, 900usize);
-        let pts: Vec<Vec<f64>> = (0..n)
-            .map(|i| {
-                let c = (i % 5) as f64 * 7.0;
-                (0..d)
-                    .map(|j| c + ((i * 37 + j * 11) % 23) as f64 * 0.1)
-                    .collect()
-            })
-            .collect();
+        let pts = gaussian_blobs(n, d, 5, 1);
         let mut tree: CFTree<f64, Spherical<f64>, _, _> =
-            CFTree::new(d, 4, 4, 0.0, 40, CentroidEuclidean, Radius);
+            CFTree::new(d, 4, 4, 0.0, 24, CentroidEuclidean, Radius);
         for p in &pts {
             tree.insert(p);
         }
         assert!(tree.rebuilds() > 0, "the fixture must actually compress");
 
-        let assign: Vec<usize> = pts.iter().map(|p| tree.nearest_entry(p)).collect();
         let m = tree.num_leaves();
         let mut want: Vec<Spherical<f64>> = (0..m).map(|_| Spherical::new(d)).collect();
-        for (i, p) in pts.iter().enumerate() {
-            want[assign[i]].push(p, 1.0);
+        for p in &pts {
+            want[tree.nearest_entry(p)].push(p, 1.0);
         }
-        let want: Vec<&Spherical<f64>> = want.iter().filter(|c| c.weight() > 0.0).collect();
-
         tree.refit_leaves(&flatten(&pts), n);
-        let mut got: Vec<&Spherical<f64>> = tree.leaf_features().iter().collect();
-        assert_eq!(got.len(), want.len(), "one entry per non-empty routed cell");
-        // `reinsert` re-places the survivors, so compare as multisets keyed on the mean.
-        let key = |c: &Spherical<f64>| (c.mean()[0] * 1e6).round() as i64;
-        got.sort_by_key(|c| key(c));
-        let mut want = want;
-        want.sort_by_key(|c| key(c));
-        for (g, w) in got.iter().zip(&want) {
-            assert!(close(g.weight(), w.weight()), "weight");
+        assert_eq!(
+            tree.num_leaves(),
+            m,
+            "the fixture must not drop an entry, or the pass rebalances and the assignment above \
+             is one the tree no longer produces"
+        );
+
+        let got = tree.leaf_features();
+        for (e, (g, w)) in got.iter().zip(&want).enumerate() {
+            assert!(close(g.weight(), w.weight()), "weight {e}");
             for j in 0..d {
-                assert!(close(g.mean()[j], w.mean()[j]), "mean {j}");
+                assert!(close(g.mean()[j], w.mean()[j]), "mean {e}/{j}");
             }
-            assert!(close(g.ssd(), w.ssd()), "ssd");
+            assert!(close(g.ssd(), w.ssd()), "ssd {e}");
         }
         verify(&tree, n);
     }
@@ -2967,6 +3024,79 @@ mod tests {
             }
             verify(&tree, n);
         }
+    }
+
+    /// A rebalance replaces the tree the CFs were accumulated against, so before the loop in
+    /// [`CFTree::refit_leaves`] the pass could hand back that pair — entries that are the exact
+    /// statistic of one partition, and a tree that produces a different one. The damage is not a
+    /// rounding residual: with the two out of step, a row descends to a leaf whose entries were
+    /// built from a *different blob*, and the codebook error the caller actually gets (route, then
+    /// measure) runs several times the error of the same centres scanned exhaustively.
+    ///
+    /// The ratio of those two is the test, because it is the only number that separates "the tree
+    /// and its entries disagree" from "the descent is greedy", which it always is. On this fixture
+    /// it reads **1.04** with the loop and **4.99** with the rebalance left unrepaired.
+    #[test]
+    fn refit_leaves_leaves_the_tree_routing_rows_to_the_entries_it_built() {
+        let (n, d) = (3996usize, 8usize);
+        let pts = gaussian_blobs(n, d, 6, 12);
+        let flat = flatten(&pts);
+        let mut tree: CFTree<f64, Spherical<f64>, _, _> =
+            CFTree::new(d, 32, 32, 0.0, 320, CentroidEuclidean, Radius);
+        for p in &pts {
+            tree.insert(p);
+        }
+        for _ in 0..2 {
+            tree.refit_leaves(&flat, n);
+        }
+
+        let centres: Vec<Vec<f64>> = tree
+            .leaf_features()
+            .iter()
+            .map(|c| c.mean().to_vec())
+            .collect();
+        let sq =
+            |a: &[f64], b: &[f64]| a.iter().zip(b).map(|(u, v)| (u - v) * (u - v)).sum::<f64>();
+        let (mut routed, mut exact) = (0.0f64, 0.0f64);
+        for p in &pts {
+            routed += sq(&centres[tree.nearest_entry(p)], p);
+            exact += centres
+                .iter()
+                .map(|c| sq(c, p))
+                .fold(f64::INFINITY, f64::min);
+        }
+        assert!(
+            routed <= exact * 1.10,
+            "routed {routed:.1} against exact {exact:.1} — the tree is not routing rows to the \
+             entries the pass built from them"
+        );
+        verify(&tree, n);
+    }
+
+    /// `k` isotropic unit-variance blobs on centres drawn `N(0, 6²)`, from a splitmix64/Box-Muller
+    /// pair so the fixture is the same on every platform.
+    fn gaussian_blobs(n: usize, d: usize, k: usize, seed: u64) -> Vec<Vec<f64>> {
+        let mut state = seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut next = || {
+            state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            let mut z = state;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            ((z ^ (z >> 31)) >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let mut normal = move || {
+            let u = next().max(f64::MIN_POSITIVE);
+            (-2.0 * u.ln()).sqrt() * (std::f64::consts::TAU * next()).cos()
+        };
+        let centres: Vec<Vec<f64>> = (0..k)
+            .map(|_| (0..d).map(|_| normal() * 6.0).collect())
+            .collect();
+        (0..n)
+            .map(|i| {
+                let c = &centres[i * k / n];
+                (0..d).map(|j| c[j] + normal()).collect()
+            })
+            .collect()
     }
 
     fn flatten(pts: &[Vec<f64>]) -> Vec<f64> {
