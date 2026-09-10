@@ -40,7 +40,8 @@ plt.rcParams.update({"figure.dpi": 110, "axes.titleweight": "bold"})
 def ari(a, b):
     a, b = np.asarray(a), np.asarray(b)
     cont = pd.crosstab(a, b).to_numpy().astype(float)
-    comb = lambda m: (m * (m - 1) / 2).sum()
+    def comb(m):
+        return (m * (m - 1) / 2).sum()
     s, sa, sb, t = comb(cont), comb(cont.sum(1)), comb(cont.sum(0)), comb(np.array([len(a)]))
     exp = sa * sb / t
     return float((s - exp) / (0.5 * (sa + sb) - exp))

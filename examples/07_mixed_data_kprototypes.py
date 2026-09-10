@@ -159,7 +159,8 @@ from betula_cluster import fit_predict
 def ari(a, b):
     a, b = np.asarray(a), np.asarray(b)
     cont = pd.crosstab(a, b).to_numpy()
-    comb = lambda m: (m * (m - 1) / 2).sum()
+    def comb(m):
+        return (m * (m - 1) / 2).sum()
     s, sa, sb = comb(cont), comb(cont.sum(1)), comb(cont.sum(0))
     t = comb(np.array([len(a)]))
     exp = sa * sb / t

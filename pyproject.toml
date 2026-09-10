@@ -75,6 +75,12 @@ ignore = ["RUF001", "RUF002", "RUF003"]
 [tool.ruff.lint.per-file-ignores]
 # Benchmark/spike harnesses set up the environment before importing, and print wide tables.
 "bench/*" = ["E402", "E501"]
+# The examples are notebooks in two representations, and four of these rules describe the notebook
+# form rather than a defect: a cell imports where the narrative needs it (E402), keeps its own import
+# group so the cell reads on its own (I001), ends in a bare expression to render it (B018), and
+# prints wide tables (E501). Everything else applies -- an unused import or a dead f-string is as
+# wrong in a shipped example as anywhere.
+"examples/**" = ["E402", "I001", "B018", "E501"]
 
 [tool.mutmut]
 # Mutation testing (advisory, nightly — see .github/workflows/mutants.yml). Scoped to the two files

@@ -28,7 +28,8 @@ Python (against the built extension):
 
 ```bash
 pytest tests/test_python.py --cov=betula_cluster --cov-fail-under=100   # 100% wrapper coverage is enforced
-ruff check python/ tests/ && ruff format --check python/ tests/
+ruff check python/ tests/ bench/ examples/   # examples/ is linted but not formatted -- it is
+ruff format --check python/ tests/ bench/    # notebook cells, and reflowing them desyncs the .ipynb
 ty check python/                                   # or mypy / pyright
 python -m mypy.stubtest betula_cluster             # the .pyi stubs must match the runtime
 ```

@@ -43,7 +43,7 @@ rng = np.random.default_rng(0)
 
 
 def scatter(ax, X, labels, title):
-    pal = {l: ("0.7" if l < 0 else sns.color_palette("tab10")[l % 10]) for l in set(labels)}
+    pal = {lab: ("0.7" if lab < 0 else sns.color_palette("tab10")[lab % 10]) for lab in set(labels)}
     sns.scatterplot(x=X[:, 0], y=X[:, 1], hue=labels, palette=pal, s=10, linewidth=0, legend=False, ax=ax)
     ax.set_title(title)
     ax.set(xlabel="", ylabel="")

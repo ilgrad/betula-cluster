@@ -80,7 +80,7 @@ d = 128
 X, y = make_mixture(d, per=30, seed=1)
 
 fig, axes = plt.subplots(1, 3, figsize=(11, 2.6), sharey=True)
-for c, (ax, name) in enumerate(zip(axes, NAMES)):
+for c, (ax, name) in enumerate(zip(axes, NAMES, strict=True)):
     for row in X[y == c][:3]:
         ax.plot(row, lw=0.9, alpha=0.8)
     ax.set(title=name, xticks=[], yticks=[])

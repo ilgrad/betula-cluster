@@ -29,7 +29,7 @@
 import matplotlib.pyplot as plt
 import numpy as np
 import seaborn as sns
-from sklearn.datasets import make_blobs, make_moons
+from sklearn.datasets import make_moons
 from sklearn.preprocessing import StandardScaler
 
 import betula_cluster

@@ -70,10 +70,10 @@ acc = pd.DataFrame(
         "quantile": qs,
         "exact": exact.round(1),
         "KLL est.": [round(kll.quantile(q), 1) for q in qs],
-        "KLL rel.err %": [round(100 * abs(kll.quantile(q) - e) / e, 2) for q, e in zip(qs, exact)],
+        "KLL rel.err %": [round(100 * abs(kll.quantile(q) - e) / e, 2) for q, e in zip(qs, exact, strict=True)],
         "DDSketch est.": [round(dd.quantile(q), 1) for q in qs],
         "DDSketch rel.err %": [
-            round(100 * abs(dd.quantile(q) - e) / e, 2) for q, e in zip(qs, exact_sample)
+            round(100 * abs(dd.quantile(q) - e) / e, 2) for q, e in zip(qs, exact_sample, strict=True)
         ],
     }
 )
@@ -88,7 +88,7 @@ acc
 # %%
 grid = np.linspace(0.01, 0.999, 60)
 exact_grid = np.percentile(data, grid * 100)
-kll_err = [100 * abs(kll.quantile(q) - e) / e for q, e in zip(grid, exact_grid)]
+kll_err = [100 * abs(kll.quantile(q) - e) / e for q, e in zip(grid, exact_grid, strict=True)]
 fig, ax = plt.subplots(figsize=(8, 4.5))
 sns.lineplot(x=grid, y=kll_err, label="KLL (k=400)", ax=ax)
 ax.axhline(1.0, ls="--", c="0.5", label="DDSketch α = 1% bound")

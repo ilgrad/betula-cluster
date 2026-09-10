@@ -64,7 +64,7 @@ def timed(fn):
 # %%
 fig, axes = plt.subplots(1, 3, figsize=(10.5, 3.6))
 rows = []
-for ax, k in zip(axes, (2, 4, 8)):
+for ax, k in zip(axes, (2, 4, 8), strict=True):
     X, y = make_blobs(n_samples=2000, centers=k, cluster_std=0.6, random_state=10 + k)
     labels = betula_cluster.fit_predict(
         X, method="scale-space", threshold=0.08, max_leaves=500, seed=0
@@ -111,7 +111,7 @@ for k in (3, 4, 6):
     )
     results.append(
         {
-            "method": f"betula k-means",
+            "method": "betula k-means",
             "parameter": f"guessed k={k}",
             "found": k,
             "ARI": round(ari(yu, lab), 3),

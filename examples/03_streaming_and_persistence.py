@@ -63,7 +63,8 @@ plt.show()
 # A fitted model round-trips exactly (CBOR via serde under the hood, schema-versioned).
 
 # %%
-import tempfile, os
+import tempfile
+import os
 
 path = os.path.join(tempfile.mkdtemp(), "model.bin")
 est.save(path)
