@@ -77,16 +77,17 @@ jobs:
     # `#[doc(hidden)]` and free to move. This job makes a break in the thirteen visible in the pull
     # request that causes it instead of after a release, which is the whole point of curating them.
     #
-    # It reports rather than gates, and that is deliberate until 1.0.0 is out: 0.x is allowed to
-    # break, this branch *does* break (the curation itself is six breaking classes against 0.8.0,
-    # all of them in the CHANGELOG), and a required check that is red on purpose is a check everyone
-    # learns to ignore. Drop `continue-on-error` at the 1.0.0 tag -- that is what the promise means.
+    # It gates, and it can: measured on this tree, `0.8.0 -> 1.0.0 (major change)` is "no semver
+    # update required" -- a major bump permits every one of the six breaking classes the curation,
+    # `n_init` and the `try_` constructors introduce, so the job is green today and stays green
+    # after 1.0.0 is published, when the baseline becomes 1.0.0 itself. A pull request that breaks
+    # the thirteen modules without a major bump is then the only thing that turns it red, which is
+    # what the promise in `CHANGELOG.md` means.
     #
     # No `--baseline-version`: with none given the tool resolves the latest version published on
     # crates.io, so the baseline follows the releases instead of rotting in this file.
     name: semver (public surface vs the last release)
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable

@@ -46,7 +46,22 @@ It classifies each difference against the published crate rather than against a 
 "is this breaking?" is answered by the tool. Exit 100 means it found breaking changes; that is a
 finding to justify in the PR body, not a failure to route around. The `#[doc(hidden)]` modules are
 outside this contract by construction — the same command reports moving one *into* hiding as major,
-which is why it is a release-boundary decision.
+which is why it is a release-boundary decision. CI runs this on every pull request; before 1.0.0 was
+published it reported rather than gated, since 0.x was allowed to break.
+
+`public-api.txt` is the same contract as a list — 1 033 items, regenerated with
+
+```bash
+cargo public-api --simplified > public-api.txt   # needs a nightly toolchain: rustdoc JSON
+```
+
+It answers a different question from `semver-checks`: not "is this breaking?" but "what exactly is
+public?", as a file a reviewer can diff. `cargo public-api` omits `#[doc(hidden)]` items, so the
+snapshot contains the thirteen modules and nothing else — which is also how the curation is checked
+to be complete. Regenerate it in any PR that changes the surface, and before a release. It is
+deliberately **not** a CI job: the tool builds rustdoc JSON, which is nightly-only and whose format
+moves with the toolchain, and `cargo install cargo-public-api` costs five minutes per run to answer
+a question `semver-checks` already answers semantically.
 
 ## Guidelines
 
