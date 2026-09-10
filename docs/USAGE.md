@@ -154,10 +154,18 @@ wall clock for +0.107 ARI, which is the trade to weigh, not a free choice.
 other feature model falls back to `chi2`, so the option changes nothing unless you asked for the
 Frequent-Directions sketch. It takes the same `chi2_p` and `chi2_scale`, in the same units.
 
-Use it when your clusters differ in *orientation* more than in *location*. On a fixture where six
-rank-5 subspaces share a single centre — so centroid distance carries no information at all — leaf
-purity goes **0.820 → 0.938** (median of seeds 0/1/2, `max_leaves=2000`, `chi2_scale=0.01`, ranges
-disjoint), and on well-separated blobs it reaches the same ARI 1.0 with **6 leaves instead of 99**.
+Use it when your clusters differ in *orientation* more than in *location*, and when the summary is
+**compressed** — that second condition is the one that was missing. On a fixture where eight rank-3
+subspaces share a single centre in 60 dimensions, summarised into 50 leaves for 2000 rows, leaf
+purity reads **0.713** against `chi2`'s 0.505 and plain `euclidean`'s 0.626: seven of seven seeds,
+mean +0.207 and +0.093, worst case +0.123 and +0.064, all three seed ranges disjoint. Widen the
+budget and the gap closes on its own — at 300 leaves for 3000 rows every criterion lands in one
+0.961–0.978 band, because ten points per leaf resolve the subspaces whatever decides the absorption.
+The gate earns its keep where leaves have to hold a crowd.
+
+At a large budget it still leads, by much less: six rank-5 subspaces in 100 dimensions, 20 000 rows
+into 2000 leaves, read **0.9793 against `chi2`'s 0.9601** (3/3 seeds, ranges disjoint). On
+well-separated blobs it reaches the same ARI 1.0 with **6 leaves instead of 99**.
 
 **On MNIST-20k it is a loss**, and that is the case to weigh it against: ARI 0.250–0.260 against
 `chi2`'s 0.274–0.291 at every scale tried, with more leaves and ~20 % more time (the gate costs

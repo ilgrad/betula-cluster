@@ -1063,37 +1063,42 @@ def _leaf_purity(truth, leaves):
     return sum(c.most_common(1)[0][1] for c in by_leaf.values()) / len(truth)
 
 
-def test_subspace_gate_matches_chi2_where_only_orientation_separates():
-    """Both orientation-aware gates have to summarise concentric subspaces without spending extra
-    leaves on them.
+def test_subspace_gate_beats_the_gate_it_refines_where_only_orientation_separates():
+    """`absorb="subspace"` is the χ² gate read on the leaf's own basis, so it has to beat that gate
+    read on a diagonal variance — and beat a plain distance too, or the basis is not what did it.
 
-    This test used to assert `subspace > chi2`. It no longer holds, and the reason is not the gate:
-    at 300 leaves for 3000 rows the *tree* now resolves the three subspaces whatever the criterion —
-    over seeds 0-2 the plain Euclidean gate reads 0.966-0.978 purity, radius 0.969-0.977, chi2
-    0.964-0.973 and subspace 0.961-0.977, i.e. one band, with the ordering between chi2 and subspace
-    flipping with the seed (subspace ahead on three of five seeds, behind on two, never by more than
-    0.004). Ranking rebuild merges by what they cost is what closed the gap. The fixture no longer
-    discriminates the gates and neither does a tighter budget (measured at 100 and 150 leaves);
-    finding one that does, or retiring `absorb="subspace"`, is tracked separately."""
-    x, truth = _concentric_subspaces(3000, 40, 3, 3, seed=0)
+    The fixture is eight rank-3 subspaces through one shared centre in 60 dimensions at a 40×
+    compression ratio. Its predecessor (three subspaces in 40 dimensions at 300 leaves for 3000
+    rows) stopped discriminating once the rebuild started ranking merges by cost: ten points per
+    leaf resolves the subspaces whatever the criterion, and all four gates landed in one 0.961-0.978
+    band. Compression is the axis that matters, not the ambient dimension. Measured over seeds 0-6
+    on this fixture, subspace wins **7 of 7 against both**: against chi2 by +0.207 mean and +0.123
+    worst, against euclidean by +0.093 and +0.064, with the seed ranges disjoint in both cases
+    (subspace 0.666-0.765, euclidean 0.582-0.662, chi2 0.423-0.578)."""
+    x, truth = _concentric_subspaces(2000, 60, 8, 3, seed=0)
     got = {}
-    for absorb in ("chi2", "subspace"):
+    for absorb in ("euclidean", "chi2", "subspace"):
         est = betula_cluster.Betula(
-            n_clusters=3,
+            n_clusters=8,
             feature="fd",
             method="kmeans",
             absorb=absorb,
             chi2_scale=0.01,
-            max_leaves=300,
+            max_leaves=50,
             seed=0,
         )
         est.fit(x)
         got[absorb] = (_leaf_purity(truth, est.assign_microclusters(x)), est.n_leaves_)
-    (pure_chi2, n_chi2), (pure_sub, n_sub) = got["chi2"], got["subspace"]
+    (pure_euc, n_euc), (pure_chi2, n_chi2), (pure_sub, n_sub) = (
+        got["euclidean"],
+        got["chi2"],
+        got["subspace"],
+    )
     # A gate that merely splits more finely buys purity for free, so the counts have to stay close.
-    assert n_sub <= 1.3 * n_chi2, f"subspace bought purity with leaves: {n_sub} vs {n_chi2}"
-    assert pure_sub > 0.90, f"subspace lost the subspaces entirely: {pure_sub:.4f}"
-    assert abs(pure_sub - pure_chi2) < 0.02, f"subspace {pure_sub:.4f} vs chi2 {pure_chi2:.4f}"
+    assert n_sub <= 1.3 * min(n_chi2, n_euc), f"subspace bought purity with leaves: {n_sub}"
+    # Margins well inside the 7-seed worst cases above, so this pins the ordering, not the values.
+    assert pure_sub - pure_chi2 > 0.08, f"subspace {pure_sub:.4f} vs chi2 {pure_chi2:.4f}"
+    assert pure_sub - pure_euc > 0.03, f"subspace {pure_sub:.4f} vs euclidean {pure_euc:.4f}"
 
 
 def test_mppca_separates_subspaces_a_diagonal_covariance_cannot():
