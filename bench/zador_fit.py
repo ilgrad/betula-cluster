@@ -31,8 +31,8 @@ the finding, not a nuisance.
     uv run --no-sync --with pandas --with numpy --with scikit-learn python bench/zador_fit.py
 
 Prints one row per (dataset, distance): the fitted slope with its standard error, the R^2, the
-implied `d_eff` with the error propagated onto it, the TWO-NN estimate on the raw data, and the
-ambient dimension.
+implied `d_eff` with the error propagated onto it, the TWO-NN estimate on the points the sweep
+summarised, and the ambient dimension.
 """
 
 from __future__ import annotations
@@ -83,20 +83,17 @@ def two_nn(x: np.ndarray, seed: int = 0) -> float:
     return float((xs @ ys) / (xs @ xs))
 
 
-def raw_data(dataset: str) -> np.ndarray | None:
-    """The points the budget sweep summarised, for the TWO-NN control."""
-    from sklearn.datasets import fetch_covtype, fetch_openml, load_digits
+def sweep_points(dataset: str) -> np.ndarray | None:
+    """The points the budget sweep summarised, for the TWO-NN control.
 
-    rng = np.random.default_rng(0)
-    if dataset == "digits":
-        return load_digits().data.astype(np.float64)
-    if dataset == "covtype-20k":
-        y = fetch_covtype()
-        return y.data[rng.choice(len(y.data), 20_000, replace=False)].astype(np.float64)
-    if dataset == "mnist-10k":
-        y = fetch_openml("mnist_784", version=1, as_frame=False, parser="liac-arff")
-        return y.data[:10_000].astype(np.float64)
-    return None
+    Taken from the loader `bench/leaf_budget.py` itself fits, so the control and the slope describe
+    the same source. It used to build its own draw — unstandardized, and `rng(0).choice` against the
+    sweep's `rng(0).permutation`, with MNIST taken off the front of the file rather than drawn at
+    all — and so estimated the intrinsic dimension of data no cell in the table had ever seen.
+    """
+    from insertion_order import DATASETS, load
+
+    return load(dataset)[0] if dataset in DATASETS else None
 
 
 def main() -> None:
@@ -108,7 +105,7 @@ def main() -> None:
 
     control: dict[str, float] = {}
     for dataset in sorted(df["dataset"].unique()):
-        x = raw_data(dataset)
+        x = sweep_points(dataset)
         if x is not None:
             control[dataset] = two_nn(x)
 

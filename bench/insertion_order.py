@@ -55,6 +55,8 @@ import numpy as np
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
+import _fixtures
+
 P = 8
 HEADS = ("kmeans", "gmm", "ward")
 
@@ -68,27 +70,14 @@ DATASETS = {
 
 
 def load(name: str):
-    """Standardized `(X, y, k)`. Subsampled datasets take a fixed permutation, never a head slice —
-    covtype and MNIST both ship class-ordered, and a head slice would hand back a truncated label
-    set that quietly makes every ARI in the table a different question."""
-    from sklearn.preprocessing import StandardScaler
-
+    """Standardized `(X, y, k)` under the **pop** rule: the scaler sees the whole population and the
+    subsample is a fixed `rng(0)` permutation of it. `bench/_fixtures.py` holds that definition and
+    the other one — the same `ward` head reads 0.1416 here and 0.0861 under the **sub** rule the
+    quality tables use, so which rule a table was measured under is not a detail."""
     spec = DATASETS[name]
-    if name == "digits":
-        from sklearn.datasets import load_digits
-
-        d = load_digits()
-        x, y = np.asarray(d.data, dtype=np.float64), np.asarray(d.target, dtype=int)
-    else:
-        from _worker import load_real_worker
-
-        base = "covtype" if name.startswith("covtype") else "mnist"
-        x, y, _ = load_real_worker(base)
-        rng = np.random.default_rng(0)
-        idx = rng.permutation(len(x))[: spec["n"]]
-        return np.ascontiguousarray(x[idx]), y[idx], spec["k"]
-    x = StandardScaler().fit_transform(x)
-    return np.ascontiguousarray(x), y, spec["k"]
+    base = "digits" if name == "digits" else "covtype" if name.startswith("covtype") else "mnist"
+    x, y, _ = _fixtures.load_pop(base, spec["n"])
+    return x, y, spec["k"]
 
 
 def one_fit(x, k, head, budget, seed, perm, canonical=False):

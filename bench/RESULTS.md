@@ -164,6 +164,44 @@ Absolute times vary by machine; the *ratios* far less.
   from `/proc/self/statm` (the post-`exec` process only — immune to the launcher's footprint), with a
   14 GiB `RLIMIT_AS` cap and a timeout, so a method that explodes fails gracefully.
 
+## Which `covtype` is this? — the two real-data fixture rules
+
+A "20 000-row draw from covtype" is not one thing, and the difference is not small: the same `ward`
+head reads **0.0861** under one rule and **0.1416** under the other. Both rules are on this page and
+both are defensible, so both are kept — but which one a table was measured under is part of the
+table, not a detail.
+
+| rule | rows | drawn how | the scaler was fitted on | used by |
+|---|---:|---|---|---|
+| **sub** | 20 000 | `rng(seed).choice` — moves with the seed | those 20 000 rows | `results_real.csv`, `results_real_hires.csv`, `results_real_normalize.csv`: the `covtype` and `mnist` rows of every quality table |
+| **pop** | 20 000 / 10 000 | `rng(0).permutation[:n]` — fixed | all 581 012 covtype / 70 000 MNIST rows | `results_order.csv`, `results_budget.csv`, and the Zador fit |
+| **raw** | 10 000 / 1797 | first `n` rows | *nothing — features are unscaled* | `results_refit.csv`: the `leaf_refit` table, whose subject is what the raw points do |
+| *(full)* | 581 012 | no draw | all 581 012 | `results_real_scale.csv`: the full-covtype headline, labelled `covtype` |
+
+**sub** is what a practitioner holding 20 000 rows has — there is no population to standardize
+against, and the per-seed draw means a median-of-three-seeds cell averages over three subsamples as
+well as three initializations. **pop** lets a 20 000-row cell and the full-covtype cell describe the
+same geometry, and holds the data still while a study sweeps a knob. None of the three is a mistake.
+Reading a **sub** number against a **pop** number is.
+
+Both drawn rules *draw*: covtype's file is ordered in spatial blocks, so a head slice is a different
+question wearing the same name — class 4 is 0.47 % of the data and **10.8 %** of the first 20 000
+rows. OpenML MNIST is not like that (all ten classes in its first 10 000 rows, each within a few per
+cent of its population share), which is the only reason the **raw** rule is allowed to take one.
+
+**Reading the labels on this page:** `covtype-20k` and `mnist-10k` mean **pop** unless the row says
+`(sub)`. Three sections built their fixture with `bench/comprehensive.py::load_real` — the **sub**
+rule — and labelled it with a 20 k name anyway; those rows now carry `(sub)` explicitly. They are
+"Where the leaf budget goes" (the mass-profile tables only — the `balance` tables further down that
+same section are **pop**), the `n_init` restart section, and the `simplified_silhouette` section.
+
+`bench/_fixtures.py` is now the only place any of the rules is defined, and every harness in `bench/`
+loads through it. That is the fix rather than the documentation: the rules were originally spelled
+out inline in five separate files, one-off scripts under `local/scratch/` then wrote further variants
+of their own — one drawing without standardizing at all — and the label stopped tracking the data. A
+one-off script written before 2026-09-10 may still use any of them; one written against `_fixtures`
+has to name a rule to get a fixture.
+
 ## Quality — ARI vs ground truth (N = 30 000)
 
 ![ARI heatmap](plots/quality_ari.png)
@@ -1142,8 +1180,8 @@ over `max_leaves`, medians of seeds 0/1/2, `threshold=0`:
 
 | dataset | 250 | 500 | 1000 | 2000 | 4000 |
 |---|---|---|---|---|---|
-| covtype-20k | 1.00 | 0.95 | 0.94 | 0.91 | 0.95 |
-| mnist-20k | 0.92 | 0.94 | 0.92 | 0.98 | 0.96 |
+| covtype-20k (sub) | 1.00 | 0.95 | 0.94 | 0.91 | 0.95 |
+| mnist-20k (sub) | 0.92 | 0.94 | 0.92 | 0.98 | 0.96 |
 | blobs-100k | 0.97 | 0.96 | 0.90 | 0.94 | 0.91 |
 | highdim-100k | 0.91 | 0.90 | 0.90 | 0.90 | 0.92 |
 
@@ -1157,10 +1195,10 @@ column:
 
 | dataset | budget | Gini | top1 | top10 | heaviest leaf | before (Gini / top1 / heaviest) |
 |---|---:|---:|---:|---:|---:|---|
-| mnist-20k | 250 | 0.772 | 0.055 | 0.592 | 1 106 of 20 000 | 0.979 / **0.831** / 16 625 |
-| mnist-20k | 1000 | 0.749 | 0.034 | 0.586 | 672 | 0.938 / 0.360 / 7 193 |
-| covtype-20k | 500 | 0.557 | 0.024 | 0.344 | 480 | 0.886 / 0.149 / 2 976 |
-| covtype-20k | 4000 | 0.490 | 0.003 | 0.326 | 60 | 0.683 / 0.015 / 295 |
+| mnist-20k (sub) | 250 | 0.772 | 0.055 | 0.592 | 1 106 of 20 000 | 0.979 / **0.831** / 16 625 |
+| mnist-20k (sub) | 1000 | 0.749 | 0.034 | 0.586 | 672 | 0.938 / 0.360 / 7 193 |
+| covtype-20k (sub) | 500 | 0.557 | 0.024 | 0.344 | 480 | 0.886 / 0.149 / 2 976 |
+| covtype-20k (sub) | 4000 | 0.490 | 0.003 | 0.326 | 60 | 0.683 / 0.015 / 295 |
 | imbalanced-100k | 4000 | 0.875 | 0.010 | 0.877 | 1 046 | 0.949 / **0.800** / **80 000** |
 
 The `imbalanced` fixture is the clean case: 80 000 points in a tight core, 20 000 spread across five
@@ -1455,11 +1493,10 @@ all the way to **×202** (99 leaves, maximum leaf weight 5773), and the order st
 and the best `covtype` cell in the whole sweep (0.1430) is the *most* compressed one.
 
 > **These `covtype-20k` cells are not the `covtype` rows of the quality tables, and must not be read
-> against them.** This sweep and the order study take their 20 000 rows from
-> `bench/_worker.py` — standardised on all 581 012 rows, then `rng(0).permutation(...)[:20000]` —
-> while `bench/comprehensive.py` draws with `rng(0).choice` and standardises *that* subsample. The
-> same ward head reads **0.1416** here and **0.0861** there, and the difference is the fixture, not
-> the budget: the cross that shows it is under "What the `covtype` / `ward` gap actually is" above. `mnist-10k` degrades gently to ×5.5 (k-means 0.2900 → 0.2725, ward 0.3419 → 0.3228)
+> against them.** This sweep and the order study are the **pop** rule; the quality tables are
+> **sub**. The same ward head reads **0.1416** here and **0.0861** there, and the difference is the
+> fixture, not the budget: see "Which `covtype` is this?" for both rules, and "What the `covtype` /
+> `ward` gap actually is" above for the cross that isolates it. `mnist-10k` degrades gently to ×5.5 (k-means 0.2900 → 0.2725, ward 0.3419 → 0.3228)
 and then falls off a cliff between ×10 and ×22.
 
 Two further readings the sweep settles:
@@ -1898,33 +1935,43 @@ and knows nothing about quantizers:
 
 | dataset | routing | budgets | slope | `d_eff` | TWO-NN | ambient |
 |---|---|---:|---:|---:|---:|---:|
-| covtype-20k | euclidean | 7 (99–7295) | −0.745 ± 0.068 | 2.68 ± 0.24 | 4.61 | 54 |
-| covtype-20k | ward | 7 (90–7302) | −0.674 ± 0.053 | 2.97 ± 0.23 | 4.61 | 54 |
-| digits | euclidean | 6 (44–898) | −0.703 ± 0.103 | 2.85 ± 0.42 | 12.91 | 64 |
-| digits | ward | 6 (41–828) | −0.544 ± 0.071 | **3.67 ± 0.48** | 12.91 | 64 |
-| mnist-10k | euclidean | 6 (97–3904) | −0.432 ± 0.082 | 4.63 ± 0.88 | 18.65 | 784 |
-| mnist-10k | ward | 6 (90–3840) | −0.417 ± 0.051 | 4.79 ± 0.59 | 18.65 | 784 |
+| covtype-20k | euclidean | 7 (98–7776) | −0.668 ± 0.049 | 2.99 ± 0.22 | 5.28 | 54 |
+| covtype-20k | ward | 7 (93–7641) | −0.685 ± 0.041 | 2.92 ± 0.17 | 5.28 | 54 |
+| digits | euclidean | 6 (41–833) | −0.536 ± 0.062 | **3.73 ± 0.43** | 12.94 | 64 |
+| digits | ward | 6 (41–875) | −0.577 ± 0.065 | 3.47 ± 0.39 | 12.94 | 64 |
+| mnist-10k | euclidean | 6 (100–3937) | −0.431 ± 0.055 | 4.64 ± 0.59 | 18.50 | 784 |
+| mnist-10k | ward | 6 (97–3776) | −0.431 ± 0.048 | 4.64 ± 0.52 | 18.50 | 784 |
 
-`R²` is 0.87–0.97 across all twelve `(dataset × routing)` fits, so the power law itself is a good
+Re-fitted 2026-09-10 against the `results_budget.csv` the rebuild change rewrote, and the TWO-NN
+column with it: the control used to build its own draw — unstandardized, and `rng(0).choice` against
+the sweep's `rng(0).permutation`, with MNIST taken off the front of the file rather than drawn at all
+— so it described data no cell in the table had seen. It now loads through `bench/insertion_order.py`,
+the loader `bench/leaf_budget.py` itself fits, which moves it 4.61 → **5.28** on covtype,
+12.91 → 12.94 on digits and 18.65 → **18.50** on MNIST.
+
+`R²` is 0.93–0.99 across all twelve `(dataset × routing)` fits, so the power law itself is a good
 description over the range users operate in. What it is *not* is an intrinsic-dimension estimate:
-TWO-NN says 4.6 / 12.9 / 18.7 and the Zador slope says 2.7 / 2.9 / 4.6, a gap that widens with
+TWO-NN says 5.3 / 12.9 / 18.5 and the Zador slope says 3.0 / 3.7 / 4.6, a gap that widens with
 dimension and is far outside the fitted uncertainty. **The disagreement is the result, not noise.**
 
 The error falls *faster* than a uniform `d`-dimensional source allows, because at these budgets the
 tree is not resolving a manifold — it is still eating between-cluster variance. Zador's law is
-asymptotic in `m`, and resolving `d` dimensions needs `m ≫ 2^d`; at `m = 900` and `d = 12.9`,
+asymptotic in `m`, and resolving `d` dimensions needs `m ≫ 2^d`; at `m = 833` and `d = 12.9`,
 `m^(1/d) = 1.7`, under two cells per axis. So the number to quote is not "the intrinsic dimension of
-`digits` is 2.85" — it is the operational statement the slope licenses directly: **doubling the leaf
-budget divides the quantization error by `2^(2/d_eff)`**, which is 1.6× on `digits` and 1.36× on
+`digits` is 3.73" — it is the operational statement the slope licenses directly: **doubling the leaf
+budget divides the quantization error by `2^(2/d_eff)`**, which is 1.45× on `digits` and 1.35× on
 `mnist-10k`. Had the exponent been the true intrinsic dimension, doubling would have bought 1.11×
 and 1.08× — the budget knob is a great deal more useful than an ID-based estimate would predict, and
 this is why the quality-vs-budget curves saturate as early as they do.
 
-One row stands out. On `digits`, `ward` routing has the shallowest slope of the four — `d_eff`
-3.67 ± 0.48 against euclidean's 2.85 ± 0.42 — i.e. its quantization error improves *least* per extra
-leaf. That is the mass-balancing lever from the covtype work seen from the other side: ward routing
-spends budget on keeping leaves comparable in weight rather than on shrinking the worst radius, and
-the squared-radius metric charges it for that.
+**One row used to stand out here, and it no longer does.** The previous edition read `digits` `ward`
+as the shallowest slope of the four — `d_eff` 3.67 ± 0.48 against euclidean's 2.85 ± 0.42 — and took
+it as the covtype mass-balancing lever seen from the other side. On the rebuilt tree the ordering is
+reversed and the separation is gone: euclidean 3.73 ± 0.43 against ward's 3.47 ± 0.39, a 0.26 gap
+against standard errors of about 0.4. It was 1.3 standard errors before and is well under one now,
+so the honest reading is that this fit never resolved a routing effect on `digits`. Nothing follows
+for the covtype `ward` finding, which is measured directly and elsewhere on this page — it loses a
+corroborating instance, not its evidence.
 
 ## A label-free fidelity number that finds the knee the quantization error hides (task #55)
 
@@ -3045,7 +3092,8 @@ the published `mnist,20000,betula-kmeans` cell reads ARI 0.3069 against `sklearn
 and a restart-starved head would explain the gap for free.
 
 Harness identical to `bench/comprehensive.py::run_real` — the same per-seed 20 000-row subsample, the
-same `StandardScaler`, the same `BETULA_KW` (`threshold=0`, `max_leaves=4000`, `n_shards=1`) —
+same `StandardScaler` (the **sub** rule; the `covtype-20k` figures below are that fixture, not the
+**pop** one the budget sweeps use — see "Which `covtype` is this?"), the same `BETULA_KW` (`threshold=0`, `max_leaves=4000`, `n_shards=1`) —
 `feature="spherical"`, `method="kmeans"`, ARI and wall time the median of seeds 0/1/2, one machine,
 one process, `RAYON_NUM_THREADS` default. Raw output in `local/scratch/q3_curve_shipped.out`.
 
@@ -3091,7 +3139,9 @@ the centroid as the representative.
 
 Two losses are stacked in that sentence and they are not the same size. `kmeans`, `max_leaves=4000`,
 `threshold=0`, medians of seeds 0/1/2, against the point-level simplified silhouette (the same
-surrogate with no summary) and against scikit-learn's classical silhouette on a 10 000-point sample:
+surrogate with no summary) and against scikit-learn's classical silhouette on a 10 000-point sample.
+Every `mnist-20k` / `covtype-20k` row in this section is the **sub** fixture (the harness calls
+`bench/comprehensive.py::load_real`), not the **pop** one the budget sweeps use:
 
 | dataset | `k` | leaf simplified | point simplified | leaf medoid | sampled classical |
 |---|---:|---:|---:|---:|---:|

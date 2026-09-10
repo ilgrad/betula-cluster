@@ -42,6 +42,29 @@ All notable changes to this project are documented here. The format follows
   subprocess test pins it. The documented promise that the thread count does not enter the answer
   was true everywhere else and is now true here; `components_` values shift in their last few bits
   against 0.8.0.
+- **Every `bench/` harness now loads its real-data fixture from one module, and the Zador control
+  stops describing data no cell in its own table had seen.** A "20 000-row draw from covtype" was
+  spelled out inline in five separate files, and one-off scripts had written further variants: the
+  quality tables draw with `rng(seed).choice` and standardize *that* subsample, while the order and
+  budget studies standardize all 581 012 rows and then take a fixed `rng(0)` permutation. The same
+  `ward` head reads **0.0861** under the first rule and **0.1416** under the second, and
+  `bench/RESULTS.md` printed both under the label `covtype-20k`. `bench/_fixtures.py` is now the only
+  definition of any of them and every harness loads through it; the rules are named (**sub** /
+  **pop** / **raw**), tabulated in `bench/RESULTS.md`, and the three sections that publish a **sub**
+  fixture under a 20 k label say so in place. All five rewired loaders return **bit-identical** arrays
+  to the ones they replace across 16 (dataset × seed) cells, so nothing published moved for the
+  refactor.
+
+  One number did move, and it was a defect: `bench/zador_fit.py`'s TWO-NN cross-check built its own
+  subsample — unstandardized, `rng(0).choice` against the sweep's `rng(0).permutation`, and MNIST
+  taken off the front of the file rather than drawn at all — so it estimated the intrinsic dimension
+  of data the budget sweep never summarised. It now loads through the loader `bench/leaf_budget.py`
+  itself fits: **4.61 → 5.28** on covtype, 12.91 → 12.94 on
+  digits, 18.65 → **18.50** on MNIST. Re-fitting that table against the `results_budget.csv` the
+  rebuild change rewrote also retires a published reading: `digits` `ward` was the shallowest slope
+  of the four (`d_eff` 3.67 ± 0.48 against euclidean's 2.85 ± 0.42) and is now the steeper of the
+  pair (3.47 ± 0.39 against 3.73 ± 0.43) — under one standard error either way, so the fit never
+  resolved a routing effect on `digits`.
 - **The three studies that swept `gmm` on the refused feature are re-run, and one published
   conclusion changes sign.** `bench/results_budget.csv`, `bench/results_imbalance.csv` and
   `bench/results_order.csv` had their `gmm` columns measured with `feature="spherical"`, which the

@@ -134,7 +134,9 @@ and it no longer costs anything on unequal masses.
 criterion.** The gate stops subdividing once a cell is described, which on real data binds long
 before `max_leaves` does: on covtype-20k it realises **46 leaves whether you ask for 500 or 4 000**,
 on `digits` 57, on MNIST-10k 920. What that buys and costs, medians of seeds 0/1/2 against the
-default `euclidean` at the same budget:
+default `euclidean` at the same budget (the fixtures here are the **sub** rule — subsample first,
+standardize the subsample; `bench/RESULTS.md` § "Which `covtype` is this?" says why that has to be
+stated):
 
 | dataset | head | `euclidean` (leaves) | `chi2` (leaves) |
 |---|---|---|---|
@@ -260,7 +262,8 @@ Lloyd converges to a *local* optimum of the inertia, so the k-means heads run `n
 draws and keep the lowest-inertia one. `None` (the default) leaves each on its own count of 4.
 
 MNIST-20k, `feature="spherical"`, `method="kmeans"`, `max_leaves=4000`, `threshold=0`, ARI and time
-the median of seeds 0/1/2 (the same harness the published tables use):
+the median of seeds 0/1/2 (the same harness the published tables use — the **sub** fixture rule, so
+the `covtype-20k` figures below are not the budget study's `covtype-20k`):
 
 | `n_init` | mnist ARI | mnist time | digits ARI | covtype ARI |
 |---|---|---|---|---|
@@ -962,7 +965,9 @@ default** because it relabels.
 medians of seeds 0/1/2, on **raw features** (`sklearn.datasets.load_digits().data` and the first
 10 000 rows of `fetch_openml("mnist_784")`) with every other parameter left at its default — the
 setup is stated because an earlier version of this table did not state one, and turned out to have
-been measured under two different ones. The harness is
+been measured under two different ones. This `mnist-10k` is unscaled and is *not* the standardized
+`mnist-10k` of the budget and order studies; `bench/RESULTS.md` § "Which `covtype` is this?" lists
+all three fixture rules and which table uses which. The harness is
 [`bench/leaf_refit.py`](https://github.com/ilgrad/betula-cluster/blob/main/bench/leaf_refit.py) and
 its output is committed as
 [`bench/results_refit.csv`](https://github.com/ilgrad/betula-cluster/blob/main/bench/results_refit.csv),

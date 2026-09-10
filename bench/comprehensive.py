@@ -34,9 +34,13 @@ import pandas as pd
 
 warnings.filterwarnings("ignore")
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
 PLOTS = HERE / "plots"
 PLOTS.mkdir(exist_ok=True)
 TIMEOUT = 180.0  # per scaling fit
+
+import _fixtures
+from _fixtures import REAL_CAP
 
 
 # ── datasets (standardized) ───────────────────────────────────────────────────────────────────────
@@ -70,42 +74,18 @@ def gen_dataset(name: str, n: int, seed: int = 0):
 
 
 # ── real datasets (download-guarded; fixed N → quality-phase only) ──────────────────────────────────
-REAL_CAP = 20_000  # subsample big real sets so the O(N^2) baselines stay feasible and comparable
-
-
 def load_real(name: str, seed: int = 0):
     """Return (X float64 standardized, y, k) for a real dataset, or ``None`` if its download is
-    unavailable (offline run). Large sets are subsampled to ``REAL_CAP`` for the all-methods table."""
-    from sklearn.preprocessing import StandardScaler
-
+    unavailable (offline run). Large sets are subsampled to ``REAL_CAP`` under the **sub** rule —
+    draw the rows, then standardize the draw. `bench/_fixtures.py` says why the rule needs a name."""
     try:
-        if name == "digits":
-            from sklearn.datasets import load_digits
-
-            X, y, k = (*load_digits(return_X_y=True), 10)
-        elif name == "mnist":
-            from sklearn.datasets import fetch_openml
-
-            d = fetch_openml("mnist_784", version=1, as_frame=False)
-            X, y, k = d.data, d.target.astype(int), 10
-        elif name == "covtype":
-            from sklearn.datasets import fetch_covtype
-
-            d = fetch_covtype()
-            X, y, k = d.data, d.target.astype(int) - 1, 7
-        else:
-            raise ValueError(f"unknown real dataset: {name}")
+        x, y, k = _fixtures.fetch(name)
     except ValueError:
         raise  # programmer error (unknown name), not a download failure
     except Exception as e:  # offline / download failure → skip this dataset, keep the run alive
         print(f"  [real] {name}: skipped ({type(e).__name__}: {str(e)[:60]})")
         return None
-
-    X, y = np.asarray(X, dtype=np.float64), np.asarray(y)
-    if len(X) > REAL_CAP:
-        idx = np.random.default_rng(seed).choice(len(X), REAL_CAP, replace=False)
-        X, y = X[idx], y[idx]
-    return StandardScaler().fit_transform(X).astype(np.float64), y, k
+    return (*_fixtures.draw_then_scale(x, y, REAL_CAP, seed), k)
 
 
 # ── methods ─────────────────────────────────────────────────────────────────────────────────────

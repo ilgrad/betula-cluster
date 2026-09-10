@@ -19,8 +19,11 @@ nobody can check.
 
 Setup, stated because the last version of this table did not state one: **raw features** — no
 scaling, no normalisation — with every parameter other than the ones under test left at its default.
-`digits` is all 1797 rows; `mnist-10k` is the first 10 000 rows of OpenML `mnist_784`. ARI against
-the class labels, median of seeds 0/1/2, identity row order.
+`digits` is all 1797 rows; `mnist-10k` is the first 10 000 rows of OpenML `mnist_784`, which is a
+representative sample there (all ten classes within a few per cent of their population shares) even
+though the same head slice of covtype would not be. Neither is the standardized `mnist-10k` the
+budget and order studies fit — see "Which `covtype` is this?" in `bench/RESULTS.md`. ARI against the
+class labels, median of seeds 0/1/2, identity row order.
 
     uv run --no-sync --with scikit-learn python bench/leaf_refit.py
 
@@ -31,6 +34,7 @@ from __future__ import annotations
 
 import csv
 import os
+import sys
 from pathlib import Path
 
 for _v in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "RAYON_NUM_THREADS"):
@@ -38,10 +42,13 @@ for _v in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "RAYON_
 
 import numpy as np
 from betula_cluster import fit_predict
-from sklearn.datasets import fetch_openml, load_digits
 from sklearn.metrics import adjusted_rand_score as ari
 
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+
+import _fixtures
+
 SEEDS = (0, 1, 2)
 HEADS = ("kmeans", "ward", "gmm")
 
@@ -70,19 +77,15 @@ def quality(x, truth, k, ml, head, refit, canonical):
 
 
 def datasets():
-    """Raw, unscaled features. `np.ascontiguousarray` is not decoration: `fetch_openml` hands back a
-    column-major array, and reading one as rows was a live bug until 2026-09-05 — the row order the
-    engine sees should be the one this file claims it sees, not one numpy happens to supply."""
-    d = load_digits()
-    m = fetch_openml("mnist_784", version=1, as_frame=False, parser="liac-arff")
+    """Raw, unscaled features — `_fixtures.fetch` is the fetch without either scaling rule applied.
+    `np.ascontiguousarray` is not decoration: `fetch_openml` hands back a column-major array, and
+    reading one as rows was a live bug until 2026-09-05 — the row order the engine sees should be
+    the one this file claims it sees, not one numpy happens to supply."""
+    dx, dy, _ = _fixtures.fetch("digits")
+    mx, my, _ = _fixtures.fetch("mnist")
     return {
-        "digits": (np.ascontiguousarray(d.data, dtype=np.float64), d.target, 10, 90),
-        "mnist-10k": (
-            np.ascontiguousarray(m.data[:10000], dtype=np.float64),
-            m.target[:10000].astype(int),
-            10,
-            200,
-        ),
+        "digits": (np.ascontiguousarray(dx), dy, 10, 90),
+        "mnist-10k": (np.ascontiguousarray(mx[:10000]), my[:10000], 10, 200),
     }
 
 

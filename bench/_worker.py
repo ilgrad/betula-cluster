@@ -88,23 +88,12 @@ def gen(dataset: str, n: int, seed: int = 0):
 
 
 def load_real_worker(dataset: str):
-    """Load a full real dataset (standardized) inside the worker, for the real-scale headline."""
-    from sklearn.preprocessing import StandardScaler
+    """Load a full real dataset (standardized) inside the worker, for the real-scale headline.
 
-    if dataset == "covtype":
-        from sklearn.datasets import fetch_covtype
+    The import is local so a worker that never asks for real data never pays sklearn's RSS."""
+    import _fixtures
 
-        d = fetch_covtype()
-        x, y, k = d.data, d.target.astype(int) - 1, 7
-    elif dataset == "mnist":
-        from sklearn.datasets import fetch_openml
-
-        d = fetch_openml("mnist_784", version=1, as_frame=False)
-        x, y, k = d.data, d.target.astype(int), 10
-    else:
-        raise ValueError(dataset)
-    x = StandardScaler().fit_transform(np.asarray(x, dtype=np.float64)).astype(np.float64)
-    return x, np.asarray(y), k
+    return _fixtures.load_pop(dataset)
 
 
 def load_sparse(dataset: str):
