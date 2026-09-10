@@ -17,8 +17,14 @@ the two cases that need different work:
   vanished no mutation with that description exists in that file at all -- the code it described is
            gone. The entry is dead and its justification with it.
 
+`--apply` performs exactly those two edits and nothing else: it re-anchors the unambiguous moves and
+deletes the vanished entries, in place, leaving every comment and every ambiguous entry untouched.
+An ambiguous move is a judgement about which of several identical mutations carried the recorded
+argument, and a script cannot make it.
+
     uv run --no-sync python scripts/check_mutants_baseline.py
     uv run --no-sync python scripts/check_mutants_baseline.py --list-from mutants.out/caught.txt
+    uv run --no-sync python scripts/check_mutants_baseline.py --apply
 """
 
 from __future__ import annotations
@@ -64,6 +70,11 @@ def main() -> int:
         "--list-from",
         type=pathlib.Path,
         help="read the mutant list from a file instead of running cargo mutants",
+    )
+    ap.add_argument(
+        "--apply",
+        action="store_true",
+        help="rewrite the baseline: re-anchor the unambiguous moves, delete the vanished entries",
     )
     args = ap.parse_args()
 
@@ -120,7 +131,25 @@ def main() -> int:
         )
         for entry in vanished:
             print(f"    {entry}")
+
+    if args.apply:
+        rewrite(dict(unambiguous), set(vanished))
+        print(
+            f"\napplied: {len(unambiguous)} re-anchored, {len(vanished)} deleted. "
+            f"{len(ambiguous)} ambiguous entries left for a re-measure."
+        )
     return 1
+
+
+def rewrite(anchors: dict[str, str], dead: set[str]) -> None:
+    """Edit the baseline line by line, so comments and untouched entries keep their bytes."""
+    out = []
+    for raw in BASELINE.read_text().splitlines():
+        entry = raw.split("#", 1)[0].rstrip()
+        if entry in dead:
+            continue
+        out.append(raw.replace(entry, anchors[entry], 1) if entry in anchors else raw)
+    BASELINE.write_text("\n".join(out) + "\n")
 
 
 if __name__ == "__main__":

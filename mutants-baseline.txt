@@ -52,16 +52,38 @@
 # 2026-08-20 after the rebuild-cost fix moved its production lines.
 #
 # HOW STALE, MEASURED (2026-09-07, `scripts/check_mutants_baseline.py`): 315 entries against the
-# 8927 mutants `cargo mutants --list` now emits -- 121 moved and 26 vanished. Of the moved, 42 are
-# unambiguous (their description occurs exactly once in that file now) and the script prints the
-# replacement line; the other 79 share a description with another mutant in the same file, and only
-# a measurement can say which line carried the accepted argument. Worst files: stream.rs 33,
-# scalespace.rs 28, hdbscan.rs 21, feature.rs 16, mixture.rs 14, gmm.rs 12, vmf.rs 10.
+# 8927 mutants `cargo mutants --list` then emitted -- 121 moved and 26 vanished. Of the moved, 42
+# were unambiguous (their description occurred exactly once in that file) and the script printed the
+# replacement line; the other 79 shared a description with another mutant in the same file, and only
+# a measurement can say which line carried the accepted argument.
 #
-# It is deliberately not repaired from the 2026-09-07 run (34108190109). That run cancelled 28 of its
-# first 53 completed shards at the 150-minute cap, and a cancelled shard still uploads a *partial*
-# `missed.txt`, so its collated survivor set is an undercount -- rewriting this file from it would
-# delete real survivors and quietly weaken the ratchet. Repair it from the first complete run under
+# REPAIRED IN PART (2026-09-10, `scripts/check_mutants_baseline.py --apply`, at `6b1a278`): 315
+# entries against 9236 listed mutants -- 139 moved, 26 vanished, **52 % of the file stale**. The
+# script made the two edits it can justify and no others: **50 unambiguous moves re-anchored, 26
+# vanished entries deleted**. 289 entries remain, 89 of them still stale and all of them ambiguous
+# moves -- scalespace.rs 22, feature.rs 16, stream.rs 15, mixture.rs 8, vmf.rs 7, gmm.rs 6,
+# kmeans.rs 4, linalg.rs 3, tree.rs 2, graph.rs 2, order.rs 2, kprototypes.rs 1, sparse.rs 1. Those
+# files need a whole-file run; nothing else will resolve them.
+#
+# **Re-anchoring is not re-measuring, and the trade is deliberate.** A stale entry fails *safe*: it
+# matches nothing, so the survivor at its new line reads as new and the job goes red. But a file
+# whose lines all shifted turns red in one step, which is how this ratchet went unread from
+# 2026-08-19 -- a signal that is always red carries no information. Re-anchoring restores the signal
+# at the cost of one assumption: that a survivor with the same description in the same file is the
+# same hole the recorded argument covers. That assumption fails exactly when a production edit
+# resurrected a mutation a test used to kill, which is why the ambiguous 89 are left red on purpose
+# rather than guessed at.
+#
+# Deleting the vanished entries emptied two sections. `src/clustering/hdbscan.rs` went 21 -> 1 and
+# `src/clustering/spectral.rs` 2 -> 0: both files were rewritten after their measurement, so those
+# sections now say *unmeasured*, not *clean*. Section headers carry the corrected counts.
+#
+# The `--apply` repair reads `cargo mutants --list`, which enumerates mutants instead of running
+# them and is therefore complete by construction. That is what makes it safe where rewriting from a
+# CI run is not: the 2026-09-07 run (34108190109) cancelled 28 of its first 53 completed shards at
+# the 150-minute cap, and a cancelled shard still uploads a *partial* `missed.txt`, so its collated
+# survivor set is an undercount -- rewriting this file from it would delete real survivors and
+# quietly weaken the ratchet. The *survivor set* still has to come from the first complete run under
 # the 192-shard matrix. That is also why the script is not a CI gate yet: it would be red from its
 # first run, which is the failure mode `mutants-summary` was rewritten to escape.
 #
@@ -193,14 +215,14 @@ src/clustering/vmf.rs:525:21: replace + with - in init_kappas
 # Believed equivalent -- a constant offset in a selection score, the same argument as gmm.rs:632:32.
 # `bic = -2 lnL + p ln n`, and `(k-1) -> (k+1)` adds exactly 2 to p for every k while `(k-1) -> (k/1)`
 # adds exactly 1, so every score shifts by the same c·ln n and the argmin cannot move.
-src/clustering/vmf.rs:559:34: replace - with + in movmf_auto
-src/clustering/vmf.rs:559:34: replace - with / in movmf_auto
+src/clustering/vmf.rs:672:34: replace - with + in movmf_auto
+src/clustering/vmf.rs:672:34: replace - with / in movmf_auto
 # Debt: two exact-coincidence guards.
 #   486:33  needs a component whose *total* responsibility underflows to exactly 0.0 -- the same
 #           constraint that keeps gmm.rs:159:22 and 455:22 open, and unreachable for the same reason.
 #   561:18  needs two k with a bit-identical BIC.
 src/clustering/vmf.rs:486:33: replace > with >= in movmf_once
-src/clustering/vmf.rs:561:18: replace < with <= in movmf_auto
+src/clustering/vmf.rs:674:18: replace < with <= in movmf_auto
 
 # ── src/clustering/kprototypes.rs (3) ──
 # Re-measured **2026-09-01 whole-file** after the module grew a third (directional) block: the
@@ -235,7 +257,7 @@ src/clustering/vmf.rs:561:18: replace < with <= in movmf_auto
 #           reach rather than towards it: a collapsed prototype has a cancelled resultant, whose
 #           angular term is the *maximum* `2·mass` against every micro.
 src/clustering/kprototypes.rs:407:19: replace < with <= in kpp_init
-src/clustering/kprototypes.rs:464:31: replace > with >= in kprototypes
+src/clustering/kprototypes.rs:466:31: replace > with >= in kprototypes
 src/clustering/kprototypes.rs:475:31: replace + with - in kprototypes
 
 # ── src/tree.rs (2) ──
@@ -265,52 +287,52 @@ src/tree.rs:323:22: replace > with >= in CFTree<R, C, D, A>::rebuild
 # ── src/stream.rs (33) ──
 # Debt, partly closed on 2026-08-20 (the DenStream prune thresholds are now checked
 # against a geometric-series reference). The rest is DbStream and `try_merge`.
-src/stream.rs:174:14: replace > with >= in DenStream<R, C>::try_merge
-src/stream.rs:174:27: replace / with * in DenStream<R, C>::try_merge
-src/stream.rs:220:19: replace > with < in DenStream<R, C>::tick
-src/stream.rs:220:19: replace > with == in DenStream<R, C>::tick
-src/stream.rs:220:19: replace > with >= in DenStream<R, C>::tick
-src/stream.rs:220:42: replace % with + in DenStream<R, C>::tick
+src/stream.rs:284:14: replace > with >= in DenStream<R, C>::try_merge
+src/stream.rs:284:27: replace / with * in DenStream<R, C>::try_merge
+src/stream.rs:350:19: replace > with < in DenStream<R, C>::tick
+src/stream.rs:350:19: replace > with == in DenStream<R, C>::tick
+src/stream.rs:350:19: replace > with >= in DenStream<R, C>::tick
+src/stream.rs:350:42: replace % with + in DenStream<R, C>::tick
 src/stream.rs:231:30: replace * with / in DenStream<R, C>::prune
 src/stream.rs:233:53: replace * with + in DenStream<R, C>::prune
 src/stream.rs:234:32: replace * with / in DenStream<R, C>::prune
 src/stream.rs:234:37: replace - with + in DenStream<R, C>::prune
 src/stream.rs:234:37: replace - with / in DenStream<R, C>::prune
-src/stream.rs:234:44: replace + with * in DenStream<R, C>::prune
-src/stream.rs:234:44: replace + with - in DenStream<R, C>::prune
-src/stream.rs:234:65: replace / with * in DenStream<R, C>::prune
+src/stream.rs:364:44: replace + with * in DenStream<R, C>::prune
+src/stream.rs:364:44: replace + with - in DenStream<R, C>::prune
+src/stream.rs:364:65: replace / with * in DenStream<R, C>::prune
 src/stream.rs:243:22: replace * with + in DenStream<R, C>::cluster
 src/stream.rs:243:22: replace * with / in DenStream<R, C>::cluster
-src/stream.rs:246:25: replace + with * in DenStream<R, C>::cluster
+src/stream.rs:376:25: replace + with * in DenStream<R, C>::cluster
 src/stream.rs:260:61: replace * with + in DenStream<R, C>::cluster
 src/stream.rs:260:61: replace * with / in DenStream<R, C>::cluster
-src/stream.rs:274:21: delete - in DenStream<R, C>::cluster
+src/stream.rs:404:21: delete - in DenStream<R, C>::cluster
 src/stream.rs:284:20: delete - in DenStream<R, C>::predict
-src/stream.rs:309:33: replace > with >= in DenStream<R, C>::potential_stats
-src/stream.rs:483:19: replace > with >= in DbStream<R, C>::tick
+src/stream.rs:443:33: replace > with >= in DenStream<R, C>::potential_stats
+src/stream.rs:644:19: replace > with >= in DbStream<R, C>::tick
 src/stream.rs:496:50: replace && with || in DbStream<R, C>::cleanup
 src/stream.rs:496:61: replace * with + in DbStream<R, C>::cleanup
 src/stream.rs:496:61: replace * with / in DbStream<R, C>::cleanup
-src/stream.rs:523:27: replace || with && in DbStream<R, C>::cluster
+src/stream.rs:684:27: replace || with && in DbStream<R, C>::cluster
 src/stream.rs:526:24: replace * with / in DbStream<R, C>::cluster
-src/stream.rs:552:44: replace < with <= in DbStream<R, C>::nearest
+src/stream.rs:713:44: replace < with <= in DbStream<R, C>::nearest
 src/stream.rs:563:20: delete - in DbStream<R, C>::predict
-src/stream.rs:588:33: replace > with >= in DbStream<R, C>::micro_stats
-src/stream.rs:600:10: replace < with <= in pair
-src/stream.rs:63:31: replace += with *= in UnionFind::union
+src/stream.rs:756:33: replace > with >= in DbStream<R, C>::micro_stats
+src/stream.rs:768:10: replace < with <= in pair
+src/stream.rs:64:31: replace += with *= in UnionFind::union
 
-# ── src/clustering/scalespace.rs (28) ──
+# ── src/clustering/scalespace.rs (27) ──
 # Debt: mode-counting and bandwidth arithmetic.
 src/clustering/scalespace.rs:107:47: replace * with / in bandwidth_range
 src/clustering/scalespace.rs:119:20: replace * with / in mean_shift
 src/clustering/scalespace.rs:133:20: replace > with >= in mean_shift
-src/clustering/scalespace.rs:136:28: replace - with + in mean_shift
-src/clustering/scalespace.rs:136:28: replace - with / in mean_shift
+src/clustering/scalespace.rs:238:28: replace - with + in mean_shift
+src/clustering/scalespace.rs:238:28: replace - with / in mean_shift
 src/clustering/scalespace.rs:136:47: replace > with >= in mean_shift
 src/clustering/scalespace.rs:159:21: replace * with + in prominence_modes
 src/clustering/scalespace.rs:186:21: replace + with * in prominence_modes
-src/clustering/scalespace.rs:187:56: replace > with >= in prominence_modes
-src/clustering/scalespace.rs:241:5: replace select_scale -> usize with 1
+src/clustering/scalespace.rs:301:56: replace > with >= in prominence_modes
+src/clustering/scalespace.rs:364:5: replace select_scale -> usize with 1
 src/clustering/scalespace.rs:250:34: replace > with >= in select_scale
 src/clustering/scalespace.rs:254:27: replace && with || in select_scale
 src/clustering/scalespace.rs:254:34: replace > with < in select_scale
@@ -325,10 +347,9 @@ src/clustering/scalespace.rs:265:21: replace + with * in select_scale
 src/clustering/scalespace.rs:265:33: replace / with % in select_scale
 src/clustering/scalespace.rs:268:22: replace - with + in select_scale
 src/clustering/scalespace.rs:268:22: replace - with / in select_scale
-src/clustering/scalespace.rs:62:56: replace - with + in scale_space
 src/clustering/scalespace.rs:93:19: replace < with <= in bandwidth_range
 src/clustering/scalespace.rs:96:19: replace < with <= in bandwidth_range
-src/clustering/scalespace.rs:99:19: replace > with >= in bandwidth_range
+src/clustering/scalespace.rs:175:19: replace > with >= in bandwidth_range
 
 # ── src/clustering/kmeans.rs (5) ──
 # Re-measured 2026-08-27 together with `xmeans.rs` and `model.rs`: 417 mutants in 2h03 at -j2 under
@@ -372,7 +393,7 @@ src/clustering/kmeans.rs:228:31: replace + with - in cop_kmeans
 src/clustering/kmeans.rs:304:20: replace < with <= in kmeans_plus_plus
 src/clustering/kmeans.rs:311:19: replace < with <= in kmeans_plus_plus
 src/clustering/kmeans.rs:411:21: replace < with <= in nearest_two
-src/clustering/kmeans.rs:589:16: replace > with >= in kmeans_auto
+src/clustering/kmeans.rs:621:16: replace > with >= in kmeans_auto
 
 # ── src/clustering/xmeans.rs (8) ──
 # First measurement -- the module postdates every earlier sweep. Same 2026-08-27 run as the section
@@ -484,10 +505,10 @@ src/sketch/kll.rs:62:30: replace << with >> in KllSketch::coin
 # p*ln n`, so a change that adds the same amount to `p` for every `k` shifts every score
 # equally and cannot move the argmin, which is all either `_auto` returns. `(k-1)` ->
 # `(k+1)` adds exactly 2; `(k-1)` -> `(k/1)` adds exactly 1 (integer division, k >= 1).
-src/clustering/gmm.rs:632:32: replace - with + in gmm_diagonal_auto
-src/clustering/gmm.rs:632:32: replace - with / in gmm_diagonal_auto
-src/clustering/gmm.rs:660:50: replace - with + in gmm_full_auto
-src/clustering/gmm.rs:660:50: replace - with / in gmm_full_auto
+src/clustering/gmm.rs:644:32: replace - with + in gmm_diagonal_auto
+src/clustering/gmm.rs:644:32: replace - with / in gmm_diagonal_auto
+src/clustering/gmm.rs:672:50: replace - with + in gmm_full_auto
+src/clustering/gmm.rs:672:50: replace - with / in gmm_full_auto
 #
 # Believed equivalent -- assigning at equality. Each of these is `if raw > floor { raw }
 # else { floor }` or `if x < floor { x = floor }`; at `raw == floor` both branches store
@@ -518,10 +539,18 @@ src/clustering/gmm.rs:396:34: replace < with == in gmm_full_once
 # BIC. `p` is strictly increasing in `k`, so that needs the log-likelihoods to differ by
 # exactly (p_k - p_j)*ln(n)/2 in f64; a fixture built to hit it would be pinned to a bit
 # pattern rather than to a property.
-src/clustering/gmm.rs:634:18: replace < with <= in gmm_diagonal_auto
-src/clustering/gmm.rs:662:18: replace < with <= in gmm_full_auto
+src/clustering/gmm.rs:646:18: replace < with <= in gmm_diagonal_auto
+src/clustering/gmm.rs:674:18: replace < with <= in gmm_full_auto
 
-# ── src/clustering/hdbscan.rs (21) ──
+# ── src/clustering/hdbscan.rs (1) ──
+# **2026-09-10: 20 of these 21 entries were deleted -- their mutations no longer exist.** Five
+# commits landed in this file after the measurement below (`457cb76` Selection::Persistence,
+# `045ca29` the reachability plot, `ab24130` dc-dist, `06ad6b5` the O(m²) parallel rewrite,
+# `562a104` min_samples from leaf mass), and every line the condense-loop block argued about moved
+# or went away. What is left is one entry that still matches. Read the argument below as history:
+# **this file is now unmeasured, not clean**, and its section has to be rebuilt from a whole-file
+# run before the ratchet means anything here. Under a memory cap -- see the note at the top.
+#
 # Re-measured **2026-08-24 whole-file**, locally and under a memory cap, after the point-count fix
 # (835d05f) and the dendrogram-walk fix (d34dd17): 88 mutants in 30 min, 65 caught, 21 missed,
 # 1 timeout, 1 unviable. Every line:col below is against that revision.
@@ -565,27 +594,7 @@ src/clustering/gmm.rs:662:18: replace < with <= in gmm_full_auto
 #          argument, so this is evidence, not a proof.
 #   257:15 `nd < m` -> `<=` really does skip the first merge. It is a genuine defect that no fixture
 #          in the suite observes.
-src/clustering/hdbscan.rs:57:31: replace += with *= in UnionFind::union
-src/clustering/hdbscan.rs:191:39: replace < with <= in hdbscan
-src/clustering/hdbscan.rs:206:22: replace < with <= in hdbscan
-src/clustering/hdbscan.rs:239:26: replace > with >= in hdbscan
-src/clustering/hdbscan.rs:257:15: replace < with <= in hdbscan
-src/clustering/hdbscan.rs:269:43: replace * with + in hdbscan
-src/clustering/hdbscan.rs:284:25: replace += with -= in hdbscan
-src/clustering/hdbscan.rs:284:25: replace += with *= in hdbscan
-src/clustering/hdbscan.rs:284:35: replace - with / in hdbscan
-src/clustering/hdbscan.rs:284:47: replace * with + in hdbscan
-src/clustering/hdbscan.rs:284:47: replace * with / in hdbscan
-src/clustering/hdbscan.rs:289:25: replace += with -= in hdbscan
-src/clustering/hdbscan.rs:289:25: replace += with *= in hdbscan
-src/clustering/hdbscan.rs:289:35: replace - with + in hdbscan
-src/clustering/hdbscan.rs:289:35: replace - with / in hdbscan
-src/clustering/hdbscan.rs:289:47: replace * with + in hdbscan
-src/clustering/hdbscan.rs:289:47: replace * with / in hdbscan
-src/clustering/hdbscan.rs:294:25: replace += with -= in hdbscan
-src/clustering/hdbscan.rs:294:35: replace - with / in hdbscan
-src/clustering/hdbscan.rs:294:47: replace * with + in hdbscan
-src/clustering/hdbscan.rs:294:47: replace * with / in hdbscan
+src/clustering/hdbscan.rs:104:31: replace += with *= in UnionFind::union
 
 # ── src/feature.rs (16) ──
 # Debt: `SecondMoment::add_scaled` and `trace_under`, plus the FD sketch.
@@ -667,14 +676,14 @@ src/clustering/nmf.rs:116:51: replace + with - in randomized_svd
 # branch. The condition is on that fill, which is why
 # `a_projection_of_an_all_zero_matrix_reports_no_error_rather_than_infinity` pins it:
 # give the fill a floor that does not vanish with the data and this stops being equivalent.
-src/clustering/nmf.rs:714:40: replace > with >= in project
+src/clustering/nmf.rs:731:40: replace > with >= in project
 
 # ── src/mixture.rs (15) ──
 # Debt: `Mixture::log_joint` term arithmetic.
-src/mixture.rs:225:47: replace + with * in Mixture::vmf
-src/mixture.rs:225:47: replace + with - in Mixture::vmf
-src/mixture.rs:254:9: replace Mixture::n_components -> usize with 0
-src/mixture.rs:254:9: replace Mixture::n_components -> usize with 1
+src/mixture.rs:250:47: replace + with * in Mixture::vmf
+src/mixture.rs:250:47: replace + with - in Mixture::vmf
+src/mixture.rs:421:9: replace Mixture::n_components -> usize with 0
+src/mixture.rs:421:9: replace Mixture::n_components -> usize with 1
 src/mixture.rs:290:56: replace * with + in Mixture::log_joint
 src/mixture.rs:290:56: replace * with / in Mixture::log_joint
 src/mixture.rs:291:37: replace > with >= in Mixture::log_joint
@@ -683,8 +692,8 @@ src/mixture.rs:291:49: replace / with * in Mixture::log_joint
 src/mixture.rs:294:39: replace * with + in Mixture::log_joint
 src/mixture.rs:294:45: replace * with + in Mixture::log_joint
 src/mixture.rs:294:45: replace * with / in Mixture::log_joint
-src/mixture.rs:340:22: replace - with + in Mixture::responsibilities
-src/mixture.rs:358:14: replace > with >= in argmax
+src/mixture.rs:614:22: replace - with + in Mixture::responsibilities
+src/mixture.rs:690:14: replace > with >= in argmax
 src/mixture.rs:56:64: replace * with + in StationaryCov<R>::innov
 
 # ── src/sketch/ddsketch.rs (8) ──
@@ -811,30 +820,26 @@ src/clustering/community.rs:259:30: replace -= with /= in refine
 src/linalg.rs:109:25: replace + with * in jacobi_eigen
 src/linalg.rs:110:27: replace + with - in jacobi_eigen
 src/linalg.rs:110:37: replace * with / in jacobi_eigen
-src/linalg.rs:63:21: replace + with * in solve_upper_t
+src/linalg.rs:68:21: replace + with * in solve_upper_t
 
-# ── src/sparse.rs (4) ──
+# ── src/sparse.rs (2) ──
 # Debt.
 src/sparse.rs:110:18: replace < with <= in summarize_sparse
-src/sparse.rs:138:35: replace + with * in nearest_sparse
-src/sparse.rs:138:35: replace + with - in nearest_sparse
-src/sparse.rs:179:64: delete - in validate_csr
+src/sparse.rs:427:64: delete - in validate_csr
 
 # ── src/clustering/graph.rs (3) ──
 # Debt.
-src/clustering/graph.rs:104:30: replace > with >= in log_covariances
+src/clustering/graph.rs:186:30: replace > with >= in log_covariances
 src/clustering/graph.rs:125:21: replace + with * in knn_affinity_impl
 src/clustering/graph.rs:54:23: replace + with - in grassmann_sq
 
-# ── src/clustering/spectral.rs (2) ──
-# Debt.
-src/clustering/spectral.rs:104:46: replace * with / in spectral_core
-src/clustering/spectral.rs:48:10: replace > with >= in spectral
+# ── src/clustering/spectral.rs (0) ──
+# Both entries deleted 2026-09-10: `1db3883` made the head cluster every leaf by filtering the
+# Laplacian, and neither mutation exists any more. Unmeasured, not clean.
 
-# ── src/clustering/ward.rs (2) ──
+# ── src/clustering/ward.rs (1) ──
 # Debt.
-src/clustering/ward.rs:167:22: replace > with >= in ward_hac_auto
-src/clustering/ward.rs:49:26: replace < with <= in dendrogram
+src/clustering/ward.rs:222:18: replace > with >= in ward_hac_auto
 
 # ── src/clustering/medoid.rs (2) ──
 # First measurement of this file. It has no entry from the whole-crate sweep because the module
@@ -900,9 +905,9 @@ src/clustering/medoid.rs:232:21: replace < with <= in best_swap
 # coincidence is a property of `PROJECTION_SEED` -- the sign of the projection carrying the leading
 # bit -- and not a law; `the_key_is_pinned_so_a_change_to_it_cannot_pass_unnoticed` is what goes red
 # if the seed moves.
-src/order.rs:109:15: replace || with && in canonical_permutation
+src/order.rs:126:15: replace || with && in canonical_permutation
 src/order.rs:188:47: replace < with <= in canonical_permutation_csr
-src/order.rs:259:21: replace / with % in projections
-src/order.rs:259:21: replace / with * in projections
+src/order.rs:279:21: replace / with % in projections
+src/order.rs:279:21: replace / with * in projections
 src/order.rs:263:57: replace * with / in projections
-src/order.rs:287:26: replace > with >= in quantise
+src/order.rs:307:26: replace > with >= in quantise
