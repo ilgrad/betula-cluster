@@ -391,9 +391,14 @@ non-convex-aware, but still the weakest head on `covtype`, where every cell scor
   radius graph: an approximate k-NN index may omit the one edge the certificate depends on, which
   costs the guarantee and leaves an approximation indistinguishable from an exact answer. See
   `bench/RESULTS.md` for where this pays and where it does not.
-- **Rebuild** merges the $k$ closest within-leaf sibling pairs, where $k$ is what the leaf budget asks
+- **Rebuild** merges the $k$ cheapest within-leaf sibling pairs, where $k$ is what the leaf budget asks
   for, and raises the threshold to the widest gap it took (monotone, $O(M \cdot \text{capacity})$ scan,
-  no global all-pairs). Two consequences. *In place*: merging two entries inside one leaf node leaves
+  no global all-pairs). Cheapest is by the exact cost of the merge,
+  $\Delta\mathrm{SSE} = \frac{w_a w_b}{w_a + w_b}\lVert\mu_a - \mu_b\rVert^2$, whatever `distance`
+  and `absorption` are set to: those decide whether a point belongs in a leaf, this decides which
+  merge loses the least information, and under the default $D_0$ geometry the two disagree — the
+  unweighted gap is mass-blind, so it merges the dense core into a few heavy leaves and leaves the
+  rest as singletons. Two consequences. *In place*: merging two entries inside one leaf node leaves
   every node CF exactly equal to the merge of its subtree, so no ancestor is touched; the reinsertion
   that follows merges nothing and only re-routes, which is the one thing compaction cannot do (shrink a
   mixed leaf, yes; split it, no). *Cliff-safe*: in high dimension distances

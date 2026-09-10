@@ -1,11 +1,32 @@
 # Benchmark: betula-cluster vs scikit-learn — quality · speed · memory
 
-> **Provenance — read before quoting a number.** Re-measured **2026-09-07** against the working tree
-> before 0.8.0, on a machine gated to be idle (see the next paragraph). Every quality table is the
-> **median of seeds 0, 1, 2**, and each ships its own
+> **Provenance — read before quoting a number.** The four **quality** tables
+> (`results_quality`, `results_real`, `results_real_hires`, `results_real_normalize`) and the three
+> leaf-level studies were re-measured **2026-09-10**; the speed, memory, scale and sparse tables are
+> from **2026-09-07**, taken against the working tree before 0.8.0 on a machine gated to be idle (see
+> below). Every quality table is the **median of seeds 0, 1, 2**, and each ships its own
 > min/median/max sidecar (`results_*_spread.csv`); the speed, memory, scale and sparse tables are a
 > single run, since `bench/_worker.py` pins `seed=0` for them and they are seed-invariant by
 > construction. This page is re-measured as a whole, not patched cell by cell.
+>
+> **The 2026-09-10 edition re-ran the quality half for one engine change, and 56 of the 139 rows
+> moved — every one of them a betula row.** `CFTree::rebuild` now ranks candidate merges by what they
+> cost in within-cluster sum of squares instead of by how close the two leaves are, which changes the
+> leaf set every head is handed (`[Unreleased]` in
+> [CHANGELOG.md](https://github.com/ilgrad/betula-cluster/blob/main/CHANGELOG.md); the measurement is
+> in [research/RESULTS-estep.md](https://github.com/ilgrad/betula-cluster/blob/main/research/RESULTS-estep.md)).
+> **Zero non-betula rows moved** in any of the four tables, which is the control that says the
+> harness, the fixtures and the scikit-learn baselines are the same ones — the difference is the
+> library. The second control is the order study: it rewrote 50 of its 81 cells, by up to 0.43 ARI,
+> and **all 27 `canonical_order=True` cells still read spread `0.0000` and pairwise ARI `1.0000`** —
+> `bench/insertion_order.py` asserts that rather than reporting it, so the guarantee was re-proved on
+> the new tree, not assumed. Six published conclusions change and are marked where they appear; the largest are MNIST
+> k-means going from a recorded **loss** to a tie against scikit-learn (0.307 → 0.327 vs 0.324, and
+> the only scoreboard verdict that moved), MNIST spectral 0.101 → 0.335, MNIST hdbscan 0.117 →
+> **0.003**, and the covtype GMM's 16 000-leaf resolution win (0.104 vs 0.080) turning into an exact
+> tie. The speed and memory tables were not re-run: the change *removes* work — rebuilds fall from 27
+> to 5 on covtype-50k and 23 to 8 on digits — so a stale timing here understates betula rather than
+> flattering it. Re-timing them needs the contention gate below and is tracked separately.
 >
 > **The quality column reproduced to the last digit; the speed column did not, and that is the
 > finding.** Against the 2026-08-24/25 edition, **108 of the 117 rows in `results_quality.csv` + `results_real.csv` are byte-identical in every metric column**
@@ -78,17 +99,19 @@ losses** are reported below.
   bound). This is the unconditional win: it holds for every method at every size, and it is what a
   bounded-memory compression engine is built to deliver.
 - **Quality is at parity on the centroid heads and ahead on the structured ones.** betula's k-means is
-  at parity with scikit-learn (blobs 0.793 vs 0.794, `digits` 0.467 vs 0.468); full-covariance GMM
-  **beats** scikit-learn's on anisotropic data (**0.961 vs 0.902**) and on real 64-D `digits`
-  (**0.575 vs 0.463**, via the high-dimensional covariance floor); the **HDBSCAN** head hits ARI
-  **1.00** on moons and circles and the **spectral** head 0.99 / 0.98.
+  at parity with scikit-learn (blobs 0.793 vs 0.794, `digits` 0.467 vs 0.468, and MNIST 0.327 vs
+  0.324, which was a loss until the distortion-ranked rebuild); full-covariance GMM **beats**
+  scikit-learn's on anisotropic data (**0.961 vs 0.902**) and on real 64-D `digits` (**0.575 vs
+  0.463**, via the high-dimensional covariance floor); the **HDBSCAN** and **spectral** heads both
+  hit ARI **1.00** on moons and circles.
 - **Two losses stated plainly.** On `covtype` and MNIST, `sklearn-birch` beats **every** betula head —
-  0.131 vs a best of 0.091, and 0.426 vs 0.377. On `covtype` that is a loss on the merits (not a
+  0.131 vs a best of 0.091, and 0.426 vs 0.394. On `covtype` that is a loss on the merits (not a
   leaf-budget artefact, measured both ways) and the mechanism is now known: the leaf budget produces
   cells of far more unequal mass than a radius threshold does. On MNIST most of the gap is the price
   of compression — Birch returns 20 000 subclusters for 20 000 points and compresses nothing, and at
-  equal (non-)compression the 0.059 gap falls to 0.010. See *The `covtype` loss*. HDBSCAN-on-CF also
-  trails raw HDBSCAN on overlapping density (blobs 0.142 vs 0.324, `varied` 0.479 vs 0.802).
+  equal (non-)compression the 0.032 gap falls to 0.010. See *The `covtype` loss*. HDBSCAN-on-CF also
+  trails raw HDBSCAN on `varied` (0.568 vs 0.802) and collapses outright on MNIST (0.003), though it
+  now leads on blobs (0.423 vs 0.324).
 - **A capability no mainstream library ships:** `method="gmm-toeplitz"` — an AR/Toeplitz-structured
   covariance GMM for ordered stationary signals — recovers a mixture of AR processes that differ *only*
   in autocovariance (ARI **1.00** at long windows) exactly where both diagonal (blind) and full
@@ -146,13 +169,13 @@ Median of seeds 0/1/2 (`results_quality.csv`; spreads in `results_quality_spread
 
 | method | blobs | aniso | varied | moons | circles | highdim |
 |---|---|---|---|---|---|---|
-| **betula-kmeans** | 0.793 | 0.545 | 0.671 | 0.485 | −0.000 | 1.00 |
+| **betula-kmeans** | 0.793 | 0.545 | 0.670 | 0.485 | −0.000 | 1.00 |
 | **betula-gmm** (diag) | 0.812 | 0.540 | **0.907** | 0.514 | −0.000 | 1.00 |
-| **betula-gmm-full** | 0.811 | **0.961** | **0.907** | 0.504 | −0.000 | 1.00 |
-| **betula-ward** | 0.776 | 0.573 | 0.663 | **0.641** | 0.014 | 1.00 |
-| **betula-spectral** | 0.750 | 0.440 | 0.620 | 0.989 | 0.981 | 1.00 |
+| **betula-gmm-full** | 0.811 | **0.961** | **0.907** | 0.503 | −0.000 | 1.00 |
+| **betula-ward** | 0.787 | 0.544 | 0.718 | **0.637** | 0.003 | 1.00 |
+| **betula-spectral** | 0.742 | 0.428 | 0.664 | **1.00** | **1.00** | 1.00 |
 | **betula-leiden** (auto-`k`) | 0.722 | 0.465 | 0.633 | 0.512 | 0.007 | 1.00 |
-| **betula-hdbscan** | 0.142 | 0.568 | 0.479 | **1.00** | **1.00** | 1.00 |
+| **betula-hdbscan** | 0.423 | 0.568 | 0.568 | **1.00** | **1.00** | 1.00 |
 | sklearn-kmeans | 0.794 | 0.545 | 0.670 | 0.484 | −0.000 | 1.00 |
 | sklearn-minibatch | 0.694 | 0.547 | 0.665 | 0.484 | −0.000 | 1.00 |
 | sklearn-birch | 0.748 | 0.554 | 0.460 | 0.616 | 0.005 | 1.00 |
@@ -169,24 +192,28 @@ Reading it honestly:
 - **betula-gmm-full beats sklearn's full GMM on the anisotropic case**, 0.961 vs 0.902 — the case
   k-means cannot do at 0.545. On `varied` all three GMM variants tie at 0.907.
 - **betula-ward** (bounded, 4 000 leaves) beats the **full-30 000** `sklearn-ward` on `varied`
-  (0.663 vs 0.673 — a tie), `moons` (0.641 vs 0.507) and `aniso` (0.573 vs 0.565), and edges it on
-  blobs (0.776 vs 0.770). Compression does not cost here; the CF microclusters denoise the linkage.
-- **betula-spectral and betula-hdbscan own the non-convex cases** — hdbscan **1.00** on both, spectral
-  0.989 and 0.981, where every centroid head sits at 0.49–0.51 and ≈ 0. The spectral row is the only
-  one on this page that moved since the previous edition, and it moved because the head was rewritten
-  to cluster every leaf instead of 256 landmarks: the two non-convex cells lose a hundredth, the
-  blob-like ones lose more (`blobs` 0.766 → 0.750, `varied` 0.650 → 0.620) and `aniso` gains
-  (0.413 → 0.440). None of the six survives its own spread — `blobs` spans 0.449–0.819 and `aniso`
-  0.384–0.994 over the three seeds — so read the row as a regime rather than as six numbers. The
-  cells where the rewrite is decidable are on the real datasets, below.
+  (0.718 vs 0.673), `moons` (0.637 vs 0.507) and blobs (0.787 vs 0.770), and is behind on `aniso`
+  (0.544 vs 0.565). Compression does not cost here; the CF microclusters denoise the linkage. This is
+  the row the distortion-ranked rebuild moved most on this table — `varied` +0.055 and blobs +0.012
+  against the previous edition, `aniso` −0.030 — because the linkage reads the leaf masses directly
+  and they are no longer half singletons.
+- **betula-spectral and betula-hdbscan own the non-convex cases** — both **1.00** on moons and
+  circles, where every centroid head sits at 0.48–0.51 and ≈ 0. Spectral reached the corner on this
+  edition (0.989 → 1.000 and 0.981 → 1.000); the blob-like cells moved the other way
+  (`blobs` 0.750 → 0.742, `aniso` 0.440 → 0.428) and `varied` gained (0.620 → 0.664). None of the six
+  survives its own spread — `blobs` spans 0.707–0.836, `aniso` 0.421–0.998 and even `circles`
+  0.611–1.000 over the three seeds — so read the row as a regime rather than as six numbers. The
+  cells where these heads are decidable are on the real datasets, below.
 - **betula-leiden** discovers the community count with **no `k`** — strong on separable community
   structure (highdim 1.00, blobs 0.722) but, being a modularity community-detector rather than a
   general partitioner, it over-splits elongated manifolds (moons 0.512). Use spectral for those.
-- The honest weak spot: **HDBSCAN-on-CF on overlapping density.** blobs 0.142 vs raw HDBSCAN's 0.324,
-  `varied` 0.479 vs 0.802. Both are the wrong tool for overlapping Gaussians, and the CF approximation
-  widens the gap. Use a parametric head for blobs; HDBSCAN-CF / spectral for density / non-convex.
+- The honest weak spot: **HDBSCAN-on-CF on overlapping density.** `varied` 0.568 vs raw HDBSCAN's
+  0.802 — the wrong tool for overlapping Gaussians, and the CF approximation widens the gap. On blobs
+  the sign flipped this edition: 0.142 → 0.423 against raw HDBSCAN's 0.324, which is the same
+  compaction change and the same reason as the ward row, since the density head is a function of the
+  leaf masses too. Use a parametric head for blobs; HDBSCAN-CF / spectral for density / non-convex.
   These cells are also by far the least stable in the whole table — betula-hdbscan's three-seed range
-  is 0.059–0.327 on blobs, 0.077–0.568 on `varied` and **0.016–0.993** on `aniso`, where the median
+  is 0.142–0.456 on blobs, 0.042–0.757 on `varied` and **0.424–0.993** on `aniso`, where the median
   0.568 sits between a near-total failure and a near-perfect recovery. Read the whole row as a regime
   without a stable answer rather than as six numbers.
 
@@ -361,16 +388,16 @@ Median of seeds 0/1/2 (`results_real.csv`; spreads in `results_real_spread.csv`)
 
 | method | digits (1797×64) | covtype (20k×54) | mnist (20k×784) |
 |---|---|---|---|
-| **betula-kmeans** | 0.467 | **0.074** | 0.307 |
+| **betula-kmeans** | 0.467 | **0.066** | 0.327 |
 | sklearn-kmeans | 0.468 | 0.054 | 0.324 |
-| **betula-gmm** (diag) | 0.461 | 0.076 | 0.234 |
-| **betula-gmm-full** | **0.575** | 0.076 | — |
+| **betula-gmm** (diag) | 0.461 | 0.077 | 0.306 |
+| **betula-gmm-full** | **0.575** | 0.069 | — |
 | sklearn-gmm (full) | 0.463 | 0.080 | — |
-| **betula-ward** | 0.643 | 0.091 | 0.377 |
+| **betula-ward** | 0.643 | 0.091 | 0.394 |
 | sklearn-ward | 0.664 | — | — |
-| **betula-spectral** | 0.669 | 0.064 | 0.101 |
-| **betula-leiden** | 0.781 | 0.056 | 0.005 |
-| **betula-hdbscan** | **0.164** | 0.052 | 0.117 |
+| **betula-spectral** | 0.669 | 0.058 | 0.335 |
+| **betula-leiden** | 0.728 | 0.046 | 0.281 |
+| **betula-hdbscan** | **0.164** | 0.050 | 0.003 |
 | sklearn-hdbscan | 0.149 | — | — |
 | sklearn-birch | 0.664 | **0.131** | **0.426** |
 
@@ -393,26 +420,43 @@ Reading it honestly:
   0.580.
 - **covtype (54-D):** a genuinely hard set — every method scores low, and at `max_leaves=4000` the
   betula heads sit within one seed spread of each other and of scikit-learn. betula-kmeans beats
-  sklearn-kmeans (0.074 vs 0.054); the diagonal GMM at 0.076 against scikit-learn's full GMM at
-  0.080 is a **tie**, not the win the previous edition claimed — the two three-seed ranges are
-  0.055–0.096 and 0.055–0.102, i.e. almost coincident, and the margin either way is a fifth of the
-  spread. The head to quote here is `ward` (0.091, range 0.086–0.093, the tightest on the table);
-  `spectral` used to read a higher median, 0.100, and after its rewrite reads 0.064 — but it spans
-  0.020–0.095 now and −0.015 to 0.128 then, so it could not be leaned on in either edition. At
-  **16 000 leaves** the GMM does separate from scikit-learn — 0.104 vs 0.080, two sections down.
+  sklearn-kmeans (0.066 vs 0.054); the diagonal GMM at 0.077 against scikit-learn's full GMM at
+  0.080 is a **tie**, not the win an earlier edition claimed — the two three-seed ranges are
+  0.059–0.097 and 0.055–0.102, i.e. almost coincident, and the margin either way is a fifth of the
+  spread. The head to quote here is `ward` (0.091, range 0.086–0.093, the tightest on the table, and
+  the one cell on this dataset the compaction change left alone). Every other covtype cell lost a few
+  thousandths to it — kmeans 0.074 → 0.066, spectral 0.064 → 0.058, leiden 0.056 → 0.046 — all inside
+  their own spreads, and all on the dataset where a merge-only compaction was already known not to
+  help, because covtype's mass sits in heavy cells a merge cannot split. The **16 000-leaf** GMM
+  separation the previous edition reported here (0.104 vs 0.080) did not survive the re-measure — it
+  now reads 0.080 against 0.080, a tie; the section two below has the table.
   `sklearn-birch` at **0.131** still beats every betula head. See below.
-- **MNIST (784-D):** raw Euclidean k-means scores **0.307** against scikit-learn's 0.324 — in 784
-  dimensions distances concentrate (concentration of measure). `normalize=True` closes it (two
-  sections down). `sklearn-birch` leads here too, 0.426 against betula-ward's 0.377 — but at
-  **20 000 subclusters for 20 000 points**, i.e. no compression at all against betula's 5.3×; give
-  betula the same non-compression and it reaches 0.416. See below.
-- **Two cells in this table are corrections rather than re-measurements.** `betula-hdbscan` on MNIST
-  was printed as **0.000** and its own `results_real.csv` has read **0.117** since the table was
-  generated — a transcription error, not a run: the CSV cell is byte-identical across both editions,
-  and the row is a modest win over the leiden head rather than the total failure it was published as.
-  `betula-spectral` on MNIST really did move, 0.203 → **0.101**, and that is the rewrite; it is a loss
-  at *this* leaf budget and a large win once the budget is raised, which is the whole of the section
-  on `max_leaves` and this head in [`docs/USAGE.md`](https://github.com/ilgrad/betula-cluster/blob/main/docs/USAGE.md).
+- **MNIST (784-D) is where the distortion-ranked rebuild pays.** Raw Euclidean k-means reads
+  **0.327** against scikit-learn's 0.324, a tie where the previous edition recorded a loss at 0.307 —
+  the one scoreboard cell whose verdict changed, `loss → tie`. Four other heads move with it:
+  spectral 0.101 → **0.335**, leiden 0.005 → **0.281**, gmm 0.234 → 0.306, ward 0.377 → 0.394. In 784
+  dimensions distances concentrate, so more than half of a 4 000-leaf budget used to go to singleton
+  leaves (0.852 of them, leaf-mass Gini 0.793 — `local/scratch/e13_quality.py`); ranking merges by
+  what they cost instead of by how close they are cuts those to 0.532 and 0.663, and the heads that
+  read the summary follow.
+  `normalize=True` no longer adds anything on the k-means row (two sections down). `sklearn-birch`
+  still leads, 0.426 against betula-ward's 0.394 — but at **20 000 subclusters for 20 000 points**,
+  i.e. no compression at all against betula's 5.3×; give betula the same non-compression and it
+  reaches 0.416. See below.
+- **`betula-hdbscan` on MNIST went the other way: 0.117 → 0.003.** The density head is the one that
+  loses from a balanced summary here, and it loses everything: with the singletons merged away the
+  mutual-reachability graph over 3 847 leaves has no density contrast left to cut, and the head
+  returns one cluster plus noise. It is a loss, recorded as one; the head was already the least
+  stable row on the page (three-seed range 0.002–0.005 now, and it is the same head that gains
+  +0.281 on `blobs` in the synthetic table).
+- **`betula-leiden` on digits fell 0.781 → 0.728** and keeps the lead on that dataset. It is the
+  widest-spread cell there (0.677–0.734), and the previous edition's 0.781 was a median over a
+  different summary; the community head reads the leaf graph, so a re-partitioned leaf set moves it
+  more than the centroid heads.
+- The MNIST `spectral` row was 0.203 two editions ago and 0.101 in the last one (the every-leaf
+  rewrite); at **0.335** it is now past both. The budget dependence that discussion rests on is
+  unchanged and is documented in
+  [`docs/USAGE.md`](https://github.com/ilgrad/betula-cluster/blob/main/docs/USAGE.md).
 
 ### The `covtype` loss to `sklearn-birch` is real, not a budget artefact
 
@@ -492,23 +536,30 @@ bounded, still `O(N)`) — an honest de-handicap, not a tuned number (`results_r
 
 | method | digits (64-D, `ml`=1797) | covtype (54-D, `ml`=16000) | mnist (784-D, `ml`=16000) |
 |---|---|---|---|
-| **betula-kmeans** | 0.467 | **0.067** | 0.325 |
+| **betula-kmeans** | 0.467 | **0.064** | 0.313 |
 | sklearn-kmeans | 0.468 | 0.054 | 0.324 |
-| **betula-gmm** (diag) | 0.461 | **0.104** | 0.267 |
-| **betula-gmm-full** | **0.575** | **0.103** | — |
+| **betula-gmm** (diag) | 0.461 | 0.080 | 0.259 |
+| **betula-gmm-full** | **0.575** | 0.080 | — |
 | sklearn-gmm (full) | 0.463 | 0.080 | — |
 
-- **covtype GMM improves with resolution**, 0.076 → 0.104, and only here does it clear
-  scikit-learn's full GMM (0.080) by more than a seed spread; `gmm-full` likewise 0.076 → 0.103. It
-  still does not reach `sklearn-birch`'s 0.131. covtype **k-means goes the other way**, 0.074 → 0.067
-  — resolution is not monotone even within one dataset.
+- **The covtype GMM's resolution win is gone.** The previous edition read 0.104 at 16 000 leaves
+  against 0.076 at 4 000 and called it the one cell where the head clears scikit-learn's full GMM by
+  more than a seed spread. On the re-measured tree it reads **0.080 against scikit-learn's 0.080** —
+  an exact tie — and the 4 000-leaf cell is 0.077, so the resolution gain is 0.003 rather than 0.028.
+  `gmm-full` behaves the same way (0.103 → 0.080). Neither reaches `sklearn-birch`'s 0.131. covtype
+  **k-means still goes the other way**, 0.066 → 0.064 — resolution is not monotone even within one
+  dataset, but the effect is now a thousandth rather than a hundredth.
 - **digits** is unchanged — its 1797 points already fit under 4 000 leaves, so at `max_leaves=1797`
   every leaf holds one point and the summary is lossless. That also means both digits columns are
-  measured at **zero compression** and say nothing about summarization; the leaf-budget sweep below
-  shows they are on the wrong side of the peak, since halving the leaves *raises* ward from 0.643 to
-  0.682 and k-means from 0.467 to 0.560.
-- **mnist k-means** closes to **0.325 vs 0.324**, a tie; the diagonal GMM gains far less
-  (0.234 → 0.267), which is the resolution/over-fragmentation trade the head pays in 784 dimensions.
+  measured at **zero compression** and say nothing about summarization. The leaf-budget sweep below
+  puts the k-means peak at **225 leaves** (0.548 against 0.467 at full resolution, an 8.5x summary
+  beating the raw points); ward is the head that wants every leaf it can get, 0.643 at 1797 against
+  0.617 at 225.
+- **mnist k-means reads 0.313 against 0.324 — and is *worse* than the same head at 4 000 leaves**
+  (0.327). The de-handicap now costs MNIST rather than paying for it: a distortion-ranked rebuild
+  already spends the tighter budget well, and raising it to 16 000 leaves re-fragments what the
+  compaction had merged. The diagonal GMM shows it too (0.306 at 4 000 against 0.259 here). Read this
+  table as what a 4× budget buys, which on MNIST is now negative.
 
 ### `normalize=True` — a direction fix that no longer helps MNIST
 
@@ -518,14 +569,15 @@ bounded, still `O(N)`) — an honest de-handicap, not a tuned number (`results_r
 | `normalize` off → **on** | betula-kmeans | betula-gmm (diag) | betula-ward |
 |---|---|---|---|
 | digits (64-D) | 0.467 → **0.569** | 0.461 → 0.387 | 0.643 → **0.699** |
-| mnist (784-D) | 0.307 → 0.346 | 0.234 → 0.258 | 0.377 → 0.380 |
-| covtype (54-D) | 0.074 → 0.005 | 0.076 → 0.053 | 0.091 → **−0.049** |
+| mnist (784-D) | 0.327 → 0.326 | 0.306 → 0.217 | 0.394 → 0.392 |
+| covtype (54-D) | 0.066 → 0.002 | 0.077 → 0.075 | 0.091 → **−0.049** |
 
-**Correction to the previous edition, which reported MNIST k-means 0.203 → 0.334 as the flagship
-result.** The 0.203 baseline is gone: on this tree raw MNIST k-means is already 0.307, and the
-normalized median of 0.346 sits inside its own seed spread — and the off-vs-on sign
-*flips between seeds*. Whatever the flag was
-compensating for in 784-D, the `[Unreleased]` tree-rebuild fix removed most of it. Reported as a wash.
+**Correction to the edition that reported MNIST k-means 0.203 → 0.334 as the flagship result.** The
+0.203 baseline is gone: raw MNIST k-means is already 0.327 on this tree, and normalizing now reads
+0.326 — the flag does nothing at all on that cell, where the last edition still had it worth +0.039
+inside a seed spread. Two tree changes removed it, the `[Unreleased]` rebuild fix and the
+distortion-ranked compaction; the diagonal GMM is the one row where normalizing is now clearly
+*harmful* on MNIST (0.306 → 0.217). Reported as a wash on k-means and a loss on gmm.
 
 Where it still earns its place is `digits`: **k-means 0.467 → 0.569 and ward 0.643 → 0.699**, stable
 across all three seeds. And it remains **off by default on purpose** — magnitude *is* signal on
@@ -1016,58 +1068,83 @@ over `max_leaves`, medians of seeds 0/1/2, `threshold=0`:
 
 | dataset | 250 | 500 | 1000 | 2000 | 4000 |
 |---|---|---|---|---|---|
-| covtype-20k | 0.96 | 0.95 | 0.96 | 0.98 | 0.90 |
-| mnist-20k | 0.94 | 0.96 | 0.97 | 0.90 | 0.94 |
-| blobs-100k | 0.97 | 0.95 | 0.95 | 0.93 | 0.95 |
-| highdim-100k | 0.97 | 0.96 | 0.96 | 0.97 | 0.97 |
+| covtype-20k | 1.00 | 0.95 | 0.94 | 0.91 | 0.95 |
+| mnist-20k | 0.92 | 0.94 | 0.92 | 0.98 | 0.96 |
+| blobs-100k | 0.97 | 0.96 | 0.90 | 0.94 | 0.91 |
+| highdim-100k | 0.91 | 0.90 | 0.90 | 0.90 | 0.92 |
 
-The tree fills **90–98%** of its budget everywhere. There is no unused-budget lever here.
+The tree fills **90–100%** of its budget everywhere. There is no unused-budget lever here.
 
-**Is the budget well *spent*?** No, and that is the real defect. The same run, share of total mass in
-the heaviest leaf (`top1`) and the heaviest 10% of leaves (`top10`):
+**Is the budget well *spent*? It was not, and that was the real defect. It is the defect the
+2026-09-10 rebuild change fixed.** The same run, share of total mass in the heaviest leaf (`top1`)
+and the heaviest 10% of leaves (`top10`), re-measured with the published fixtures
+(`local/scratch/e13_massprofile.py`), with the numbers this page carried before it in the last
+column:
 
-| dataset | budget | Gini | top1 | top10 | heaviest leaf |
-|---|---:|---:|---:|---:|---:|
-| mnist-20k | 250 | 0.979 | **0.831** | 0.984 | 16 625 of 20 000 |
-| mnist-20k | 1000 | 0.938 | 0.360 | 0.948 | 7 193 |
-| covtype-20k | 500 | 0.886 | 0.149 | 0.851 | 2 976 |
-| covtype-20k | 4000 | 0.683 | 0.015 | 0.613 | 295 |
-| imbalanced-100k | 4000 | 0.949 | **0.800** | 0.952 | **80 000** |
+| dataset | budget | Gini | top1 | top10 | heaviest leaf | before (Gini / top1 / heaviest) |
+|---|---:|---:|---:|---:|---:|---|
+| mnist-20k | 250 | 0.772 | 0.055 | 0.592 | 1 106 of 20 000 | 0.979 / **0.831** / 16 625 |
+| mnist-20k | 1000 | 0.749 | 0.034 | 0.586 | 672 | 0.938 / 0.360 / 7 193 |
+| covtype-20k | 500 | 0.557 | 0.024 | 0.344 | 480 | 0.886 / 0.149 / 2 976 |
+| covtype-20k | 4000 | 0.490 | 0.003 | 0.326 | 60 | 0.683 / 0.015 / 295 |
+| imbalanced-100k | 4000 | 0.875 | 0.010 | 0.877 | 1 046 | 0.949 / **0.800** / **80 000** |
 
 The `imbalanced` fixture is the clean case: 80 000 points in a tight core, 20 000 spread across five
-diffuse minorities ten times wider. **The entire core lands in one leaf at every budget from 250 to
-4000.** With 3 792 leaves realised, 3 791 of them go to the 20% of the mass that happens to be spread
-out. The budget is spent by geometry — how far apart points are — and not by mass.
+diffuse minorities ten times wider. **The entire core used to land in one leaf at every budget from
+250 to 4000** — 3 791 of 3 792 leaves went to the 20 % of the mass that happens to be spread out. It
+no longer does: the heaviest leaf holds 1 046 points, one and a half per mille of the mass, and the
+head recovers the two clusters hidden inside that core at ARI 1.0000 (next table). What did not
+change is `top10`, still 0.33–0.88 — the top tenth of the leaves still carries most of the mass,
+because that is a property of the data's density and not of the budget. The defect was the *single
+heaviest cell*, and the mechanism was that compaction ranked merges by distance, which is blind to
+what a merge destroys.
 
-**The mechanism is the single global threshold.** The rebuild heuristic raises one absorption radius
-until the leaf count fits under `max_leaves`, and stops as soon as it does. One global radius cannot
-serve two densities: at `max_leaves=4000` the threshold settles at 0.705, which is still wider than
-the core's whole diameter, so the core cannot split — and lowering it far enough to split the core
-would explode the minorities past any budget.
+**The mechanism was the single global threshold, and how compaction spent it.** The rebuild raises
+one absorption radius until the leaf count fits under `max_leaves` and stops as soon as it does; one
+global radius cannot serve two densities, and at `max_leaves=4000` it settled at 0.705, wider than
+the core's whole diameter. That is still true of the threshold. What changed is which pairs the
+rebuild spends its merges on: while it merged the *closest* pair it drove the core together (the
+closest pairs in the data are inside the densest region), and the threshold followed them upward.
+Ranking by the merge cost makes the core the *last* thing it merges, because fusing two heavy leaves
+is the most expensive thing it can do. The radius argument was a correct description of a symptom.
 
-**What it costs.** `structured` gives the core internal structure — two true clusters inside it — so
+**What it cost.** `structured` gives the core internal structure — two true clusters inside it — so
 collapsing it to one leaf makes them unrecoverable by *any* Phase-3 head. `flat` is the control with
 the same mass profile and no internal structure. Medians of seeds 0/1/2:
 
 | fixture | sklearn-kmeans (raw points) | betula @250 | @1000 | @4000 |
 |---|---:|---:|---:|---:|
-| structured (k=7) | **1.0000** | 0.4174 | 0.4174 | 0.4174 |
+| structured (k=7) | **1.0000** | **1.0000** | **1.0000** | **1.0000** |
 | flat (k=6) | 1.0000 | **1.0000** | 1.0000 | 1.0000 |
+| structured, before 2026-09-10 | 1.0000 | 0.4174 | 0.4174 | 0.4174 |
 
-Sixteen times the budget buys **nothing** on `structured`, and `kmeans` / `ward` / `gmm` agree to
-three decimals — this is not a head choosing badly, it is a summary that no longer contains the
-answer. On `flat` the identical collapse is free. This reproduces the shape of scikit-learn's Birch
-issue #22854 on our own tree, and it is the mechanism behind the `covtype` and MNIST rows above,
-where `top10` reaches 0.61–0.98. Two things fix it: a budget allocated by mass rather than by radius
-(`balance`, next section), or an absorption criterion that does not measure a radius in the first
-place (`absorb`, "It is D0, not the CF-tree" below — the cheaper of the two, and the one this table's
-`absorb="euclidean"` rows do not show).
+**This is the row the distortion-ranked rebuild fixed, and it is the largest single move on this
+page.** Every `structured` cell read 0.4174 at every budget — sixteen times the budget bought
+*nothing*, and `kmeans` / `ward` / `gmm` agreed to three decimals, because the summary no longer
+contained the answer. Ranking compaction merges by the within-cluster sum of squares they cost
+instead of by how close the pair is takes `top1` from **0.800 to 0.064** at 250 leaves and every one
+of those cells to **1.0000**: 42 of the 46 betula cells in `results_imbalance.csv` moved, none of the
+10 scikit-learn cells did, and the four that did not move were already at 1.0 because they absorb on
+`ward`, where the gap *was* the merge cost all along. That is the same built-in control as the ELKI
+D4/R row.
 
-### The fix, and the honest range over which it is one (`balance`)
+The one thing compaction still cannot do is *split* a leaf, so a genuinely degenerate core — every
+point within 1e-6 of the same coordinates — still lands in one leaf whatever the ranking, and
+`tree_report()` still says so. What has changed is that a merely *dense* region is no longer treated
+like a degenerate one.
+
+### `balance` — the fix that came first, and now has much less left to fix
+
+> **This whole subsection predates 2026-09-10 and its `off` column no longer reproduces.** `balance`
+> was built to bound the heaviest leaf when compaction would not; the rebuild now bounds it on its
+> own, so every `off` cell below that reads 0.4174 reads 1.0000 today and the `top1 off` column is an
+> order of magnitude smaller. The knob still does what it says and its guard rails are still tested —
+> what is stale is the size of the problem it was measured against. Re-measuring the 27-cell grid is
+> tracked as its own task; the numbers below are kept, dated, rather than half-corrected.
 
 `balance = b` caps a leaf at `b × (mass / max_leaves)`, refusing absorption into a full leaf and
 skipping the same pairs at compaction; `max_leaves` stays a hard bound. On the fixture that motivated
-it, `kmeans`, medians of seeds 0/1/2:
+it, `kmeans`, medians of seeds 0/1/2, **as measured before 2026-09-10**:
 
 | budget | off | b=8 | b=4 | b=2 | b=1 |
 |---|---:|---:|---:|---:|---:|
@@ -1372,10 +1449,12 @@ than no answer, and the caller cannot tell which they got.
 
 The three studies that swept `("kmeans", "gmm", "ward")` on `feature="spherical"` —
 `bench/leaf_budget.py`, `bench/size_imbalance.py`, `bench/insertion_order.py` — now put the `gmm`
-head on `feature="diagonal"`, and **all three were re-run on 2026-09-09**; every table in this
-document that draws on them is the new run. What moved is exactly the `gmm` cells and nothing else,
-which is also the control: of the 252 budget cells, 76 of the 92 `gmm` cells changed and **0 of the
-160 others**, to the last digit.
+head on `feature="diagonal"`, and **all three were re-run on 2026-09-09**. What moved is exactly the
+`gmm` cells and nothing else, which is also the control: of the 252 budget cells, 76 of the 92 `gmm`
+cells changed and **0 of the 160 others**, to the last digit. (All three were then re-run *again* on
+2026-09-10 for the rebuild-ranking change, and that is the edition the tables below carry; the
+counts in this list are the 09-09 `spherical` → `diagonal` deltas and are kept as the evidence for
+the refusal.)
 
 - **`results_budget.csv`** — the large moves are the collapses reversing (`digits` at 900 leaves
   0.0088 → 0.4403, at 450 0.2139 → 0.5485; MNIST at 2000 0.0618 → 0.2850), against losses of at
@@ -2510,26 +2589,28 @@ restart term in it.
 | dataset | `max_leaves` | leaves | head | order spread | order pairwise | seed spread | seed pairwise |
 |---|---|---|---|---|---|---|---|
 | digits | 4000 | 1797 (×1.0) | ward | 0.0159 | 0.9261 | **0.0000** | **1.0000** |
-| digits | 360 | 327–358 | ward | **0.2880** | 0.5454 | **0.0000** | **1.0000** |
-| digits | 90 | 83–90 | ward | 0.1986 | 0.3425 | **0.0000** | **1.0000** |
+| digits | 360 | 325–351 | ward | **0.1644** | 0.7751 | **0.0000** | **1.0000** |
+| digits | 90 | 81–89 | ward | 0.1961 | 0.6422 | **0.0000** | **1.0000** |
 | mnist-10k | 10000 | 10000 (×1.0) | ward | 0.0061 | 0.8417 | **0.0000** | **1.0000** |
-| mnist-10k | 1000 | 909–1000 | ward | 0.1129 | 0.3536 | **0.0000** | **1.0000** |
-| mnist-10k | 200 | 180–195 | ward | 0.1635 | 0.3087 | **0.0000** | **1.0000** |
+| mnist-10k | 1000 | 903–997 | ward | 0.1077 | 0.4037 | **0.0000** | **1.0000** |
+| mnist-10k | 200 | 180–199 | ward | **0.1249** | 0.4343 | **0.0000** | **1.0000** |
 | covtype-20k | 20000 | 20000 (×1.0) | ward | 0.0005 | 0.9960 | **0.0000** | **1.0000** |
-| covtype-20k | 2000 | 1805–1983 | ward | 0.0005 | 0.9984 | **0.0000** | **1.0000** |
-| covtype-20k | 300 | 278–299 | ward | 0.0013 | 0.9902 | **0.0000** | **1.0000** |
+| covtype-20k | 2000 | 1811–1857 | ward | 0.0005 | 0.9992 | **0.0000** | **1.0000** |
+| covtype-20k | 300 | 270–291 | ward | 0.0002 | 0.9996 | **0.0000** | **1.0000** |
 
 Three results:
 
 - **The effect scales with compression, not with the dataset or the head.** `digits` goes 0.0159 →
-  0.2880 → 0.1986 as the budget falls; MNIST goes 0.0061 → 0.1129 → 0.1635. `covtype` stays under
-  0.0013 everywhere only because its `ward` ARI is pinned at ~0.1416 whatever the leaves are.
-- **At real compression the input order is a bigger lever than the seed.** MNIST at
-  `max_leaves=200`, k-means head: order pairwise ARI **0.2949** against seed pairwise **0.7026** —
-  reordering the rows disagrees with itself 2.4× more than reseeding the head does. Over all 27
-  cells the order arm averages **0.5465** pairwise against the seed arm's **0.7514**. Every published
-  table in this file, and every competitor's, fixes the order and varies the seed.
-- **The realised leaf count is itself order-dependent** (327–358, 909–1000, 180–195) — it varies in
+  0.1644 → 0.1961 as the budget falls; MNIST goes 0.0061 → 0.1077 → 0.1249. `covtype` stays under
+  0.0005 everywhere only because its `ward` ARI is pinned at ~0.1416 whatever the leaves are.
+- **At real compression the input order is still the larger lever, but by much less than it was.**
+  Over all 27 cells the order arm averages **0.6254** pairwise against the seed arm's **0.7576**. The
+  cell this bullet used to quote — MNIST at `max_leaves=200`, k-means head — no longer carries it:
+  order pairwise **0.4875** against seed **0.5175** is a ratio of 1.06×, where the 2026-09-09 edition
+  read 0.2949 against 0.7026 and 2.4×. The widest remaining gap on a head whose seed arm can move at
+  all is covtype at ×1.0, gmm: **0.4049** against **0.6526**. Every published table in this file, and
+  every competitor's, still fixes the order and varies the seed.
+- **The realised leaf count is itself order-dependent** (325–351, 903–997, 180–199) — it varies in
   **18 of the 27** cells and is constant under reseeding, so the two arms are not even comparing
   summaries of the same size.
 
@@ -2552,34 +2633,47 @@ As far as we can find, this is the only order-invariance guarantee published for
 implementation.
 
 **What it costs in quality: nothing systematic, and slightly negative on average.** Against the
-order arm's median draw, over 27 cells: mean **−0.0064**, median **−0.0052**, non-negative in
+order arm's median draw, over 27 cells: mean **−0.0067**, median **−0.0052**, non-negative in
 **9 of 27**, and the canonical value lands **inside the order arm's own [min, max] in 21 of 27**. In
 other words it is usually indistinguishable from one of the draws you would have got anyway — it
 fixes *which* draw you get, it does not move the distribution:
 
 | cell | order median [min, max] | canonical | Δ |
 |---|---|---|---|
-| digits, 360, ward | 0.4892 [0.3427, 0.6307] | 0.5758 | **+0.0866** |
-| mnist-10k, 1000, kmeans | 0.2180 [0.1905, 0.2761] | 0.2566 | +0.0387 |
-| digits, 90, gmm | 0.2268 [0.1436, 0.2779] | 0.2654 | +0.0386 |
-| digits, 360, gmm | 0.4721 [0.4151, 0.5453] | 0.4195 | −0.0526 |
-| digits, 360, kmeans | 0.5379 [0.4886, 0.5880] | 0.4771 | **−0.0608** |
-| mnist-10k, 200, ward | 0.1102 [0.0275, 0.1909] | 0.0482 | **−0.0620** |
+| mnist-10k, 200, gmm | 0.2436 [0.2021, 0.2938] | 0.3096 | **+0.0661** |
+| digits, 360, gmm | 0.5133 [0.4212, 0.5607] | 0.5596 | +0.0463 |
+| mnist-10k, 1000, gmm | 0.2382 [0.2019, 0.2968] | 0.2742 | +0.0360 |
+| digits, 4000, gmm | 0.4313 [0.3264, 0.4822] | 0.3803 | −0.0510 |
+| covtype-20k, 300, kmeans | 0.0768 [0.0490, 0.0952] | 0.0118 | **−0.0650** |
+| digits, 90, kmeans | 0.5049 [0.4349, 0.6202] | 0.4054 | **−0.0994** |
+
+**Those four summary statistics survived the 2026-09-10 engine change unmoved, and none of the
+individual cells did.** Ranking rebuild merges by cost rather than by distance rewrote most of this
+grid — 50 of the 81 cells moved their median ARI, by up to 0.43 — yet the flag's average effect went
+from −0.0064 to **−0.0067**, its median from −0.0052 to −0.0052, and both counts (9 of 27
+non-negative, 21 of 27 inside the order arm's range) are identical. That is the strongest evidence on
+this page for the reading above: the flag is not moving the distribution, so a change that moves the
+distribution leaves its cost alone. It does move *which* cells are extreme, which is why the table
+above shares no row with the one it replaced.
 
 **A correction, and the reason the mean changed sign.** Until 2026-09-09 this section reported a mean
 of **+0.0136** and attributed it to two cells where the canonical order "rescues a head the arrival
 order was collapsing": `digits, 360, gmm` at 0.1738 → 0.5146 and `mnist-10k, 1000, gmm` at
 0.0551 → 0.2457. Both were the isotropic collapse of `feature="spherical"` with `method="gmm"` — the
 pair the library now refuses — and what the canonical order was rescuing was a fit that should never
-have been offered. On the `diagonal` feature the same two cells read 0.4721 → 0.4195 and
-0.2223 → 0.2055: the arrival order is *ahead* in both, and the flag's average effect over the grid is
-a small negative. The order arm's spread at those cells collapsed with them (0.5616 → 0.1302 and
-0.1400 → 0.0545), so the old reading — "a head that is unstable under reordering gains most from not
-being reordered" — was measuring the mismatch, not the reordering.
+have been offered. On the `diagonal` feature the 2026-09-09 edition read those same two cells at
+0.4721 → 0.4195 and 0.2223 → 0.2055, the arrival order ahead in both. On the 2026-09-10 tree they
+read **0.5133 → 0.5596** and **0.2382 → 0.2742**, the canonical order ahead in both — a sign flip in
+two cells whose order-arm spread is 0.1394 and 0.0949, i.e. inside the noise the arm itself reports.
+The conclusion the correction drew does not depend on their sign: the old reading — "a head that is
+unstable under reordering gains most from not being reordered" — was measuring the
+`spherical`/`gmm` mismatch, and the grid mean has been a small negative on both trees since.
 
-The three losses are real and are published for the same reason: at `mnist-10k, 200` every head reads
-lower under the canonical order, and a reader choosing the flag at heavy compression on
-high-dimensional data should know that.
+The losses are real and are published for the same reason: `digits, 90, kmeans` gives up 0.0994 and
+`covtype-20k, 300, kmeans` 0.0650, and a reader choosing the flag at heavy compression should know
+that it can cost that much in a single cell. What is no longer true is the 2026-09-09 reading that
+the losses cluster at `mnist-10k, 200` — on this tree that cell's `gmm` head is the grid's largest
+*gain*.
 
 **It is not free either.** Measured separately on the extension, A-B-A-B on one build, medians of
 three: `200k × 20` **1.19×**, `200k × 128` **0.83×**, `100k × 784` **1.06×**, `20k × 784` **1.33×**
@@ -2591,6 +2685,12 @@ more often — 3 → 30 at `50k × 784`, `max_leaves = 8000`, which is what make
 cell is the tail of a distribution over the projection draw, not the cost of high dimension: 24 draws
 at the same shape read min 3, median 4, max 31, and changing the fixed constant only moves which
 shapes land there — [ADR 005](../docs/adr/005-canonical-order-projection-seed.md).
+
+> Those timings and the rebuild counts in them are from **2026-09-07** and are the one part of this
+> section not re-taken on the 2026-09-10 tree. The ranking change cuts rebuilds — 27 → 5 on
+> covtype-50k, 23 → 8 on digits — so the `3 → 30` figure above is an upper bound on this tree rather
+> than a measurement of it, and the ratio it explains may have moved with it. Re-timing needs the
+> contention gate and is tracked separately.
 
 The practical reading: `canonical_order=True` when reproducibility matters — the same rows must give
 the same answer however they arrived — and the default arrival order otherwise. The older advice

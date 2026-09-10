@@ -401,6 +401,12 @@ impl<R: Real, B: BregmanDivergence<R>> CFDistance<R, BregmanCf<R, B>> for Bregma
             })
             .sum()
     }
+
+    /// The Bregman information this merge destroys, which is what `between` already computes here —
+    /// the Ward default would price it with a squared Euclidean distance the space does not use.
+    fn merge_cost(&self, a: &BregmanCf<R, B>, b: &BregmanCf<R, B>) -> R {
+        self.between(a, b)
+    }
 }
 
 #[cfg(test)]
@@ -723,6 +729,35 @@ mod tests {
         let d0_b = BregmanCentroid::<SquaredEuclidean>::new().between(&a, &b);
         let d0_e = CentroidEuclidean.between(&sa, &sb);
         assert!((d0_b - d0_e).abs() <= 1e-9 * d0_e, "{d0_b} vs {d0_e}");
+    }
+
+    #[test]
+    fn the_merge_cost_of_a_bregman_pair_is_the_information_it_destroys() {
+        // A rebuild ranks candidate merges by `merge_cost`, whose default is the squared-Euclidean
+        // Ward cost. This space is not Euclidean: pricing a KL merge by how far apart the means sit
+        // is a different order from pricing it by the information the merge loses, and the tree
+        // would give up the wrong pairs. The fixture is one where the two disagree, so the test can
+        // see the override rather than an accidental agreement.
+        let mut rng = Lcg(12);
+        let left = points(&mut rng, 30, 4, 0.5, 2.0);
+        let right = points(&mut rng, 20, 4, 4.0, 9.0);
+        let wl: Vec<f64> = (0..30).map(|_| rng.span(0.5, 3.0)).collect();
+        let wr: Vec<f64> = (0..20).map(|_| rng.span(0.5, 3.0)).collect();
+        let a = build::<KullbackLeibler>(&left, &wl);
+        let b = build::<KullbackLeibler>(&right, &wr);
+
+        let inc = BregmanIncrease::<KullbackLeibler>::new();
+        assert_eq!(
+            inc.merge_cost(&a, &b).to_bits(),
+            inc.between(&a, &b).to_bits()
+        );
+
+        let (na, nb) = (a.weight(), b.weight());
+        let ward = crate::kernels::sq_euclidean(a.mean(), b.mean()) * na * nb / (na + nb);
+        assert!(
+            (inc.merge_cost(&a, &b) - ward).abs() > 1e-6 * ward,
+            "the fixture cannot see the override: KL and Ward agree at {ward}"
+        );
     }
 
     #[test]

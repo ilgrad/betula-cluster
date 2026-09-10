@@ -198,6 +198,10 @@ gets, and 8 % of the summarisation objective is more than the E-step differences
 its length on. It is also narrow enough to be one policy — a split rule, a rebuild threshold, an
 absorption tie-break — rather than a difference in kind. Chasing it is **T27**.
 
+> It was a fourth policy, it was fixed in E13 below, and the D0/D0 row of the matched table is now
+> 0.846–0.857 of ELKI rather than 1.076–1.085. The two tables above measure the tree as it stood on
+> 2026-09-09 and are kept as it was measured.
+
 ### Where the D0/D0 gap comes from (T27, 2026-09-09)
 
 Three candidates were on file — the split rule, the rebuild threshold, the absorption tie-break —
@@ -238,7 +242,7 @@ kNN graph the library already builds over leaves, rather than by node membership
 where the tree is already at its budget. What is *not* yet separated is how much of the 0.72 is the
 finer build (more information before compacting) and how much is global-versus-sibling merging at a
 fixed tree size; that separation needs the merge policy swapped inside the rebuild, which is E13's
-own experiment.
+own experiment — done in the next section, where it turns out to be 21 of the 28 points.
 
 Two things this does *not* say. The partitions agree with each other at ARI 0.39–0.53 even where
 their WCSS matches to 1 %, so "the same tree quality" is not "the same tree" — the leaf boundaries
@@ -246,3 +250,86 @@ land in genuinely different places, and a downstream head sees different summari
 column is unusable as a speed comparison: ELKI's 0.5–5.5 s per run is a JVM start plus CSV parsing
 plus a result write, against 0.01–0.14 s for an in-process call. Nothing here measures the
 summarisation loop against ELKI's.
+
+### The fix, and what it was actually worth (E13, 2026-09-10)
+
+T27 left the lever unseparated: how much of the 0.72 is the finer build and how much is the merge
+policy at a fixed tree size. It is almost all the policy, and the policy is one line.
+
+`sibling_pairs` chose each entry's partner under `dist` and ranked the pairs by the `abs` gap. Under
+the default D0/D0 geometry both are the *unweighted* squared centroid distance, so compaction merged
+the geometrically closest pair whatever it weighed. That is not the merge that costs least: the exact
+price of fusing two features is the Ward cost `w_a w_b/(w_a+w_b) ‖μ_a−μ_b‖²`, and an unweighted gap
+prices a pair of thousand-point leaves exactly like a pair of singletons the same distance apart. The
+consequence is visible in the summary it built — on digits at 200 leaves **63 % of the leaves held a
+single point** and the leaf-mass Gini was 0.82.
+
+The check that this is the mechanism and not a coincidence was already in the record: under D4
+(`VarianceIncrease`) the gap *is* the Ward cost, so a D4-routed tree was already ranking correctly —
+and D4/R is exactly the geometry where the matched table above calls the two implementations level.
+A distortion-ranked rebuild should therefore move D0/D0 a long way and D4/R barely at all. It does
+(`local/scratch/e13_compaction.py`, seeds 0/1/2, medians; leaf counts are `n_leaves_`):
+
+| fixture | geometry | leaves | singleton share | leaf-mass Gini | rebuilds | leaf WCSS | of ELKI |
+|---|---|---:|---:|---:|---:|---:|---:|
+| digits, 200 | D0/D0 before | 195 | 0.626 | 0.815 | 23 | 7.087e5 | 1.085 |
+| digits, 200 | D0/D0 after | 180 | **0.139** | **0.530** | 8 | **5.601e5** | **0.857** |
+| digits, 200 | D4/R before | 180 | 0.050 | 0.468 | 19 | 5.250e5 | — |
+| digits, 200 | D4/R after | 187 | 0.048 | 0.406 | 7 | 5.158e5 | — |
+| covtype-50k, 2000 | D0/D0 before | 1950 | 0.309 | 0.849 | 27 | 8.642e4 | 1.076 |
+| covtype-50k, 2000 | D0/D0 after | 1987 | **0.148** | **0.586** | 5 | **6.794e4** | **0.846** |
+| covtype-50k, 2000 | D4/R before | 1957 | 0.103 | 0.628 | 21 | 6.859e4 | — |
+| covtype-50k, 2000 | D4/R after | 1908 | 0.103 | 0.505 | 5 | 6.474e4 | — |
+
+D0/D0 drops 21 % on both fixtures — from 8 % behind ELKI to 15 % ahead — and reaches 0.79 of the old
+WCSS against the 0.72 T27's offline bound got from a tree built at **twice** the budget with a
+*global* `O(m²)` merge. So the finer build and the global reach together are worth about 7 points of
+the 28; the ranking is worth 21. D4/R moves 1.8 % and 5.6 %, as predicted, because its partner choice
+was already the Ward-optimal one. The rebuild count falls with it (27 → 5), since a rebuild that
+takes the cheap merges lands further under the budget and stays there.
+
+The bounds T27 said a fix had to keep are both kept: the scan is still `O(Σ_leaf child²)` over
+siblings, the tree is still built once at its budget, and nothing new is allocated — the Ward cost
+reuses the weights and means already in the features.
+
+**What it costs downstream.** A tighter summary is not automatically a better label assignment, so
+the published quality fixtures were run on both builds before this landed
+(`local/scratch/e13_quality.py`, medians of seeds 0/1/2 at `max_leaves=4000`). The singleton share
+falls on every fixture (mnist 0.852 → 0.532, highdim 0.866 → 0.442, covtype 0.453 → 0.262); ARI moves
+where the head is sensitive to the summary and not otherwise:
+
+| head | improves | flat | loses |
+|---|---|---|---|
+| ward | moons 0.148 → **0.599**, varied 0.433 → **0.705**, aniso 0.471 → 0.526, blobs 0.810 → 0.831, mnist 0.367 → 0.394 | covtype, digits, highdim, circles | — |
+| gmm | mnist 0.269 → 0.306, covtype 0.055 → 0.059 | every synthetic fixture (≤ 0.0003) | — |
+| kmeans | — | every synthetic fixture (≤ 0.001) | mnist 0.315 → 0.285, covtype 0.064 → 0.049 |
+
+The ward head is the one that reads the leaf masses directly, and it is the one that gains; k-means
+loses two real-set cells and gains none, which is the honest cost of the change. Both losses are
+inside the seed spread of the cell they sit in (mnist k-means baseline [0.258, 0.341] against
+[0.261, 0.331]), and neither is on a fixture where k-means recovers the labels at all — covtype ARI
+is 0.05–0.10 for every method in the table.
+
+Two negative controls. `absorb="chi2"` reads bit-identical ARI before and after on both fixtures,
+because its gate binds at 46–57 leaves and the budget is never reached, so no rebuild ever runs —
+which is the change firing only through compaction, as intended. And the spectral head's occasional
+collapse on `circles` is not caused by this: ten seeds per build put 2/20 runs below ARI 0.9 on
+either side of the change (`local/scratch/e13_spectral_seeds.py`), the same k-means-on-the-embedding
+lottery T23 measured, sampled differently by a three-seed window.
+
+Five non-default geometries were run for the same reason — the Ward rank is a squared-Euclidean
+statement and the tree may be routing on something else (`local/scratch/e13_geometry.py`, digits at
+200 leaves, covtype-20k at 4000). On digits every one of them improves (`euclidean/radius`
+0.533 → 0.548, `euclidean/diameter` 0.485 → 0.554, `ward/radius` 0.440 → 0.476,
+`manhattan/manhattan` 0.482 → 0.574); on covtype they move inside their own spread in both
+directions. Nothing there argues for making the rank follow `absorb`.
+
+**E13's own stop rule was not met, and the change ships on other evidence.** The task was written to
+chase covtype: *"continue only at ARI ≥ 0.10 on either head"*, otherwise "the record says covtype
+needs a *split*, i.e. an in-leaf sub-sketch". Covtype-20k at 4000 leaves reads ward 0.0861 (bit for
+bit unchanged) and k-means 0.0640 → 0.0486. Neither clears 0.10. The prediction that framed the task
+is confirmed in both halves: the singleton share does fall (0.453 → 0.262, Gini 0.683 → 0.490) and it
+buys nothing there, because a merge-only compaction cannot split the heavy cells that hold covtype's
+mass. What changed is why the fix is worth having — not covtype's ARI, but the summarisation
+objective the tree exists to optimise, on every fixture measured, and the ward head that reads it.
+Covtype still needs a split.

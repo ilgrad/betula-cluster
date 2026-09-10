@@ -112,20 +112,23 @@ transfer to another — retune when you switch. `D2`, `D3` and `R` read the leav
 they grow with a cell's scatter; `D0`, `D1` and `D4` are centroid-only and therefore the most
 numerically stable.
 
-**On wildly unequal cluster sizes, switch — the default is the criterion that fails.** BIRCH's
-size-imbalance bug (scikit-learn [#22854](https://github.com/scikit-learn/scikit-learn/issues/22854)
-— a large cluster swallows a distant point because one global absorption radius is generous relative
-to a dense core) is a property of the *criterion*, and the eight differ sharply. On the
+**On wildly unequal cluster sizes the criterion used to decide the outcome; since 2026-09-10 it
+does not.** BIRCH's size-imbalance bug (scikit-learn
+[#22854](https://github.com/scikit-learn/scikit-learn/issues/22854) — a large cluster swallows a
+distant point because one global absorption radius is generous relative to a dense core) used to be
+a property of the *criterion* here: on the
 [`bench/results_imbalance.csv`](https://github.com/ilgrad/betula-cluster/blob/main/bench/results_imbalance.csv)
-fixture — one dense core of 20 000 against six minorities of 30 — only **`ward` and `chi2`** score
-ARI 1.0000 at every leaf budget; `manhattan`, `diameter` and `radius` recover at 4 000 leaves and
-not below; **`euclidean` (the default) and `average` never recover**, at any budget tried. `ward`
-costs nothing to switch to — same tree, same budget, the same realised leaf count — and `chi2` gets
-there with half the leaves. Lang's thesis tunes absorption for minimum variance and finds D4 × D2
-best on Gaussian data; D4 is `ward`, so on this axis the thesis' choice and ours agree — D0 is the
-outlier. Keep the default for roughly balanced data, where it is the cheapest and most stable
-gate; reach for `ward` or `chi2` the moment your clusters differ wildly in mass, and for `radius` or
-`diameter` only if you want BIRCH's published behaviour specifically.
+fixture only `ward` and `chi2` scored ARI 1.0000 at every leaf budget, `manhattan` / `diameter` /
+`radius` recovered at 4 000 leaves and not below, and **`euclidean` (the default) and `average` never
+recovered at any budget**. All eight now read **1.0000 at every budget**, because the rebuild ranks
+its merges by what they cost rather than by how close the pair is, and the dense core is the most
+expensive thing it can merge. The criterion is again a choice about *absorption* rather than a repair
+for compaction. Lang's thesis tunes absorption for minimum variance and finds D4 × D2 best on
+Gaussian data; D4 is `ward`, and it remains the one to reach for if you want the tree's routing and
+its compaction to agree. `chi2` still gets there with a fraction of the leaves (129 against 3 746 at
+a 4 000 budget on that fixture), which is an operating point rather than a quality result — see the
+next paragraph. Keep the default unless you have a reason: it is the cheapest and most stable gate,
+and it no longer costs anything on unequal masses.
 
 **`chi2` sets its own resolution, so it is a different operating point rather than a better
 criterion.** The gate stops subdividing once a cell is described, which on real data binds long
@@ -1225,14 +1228,18 @@ est = betula_cluster.Betula(n_clusters=7, max_leaves=1000, balance=4.0)
 ```
 
 `max_leaves` stays a hard bound; the cap is best-effort and yields to it. On a fixture with 80 % of
-the mass in one tight core this moves `kmeans` from ARI 0.4174 to **1.0000** at every budget from 250
-to 4000 — but it is a lever, not a free win, so measure it against `balance=None` on your own data.
+the mass in one tight core this used to move `kmeans` from ARI 0.4174 to **1.0000** at every budget
+from 250 to 4000. Since 2026-09-10 the uncapped tree reads 1.0000 there too — the rebuild stopped
+concentrating mass in one leaf on its own — so the cap has much less left to repair, and it was never
+a free win. Read the share on your own data first, and measure the cap against `balance=None`.
 
 **`balance="auto"` reads that diagnostic for you.** The share above is not a taste question: over 27
-cells (digits / covtype-20k / mnist-10k × `kmeans`/`ward`/`gmm` × three budgets) a fixed cap gains
-**+0.08 to +0.25 ARI on all six cells where the share passes 0.5**, and moves nothing outside seed
-noise on the twelve below 0.1. `"auto"` builds the tree once, reads the share off it, and — only if
-it passes 0.5 — summarises the same rows again with the cap on from the first point:
+cells (digits / covtype-20k / mnist-10k × `kmeans`/`ward`/`gmm` × three budgets, measured before
+2026-09-10) a fixed cap gained **+0.08 to +0.25 ARI on all six cells where the share passed 0.5**,
+and moved nothing outside seed noise on the twelve below 0.1. `"auto"` builds the tree once, reads
+the share off it, and — only if it passes 0.5 — summarises the same rows again with the cap on from
+the first point. Expect it to fire far less often than that grid suggests: a share above 0.5 now
+takes a much tighter budget, or a core so degenerate that no merge policy could split it.
 
 ```python
 est = betula_cluster.Betula(n_clusters=10, max_leaves=250, balance="auto")

@@ -75,7 +75,7 @@
   "results_real/quality/vs-same/digits/1797/betula-hdbscan": "win",
   "results_real/quality/vs-same/digits/1797/betula-kmeans": "tie",
   "results_real/quality/vs-same/digits/1797/betula-ward": "loss",
-  "results_real/quality/vs-same/mnist/20000/betula-kmeans": "loss",
+  "results_real/quality/vs-same/mnist/20000/betula-kmeans": "tie",
   "results_real_hires/quality/vs-best/covtype/20000/16000": "tie",
   "results_real_hires/quality/vs-best/digits/1797/1797": "win",
   "results_real_hires/quality/vs-best/mnist/20000/16000": "tie",

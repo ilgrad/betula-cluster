@@ -1383,13 +1383,16 @@ mod tests {
     fn refinement_lowers_the_k_means_objective_it_optimizes() {
         // Phase 3 minimizes the objective over the *leaf summary*; Phase 4 minimizes it over the raw
         // points. Lloyd is monotone, so the second can only improve on the first — and on a summary
-        // this coarse (16 leaves for 4 blobs) it has room to.
+        // this coarse (8 leaves for 4 blobs) it has room to: the phase-3 answer costs 4617.88 against
+        // the point-optimal 4611.23. At 16 leaves it no longer has any, which is a property of the
+        // summary rather than of the refinement — a distortion-ranked compaction places those 16
+        // leaves well enough that phase 3 already lands on the point optimum.
         let mut rng = SplitMix64::new(11);
         let centers = [[0.0, 0.0], [9.0, 0.0], [0.0, 9.0], [9.0, 9.0]];
         let (pts, _) = blobs(&mut rng, 300, &centers, 1.4);
         let flat: Vec<f64> = pts.iter().flatten().copied().collect();
         let mut tree: CFTree<f64, Diagonal<f64>, _, _> =
-            CFTree::new(2, 4, 4, 4.0, 16, CentroidEuclidean, CentroidEuclidean);
+            CFTree::new(2, 4, 4, 4.0, 8, CentroidEuclidean, CentroidEuclidean);
         for p in &pts {
             tree.insert(p);
         }

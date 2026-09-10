@@ -18,6 +18,26 @@ pub trait CFDistance<R: Real, C>: Send + Sync {
     fn point(&self, cf: &C, x: &[R]) -> R;
     /// Squared distance between two features.
     fn between(&self, a: &C, b: &C) -> R;
+
+    /// What merging two features costs, in the criterion's own geometry.
+    ///
+    /// A rebuild has to decide which merges to give up, and `between` does not answer that: a
+    /// distance between centroids prices a pair of thousand-point leaves exactly like a pair of
+    /// singletons the same distance apart, though one destroys a thousand times more information.
+    /// The default is the exact increase in within-cluster sum of squares the merge causes — the
+    /// Ward cost `w_a w_b/(w_a + w_b) ‖μ_a − μ_b‖²` — which is the right price for every Euclidean
+    /// criterion in this module. A criterion whose space is not Euclidean overrides it.
+    fn merge_cost(&self, a: &C, b: &C) -> R
+    where
+        C: ClusterFeature<R>,
+    {
+        let (na, nb) = (a.weight(), b.weight());
+        let nab = na + nb;
+        if nab <= R::zero() {
+            return R::zero();
+        }
+        kernels::sq_euclidean(a.mean(), b.mean()) * na * nb / nab
+    }
 }
 
 /// D0 — squared Euclidean distance between centroids.

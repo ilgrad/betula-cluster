@@ -162,9 +162,12 @@ Python end-to-end + scikit-learn benchmark (`README.md`, `bench/RESULTS.md`):
 - `tree` (insert/split/rebuild — `estimate_threshold` is the within-leaf mean nearest-sibling gap,
   ELKI/BETULA-standard, $O(M \cdot \text{capacity})$, threshold raised monotonically; reverse-DFS-order reinsert
   matches the reference tree shape; the rebuild **targets the leaf budget** rather than predicting it —
-  it merges the `k` closest sibling pairs with `k` set by the budget and reads the grown threshold off
+  it merges the `k` cheapest sibling pairs with `k` set by the budget and reads the grown threshold off
   the widest gap it took, because the achievable leaf count is near-discontinuous in the threshold in
-  high dimension and no threshold-first policy has a safe value there; **compaction is separated from
+  high dimension and no threshold-first policy has a safe value there; **cheapest is the Ward cost**
+  $w_a w_b/(w_a{+}w_b)\,\lVert\mu_a-\mu_b\rVert^2$, the exact WCSS the merge costs, and not the
+  measure the tree routes and absorbs on — an unweighted centroid gap prices a pair of heavy leaves
+  like a pair of singletons and builds a summary of a few heavy leaves plus a long tail of ones; **compaction is separated from
   rebalancing** — merging entries inside their own leaf node leaves every node CF unchanged, so it is
   done in place, and the reinsertion pass that follows only re-routes (absorption off, which is what
   walked off the concentration cliff); per-feature EWMA `decay`; runtime-selectable routing; **parallel

@@ -558,7 +558,7 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> CF
         }
     }
 
-    /// Bring the entry count back under `max_leaves` by merging the closest sibling pairs, and raise
+    /// Bring the entry count back under `max_leaves` by merging the cheapest sibling pairs, and raise
     /// the absorption threshold to the widest gap that took (BIRCH reducibility).
     ///
     /// Two departures from the textbook rebuild, both measured:
@@ -579,8 +579,9 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> CF
     /// that guess has no safe value: on 3000-dimensional TF-IDF the achievable leaf count jumps from
     /// 7755 to 12 between thresholds 1.0 and 1.3, so *every* threshold-first policy either fails to
     /// reduce or collapses the tree — measured at 3 leaves against a 2000 budget. Merging the `k`
-    /// closest pairs and reading the threshold off the last one inverts that: `k` is exact, and the
-    /// cliff cannot be stepped over because merging is capped at one pair per entry per rebuild.
+    /// cheapest pairs and reading the threshold off the widest gap they span inverts that: `k` is
+    /// exact, and the cliff cannot be stepped over because merging is capped at one pair per entry
+    /// per rebuild.
     /// The 10% margin below `max_leaves` is what keeps the next insert from rebuilding immediately.
     fn rebuild(&mut self) {
         let target = (self.max_leaves - self.max_leaves / 10).max(1);
@@ -601,7 +602,7 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> CF
             if merged == want || (respect_cap && cap.is_none()) {
                 continue;
             }
-            for &(gap, ei, ej) in &pairs {
+            for &(_, ei, ej) in &pairs {
                 if merged == want {
                     break;
                 }
@@ -614,6 +615,10 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> CF
                 {
                     continue;
                 }
+                // The rank is the merge cost; the threshold has to grow in the *absorption* measure,
+                // which is the one the gate reads, so that gap is taken here rather than carried
+                // through the sort — one extra distance per merged pair, not per candidate.
+                let gap = self.abs.between(&self.entries[ei], &self.entries[ej]);
                 let absorbed = self.entries[ej].clone();
                 self.entries[ei].merge(&absorbed);
                 alive[ej] = false;
@@ -641,10 +646,19 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> CF
         self.rebuilds += 1;
     }
 
-    /// Every leaf entry paired with its nearest sibling *inside its own leaf node*: `(gap, entry,
-    /// sibling)`, with the sibling chosen under the routing measure (`dist`) and the gap measured
-    /// under the absorption measure (`abs`) — mirroring how insertion routes, then absorbs. Each
-    /// entry contributes at most one pair, which is what caps a rebuild at one merge per entry.
+    /// Every leaf entry paired with the sibling *inside its own leaf node* that is cheapest to merge
+    /// with: `(cost, entry, sibling)`, where the cost is the exact increase in within-cluster sum of
+    /// squares the merge causes, `w_a w_b/(w_a + w_b) · ‖μ_a − μ_b‖²`. Each entry contributes at most
+    /// one pair, which is what caps a rebuild at one merge per entry.
+    ///
+    /// *Ranked by distortion, not by the geometry the tree routes and absorbs on.* Those answer
+    /// different questions: `dist`/`abs` decide whether a point belongs in a leaf, while a rebuild
+    /// has to decide which merge loses the least information, and under the default D0 geometry the
+    /// two disagree — an unweighted centroid distance prices a pair of heavy leaves exactly like a
+    /// pair of singletons the same distance apart, though merging the heavy pair costs many times
+    /// more. Ranking by distance builds a summary of a few heavy leaves and a long tail of
+    /// singletons (measured on digits at 200 leaves: 63 % of leaves held one point, leaf-mass Gini
+    /// 0.82); the mass factor is what stops a leaf growing without bound.
     fn sibling_pairs(&self) -> Vec<(R, usize, usize)> {
         let mut out = Vec::with_capacity(self.entries.len());
         for node in &self.nodes {
@@ -660,13 +674,13 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> CF
                     if i == j {
                         continue;
                     }
-                    let d = self.dist.between(entry, &self.entries[ej]);
+                    let d = self.abs.merge_cost(entry, &self.entries[ej]);
                     if d < bd {
                         bd = d;
                         best = ej;
                     }
                 }
-                out.push((self.abs.between(entry, &self.entries[best]), ei, best));
+                out.push((bd, ei, best));
             }
         }
         out
@@ -1887,11 +1901,11 @@ mod tests {
 
     #[test]
     fn sibling_pairs_track_the_within_leaf_nn() {
-        // A rebuild merges the closest sibling pairs and reads the grown threshold off the widest gap
-        // it took, so every gap the scan reports must sit at the true nearest-sibling scale. For
-        // unit-spaced points that (squared) distance is 1.0 everywhere; a gap systematically above it
-        // would coarsen the tree below `max_leaves` on rebuild. Many entries across many leaf nodes
-        // here ⇒ this exercises the per-leaf scan, not a single fused leaf.
+        // A rebuild merges the cheapest sibling pairs, so every cost the scan reports must sit at the
+        // true nearest-sibling scale. For unit-spaced unit-weight points that Ward cost is
+        // 1·1/(1+1) · 1² = 0.5 everywhere; a cost systematically above it means the scan is not
+        // finding the nearest sibling. Many entries across many leaf nodes here ⇒ this exercises the
+        // per-leaf scan, not a single fused leaf.
         let mut tree: CFTree<f64, Spherical<f64>, _, _> = CFTree::new(
             1,
             16,
@@ -1915,13 +1929,54 @@ mod tests {
             tree.num_leaves(),
             "every entry contributes exactly one pair"
         );
-        for (gap, ei, ej) in pairs {
+        for (cost, ei, ej) in pairs {
             assert_ne!(ei, ej, "an entry must not pair with itself");
             assert!(
-                (0.5..=1.5).contains(&gap),
-                "sibling gap {gap} drifted from the unit nearest-sibling scale (≈1.0)"
+                (0.25..=0.75).contains(&cost),
+                "sibling cost {cost} drifted from the unit nearest-sibling scale (≈0.5)"
             );
         }
+    }
+
+    #[test]
+    fn the_sibling_scan_prices_mass_not_only_distance() {
+        // Two candidate merges, both exactly one unit apart: a pair of ten-point entries and a pair
+        // of singletons. Merging the heavy pair costs 10·10/20 · 1² = 5 in within-cluster sum of
+        // squares, the light pair 1·1/2 · 1² = 0.5, so a rebuild forced to choose must take the
+        // light one. A centroid distance cannot see that difference — both gaps read 1.0 and the
+        // order is whatever the sort was handed — and the summary it builds is a few heavy leaves
+        // plus a long tail of singletons (digits at 200 leaves: 63 % of leaves held one point).
+        let mut t = EuclidTree::new(
+            1,
+            8,
+            8,
+            0.0,
+            usize::MAX,
+            CentroidEuclidean,
+            CentroidEuclidean,
+        );
+        for _ in 0..10 {
+            t.insert(&[0.0]);
+            t.insert(&[1.0]);
+        }
+        t.insert(&[10.0]);
+        t.insert(&[11.0]);
+        assert_eq!(
+            t.entries.len(),
+            4,
+            "fixture: two heavy entries and two singletons"
+        );
+
+        let pairs = t.sibling_pairs();
+        let cost = |i: usize| {
+            pairs
+                .iter()
+                .find(|p| p.1 == i)
+                .expect("entry reported no pair")
+                .0
+        };
+        assert_eq!(cost(0), 5.0, "the heavy pair");
+        assert_eq!(cost(2), 0.5, "the singleton pair");
     }
 
     #[test]
@@ -1930,8 +1985,8 @@ mod tests {
         // both neighbours -- bit for bit, not to a tolerance. Which one it pairs with decides which
         // merge a rebuild considers, and only the strictness of the comparison decides that.
         let t = entries_at(&[0.0, 1.0, 2.0], 0.0);
-        let left = t.dist.between(&t.entries[1], &t.entries[0]);
-        let right = t.dist.between(&t.entries[1], &t.entries[2]);
+        let left = t.abs.merge_cost(&t.entries[1], &t.entries[0]);
+        let right = t.abs.merge_cost(&t.entries[1], &t.entries[2]);
         assert_eq!(
             left.to_bits(),
             right.to_bits(),
@@ -1944,7 +1999,10 @@ mod tests {
             .find(|p| p.1 == 1)
             .expect("the middle entry reported no pair");
         assert_eq!(mid.2, 0, "the tie went to the later sibling");
-        assert_eq!(mid.0, 1.0);
+        assert_eq!(
+            mid.0, 0.5,
+            "two unit-weight entries one unit apart cost 1·1/2 · 1² to merge"
+        );
     }
 
     #[test]
@@ -1964,7 +2022,10 @@ mod tests {
 
         let pairs = t.sibling_pairs();
         assert_eq!(pairs.len(), 2, "the two-entry leaf reported no pair");
-        assert!(pairs.iter().all(|p| p.0 == 25.0));
+        assert!(
+            pairs.iter().all(|p| p.0 == 12.5),
+            "1·1/2 · 5² is the cost of fusing the leaf"
+        );
     }
 
     #[test]
@@ -1981,11 +2042,24 @@ mod tests {
         let mut t = entries_at(&[0.0, 1.5, 5.0, 12.0, 25.0], 0.0);
         t.max_leaves = 4;
 
-        let mut gaps: Vec<f64> = t.sibling_pairs().iter().map(|p| p.0).collect();
-        gaps.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        let widest = gaps[0];
-        assert_eq!(widest, 2.25, "the closest sibling gap moved");
-        assert!(gaps[2] > widest, "more than one pair sits at the minimum");
+        let pairs = t.sibling_pairs();
+        let cheapest = pairs
+            .iter()
+            .min_by(|a, b| a.0.partial_cmp(&b.0).unwrap())
+            .expect("the fixture reported no sibling pair");
+        // Pairs are ranked by merge cost, but the gate is lifted in the absorption measure, so what
+        // the threshold is read off is that pair's `abs` gap and not its cost.
+        let widest = t
+            .abs
+            .between(&t.entries[cheapest.1], &t.entries[cheapest.2]);
+        assert_eq!(cheapest.0, 1.125, "the cheapest sibling pair moved");
+        assert_eq!(widest, 2.25, "its absorption gap moved");
+        let mut costs: Vec<f64> = pairs.iter().map(|p| p.0).collect();
+        costs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        assert!(
+            costs[2] > costs[0],
+            "more than one pair sits at the minimum"
+        );
         assert_eq!(
             t.entries.len() - (t.max_leaves - t.max_leaves / 10).max(1),
             1,
