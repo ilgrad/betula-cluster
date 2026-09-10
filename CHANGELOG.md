@@ -184,6 +184,30 @@ All notable changes to this project are documented here. The format follows
   arrival-order path keeps the uniform draw and is untouched.
 
 ### Changed
+- **The Rust crate's public surface is curated, and the crate now says which modules the contract
+  covers.** `src/lib.rs` declared 23 `pub mod`, so `kernels`, `linalg` and `stats` — a SIMD
+  reduction, a Cholesky, a `lgamma` — carried the same semantic-versioning promise as `tree` and
+  `model`, and a snapshot of that surface would have been a snapshot of the implementation. Ten are
+  now `#[doc(hidden)]`: `adwin`, `assign`, `fidelity`, `kernels`, `linalg`, `mixture`, `sketch`,
+  `stats`, `topology`, `wasserstein`. Nothing is deleted and nothing stops compiling — they stay
+  `pub`, because this repository's own benchmarks call into `kernels` and `assign` — but they are
+  off docs.rs and off the contract, which a crate-level doc section and a new **Compatibility**
+  section in [`README.md`](https://github.com/ilgrad/betula-cluster/blob/main/README.md) now state
+  outright. The thirteen that remain documented are the library: `tree`, `feature`, `distance`,
+  `bregman`, `model`, `clustering`, `types`, `sparse`, `order`, `coreset`, `stream`, `window`,
+  `validity`. What the hidden modules implement stays reachable through the Python package, which is
+  the supported way to use it — `mapper()` is `topology`, `KllSketch` / `DdSketch` are `sketch`, the
+  drift distance is `wasserstein`, `tree_report()`'s fidelity number is `fidelity`. Two rustdoc
+  warnings went with the change (40 → 38), and the crate docs gained a compiled minimal-fit example.
+
+  The contract is checked by a tool rather than by a hand-kept list:
+  `cargo semver-checks --baseline-version 0.8.0` classifies every difference against the published
+  crate, and `CONTRIBUTING.md` now names it as the gate for a PR that touches a documented module.
+  Run against this tree it reports **six** breaking changes since 0.8.0, all of them deliberate and
+  all of them already in this section: `insert` / `predict` renamed to their `try_` forms on
+  `CFTree`, `Model`, `DenStream`, `DbStream` and `WindowStream`; the arity of `Model::fit`,
+  `CFTree::build_sharded`, `clustering::spectral` and `clustering::kmeans_auto`; and this hiding.
+  That is what makes the next release a major one.
 - **`save` gzip-frames the file, and what `load` promises across versions is now written down.** A
   model was bare CBOR, and the bulk of one is a leaf centroid matrix that repeats heavily down the
   leaves — dead dimensions, shared zeros, near-duplicate centroids. Framing it in gzip takes

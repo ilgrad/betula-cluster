@@ -376,6 +376,18 @@ Honest scope — inherent to a CF-compression + streaming design, not bugs:
 
 ## Compatibility
 
+**The Rust crate's public surface is a curated set of modules**, and that is what semantic
+versioning is a promise about: `tree`, `feature`, `distance`, `bregman`, `model`, `clustering`,
+`types`, `sparse`, `order`, `coreset`, `stream`, `window`, `validity`. The rest of the crate —
+`adwin`, `assign`, `fidelity`, `kernels`, `linalg`, `mixture`, `sketch`, `stats`, `topology`,
+`wasserstein` — is `#[doc(hidden)]`: still reachable, because this repository's own benchmarks call
+into it, but **not part of the contract**, and free to change shape in any release. What those
+modules implement is reachable through the Python package, which is the supported way to use them.
+
+**The Python surface is the package**, and it is pinned by a type stub rather than by prose:
+`python/betula_cluster/__init__.pyi` declares every public signature and `mypy.stubtest` checks the
+compiled module against it on every run of the gate, so a wrapper signature cannot drift silently.
+
 **Saved models are not portable across major versions.** `Betula.save` writes a gzip-framed,
 version-tagged CBOR file; `Betula.load` accepts one schema version and refuses every other, naming
 the version it found. Re-save with the version that wrote the file before upgrading, or keep the

@@ -33,6 +33,20 @@ ty check python/                                   # or mypy / pyright
 python -m mypy.stubtest betula_cluster             # the .pyi stubs must match the runtime
 ```
 
+Public surface, when a PR touches one of the thirteen documented modules (`tree`, `feature`,
+`distance`, `bregman`, `model`, `clustering`, `types`, `sparse`, `order`, `coreset`, `stream`,
+`window`, `validity` — see *Compatibility* in `README.md`):
+
+```bash
+cargo semver-checks --baseline-version <last released version>
+```
+
+It classifies each difference against the published crate rather than against a hand-kept list, so
+"is this breaking?" is answered by the tool. Exit 100 means it found breaking changes; that is a
+finding to justify in the PR body, not a failure to route around. The `#[doc(hidden)]` modules are
+outside this contract by construction — the same command reports moving one *into* hiding as major,
+which is why it is a release-boundary decision.
+
 ## Guidelines
 
 - **Numerical correctness first.** New CF math must be cancellation-free and property-tested
