@@ -1501,6 +1501,37 @@ def test_save_writes_a_gzip_member_and_a_smaller_file(tmp_path):
     assert plain[0] == 0x82 and plain[1] == 0x02, "the schema tag is not where load expects it"
 
 
+def test_a_model_whose_root_is_past_its_own_arena_is_refused(tmp_path):
+    """Deserializing a file successfully is not the same as the file being loadable.
+
+    The document this builds is well-formed CBOR and serde reconstructs a `CFTree` from it happily;
+    what it *describes* is a tree whose root is node 255 of four. Before `load` validated, this file
+    loaded, and the failure arrived later -- `partial_fit` panicked with `index out of bounds`, and
+    a panic crossing the FFI boundary is a `pyo3_runtime.PanicException`, which is not a
+    `ValueError` and is not something a caller can reasonably be asked to catch. Three other
+    corruptions of the same kind (a child index, a parent index, a feature of the wrong width)
+    behaved the same way; `local/scratch/e24_structural.py` is the probe that found them and
+    `tree::tests::validate_rejects_an_arena_no_insert_could_have_produced` is the unit test.
+    """
+    import gzip
+
+    from sklearn.datasets import make_blobs
+
+    x, _ = make_blobs(n_samples=400, n_features=3, centers=3, random_state=0)
+    est = betula_cluster.Betula(n_clusters=3, max_leaves=40, seed=0).fit(x)
+    path = tmp_path / "model.betula"
+    est.save(str(path))
+
+    plain = bytearray(gzip.decompress(path.read_bytes()))
+    i = plain.index(b"\x64root")  # CBOR text key "root", then its value
+    assert plain[i + 5] < 0x18, "root is encoded as a CBOR immediate; this patch assumes it"
+    plain[i + 5 : i + 6] = b"\x18\xff"  # uint8 255, past any arena this fixture can build
+    path.write_bytes(gzip.compress(bytes(plain), 1))
+
+    with pytest.raises(ValueError, match="corrupt model: root is node 255"):
+        betula_cluster.Betula.load(str(path))
+
+
 def test_a_snapshot_written_by_0_6_0_still_loads():
     """A committed snapshot from the released 0.6.0 wheel, loaded by the current build.
 

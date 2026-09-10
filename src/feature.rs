@@ -222,6 +222,22 @@ pub trait ClusterFeature<R: Real>: Clone + Send + Sync {
     fn second_moment(&self) -> SecondMoment<R> {
         SecondMoment::Dense(self.cov_dense())
     }
+    /// Are this feature's own arrays mutually consistent?
+    ///
+    /// Dead weight on every path but one. A feature built by [`ClusterFeature::new`],
+    /// [`ClusterFeature::push`] and [`ClusterFeature::merge`] cannot be malformed — but one
+    /// *deserialized* came from bytes, and bytes are input. A mean of length 1 inside a
+    /// 4-dimensional tree used to reach an `index out of bounds` in `cluster_centers_`, from a file
+    /// rather than from a bug. [`crate::tree::CFTree::validate`] is what calls this.
+    ///
+    /// Defaults to `true` so an out-of-crate feature is not forced to implement it; the shipped
+    /// models override it wherever they hold two arrays that have to agree. [`Spherical`] does not:
+    /// its dimension *is* its mean's length and its scatter is a scalar, so it has nothing to
+    /// disagree with.
+    #[doc(hidden)]
+    fn is_well_formed(&self) -> bool {
+        true
+    }
 }
 
 /// `R -> f64`. Infallible for both types `Real` admits.
@@ -366,6 +382,9 @@ impl<R: Real> ClusterFeature<R> for Diagonal<R> {
             ssd: vec![R::zero(); dim],
         }
     }
+    fn is_well_formed(&self) -> bool {
+        self.mean.len() == self.ssd.len()
+    }
     fn dim(&self) -> usize {
         self.mean.len()
     }
@@ -501,6 +520,9 @@ impl<R: Real> ClusterFeature<R> for Full<R> {
             scatter: vec![R::zero(); dim * (dim + 1) / 2],
             dim,
         }
+    }
+    fn is_well_formed(&self) -> bool {
+        self.mean.len() == self.dim && self.scatter.len() == self.dim * (self.dim + 1) / 2
     }
     fn dim(&self) -> usize {
         self.dim
@@ -718,6 +740,13 @@ impl<R: Real> ClusterFeature<R> for FdSketch<R> {
     fn new(dim: usize) -> Self {
         Self::with_ell(dim, FD_DEFAULT_ELL)
     }
+    fn is_well_formed(&self) -> bool {
+        self.mean.len() == self.dim
+            && self.ell >= 1
+            && self.sketch.len() == self.ell
+            && self.rows <= self.ell
+            && self.sketch.iter().all(|r| r.len() == self.dim)
+    }
     fn dim(&self) -> usize {
         self.dim
     }
@@ -863,6 +892,39 @@ mod tests {
             c.push(p, 1.0);
         }
         c
+    }
+
+    /// `is_well_formed` earns its place only where a feature holds two arrays that have to agree
+    /// *and* `dim()` cannot see the disagreement — which is the case for all three of these, and
+    /// for none of `Spherical`, whose dimension is its mean's length.
+    #[test]
+    fn a_feature_whose_own_arrays_disagree_is_not_well_formed() {
+        let mut diag: Diagonal<f64> = push_all(3, &[&[1.0, 2.0, 3.0], &[2.0, 0.0, 1.0]]);
+        assert!(diag.is_well_formed());
+        diag.ssd.pop();
+        assert_eq!(
+            diag.dim(),
+            3,
+            "the mean still says 3, so only this check can see it"
+        );
+        assert!(!diag.is_well_formed());
+
+        let mut full: Full<f64> = push_all(3, &[&[1.0, 2.0, 3.0], &[2.0, 0.0, 1.0]]);
+        assert!(full.is_well_formed());
+        full.scatter.pop();
+        assert_eq!(full.dim(), 3);
+        assert!(!full.is_well_formed());
+
+        let mut fd: FdSketch<f64> = push_all(4, &[&[1.0, 2.0, 3.0, 4.0], &[2.0, 0.0, 1.0, 5.0]]);
+        assert!(fd.is_well_formed());
+        fd.sketch[0].pop();
+        assert!(!fd.is_well_formed(), "a sketch row narrower than the mean");
+        let mut fd: FdSketch<f64> = push_all(4, &[&[1.0, 2.0, 3.0, 4.0]]);
+        fd.rows = fd.ell + 1;
+        assert!(!fd.is_well_formed(), "more live rows than the sketch has");
+
+        let sph: Spherical<f64> = push_all(3, &[&[1.0, 2.0, 3.0]]);
+        assert!(sph.is_well_formed(), "nothing in a Spherical can disagree");
     }
 
     #[test]

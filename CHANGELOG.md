@@ -7,6 +7,32 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Fixed
+- **A corrupt model file loaded, and the panic arrived three calls later.** `load` checked the schema
+  version and nothing else, so any CBOR document that *deserialized* became a `Betula` — including
+  documents describing a tree no insert could have produced. That is the cause: a schema version says
+  which fields exist, not that their values address each other, and a file is input. Of seven
+  structural corruptions built by hand, **four panicked**: a root index past the arena, a child index
+  past it, a parent index past it and an empty arena all reached `index out of bounds` inside the
+  next `partial_fit`, and an entry whose mean was one coordinate wide reached it inside
+  `cluster_centers_`. A panic crossing the FFI boundary surfaces as `pyo3_runtime.PanicException`,
+  which is not a `ValueError` and is not something a caller can be asked to catch.
+
+  `load` now validates every tree it deserializes and raises `ValueError: corrupt model: …` naming
+  what disagrees. `CFTree::validate` checks that the arena is non-empty and `root` addresses it, that
+  every parent and child index is in range and points at the right arena, that no node is reachable
+  twice — which is what rules out a cycle — that every feature is self-consistent and carries the
+  tree's dimension, and that `branching`, `leaf_cap`, `max_leaves`, `threshold`, `huber_k` and
+  `balance` cannot leave an insert unable to terminate. All seven corruptions now fail at the
+  boundary that produced them. The check is a no-op for a tree this process built, which a test pins
+  across fresh, rebuilt, sharded and empty trees and all four feature models — a validator that
+  rejects a real tree would be worse than none.
+
+  Two things it deliberately does not do. Unreachable nodes and unreferenced entries are **not** an
+  error: compaction leaves both behind and they cost only memory. And the decompression bomb the
+  gzip framing invites was checked rather than assumed — `decode` streams out of the gzip member
+  instead of inflating to a `Vec` first, and a CBOR length header claiming `2^40` elements is
+  refused without reserving for it. Over **4 000** randomly corrupted files, every failure is a
+  `ValueError` and none is a panic.
 - **An `f32` tree stopped counting rows at `2^24`, and its reported variance drifted for every row
   after that.** A cluster feature accumulates `w ← w + wᵢ`, and binary32 spaces its values 2 apart
   from 16 777 216 upward, so a unit-weight row left the weight exactly where it was. Nothing else in

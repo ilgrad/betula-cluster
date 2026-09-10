@@ -93,8 +93,8 @@ must-link/cannot-link constrained clustering, and memory-aware hyperparameter
 tuning. Prebuilt `abi3` wheels ship for Linux, macOS, and Windows, and the Rust
 core is separately reusable.
 
-Correctness is covered by a 548-case Python test suite held at 100% statement
-coverage of the wrapper, 814 Rust tests, and a mutation-testing baseline in
+Correctness is covered by a 549-case Python test suite held at 100% statement
+coverage of the wrapper, 818 Rust tests, and a mutation-testing baseline in
 which every recorded survivor carries either a killing test or a written
 equivalence argument, checked against the mutations the current source can
 produce rather than assumed to still apply. Every **quality** figure is the

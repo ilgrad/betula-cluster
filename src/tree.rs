@@ -901,6 +901,109 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> CF
         self.dim
     }
 
+    /// Check the invariants a tree that came from *bytes* has to satisfy before anything indexes
+    /// into it.
+    ///
+    /// Every path that builds a tree — [`CFTree::new`], [`CFTree::try_insert`],
+    /// [`CFTree::insert_cf`], a rebuild — maintains these by construction, so this is a no-op for a
+    /// tree this process built. A **deserialized** tree is different: a model file is input, and a
+    /// file that says `root = 1000000` over an arena of four nodes is a legal CBOR document. Loading
+    /// one used to succeed and then panic on the next `partial_fit` with `index out of bounds` —
+    /// four of seven hand-built corruptions did, in `tree.rs` and in the estimator's cluster
+    /// statistics. This turns all of them into an error at the boundary that produced them.
+    ///
+    /// What it checks: the arena is non-empty and `root` addresses it; every `parent` and every
+    /// child index is in range, and a leaf's children address `entries` while an internal node's
+    /// address `nodes`; no node is reached twice from the root, which is what rules out a cycle;
+    /// every feature is [`ClusterFeature::is_well_formed`] and carries this tree's dimension; and
+    /// `branching`, `leaf_cap` and `max_leaves` are large enough that an insert terminates.
+    ///
+    /// Unreachable nodes and unreferenced entries are *not* an error: compaction leaves both behind
+    /// and they cost only memory.
+    ///
+    /// Hidden rather than published because the error is a message and not a designed type. There
+    /// is exactly one caller — the estimator's `load`, which renders it into a `ValueError` — and
+    /// giving this a public error enum before a second caller exists would be inventing surface.
+    #[doc(hidden)]
+    pub fn validate(&self) -> Result<(), String> {
+        if self.nodes.is_empty() {
+            return Err("the node arena is empty; a tree always has a root".into());
+        }
+        if self.root >= self.nodes.len() {
+            return Err(format!(
+                "root is node {} of {}",
+                self.root,
+                self.nodes.len()
+            ));
+        }
+        if self.branching < 2 || self.leaf_cap < 1 || self.max_leaves < 1 {
+            return Err(format!(
+                "branching {}, leaf_cap {}, max_leaves {}: an insert cannot terminate",
+                self.branching, self.leaf_cap, self.max_leaves
+            ));
+        }
+        // A non-finite knob does not crash: every comparison against it is false, so absorption
+        // simply never fires and the tree grows to `max_leaves` and rebuilds forever against a
+        // threshold that cannot grow. There is no estimator state that produces one.
+        let knobs = [
+            ("threshold", Some(self.threshold)),
+            ("huber_k", self.huber_k),
+            ("balance", self.balance),
+        ];
+        if let Some((name, _)) = knobs
+            .iter()
+            .find(|(_, v)| v.is_some_and(|v| !v.is_finite() || v < R::zero()))
+        {
+            return Err(format!("{name} is not a finite non-negative number"));
+        }
+        for (i, node) in self.nodes.iter().enumerate() {
+            match node.parent {
+                Some(p) if p >= self.nodes.len() => {
+                    return Err(format!("node {i} has parent {p} of {}", self.nodes.len()));
+                }
+                _ => {}
+            }
+            let bound = if node.leaf {
+                self.entries.len()
+            } else {
+                self.nodes.len()
+            };
+            if let Some(&c) = node.children.iter().find(|&&c| c >= bound) {
+                let kind = if node.leaf { "entries" } else { "nodes" };
+                return Err(format!("node {i} has child {c} of {bound} {kind}"));
+            }
+            if !node.cf.is_well_formed() || node.cf.dim() != self.dim {
+                return Err(format!(
+                    "node {i} holds a {}-dimensional feature in a {}-dimensional tree",
+                    node.cf.dim(),
+                    self.dim
+                ));
+            }
+        }
+        for (i, e) in self.entries.iter().enumerate() {
+            if !e.is_well_formed() || e.dim() != self.dim {
+                return Err(format!(
+                    "entry {i} holds a {}-dimensional feature in a {}-dimensional tree",
+                    e.dim(),
+                    self.dim
+                ));
+            }
+        }
+        let mut seen = vec![false; self.nodes.len()];
+        let mut stack = vec![self.root];
+        while let Some(i) = stack.pop() {
+            if std::mem::replace(&mut seen[i], true) {
+                return Err(format!(
+                    "node {i} is reachable twice; the arena has a cycle"
+                ));
+            }
+            if !self.nodes[i].leaf {
+                stack.extend_from_slice(&self.nodes[i].children);
+            }
+        }
+        Ok(())
+    }
+
     /// Insert a point of exactly [`CFTree::dim`] coordinates, or return [`ShapeError`].
     ///
     /// The checked entry point. The tree is left untouched on error — the length is read before
@@ -3101,6 +3204,135 @@ mod tests {
 
     fn flatten(pts: &[Vec<f64>]) -> Vec<f64> {
         pts.iter().flatten().copied().collect()
+    }
+
+    // ── validate(): the invariants a deserialized tree has to satisfy ───────────────────────────
+
+    fn a_fitted_tree(max_leaves: usize) -> CFTree<f64, Spherical<f64>, CentroidEuclidean, Radius> {
+        let mut t = CFTree::new(3, 4, 4, 0.4, max_leaves, CentroidEuclidean, Radius);
+        for p in gaussian_blobs(600, 3, 5, 7) {
+            t.insert(&p);
+        }
+        t
+    }
+
+    /// The net under every check below: a tree this process built must pass all of them, whatever
+    /// shape the inserts left it in. A validator that rejects a real tree is worse than none.
+    #[test]
+    fn every_tree_this_process_builds_validates() {
+        for max_leaves in [4, 16, 64, 4096] {
+            let t = a_fitted_tree(max_leaves);
+            assert!(t.rebuilds() > 0 || max_leaves >= 4096);
+            assert_eq!(t.validate(), Ok(()), "max_leaves {max_leaves}");
+        }
+        let empty: CFTree<f64, Full<f64>, CentroidEuclidean, Radius> =
+            CFTree::new(2, 32, 32, 0.0, 100, CentroidEuclidean, Radius);
+        assert_eq!(empty.validate(), Ok(()), "a tree with no points at all");
+
+        let pts = gaussian_blobs(400, 3, 4, 11);
+        let sharded: CFTree<f64, Diagonal<f64>, CentroidEuclidean, CentroidEuclidean> =
+            CFTree::build_sharded(
+                3,
+                4,
+                4,
+                0.3,
+                64,
+                CentroidEuclidean,
+                CentroidEuclidean,
+                &flatten(&pts),
+                pts.len(),
+                2,
+                None,
+                false,
+                None,
+            );
+        assert_eq!(sharded.validate(), Ok(()));
+
+        // All four feature models, since `is_well_formed` is where each one differs: `FdSketch`
+        // shrinks its own rows, and a check that misread that would refuse every `feature="fd"`
+        // model ever saved.
+        let pts = gaussian_blobs(500, 5, 4, 13);
+        macro_rules! every_model {
+            ($($C:ty),*) => {$({
+                let mut t: CFTree<f64, $C, CentroidEuclidean, Radius> =
+                    CFTree::new(5, 4, 4, 0.3, 48, CentroidEuclidean, Radius);
+                for p in &pts {
+                    t.insert(p);
+                }
+                assert!(t.num_leaves() > 1);
+                assert_eq!(t.validate(), Ok(()), "{}", stringify!($C));
+            })*};
+        }
+        every_model!(
+            Spherical<f64>,
+            Diagonal<f64>,
+            Full<f64>,
+            crate::feature::FdSketch<f64>
+        );
+    }
+
+    /// Each of these was reachable from a *file*: the estimator loaded one and panicked with
+    /// `index out of bounds` on the next call. `local/scratch/e24_structural.py` is the probe that
+    /// found them; this is the same seven cases with the arena reached directly.
+    #[test]
+    fn validate_rejects_an_arena_no_insert_could_have_produced() {
+        let mut t = a_fitted_tree(64);
+        let good = t.nodes.len();
+        t.root = 1_000_000;
+        assert!(t.validate().unwrap_err().contains("root is node 1000000"));
+        t.root = 0;
+
+        t.nodes[t.root].children.push(1_000_000);
+        assert!(t.validate().unwrap_err().contains("child 1000000"));
+        t.nodes[t.root].children.pop();
+
+        t.nodes[good - 1].parent = Some(1_000_000);
+        assert!(t.validate().unwrap_err().contains("parent 1000000"));
+        t.nodes[good - 1].parent = Some(0);
+
+        let mut cycles = a_fitted_tree(64);
+        let root = cycles.root;
+        assert!(
+            !cycles.nodes[root].leaf,
+            "the fixture must have an interior"
+        );
+        let child = cycles.nodes[root].children[0];
+        cycles.nodes[root].children.push(child);
+        assert!(cycles.validate().unwrap_err().contains("cycle"));
+
+        let mut narrow = a_fitted_tree(64);
+        narrow.entries[0] = Spherical::new(1);
+        assert!(narrow.validate().unwrap_err().contains("entry 0"));
+
+        let mut wide = a_fitted_tree(64);
+        wide.nodes[0].cf = Spherical::new(9);
+        assert!(wide.validate().unwrap_err().contains("node 0"));
+
+        let mut empty = a_fitted_tree(64);
+        empty.nodes.clear();
+        assert!(empty.validate().unwrap_err().contains("arena is empty"));
+    }
+
+    #[test]
+    fn validate_rejects_parameters_that_would_not_terminate() {
+        for (branching, leaf_cap, max_leaves) in [(1, 4, 64), (4, 0, 64), (4, 4, 0)] {
+            let mut t = a_fitted_tree(64);
+            t.branching = branching;
+            t.leaf_cap = leaf_cap;
+            t.max_leaves = max_leaves;
+            assert!(t.validate().unwrap_err().contains("cannot terminate"));
+        }
+        for bad in [f64::NAN, f64::INFINITY, -1.0] {
+            let mut t = a_fitted_tree(64);
+            t.threshold = bad;
+            assert!(t.validate().unwrap_err().contains("threshold"), "{bad}");
+            let mut t = a_fitted_tree(64);
+            t.huber_k = Some(bad);
+            assert!(t.validate().unwrap_err().contains("huber_k"), "{bad}");
+            let mut t = a_fitted_tree(64);
+            t.balance = Some(bad);
+            assert!(t.validate().unwrap_err().contains("balance"), "{bad}");
+        }
     }
 }
 

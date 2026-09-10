@@ -2241,6 +2241,16 @@ impl<R: Real> TreeState<R> {
         }
     }
 
+    /// [`CFTree::validate`] for whichever feature model this state holds.
+    fn validate(&self) -> Result<(), String> {
+        match self {
+            TreeState::Spherical(t) => t.validate(),
+            TreeState::Diagonal(t) => t.validate(),
+            TreeState::Full(t) => t.validate(),
+            TreeState::Fd(t) => t.validate(),
+        }
+    }
+
     /// The heaviest leaf's share of the mass, in `f64` whatever the tree's element type.
     fn top1_mass(&self) -> f64 {
         let share = match self {
@@ -4516,6 +4526,11 @@ fn encode(est: &Betula) -> PyResult<Vec<u8>> {
 /// A file that does not start with [`GZIP_MAGIC`] is read as bare CBOR, which is what 0.8.0 and
 /// earlier wrote. The schema inside is unchanged, so those files still load rather than failing on
 /// a container they predate.
+///
+/// Deserializing successfully is not the same as being loadable: a CBOR document can describe a
+/// tree whose root is node 1 000 000 of four, and serde will build it. Each tree is therefore run
+/// through [`crate::tree::CFTree::validate`] before it is handed back, so a corrupt file fails here
+/// with a message rather than three calls later with `index out of bounds`.
 fn decode(bytes: &[u8]) -> PyResult<Betula> {
     let (version, est): (u32, Betula) = if bytes.starts_with(&GZIP_MAGIC) {
         ciborium::from_reader(std::io::BufReader::new(flate2::read::GzDecoder::new(bytes)))
@@ -4527,6 +4542,15 @@ fn decode(bytes: &[u8]) -> PyResult<Betula> {
         return Err(PyValueError::new_err(format!(
             "unsupported model version {version} (this build expects {SCHEMA_VERSION})"
         )));
+    }
+    for state in [
+        est.state64.as_ref().map(TreeState::validate),
+        est.state32.as_ref().map(TreeState::validate),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        state.map_err(|why| PyValueError::new_err(format!("corrupt model: {why}")))?;
     }
     Ok(est)
 }
