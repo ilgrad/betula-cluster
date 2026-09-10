@@ -958,11 +958,11 @@ the rows it wins, and drops the entries that win none. Same restrictions as `ref
 `fit` / `fit_predict` only, since `partial_fit` keeps a tree and not the data. It is **off by
 default** because it relabels.
 
-It is worth the pass where the compression is real. ARI against the labels, medians of seeds 0/1/2,
-on **raw features** (`sklearn.datasets.load_digits().data` and the first 10 000 rows of
-`fetch_openml("mnist_784")`) with every other parameter left at its default — the setup is stated
-because an earlier version of this table did not state one, and turned out to have been measured
-under two different ones. The harness is
+**Since 2026-09-10 it is close to a coin flip, and it used to pay 11 of 12.** ARI against the labels,
+medians of seeds 0/1/2, on **raw features** (`sklearn.datasets.load_digits().data` and the first
+10 000 rows of `fetch_openml("mnist_784")`) with every other parameter left at its default — the
+setup is stated because an earlier version of this table did not state one, and turned out to have
+been measured under two different ones. The harness is
 [`bench/leaf_refit.py`](https://github.com/ilgrad/betula-cluster/blob/main/bench/leaf_refit.py) and
 its output is committed as
 [`bench/results_refit.csv`](https://github.com/ilgrad/betula-cluster/blob/main/bench/results_refit.csv),
@@ -970,20 +970,28 @@ so every cell below can be checked without re-running anything:
 
 | | arrival, `leaf_refit=0` | arrival, `=1` | canonical, `=0` | canonical, `=1` |
 |---|---|---|---|---|
-| `digits`, `max_leaves=90`, kmeans | 0.583 | 0.607 | 0.443 | 0.561 |
-| `digits`, `max_leaves=90`, ward | 0.533 | 0.530 | 0.455 | **0.582** |
-| `digits`, `max_leaves=90`, gmm | 0.594 | 0.610 | 0.393 | 0.524 |
-| MNIST, `max_leaves=200`, kmeans | 0.233 | 0.290 | 0.280 | **0.334** |
-| MNIST, `max_leaves=200`, ward | 0.216 | 0.258 | 0.248 | **0.301** |
-| MNIST, `max_leaves=200`, gmm | 0.156 | 0.211 | 0.243 | **0.251** |
+| `digits`, `max_leaves=90`, kmeans | 0.625 | 0.644 | 0.617 | 0.636 |
+| `digits`, `max_leaves=90`, ward | **0.678** | 0.647 | 0.725 | **0.725** |
+| `digits`, `max_leaves=90`, gmm | 0.520 | **0.621** | 0.597 | 0.575 |
+| MNIST, `max_leaves=200`, kmeans | **0.359** | 0.335 | 0.355 | 0.339 |
+| MNIST, `max_leaves=200`, ward | **0.409** | 0.368 | 0.349 | 0.351 |
+| MNIST, `max_leaves=200`, gmm | 0.347 | 0.352 | 0.324 | **0.333** |
 
-The pass pays in 11 of those 12 columns-pairs, and the two knobs **compose rather than overlap** —
-which is the opposite of what was expected. The hypothesis was that a net built by sweeping the space
-would already sit close to its own routed partition, so `canonical_order` should shrink what
-`leaf_refit` is worth. It does the reverse on `digits`, where the canonical order gives up quality
-(0.583 → 0.443 on kmeans) and the pass buys most of it back (+0.118 against +0.024 on the arrival
-order); and it leaves the gain unchanged on MNIST, where the canonical order *raises* both arms. The
-best cell in every row is the two together.
+**The pass now pays in 6 of those 12 column-pairs, loses in 5 and ties in 1**, and its mean effect is
++0.005 on the arrival order and −0.001 under `canonical_order`. The 2026-09-06 edition of this table
+read 11 of 12 with means +0.032 and +0.082. Nothing about the pass changed; the tree it runs on did.
+Ranking rebuild merges by what they cost leaves each leaf CF already close to the cell the finished
+tree routes, so one more Lloyd step over it has little to move — every `leaf_refit=0` cell in the
+table above rose (MNIST ward 0.216 → 0.409, `digits` ward 0.533 → 0.678), and the pass is what
+absorbed the loss.
+
+The old reading — that `leaf_refit` and `canonical_order` **compose**, because the canonical order
+cost `digits` quality (0.583 → 0.443 on kmeans) and the pass bought it back — is gone with its
+premise: the canonical order no longer costs `digits` anything (0.625 → 0.617 on kmeans, and 0.678 →
+0.725 on ward, a *gain*). The two knobs now overlap the way the original hypothesis expected.
+
+Turn it on when you have measured it on your own data, and read the arrival/canonical columns
+separately — the sign differs between them in three of the six rows.
 
 **It does not make the result order-independent, and it was built hoping it would.** Feed the same
 rows in two different orders and the pairwise ARI between the two answers stays at 0.4–0.55, with the
@@ -992,12 +1000,23 @@ prototype summarises; it cannot fix where the prototypes are, because it re-rout
 insertion order already built. That is what `canonical_order` below does instead, by choosing the
 order rather than by routing more cleverly against it.
 
-Two more properties before turning it on. **Passes are not monotone past two or three** — each one
+Three more properties before turning it on. **Passes are not monotone past two or three** — each one
 re-routes against the tree the previous one produced, so the worst leaf's distance from the centroid
 of its rows runs 2.25 → 1.55 → 0.89 → 0.44 → 1.63 over `n = 0..4` on a 4000 × 8 blob fixture. And **a
 leaf budget above `N` is not a free no-op**, unlike `refine`, which is genuinely idempotent there:
 the partition is the one the tree's greedy descent produces, descent is not the inverse of
 absorption, and 600 rows at one row per leaf come back as 436 leaves carrying the same total weight.
+
+**And at a large leaf budget the pass can leave the tree routing badly, which is the failure to watch
+for.** It drops the entries that win no row and rebuilds the tree from the survivors, and the greedy
+descent through that rebuilt structure is not guaranteed to reach the entry a row belongs to. Over
+150 cells (5 budgets × 10 blob fixtures × `leaf_refit` 1/2/3, 4000 × 8) the routed codebook error —
+what `assign_microclusters` returns — falls at a median ratio of 0.98 but **rises by more than 5 % in
+8 of them**, all at `max_leaves` 160 and 320, once by 5.25× with 15 % of rows misrouted. The
+prototypes are not the problem there: the exact nearest-centre error still *improves* in that cell,
+and `route_beam=4` brings the routed error back down to it with zero misroutes. If you use
+`leaf_refit` at a budget in the hundreds, compare against `leaf_refit=0` on your own data — or widen
+the descent.
 
 ### Making the answer independent of the row order — `canonical_order`
 
