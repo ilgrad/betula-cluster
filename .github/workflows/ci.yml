@@ -72,6 +72,31 @@ jobs:
       - name: check on the declared minimum supported Rust version
         run: cargo check --all-features --all-targets
 
+  semver:
+    # The crate's contract is thirteen modules (`README.md`, *Compatibility*); everything else is
+    # `#[doc(hidden)]` and free to move. This job makes a break in the thirteen visible in the pull
+    # request that causes it instead of after a release, which is the whole point of curating them.
+    #
+    # It reports rather than gates, and that is deliberate until 1.0.0 is out: 0.x is allowed to
+    # break, this branch *does* break (the curation itself is six breaking classes against 0.8.0,
+    # all of them in the CHANGELOG), and a required check that is red on purpose is a check everyone
+    # learns to ignore. Drop `continue-on-error` at the 1.0.0 tag -- that is what the promise means.
+    #
+    # No `--baseline-version`: with none given the tool resolves the latest version published on
+    # crates.io, so the baseline follows the releases instead of rotting in this file.
+    name: semver (public surface vs the last release)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-semver-checks
+      - name: cargo semver-checks
+        run: cargo semver-checks
+
   python-build:
     name: python (build · clippy)
     runs-on: ubuntu-latest
@@ -84,8 +109,11 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - uses: astral-sh/setup-uv@v10.0.1
+      # `examples/` is linted but deliberately not formatted: each `.py` there is one half of a
+      # jupytext pair, and reflowing a cell desyncs it from the `.ipynb` nothing here re-executes.
+      # The four rules that describe the notebook form rather than a defect are in `pyproject.toml`.
       - name: ruff check
-        run: uvx ruff check python/ tests/ bench/
+        run: uvx ruff check python/ tests/ bench/ examples/
       - name: ruff format --check
         run: uvx ruff format --check python/ tests/ bench/
       - name: ty check

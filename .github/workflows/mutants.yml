@@ -141,6 +141,24 @@ jobs:
         with:
           pattern: mutants-out-*
           path: shards
+      # Before `Collate` on purpose: that step exits 1 on a new survivor, and the staleness question
+      # is most interesting exactly then -- a "new" survivor is often an old one whose line moved,
+      # since an entry is keyed by `file:line:col`. The list is the union of the four outcome files,
+      # which is complete because every mutant lands in exactly one of them, so this needs neither a
+      # toolchain nor `cargo mutants --list`. Reports, never gates: the register still carries
+      # ambiguous stale entries that only a whole-file re-measure can resolve, so a gating version
+      # would be red from its first run -- the failure mode this whole job was rewritten to escape.
+      - name: is the baseline still describing mutants that exist?
+        continue-on-error: true
+        run: |
+          cat shards/*/caught.txt shards/*/missed.txt shards/*/timeout.txt shards/*/unviable.txt \
+            2>/dev/null | sort -u > all_mutants.txt
+          { echo '## Baseline staleness'; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          python3 scripts/check_mutants_baseline.py --list-from all_mutants.txt \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+          rc=${PIPESTATUS[0]}
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          exit "$rc"
       - name: Collate
         run: |
           # A shard whose artifact never arrived is invisible in a `cat shards/*/...`: the totals
