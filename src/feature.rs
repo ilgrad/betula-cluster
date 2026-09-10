@@ -1132,6 +1132,196 @@ mod tests {
         }
     }
 
+    /// A deterministic full-rank cloud: no circulant or trigonometric structure that could make
+    /// the sketch lossless behind the test's back.
+    fn full_rank_cloud(n: usize, d: usize, seed: u64) -> Vec<Vec<f64>> {
+        let mut state = seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut next = move || {
+            state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            let mut z = state;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            ((z ^ (z >> 31)) >> 11) as f64 / (1u64 << 53) as f64 * 4.0 - 2.0
+        };
+        (0..n).map(|_| (0..d).map(|_| next()).collect()).collect()
+    }
+
+    /// The sketch on data it **cannot** hold exactly — the regime every other FD test here avoids.
+    ///
+    /// `fd_sketch_reports_the_exact_scatter_and_stays_symmetric` and
+    /// `the_low_rank_factors_reconstruct_the_dense_covariance` both feed the sketch data of rank
+    /// `<= ell`, so `lost` stays 0, `completion` returns from its first line, and everything after
+    /// it is unmeasured. A whole-file mutation run of `src/feature.rs` (2026-09-10) left 20 mutants
+    /// alive in `completion`, `variance`, `cov_dense`, `merge` and `reduce` for exactly that reason.
+    /// The `assert!(lost > 0)` is load-bearing: without it a future fixture could drift back into
+    /// the lossless regime and this test would keep passing while measuring nothing.
+    #[test]
+    fn a_sketch_that_really_loses_a_direction_still_reports_the_exact_scatter() {
+        let (n, d, ell) = (30, 6, 3);
+        let pts = full_rank_cloud(n, d, 20260910);
+        let refs: Vec<&[f64]> = pts.iter().map(|v| v.as_slice()).collect();
+        let full: Full<f64> = push_all(d, &refs);
+        let mut fd: FdSketch<f64> = FdSketch::with_ell(d, ell);
+        for p in &refs {
+            fd.push(p, 1.0);
+        }
+        assert!(
+            fd.lost > 0.0,
+            "the fixture is not lossy, so it measures nothing"
+        );
+        assert!(fd.kept() > 0.0, "and it must still retain a direction");
+
+        // FD's promise: the *total* scatter survives the shrink even though the directions do not.
+        assert!(
+            (fd.ssd() - full.ssd()).abs() < 1e-9,
+            "fd ssd {} != full {}",
+            fd.ssd(),
+            full.ssd()
+        );
+        // Both readings of that total have to agree with it: `variance` summed over dimensions and
+        // the trace of `cov_dense` are the same number by construction, and both go through
+        // `completion`.
+        let by_variance: f64 = (0..d).map(|j| fd.variance(j)).sum::<f64>() * fd.weight();
+        let by_trace: f64 = fd
+            .cov_dense()
+            .iter()
+            .enumerate()
+            .map(|(i, r)| r[i])
+            .sum::<f64>()
+            * fd.weight();
+        assert!(
+            (by_variance - fd.ssd()).abs() < 1e-9,
+            "Σ variance = {by_variance}"
+        );
+        assert!(
+            (by_trace - fd.ssd()).abs() < 1e-9,
+            "tr cov_dense = {by_trace}"
+        );
+
+        let cov = fd.cov_dense();
+        for (i, row) in cov.iter().enumerate() {
+            for (j, &x) in row.iter().enumerate() {
+                assert!((x - cov[j][i]).abs() < 1e-12, "asymmetric ({i},{j})");
+            }
+        }
+        // With a direction still retained the completion is a *scale* on it, never an isotropic
+        // floor — which is the branch `completion` picks, not a detail of it.
+        let SecondMoment::LowRank { rows, iso, dim } = fd.second_moment() else {
+            panic!("FdSketch must expose low-rank factors");
+        };
+        assert_eq!(dim, d);
+        assert_eq!(
+            iso, 0.0,
+            "a retained direction must not be completed isotropically"
+        );
+        for a in 0..d {
+            for b in 0..d {
+                let got: f64 = rows.iter().map(|r| r[a] * r[b]).sum();
+                assert!((got - cov[a][b]).abs() < 1e-9, "factors ≠ cov at ({a},{b})");
+            }
+        }
+
+        // Merging two *lossy* sketches: `lost` is additive, and the Chan correction row keeps the
+        // combined total exact even though neither side holds its own directions any more.
+        let (l, r) = pts.split_at(n / 2);
+        let mut a: FdSketch<f64> = FdSketch::with_ell(d, ell);
+        let mut b: FdSketch<f64> = FdSketch::with_ell(d, ell);
+        for p in l {
+            a.push(p, 1.0);
+        }
+        for p in r {
+            b.push(p, 1.0);
+        }
+        assert!(
+            a.lost > 0.0 && b.lost > 0.0,
+            "both sides must have lost something"
+        );
+        a.merge(&b);
+        assert!(
+            (a.ssd() - full.ssd()).abs() < 1e-9,
+            "merged ssd {} != full {}",
+            a.ssd(),
+            full.ssd()
+        );
+    }
+
+    /// The other branch of `completion`: a shrink that leaves **no** direction at all, where the
+    /// only honest way to give the banked trace back is to spread it evenly.
+    ///
+    /// Reachable, not hypothetical: with `ell = 1` a point that lands exactly on the running mean
+    /// contributes a zero row, so the sketch holds a row and retains nothing.
+    #[test]
+    fn a_sketch_shrunk_to_no_direction_reports_an_isotropic_variance() {
+        let d = 3;
+        let mut fd: FdSketch<f64> = FdSketch::with_ell(d, 1);
+        let pts: Vec<Vec<f64>> = vec![
+            vec![-2.0, 1.0, 0.5],
+            vec![2.0, -1.0, -0.5],
+            vec![1.0, 3.0, -2.0],
+            vec![-1.0, -3.0, 2.0],
+        ];
+        for p in &pts {
+            fd.push(p, 1.0);
+        }
+        let mean = fd.mean().to_vec();
+        fd.push(&mean, 1.0); // a zero row: the sketch now holds a direction of length nothing
+
+        assert_eq!(fd.kept(), 0.0, "the fixture must retain nothing");
+        assert!(fd.lost > 0.0);
+        let refs: Vec<&[f64]> = pts.iter().map(|v| v.as_slice()).collect();
+        let mut full: Full<f64> = push_all(d, &refs);
+        full.push(&mean, 1.0);
+        assert!(
+            (fd.ssd() - full.ssd()).abs() < 1e-9,
+            "fd ssd {} != full {}",
+            fd.ssd(),
+            full.ssd()
+        );
+
+        let v: Vec<f64> = (0..d).map(|j| fd.variance(j)).collect();
+        assert!(
+            v.windows(2).all(|w| (w[0] - w[1]).abs() < 1e-12),
+            "with no direction left the variance can only be isotropic: {v:?}"
+        );
+        assert!((v.iter().sum::<f64>() * fd.weight() - fd.ssd()).abs() < 1e-9);
+        let SecondMoment::LowRank { rows, iso, .. } = fd.second_moment() else {
+            panic!("FdSketch must expose low-rank factors");
+        };
+        assert!(
+            rows.iter().flatten().all(|&x| x == 0.0),
+            "the retained factors carry no direction: {rows:?}"
+        );
+        assert!(
+            iso > 0.0,
+            "the banked trace has to come back as an isotropic floor"
+        );
+        assert!((iso * (d as f64) * fd.weight() - fd.ssd()).abs() < 1e-9);
+    }
+
+    /// The shrink is by the **lower median** squared singular value, not by the smallest: that is
+    /// what frees about half the rows per reduce and so rebuilds the sketch every ~ℓ/2 inserts
+    /// instead of every insert. It is a cost policy, so a test has to pin it — the exactness
+    /// assertions above cannot see it, since `lost` banks whatever the shrink gives up either way.
+    #[test]
+    fn a_reduce_frees_about_half_the_rows_not_one() {
+        let (d, ell) = (8, 6);
+        let pts = full_rank_cloud(ell + 1, d, 7);
+        let mut fd: FdSketch<f64> = FdSketch::with_ell(d, ell);
+        for p in &pts {
+            fd.push(p, 1.0);
+        }
+        assert!(fd.lost > 0.0, "the fixture must have triggered a reduce");
+        // `ell + 1` inserts fire exactly one reduce, so `rows` reads (ell − freed) + 1. The lower
+        // median frees ⌈ell/2⌉ = 3 of 6 and leaves 4; the smallest singular value would free one
+        // and leave 6 — full again, and reducing on every insert from then on.
+        assert!(
+            fd.rows <= ell / 2 + 1,
+            "a reduce left {} of {ell} rows; the lower-median rule leaves {}",
+            fd.rows,
+            ell / 2 + 1
+        );
+    }
+
     #[test]
     fn decay_scales_mass_but_preserves_shape() {
         let pts: &[&[f64]] = &[&[0.0, 0.0], &[2.0, 4.0], &[4.0, 2.0], &[1.0, 3.0]];
@@ -1568,6 +1758,127 @@ mod tests {
         let mut di = vec![0.0_f64; 4];
         iso.add_diagonal_scaled(&mut di, 2.0);
         assert!(di.iter().all(|&v| close(v, 0.5)), "{di:?}");
+    }
+
+    /// The same accessors with a **non-zero isotropic floor**, which is what the sketch returns
+    /// once a shrink has discarded a direction — and with `trace_under` and `add_scaled`, which the
+    /// `iso = 0` test above does not reach at all.
+    ///
+    /// Every `iso` term in `SecondMoment`, and the `!= 0` guards that skip it, were unmeasured: a
+    /// whole-file mutation run of `src/feature.rs` (2026-09-10) left 24 arithmetic mutants alive
+    /// across `trace`, `trace_under`, `apply_rows` and `add_scaled` for exactly that reason. Every
+    /// number here is checked against longhand as well as across the two variants, so a mutation in
+    /// either arm is a failure rather than a disagreement nobody reads.
+    #[test]
+    fn the_low_rank_products_carry_the_isotropic_floor() {
+        let d = 3;
+        let iso = 0.25_f64;
+        let rows = vec![vec![1.0_f64, 2.0, -1.0], vec![0.5, -1.0, 2.0]];
+        let mut dense = vec![vec![0.0_f64; d]; d];
+        for r in &rows {
+            for a in 0..d {
+                for b in 0..d {
+                    dense[a][b] += r[a] * r[b];
+                }
+            }
+        }
+        for (a, row) in dense.iter_mut().enumerate() {
+            row[a] += iso;
+        }
+        let low = SecondMoment::LowRank {
+            rows: rows.clone(),
+            iso,
+            dim: d,
+        };
+        let full = SecondMoment::Dense(dense.clone());
+
+        // tr(Σ) = Σ_r ‖f_r‖² + iso·d = 6 + 5.25 + 0.75.
+        assert!(close(low.trace(), 12.0), "{}", low.trace());
+        assert!(close(full.trace(), 12.0));
+
+        // tr(A⁻¹ Σ) through the Cholesky, against the dense double sum. `a` is not diagonal, so
+        // the off-diagonal terms of both formulas are load-bearing.
+        let a = vec![
+            vec![4.0_f64, 1.0, 0.5],
+            vec![1.0, 3.0, -0.5],
+            vec![0.5, -0.5, 2.0],
+        ];
+        let chol = linalg::cholesky_lower(&a).expect("the fixture must be positive definite");
+        let inv = linalg::inv_from_chol(&chol);
+        let want: f64 = (0..d)
+            .map(|i| (0..d).map(|j| inv[i][j] * dense[i][j]).sum::<f64>())
+            .sum();
+        assert!(close(low.trace_under(&chol, &inv), want), "low: {want}");
+        assert!(close(full.trace_under(&chol, &inv), want), "dense: {want}");
+
+        let w = 1.5;
+        let v = vec![vec![2.0_f64, 0.0, -1.0], vec![0.3, 1.7, -2.0]];
+        let mut la = vec![vec![0.0_f64; d]; 2];
+        let mut fa = vec![vec![0.0_f64; d]; 2];
+        low.apply_rows(&v, &mut la, w);
+        full.apply_rows(&v, &mut fa, w);
+        for (r, vr) in v.iter().enumerate() {
+            for i in 0..d {
+                let want: f64 = w * (0..d).map(|j| dense[i][j] * vr[j]).sum::<f64>();
+                assert!(
+                    close(la[r][i], want),
+                    "low ({r},{i}): {} vs {want}",
+                    la[r][i]
+                );
+                assert!(close(fa[r][i], want), "dense ({r},{i})");
+            }
+        }
+
+        // `add_scaled` accumulates into a target that is already non-zero, so a `+` that became a
+        // `*` cannot hide behind a zero.
+        let base = vec![
+            vec![0.5_f64, -0.25, 1.0],
+            vec![-0.25, 2.0, 0.75],
+            vec![1.0, 0.75, -0.5],
+        ];
+        let (mut lt, mut ft) = (base.clone(), base.clone());
+        low.add_scaled(&mut lt, w);
+        full.add_scaled(&mut ft, w);
+        for i in 0..d {
+            for j in 0..d {
+                let want = base[i][j] + w * dense[i][j];
+                assert!(
+                    close(lt[i][j], want),
+                    "low ({i},{j}): {} vs {want}",
+                    lt[i][j]
+                );
+                assert!(close(ft[i][j], want), "dense ({i},{j})");
+            }
+        }
+
+        let (mut ld, mut fd_) = (vec![0.0_f64; d], vec![0.0_f64; d]);
+        low.add_diagonal_scaled(&mut ld, w);
+        full.add_diagonal_scaled(&mut fd_, w);
+        for i in 0..d {
+            assert!(close(ld[i], w * dense[i][i]), "low diag {i}");
+            assert!(close(fd_[i], w * dense[i][i]), "dense diag {i}");
+        }
+
+        // The degenerate case the floor exists for: a shrink that left no direction at all, so the
+        // whole covariance *is* the floor.
+        let bare: SecondMoment<f64> = SecondMoment::LowRank {
+            rows: Vec::new(),
+            iso,
+            dim: d,
+        };
+        assert!(close(bare.trace(), iso * d as f64));
+        assert!(close(
+            bare.trace_under(&chol, &inv),
+            iso * (0..d).map(|i| inv[i][i]).sum::<f64>()
+        ));
+        let mut bt = vec![vec![0.0_f64; d]; d];
+        bare.add_scaled(&mut bt, w);
+        for (i, row) in bt.iter().enumerate() {
+            for (j, &x) in row.iter().enumerate() {
+                let want = if i == j { w * iso } else { 0.0 };
+                assert!(close(x, want), "bare ({i},{j}): {x}");
+            }
+        }
     }
 
     /// `apply_rows` accumulates: two half-weight calls must equal one full-weight call, which is
