@@ -124,7 +124,16 @@ All notable changes to this project are documented here. The format follows
   quality table in `bench/RESULTS.md` was re-measured for this. **`canonical_order=True` is
   unaffected as a guarantee**: the order study rewrote 50 of its 81 cells and all 27 canonical cells
   still read spread `0.0000` and pairwise ARI `1.0000`, which `bench/insertion_order.py` asserts
-  rather than reports. Full write-up, including the five
+  rather than reports.
+
+  Three tuning knobs lose most of what they were worth, because the tree now does their job.
+  `balance="auto"` fires in **none** of the 27 cells it was shipped on (the heaviest-leaf share it
+  arms on reads 0.005–0.046 there against up to 0.594 before) and only reaches its trigger two
+  decades of budget lower. `leaf_refit=1` now pays in 6 of 12 published column-pairs against 11 of
+  12, mean effect +0.005 on the arrival order and −0.001 under `canonical_order` against +0.032 and
+  +0.082 — every `leaf_refit=0` cell rose instead. `tree_report`'s size-imbalance diagnosis no longer
+  fires on the fixture it was cut on. All three are documented with the new numbers rather than left
+  quoting the old ones, and none of them changed: the tree they measure did. Full write-up, including the five
   non-default geometries and the ten-seed spectral control, in
   [research/RESULTS-estep.md](https://github.com/ilgrad/betula-cluster/blob/main/research/RESULTS-estep.md).
 
