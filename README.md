@@ -100,9 +100,47 @@ density / topology plus dedup / outliers / representatives — especially on **e
 streams**.
 
 **Use raw scikit-learn instead when** `N` fits comfortably in RAM and you want the exact point-level
-algorithm with no compression: at small `N` the two-phase overhead removes the speed edge, and raw
-HDBSCAN is stronger on overlapping density. betula-cluster trades a CF-compression approximation for
-scale and bounded memory — if you need neither, a plain in-core clusterer is simpler.
+algorithm with no compression. betula-cluster trades a CF-compression approximation for scale and
+bounded memory — if you need neither, a plain in-core clusterer is simpler. Three specific cases are
+below.
+
+### Choosing a head
+
+Five families and where to start in each. The full table — every `method`, whether it needs `k`, and
+which ones refuse to run on what — is in
+[`docs/USAGE.md`](https://github.com/ilgrad/betula-cluster/blob/main/docs/USAGE.md#choosing-a-head).
+
+| what the data looks like | family | start here | then |
+|---|---|---|---|
+| compact groups, a partition, `k` known or found by BIC | centroid | `kmeans` | `xmeans` when the count may run past the BIC sweep's cap of 20, `kmedoids` when the centre must be a real observation, `ward` when the merge structure matters as much as the partition |
+| elliptical / correlated shapes, soft assignment, a generative model | probabilistic | `gmm` (diagonal) | `gmm-full` when the covariance is rotated, `mppca` / `mfa` when `d` is too large for a full one, `gmm-toeplitz` on ordered signals |
+| variable density, noise, count unknown | density | `hdbscan` | `scale-space` when there is neither a `k` nor a bandwidth to pick, `dc-median` when `k` is known and noise is not wanted |
+| non-convex shapes, manifolds, communities | graph | `spectral` with `k`, `leiden` without | `leiden-cpm` when the resolution limit bites, `mapper` for a skeleton rather than a partition |
+| L2-normalized embeddings, cosine geometry | directional | `vmf` (soft) or `spherical-kmeans` (hard) | `watson` when `x` and `−x` mean the same thing |
+
+Outside the five: `hyperbolic` for a Poincaré / Lorentz embedding of a hierarchy, `fuzzy-cmeans` for
+a graded membership with no density behind it, and `KPrototypes` for mixed numeric + categorical +
+directional columns.
+
+### Where it is the wrong tool
+
+Three cases, each measured rather than assumed:
+
+- **`N` in the low thousands** — the tree stops compressing. On `digits` (1 797 points) it holds
+  **1 797 leaves and rebuilds zero times**, at `max_leaves` of both 2 000 and 4 000: one leaf per
+  point. Phase 3 then clusters the data itself, which is why the published ARI is a tie
+  (0.467 against scikit-learn's 0.468) rather than a win — you pay for a summary that summarises
+  nothing. Cluster the points directly.
+- **HDBSCAN where the densities overlap** — `fast-hdbscan` recovers the 100 k-point blob fixture at
+  **ARI 0.910 against our 0.478**, and that is the fixture density methods are judged on. We are 9×
+  faster on half the memory, which is the trade, not a rebuttal. If the density structure *is* the
+  answer, run the exact algorithm on the points.
+- **A mixture whose likelihood has to be a raw-point likelihood** — the E-step ties responsibilities
+  within a leaf and every `ln p` is computed from `(n, μ, S)`, so a per-point density, a BIC
+  against a model fitted to raw points, or a likelihood-ratio test are not what comes out. On raw
+  pixels the model itself is the limit as well: `gmm` reads ARI 0.185 on MNIST-20k at the default
+  leaf budget where a nearest-centre rule reads 0.378, because a diagonal covariance charges 784
+  independent penalties for 784 correlated pixels.
 
 ## Installation
 

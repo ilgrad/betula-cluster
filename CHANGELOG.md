@@ -332,6 +332,23 @@ All notable changes to this project are documented here. The format follows
   [bench/RESULTS.md](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md).
 
 ### Added
+- **A "choosing a head" table in the README, and the three cases where the answer is a different
+  library.** `docs/USAGE.md` has documented every head for several releases and its twenty-row table
+  answers "which one" — but only once you are already reading it. The README said which *datasets*
+  betula-cluster is for and never which of the twenty-seven `method` values to type, so the first
+  question a new reader has was answered two clicks away. It now carries a five-family table
+  (centroid / probabilistic / density / graph / directional) naming a head to start from and what to
+  reach for next, above a link to the full one.
+
+  The exclusions are written in the same place rather than left implicit, each with the measurement
+  behind it. `N` in the low thousands: the tree stops compressing — on `digits` (1 797 points) it
+  holds **1 797 leaves and rebuilds zero times**, at `max_leaves` of both 2 000 and 4 000, one leaf
+  per point — which is why that row is a tie (0.467 against scikit-learn's 0.468) rather than a win.
+  Density structure that overlaps: `fast-hdbscan` recovers the 100 k blob fixture at ARI **0.910
+  against our 0.478**, and being 9× faster on half the memory is the trade, not a rebuttal. And a
+  mixture whose likelihood has to be a raw-point likelihood: responsibilities are tied within a leaf
+  and every `ln p` is computed from `(n, μ, S)`, so a per-point density, a BIC against a model
+  fitted to raw points, or a likelihood-ratio test are not what comes out.
 - **`n_init` — the k-means restart count is a parameter.** Lloyd converges to a local optimum of the
   inertia, so the k-means heads have always kept the best of four k-means++ draws; the count was a
   constant. On MNIST-20k it is worth choosing: 25 restarts read ARI **0.3303** against the
