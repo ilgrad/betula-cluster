@@ -1296,6 +1296,17 @@ mod tests {
             "the banked trace has to come back as an isotropic floor"
         );
         assert!((iso * (d as f64) * fd.weight() - fd.ssd()).abs() < 1e-9);
+
+        // The floor has to reach the dense covariance as well, and here it is the whole of it: the
+        // retained factors are zero, so `cov_dense` can only be `iso · I`. Nothing else in the
+        // suite reaches this path with `iso != 0`.
+        let cov = fd.cov_dense();
+        for (i, row) in cov.iter().enumerate() {
+            for (j, &x) in row.iter().enumerate() {
+                let want = if i == j { iso } else { 0.0 };
+                assert!((x - want).abs() < 1e-12, "cov[{i}][{j}] = {x}, want {want}");
+            }
+        }
     }
 
     /// The shrink is by the **lower median** squared singular value, not by the smallest: that is
