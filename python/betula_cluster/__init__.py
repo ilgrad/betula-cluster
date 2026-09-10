@@ -1219,10 +1219,15 @@ class Betula:
                 "the tree spent its leaves resolving the sparse part of the data and merged the "
                 "dense part (scikit-learn Birch #22854). "
             )
-            # The cut is measured on `bench/size_imbalance.py`'s own positive/negative control pair,
-            # medians of seeds 0/1/2 at budgets 250 and 4000: the `structured` core (two clusters
-            # 2.0 apart inside the heavy leaf) gives 0.53 and 0.75, the `flat` core (nothing inside
-            # to lose) gives 0.17 and 0.27.
+            # Re-derived 2026-09-10, because the pair the cut was originally measured on stopped
+            # producing the pathology: on `bench/size_imbalance.py`'s `structured` fixture the outer
+            # gate above no longer opens at any published budget, and where it does open (8-32
+            # leaves) the heavy leaf reads 0.33/0.20/0.12 and the fixture scores ARI 1.0000, so
+            # "point-like" is the correct call. The separation now comes from real data at a budget
+            # tight enough to keep the pathology, medians of seeds 0/1/2: every cell where the gate
+            # opens on digits / mnist-10k / covtype-20k reads 0.47 to 2.33, and the two where a mass
+            # cap recovers ARI (mnist-10k at 8 and 16 leaves, +0.073 and +0.228) read 0.93 and 0.47.
+            # The two populations do not overlap and 0.4 sits between them.
             if width >= 0.4:
                 note += (
                     f"That leaf is {width:.2f}x as wide as a typical one, so it is a merged region "

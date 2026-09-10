@@ -1135,12 +1135,12 @@ like a degenerate one.
 
 ### `balance` — the fix that came first, and now has much less left to fix
 
-> **This whole subsection predates 2026-09-10 and its `off` column no longer reproduces.** `balance`
-> was built to bound the heaviest leaf when compaction would not; the rebuild now bounds it on its
-> own, so every `off` cell below that reads 0.4174 reads 1.0000 today and the `top1 off` column is an
-> order of magnitude smaller. The knob still does what it says and its guard rails are still tested —
-> what is stale is the size of the problem it was measured against. Re-measuring the 27-cell grid is
-> tracked as its own task; the numbers below are kept, dated, rather than half-corrected.
+> **The tables in this subsection are from before 2026-09-10 and their `off` column no longer
+> reproduces.** `balance` was built to bound the heaviest leaf when compaction would not; the rebuild
+> now bounds it on its own, so every `off` cell below that reads 0.4174 reads 1.0000 today and the
+> `top1 off` column is an order of magnitude smaller. They are kept, dated, rather than
+> half-corrected. **The 27-cell grid was re-run on the new tree — see "Where it went" at the end of
+> this subsection**, which is where the current numbers are.
 
 `balance = b` caps a leaf at `b × (mass / max_leaves)`, refusing absorption into a full leaf and
 skipping the same pairs at compaction; `max_leaves` stays a hard bound. On the fixture that motivated
@@ -1197,6 +1197,35 @@ the core keeps it, and the arming recovers **+0.006 to +0.037** on mnist-10k at 
 two-pass recovers +0.167 to +0.251. And the parameter does *not* reach the `covtype` / `ward` cell it
 was once hoped to: in the published configuration that cell's `top1` is **0.041** and a fixed cap
 moves its ARI by **−0.0001**, so whatever the 0.086-against-0.131 gap is, it is not this.
+
+#### Where it went (2026-09-10)
+
+The 27-cell grid above was re-run on the tree that ranks rebuild merges by cost. **The predictor
+fires in none of the 27 cells**: `top1` reads **0.005–0.046** across the grid where it once reached
+0.594, and `balance="auto"` is bit-identical to `balance=None` in every cell. On the `structured`
+fixture the whole comparison collapses — `off`, `b=4` and `"auto"` all read ARI **1.0000** at 250,
+1000 and 4000 leaves, so the fixture the feature was built on no longer poses the problem.
+
+It has not stopped working; the regime moved. Sweeping the same three datasets two decades tighter
+(`kmeans` and `ward`, `max_leaves ∈ {8, 16, 32, 64}`, medians of seeds 0/1/2) the predictor fires on
+three configurations, and its decision is **exact in all 24 cells** — `auto` reproduces `balance=4.0`
+where it fires and `balance=None` where it does not, to the last bit:
+
+| cell | `top1` | off | `b=4` = `"auto"` |
+|---|---:|---:|---:|
+| mnist-10k @16, kmeans | 0.998 | −0.0000 | **0.2280** |
+| mnist-10k @16, ward | 0.998 | −0.0000 | **0.2282** |
+| mnist-10k @8, kmeans / ward | 0.859 | 0.0296 | 0.1030 |
+| covtype-20k @8, kmeans / ward | 0.889 | 0.1489 | **0.0859** |
+
+Two results, and the second is the one that matters for the parameter's guidance. **The predictor is
+sound and the rule it encodes is not**: `top1 > 0.5` selects the right cells on mnist and the wrong
+one on covtype, where capping a genuinely dense majority costs 0.063. And the largest gains a fixed
+cap now offers are in cells the predictor does not select at all — **+0.0900** on digits at 64 leaves
+(`top1` 0.056) and **+0.0757** on mnist-10k at 32 (`top1` 0.212) — with losses of 0.024–0.042 one
+budget further out on the same two datasets. Concentration was a good proxy for "the cap will help"
+on the old tree because the old tree produced concentration for one reason; on this tree the two
+questions have come apart, and the honest guidance is the A/B, not the share.
 
 #### What the `covtype` / `ward` gap actually is (2026-09-09)
 

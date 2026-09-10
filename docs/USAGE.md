@@ -1233,13 +1233,38 @@ from 250 to 4000. Since 2026-09-10 the uncapped tree reads 1.0000 there too — 
 concentrating mass in one leaf on its own — so the cap has much less left to repair, and it was never
 a free win. Read the share on your own data first, and measure the cap against `balance=None`.
 
-**`balance="auto"` reads that diagnostic for you.** The share above is not a taste question: over 27
-cells (digits / covtype-20k / mnist-10k × `kmeans`/`ward`/`gmm` × three budgets, measured before
-2026-09-10) a fixed cap gained **+0.08 to +0.25 ARI on all six cells where the share passed 0.5**,
-and moved nothing outside seed noise on the twelve below 0.1. `"auto"` builds the tree once, reads
-the share off it, and — only if it passes 0.5 — summarises the same rows again with the cap on from
-the first point. Expect it to fire far less often than that grid suggests: a share above 0.5 now
-takes a much tighter budget, or a core so degenerate that no merge policy could split it.
+**Where a fixed cap still pays is not where the share is high.** Re-measured 2026-09-10 over
+digits / mnist-10k / covtype-20k × `kmeans`/`ward` × `max_leaves ∈ {8, 16, 32, 64}`, medians of
+seeds 0/1/2: `balance=4.0` is worth **+0.0900** on digits at 64 leaves and **+0.0757** on mnist-10k
+at 32, where the heaviest leaf holds only 0.056 and 0.212 of the mass — and it *costs* 0.024 to 0.042
+on the same two datasets one budget further out. There is no share at which it is safe and none at
+which it is useless; it is a different budget-allocation policy, not a repair, and the only way to
+know is the A/B.
+
+**`balance="auto"` reads the share for you — and on today's tree the share almost never passes.**
+`"auto"` builds the tree once, reads the heaviest leaf's share off it, and — only if it passes 0.5 —
+summarises the same rows again with the cap on from the first point. Over the 27 cells Q1 shipped it
+on (digits / covtype-20k / mnist-10k × `kmeans`/`ward`/`gmm` × budgets 225–4000) it fired on six and
+gained +0.08 to +0.25. Re-measured on the 2026-09-10 tree it fires on **none of the 27**: the share
+now reads **0.005–0.046** there, an order of magnitude below the trigger, and `auto` is bit-identical
+to `balance=None` in every one.
+
+It has not stopped working — it has moved two decades of budget tighter. Over the same three datasets
+at `max_leaves ∈ {8, 16, 32, 64}` it fires on three configurations, and the decision is exact in all
+24 cells (`auto` reproduces `balance=4.0` where it fires and `balance=None` where it does not, to the
+last bit):
+
+| cell | share | `balance=None` | `"auto"` |
+|---|---|---|---|
+| mnist-10k, 16 leaves, kmeans | 0.998 | −0.0000 | **0.2280** |
+| mnist-10k, 16 leaves, ward | 0.998 | −0.0000 | **0.2282** |
+| mnist-10k, 8 leaves, either | 0.859 | 0.0296 | 0.1030 |
+| covtype-20k, 8 leaves, either | 0.889 | 0.1489 | **0.0859** |
+
+Two wins, one loss, and the loss is the honest half: the predictor selects on concentration, and
+concentration is not the same question as whether capping it helps. Read it as insurance against the
+degenerate case — a budget so tight, or a core so dense, that one leaf swallows the dataset — and not
+as a tuning knob.
 
 ```python
 est = betula_cluster.Betula(n_clusters=10, max_leaves=250, balance="auto")
@@ -1413,12 +1438,17 @@ reported `k = 2` on every seed where the variance ratio reports the true 4.
 ### Why is my tree collapsing? — `tree_report()`
 
 ```python
-est.tree_report()
-# {'n_leaves': 241, 'max_leaves': 250, 'fill': 0.964, 'threshold': 1.681,
-#  'heaviest_leaf_mass_fraction': 0.800, 'heaviest_leaf_width': 0.56,
-#  'leaf_mass_quantiles': {50: 3.0, 90: 41.0, 99: 512.0, 100: 80000.0},
-#  'diagnosis': ['the leaf budget is 96% spent and one leaf holds 80% of the mass: …']}
+est.tree_report()          # MNIST-10k at max_leaves=16 — a budget tight enough to collapse
+# {'n_leaves': 15, 'max_leaves': 16, 'fill': 0.938, 'threshold': 61049.187,
+#  'heaviest_leaf_mass_fraction': 0.998, 'heaviest_leaf_width': 0.474,
+#  'leaf_mass_quantiles': {50: 1.0, 90: 5.0, 99: 8582.06, 100: 9978.0},
+#  'diagnosis': ['the leaf budget is 94% spent and one leaf holds 100% of the mass: …']}
 ```
+
+The budget in that example is deliberately absurd, and since 2026-09-10 it has to be: the tree
+concentrates mass far less than it used to, so the same call on the 100 000-row size-imbalance
+fixture at 250 leaves now returns `heaviest_leaf_mass_fraction` **0.064** and an empty `diagnosis`
+where it used to return 0.800 and fire.
 
 `fill` and `heaviest_leaf_mass_fraction` locate the size-imbalance pathology of scikit-learn's Birch
 issue [#22854](https://github.com/scikit-learn/scikit-learn/issues/22854) — a spent budget with the
