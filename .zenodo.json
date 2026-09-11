@@ -1,0 +1,54 @@
+{
+  "title": "betula-cluster: memory-bounded BETULA clustering with a Rust core",
+  "description": "<p>Memory-bounded clustering for large embeddings and tabular streams. The data is compressed once into numerically stable BETULA cluster features &mdash; a CF-tree whose leaf count is capped, so streaming memory stays flat in N and the summary never loses digits far from the origin the way classic BIRCH does &mdash; and the clustering head then runs on that summary rather than on the points: k-means, Gaussian mixtures (diagonal, full, Toeplitz, subspace), Ward, spectral, Leiden community detection, HDBSCAN-style density clustering over microclusters, directional (von Mises-Fisher / Watson / spherical k-means) heads for L2-normalized embeddings, scale-space density modes and a Mapper skeleton. Cost is set by the microcluster count, not by N.</p><p>The core is Rust with PyO3 bindings; NumPy is the only runtime dependency, and there is no LAPACK, BLAS or SciPy at run time. Streaming <code>partial_fit</code>, a scikit-learn-compatible API, order-invariant builds, soft assignment, coresets, outliers and representatives. Distributed on PyPI (<code>pip install betula-cluster</code>) and crates.io (<code>cargo add betula-cluster</code>); documentation at <a href=\"https://ilgrad.github.io/betula-cluster/\">ilgrad.github.io/betula-cluster</a>.</p>",
+  "upload_type": "software",
+  "access_right": "open",
+  "license": "MIT",
+  "creators": [
+    {
+      "name": "Gradina, Ilia",
+      "orcid": "0009-0008-0911-8765"
+    }
+  ],
+  "keywords": [
+    "clustering",
+    "birch",
+    "betula",
+    "cf-tree",
+    "k-means",
+    "gaussian-mixture-model",
+    "hdbscan",
+    "spectral-clustering",
+    "streaming",
+    "embeddings",
+    "rust",
+    "python"
+  ],
+  "related_identifiers": [
+    {
+      "identifier": "https://pypi.org/project/betula-cluster/",
+      "relation": "isSupplementedBy",
+      "scheme": "url"
+    },
+    {
+      "identifier": "https://crates.io/crates/betula-cluster",
+      "relation": "isSupplementedBy",
+      "scheme": "url"
+    },
+    {
+      "identifier": "https://ilgrad.github.io/betula-cluster/",
+      "relation": "isDocumentedBy",
+      "scheme": "url"
+    },
+    {
+      "identifier": "10.1016/j.is.2021.101918",
+      "relation": "cites",
+      "scheme": "doi"
+    },
+    {
+      "identifier": "10.1145/233269.233324",
+      "relation": "cites",
+      "scheme": "doi"
+    }
+  ]
+}
