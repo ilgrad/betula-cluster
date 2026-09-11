@@ -437,6 +437,15 @@ version the format is stable, and a file written before the gzip framing existed
 codec measurements and the rejected column-major layout are in
 [`docs/USAGE.md`](https://github.com/ilgrad/betula-cluster/blob/main/docs/USAGE.md#saving-and-loading-a-model).
 
+## Sponsoring
+
+If betula-cluster keeps a clustering job inside its memory budget, consider
+[sponsoring its development](https://github.com/sponsors/ilgrad). **Using it in production?**
+Corporate sponsorship funds what keeps a library like this dependable — the 1.x compatibility
+promise across Rust and Python releases, the benchmark suite behind every number above, hardening
+of the model-file loader against malformed input, and performance work at the scales where the
+compression actually pays — and tells the maintainer which workloads to measure next.
+
 ## How to cite
 
 If betula-cluster supports your research, please cite **the software** and **the underlying
