@@ -1485,9 +1485,9 @@ def test_save_writes_a_gzip_member_and_a_smaller_file(tmp_path):
     """
     import gzip
 
-    from sklearn.datasets import make_blobs
-
-    x, _ = make_blobs(n_samples=3000, n_features=8, centers=5, random_state=0)
+    rng = np.random.default_rng(0)
+    centres = rng.normal(scale=8.0, size=(5, 8))
+    x = np.repeat(centres, 600, axis=0) + rng.normal(size=(3000, 8))
     padded = np.ascontiguousarray(np.hstack([x, np.zeros((len(x), 56))]))
     est = betula_cluster.Betula(n_clusters=4, max_leaves=300, threshold=0.0, seed=1).fit(padded)
     path = tmp_path / "model.betula"
@@ -1515,9 +1515,9 @@ def test_a_model_whose_root_is_past_its_own_arena_is_refused(tmp_path):
     """
     import gzip
 
-    from sklearn.datasets import make_blobs
-
-    x, _ = make_blobs(n_samples=400, n_features=3, centers=3, random_state=0)
+    rng = np.random.default_rng(0)
+    centres = rng.normal(scale=6.0, size=(3, 3))
+    x = np.repeat(centres, 134, axis=0) + rng.normal(size=(402, 3))
     est = betula_cluster.Betula(n_clusters=3, max_leaves=40, seed=0).fit(x)
     path = tmp_path / "model.betula"
     est.save(str(path))

@@ -28,11 +28,17 @@ Python (against the built extension):
 
 ```bash
 pytest tests/test_python.py --cov=betula_cluster --cov-fail-under=100   # 100% wrapper coverage is enforced
+pytest tests/test_python.py -q   # again with NO optional deps installed: 501 passed, 48 skipped
 ruff check python/ tests/ bench/ examples/   # examples/ is linted but not formatted -- it is
 ruff format --check python/ tests/ bench/    # notebook cells, and reflowing them desyncs the .ipynb
 ty check python/                                   # or mypy / pyright
 python -m mypy.stubtest betula_cluster             # the .pyi stubs must match the runtime
 ```
+
+The second `pytest` line is not a duplicate. scikit-learn, SciPy and networkx are **optional test**
+dependencies: the `python (pytest · pyX)` CI jobs install the wheel without them, so a test that
+imports one without `pytest.importorskip` fails there and in no other command on this page. That is
+exactly how `main` went red for three runs on 2026-09-10.
 
 Public surface, when a PR touches one of the thirteen documented modules (`tree`, `feature`,
 `distance`, `bregman`, `model`, `clustering`, `types`, `sparse`, `order`, `coreset`, `stream`,
