@@ -2,11 +2,13 @@
 
 [![PyPI](https://img.shields.io/pypi/v/betula-cluster)](https://pypi.org/project/betula-cluster/)
 [![Python](https://img.shields.io/pypi/pyversions/betula-cluster)](https://pypi.org/project/betula-cluster/)
+[![crates.io](https://img.shields.io/crates/v/betula-cluster)](https://crates.io/crates/betula-cluster)
 [![CI](https://github.com/ilgrad/betula-cluster/actions/workflows/ci.yml/badge.svg)](https://github.com/ilgrad/betula-cluster/actions/workflows/ci.yml)
 [![Python coverage 100%](https://img.shields.io/badge/python%20coverage-100%25-brightgreen.svg)](https://github.com/ilgrad/betula-cluster/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/ilgrad/betula-cluster/blob/main/LICENSE-MIT)
 [![Rust core · PyO3](https://img.shields.io/badge/Rust%20core-PyO3-orange.svg)](https://github.com/ilgrad/betula-cluster)
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21427331.svg)](https://doi.org/10.5281/zenodo.21427331)
+[![Sponsor](https://img.shields.io/badge/sponsor-GitHub%20Sponsors-ea4aaa?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/ilgrad)
 
 [Documentation](https://ilgrad.github.io/betula-cluster/) · [API reference](https://ilgrad.github.io/betula-cluster/api/)
 
