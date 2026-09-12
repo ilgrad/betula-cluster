@@ -40,6 +40,17 @@ dependencies: the `python (pytest · pyX)` CI jobs install the wheel without the
 imports one without `pytest.importorskip` fails there and in no other command on this page. That is
 exactly how `main` went red for three runs on 2026-09-10.
 
+When a PR adds or changes a **parallel reduction over floats** — a rayon `fold`/`reduce`,
+`par_iter().sum()`, anything whose chunking the pool size decides:
+
+```bash
+python scripts/thread_determinism.py   # every head, fitted at 1 and 8 threads, compared by digest
+```
+
+Floating-point addition does not associate, so a work-stealing fold makes the answer a function of
+how the threads interleaved. It is invisible at one thread, which is why `cargo test` cannot see it,
+and it shipped once in `nmf.rs`. CI runs this as the `threads` job.
+
 Public surface, when a PR touches one of the thirteen documented modules (`tree`, `feature`,
 `distance`, `bregman`, `model`, `clustering`, `types`, `sparse`, `order`, `coreset`, `stream`,
 `window`, `validity` — see *Compatibility* in `README.md`):

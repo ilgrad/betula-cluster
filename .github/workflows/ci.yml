@@ -234,6 +234,50 @@ jobs:
           uv run --no-sync maturin develop --release
           uv run --no-sync pytest tests/test_python.py -q --cov=betula_cluster --cov-fail-under=100
 
+  threads:
+    # `RAYON_NUM_THREADS` must not change an answer, and once it did: a work-stealing float
+    # `fold`/`reduce` in `nmf.rs` made `components_` a function of how the threads interleaved --
+    # invisible at one thread, twenty different answers at eight. `tests/test_python.py` pins that
+    # one head. This job is the library-wide form, because the next parallel reduction will land in
+    # some other head and nothing in the suite would see it.
+    name: threads (the pool size must not change the answer)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: astral-sh/setup-uv@v10.0.1
+      - name: every head, fitted at 1 and 8 threads, compared by digest
+        run: |
+          uv venv --python 3.12
+          uv pip install maturin numpy
+          # --no-sync: the repo pins .python-version=3.14, so a plain `uv run` rejects this venv
+          # and recreates it, discarding maturin. Same reason as in `python-test-os` above.
+          uv run --no-sync maturin develop --release
+          uv run --no-sync python scripts/thread_determinism.py
+
+  arm64-kernels:
+    # The SIMD distance kernels are the crate's only `unsafe` (ADR 003) and the NEON half has never
+    # had a number attached to it -- every machine that has run this sweep was x86_64. Apple-silicon
+    # runner, `cargo bench --bench kernels`, printed to the step summary.
+    #
+    # Reports, never gates: a hosted runner's absolute timings are far too noisy to ratchet against,
+    # and what is missing is not a threshold but any aarch64 measurement at all. Pushes only -- it is
+    # the one job here that costs real runner minutes, and a PR cannot change the timing without
+    # changing the kernels, which the `rust` job already tests on every event.
+    name: kernels (arm64 timing smoke)
+    runs-on: macos-14
+    if: github.event_name == 'push'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo bench --bench kernels
+        run: |
+          { echo '## Distance kernels on aarch64'; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          cargo bench --bench kernels | tee -a "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
   scoreboard:
     # The benchmark CSVs are committed, so the win/tie/loss board can be re-derived without running
     # a single benchmark: this job costs seconds and catches the one failure mode the suite cannot,
