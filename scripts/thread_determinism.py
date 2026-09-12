@@ -110,9 +110,20 @@ def digest(config: str) -> str:
     spec.pop("k", None)
     spec.pop("normalize", None)
 
+    # Overlapping clusters of unequal mass and spread, not five separated balls. On separable data
+    # every head returns the same partition -- nine of these configurations produced one identical
+    # digest -- and then the answer is a property of the fixture rather than of the head, so a
+    # reduction inside the head's own arithmetic has nothing to move. Here `average` chains,
+    # `scale-space` finds two modes where `ward` finds five, and `kmedoids` disagrees with both.
     rng = np.random.default_rng(0)
-    centres = rng.normal(scale=6.0, size=(5, 12))
-    x = np.repeat(centres, 800, axis=0) + rng.normal(size=(4000, 12))
+    centres = rng.normal(scale=2.2, size=(5, 12))
+    masses, spreads = (1400, 1000, 700, 500, 400), (0.6, 1.0, 1.4, 0.8, 1.8)
+    x = np.vstack(
+        [
+            c + rng.normal(scale=s, size=(m, 12))
+            for c, m, s in zip(centres, masses, spreads, strict=True)
+        ]
+    )
     if CONFIGS[config].get("normalize"):
         x /= np.linalg.norm(x, axis=1, keepdims=True)
     elif fixture == "nonneg":
