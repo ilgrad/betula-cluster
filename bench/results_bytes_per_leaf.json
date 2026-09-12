@@ -1,0 +1,818 @@
+[
+  {
+    "feature": "spherical",
+    "dim": 2,
+    "measured": 224.13377634981353,
+    "modelled": 128,
+    "ratio": 1.7510451277329182,
+    "r2": 0.9782014957610953,
+    "intercept_mib": 45.31889642916637,
+    "points": [
+      {
+        "feature": "spherical",
+        "dim": 2,
+        "n": 200000,
+        "max_leaves": 500,
+        "n_leaves": 462,
+        "rss_before": 45821952,
+        "rss_after": 47673344,
+        "delta": 1851392
+      },
+      {
+        "feature": "spherical",
+        "dim": 2,
+        "n": 200000,
+        "max_leaves": 1000,
+        "n_leaves": 900,
+        "rss_before": 45723648,
+        "rss_after": 47656960,
+        "delta": 1933312
+      },
+      {
+        "feature": "spherical",
+        "dim": 2,
+        "n": 200000,
+        "max_leaves": 2000,
+        "n_leaves": 1801,
+        "rss_before": 45776896,
+        "rss_after": 47935488,
+        "delta": 2158592
+      },
+      {
+        "feature": "spherical",
+        "dim": 2,
+        "n": 200000,
+        "max_leaves": 4000,
+        "n_leaves": 3680,
+        "rss_before": 45768704,
+        "rss_after": 48349184,
+        "delta": 2580480
+      }
+    ]
+  },
+  {
+    "feature": "spherical",
+    "dim": 20,
+    "measured": 526.5663776764686,
+    "modelled": 272,
+    "ratio": 1.9359058002811347,
+    "r2": 0.9991077380402712,
+    "intercept_mib": 72.71623180022848,
+    "points": [
+      {
+        "feature": "spherical",
+        "dim": 20,
+        "n": 200000,
+        "max_leaves": 500,
+        "n_leaves": 451,
+        "rss_before": 74530816,
+        "rss_after": 76496896,
+        "delta": 1966080
+      },
+      {
+        "feature": "spherical",
+        "dim": 20,
+        "n": 200000,
+        "max_leaves": 1000,
+        "n_leaves": 903,
+        "rss_before": 74485760,
+        "rss_after": 76693504,
+        "delta": 2207744
+      },
+      {
+        "feature": "spherical",
+        "dim": 20,
+        "n": 200000,
+        "max_leaves": 2000,
+        "n_leaves": 1800,
+        "rss_before": 74534912,
+        "rss_after": 77221888,
+        "delta": 2686976
+      },
+      {
+        "feature": "spherical",
+        "dim": 20,
+        "n": 200000,
+        "max_leaves": 4000,
+        "n_leaves": 3898,
+        "rss_before": 74530816,
+        "rss_after": 78295040,
+        "delta": 3764224
+      }
+    ]
+  },
+  {
+    "feature": "spherical",
+    "dim": 54,
+    "measured": 1016.6473527675112,
+    "modelled": 544,
+    "ratio": 1.8688370455285133,
+    "r2": 0.9990448417777668,
+    "intercept_mib": 124.75283196092781,
+    "points": [
+      {
+        "feature": "spherical",
+        "dim": 54,
+        "n": 200000,
+        "max_leaves": 500,
+        "n_leaves": 497,
+        "rss_before": 129114112,
+        "rss_after": 131375104,
+        "delta": 2260992
+      },
+      {
+        "feature": "spherical",
+        "dim": 54,
+        "n": 200000,
+        "max_leaves": 1000,
+        "n_leaves": 901,
+        "rss_before": 128970752,
+        "rss_after": 131682304,
+        "delta": 2711552
+      },
+      {
+        "feature": "spherical",
+        "dim": 54,
+        "n": 200000,
+        "max_leaves": 2000,
+        "n_leaves": 1845,
+        "rss_before": 128929792,
+        "rss_after": 132661248,
+        "delta": 3731456
+      },
+      {
+        "feature": "spherical",
+        "dim": 54,
+        "n": 200000,
+        "max_leaves": 4000,
+        "n_leaves": 3804,
+        "rss_before": 128876544,
+        "rss_after": 134696960,
+        "delta": 5820416
+      }
+    ]
+  },
+  {
+    "feature": "spherical",
+    "dim": 784,
+    "measured": 13228.260283250811,
+    "modelled": 6384,
+    "ratio": 2.0720959090305153,
+    "r2": 0.999988206322544,
+    "intercept_mib": 341.3369990388021,
+    "points": [
+      {
+        "feature": "spherical",
+        "dim": 784,
+        "n": 50000,
+        "max_leaves": 500,
+        "n_leaves": 450,
+        "rss_before": 356081664,
+        "rss_after": 363794432,
+        "delta": 7712768
+      },
+      {
+        "feature": "spherical",
+        "dim": 784,
+        "n": 50000,
+        "max_leaves": 1000,
+        "n_leaves": 909,
+        "rss_before": 356171776,
+        "rss_after": 370016256,
+        "delta": 13844480
+      },
+      {
+        "feature": "spherical",
+        "dim": 784,
+        "n": 50000,
+        "max_leaves": 2000,
+        "n_leaves": 1809,
+        "rss_before": 356106240,
+        "rss_after": 381870080,
+        "delta": 25763840
+      },
+      {
+        "feature": "spherical",
+        "dim": 784,
+        "n": 50000,
+        "max_leaves": 4000,
+        "n_leaves": 3623,
+        "rss_before": 356077568,
+        "rss_after": 405823488,
+        "delta": 49745920
+      }
+    ]
+  },
+  {
+    "feature": "diagonal",
+    "dim": 2,
+    "measured": 320.95312585066216,
+    "modelled": 144,
+    "ratio": 2.2288411517407094,
+    "r2": 0.998418613948598,
+    "intercept_mib": 45.077928008986454,
+    "points": [
+      {
+        "feature": "diagonal",
+        "dim": 2,
+        "n": 200000,
+        "max_leaves": 500,
+        "n_leaves": 462,
+        "rss_before": 45752320,
+        "rss_after": 47423488,
+        "delta": 1671168
+      },
+      {
+        "feature": "diagonal",
+        "dim": 2,
+        "n": 200000,
+        "max_leaves": 1000,
+        "n_leaves": 900,
+        "rss_before": 45735936,
+        "rss_after": 47534080,
+        "delta": 1798144
+      },
+      {
+        "feature": "diagonal",
+        "dim": 2,
+        "n": 200000,
+        "max_leaves": 2000,
+        "n_leaves": 1801,
+        "rss_before": 45727744,
+        "rss_after": 47865856,
+        "delta": 2138112
+      },
+      {
+        "feature": "diagonal",
+        "dim": 2,
+        "n": 200000,
+        "max_leaves": 4000,
+        "n_leaves": 3680,
+        "rss_before": 45715456,
+        "rss_after": 48443392,
+        "delta": 2727936
+      }
+    ]
+  },
+  {
+    "feature": "diagonal",
+    "dim": 20,
+    "measured": 749.2270113771907,
+    "modelled": 432,
+    "ratio": 1.7343217855953488,
+    "r2": 0.9983464191380429,
+    "intercept_mib": 72.55671003240778,
+    "points": [
+      {
+        "feature": "diagonal",
+        "dim": 20,
+        "n": 200000,
+        "max_leaves": 500,
+        "n_leaves": 451,
+        "rss_before": 74559488,
+        "rss_after": 76431360,
+        "delta": 1871872
+      },
+      {
+        "feature": "diagonal",
+        "dim": 20,
+        "n": 200000,
+        "max_leaves": 1000,
+        "n_leaves": 903,
+        "rss_before": 74579968,
+        "rss_after": 76791808,
+        "delta": 2211840
+      },
+      {
+        "feature": "diagonal",
+        "dim": 20,
+        "n": 200000,
+        "max_leaves": 2000,
+        "n_leaves": 1800,
+        "rss_before": 74489856,
+        "rss_after": 77361152,
+        "delta": 2871296
+      },
+      {
+        "feature": "diagonal",
+        "dim": 20,
+        "n": 200000,
+        "max_leaves": 4000,
+        "n_leaves": 3898,
+        "rss_before": 74657792,
+        "rss_after": 79024128,
+        "delta": 4366336
+      }
+    ]
+  },
+  {
+    "feature": "diagonal",
+    "dim": 54,
+    "measured": 1562.5851506905954,
+    "modelled": 976,
+    "ratio": 1.6010093757075772,
+    "r2": 0.9998820976541322,
+    "intercept_mib": 124.45667611195644,
+    "points": [
+      {
+        "feature": "diagonal",
+        "dim": 54,
+        "n": 200000,
+        "max_leaves": 500,
+        "n_leaves": 497,
+        "rss_before": 128929792,
+        "rss_after": 131248128,
+        "delta": 2318336
+      },
+      {
+        "feature": "diagonal",
+        "dim": 54,
+        "n": 200000,
+        "max_leaves": 1000,
+        "n_leaves": 901,
+        "rss_before": 128966656,
+        "rss_after": 131936256,
+        "delta": 2969600
+      },
+      {
+        "feature": "diagonal",
+        "dim": 54,
+        "n": 200000,
+        "max_leaves": 2000,
+        "n_leaves": 1845,
+        "rss_before": 128942080,
+        "rss_after": 133398528,
+        "delta": 4456448
+      },
+      {
+        "feature": "diagonal",
+        "dim": 54,
+        "n": 200000,
+        "max_leaves": 4000,
+        "n_leaves": 3804,
+        "rss_before": 128937984,
+        "rss_after": 136437760,
+        "delta": 7499776
+      }
+    ]
+  },
+  {
+    "feature": "diagonal",
+    "dim": 784,
+    "measured": 20049.81456376331,
+    "modelled": 12656,
+    "ratio": 1.5842141722316143,
+    "r2": 0.999998105464758,
+    "intercept_mib": 341.1818650478085,
+    "points": [
+      {
+        "feature": "diagonal",
+        "dim": 784,
+        "n": 50000,
+        "max_leaves": 500,
+        "n_leaves": 450,
+        "rss_before": 356171776,
+        "rss_after": 366731264,
+        "delta": 10559488
+      },
+      {
+        "feature": "diagonal",
+        "dim": 784,
+        "n": 50000,
+        "max_leaves": 1000,
+        "n_leaves": 909,
+        "rss_before": 356151296,
+        "rss_after": 376025088,
+        "delta": 19873792
+      },
+      {
+        "feature": "diagonal",
+        "dim": 784,
+        "n": 50000,
+        "max_leaves": 2000,
+        "n_leaves": 1809,
+        "rss_before": 356098048,
+        "rss_after": 394039296,
+        "delta": 37941248
+      },
+      {
+        "feature": "diagonal",
+        "dim": 784,
+        "n": 50000,
+        "max_leaves": 4000,
+        "n_leaves": 3623,
+        "rss_before": 356139008,
+        "rss_after": 430383104,
+        "delta": 74244096
+      }
+    ]
+  },
+  {
+    "feature": "fd",
+    "dim": 2,
+    "measured": 376.42509492903054,
+    "modelled": 144,
+    "ratio": 2.614063159229379,
+    "r2": 0.9987155478753954,
+    "intercept_mib": 45.47473027119652,
+    "points": [
+      {
+        "feature": "fd",
+        "dim": 2,
+        "n": 200000,
+        "max_leaves": 500,
+        "n_leaves": 462,
+        "rss_before": 45924352,
+        "rss_after": 47845376,
+        "delta": 1921024
+      },
+      {
+        "feature": "fd",
+        "dim": 2,
+        "n": 200000,
+        "max_leaves": 1000,
+        "n_leaves": 900,
+        "rss_before": 45838336,
+        "rss_after": 48017408,
+        "delta": 2179072
+      },
+      {
+        "feature": "fd",
+        "dim": 2,
+        "n": 200000,
+        "max_leaves": 2000,
+        "n_leaves": 1801,
+        "rss_before": 45719552,
+        "rss_after": 48390144,
+        "delta": 2670592
+      },
+      {
+        "feature": "fd",
+        "dim": 2,
+        "n": 200000,
+        "max_leaves": 4000,
+        "n_leaves": 3680,
+        "rss_before": 45719552,
+        "rss_after": 49057792,
+        "delta": 3338240
+      }
+    ]
+  },
+  {
+    "feature": "fd",
+    "dim": 20,
+    "measured": 4722.791084102101,
+    "modelled": 432,
+    "ratio": 10.932386768754863,
+    "r2": 0.9980038044248435,
+    "intercept_mib": 73.19908840058136,
+    "points": [
+      {
+        "feature": "fd",
+        "dim": 20,
+        "n": 200000,
+        "max_leaves": 500,
+        "n_leaves": 451,
+        "rss_before": 74629120,
+        "rss_after": 78688256,
+        "delta": 4059136
+      },
+      {
+        "feature": "fd",
+        "dim": 20,
+        "n": 200000,
+        "max_leaves": 1000,
+        "n_leaves": 903,
+        "rss_before": 74522624,
+        "rss_after": 80908288,
+        "delta": 6385664
+      },
+      {
+        "feature": "fd",
+        "dim": 20,
+        "n": 200000,
+        "max_leaves": 2000,
+        "n_leaves": 1800,
+        "rss_before": 74571776,
+        "rss_after": 85737472,
+        "delta": 11165696
+      },
+      {
+        "feature": "fd",
+        "dim": 20,
+        "n": 200000,
+        "max_leaves": 4000,
+        "n_leaves": 3898,
+        "rss_before": 74534912,
+        "rss_after": 94990336,
+        "delta": 20455424
+      }
+    ]
+  },
+  {
+    "feature": "fd",
+    "dim": 54,
+    "measured": 17365.356248457443,
+    "modelled": 976,
+    "ratio": 17.792373205386724,
+    "r2": 0.9990919776741536,
+    "intercept_mib": 125.53575861862191,
+    "points": [
+      {
+        "feature": "fd",
+        "dim": 54,
+        "n": 200000,
+        "max_leaves": 500,
+        "n_leaves": 497,
+        "rss_before": 128974848,
+        "rss_after": 139419648,
+        "delta": 10444800
+      },
+      {
+        "feature": "fd",
+        "dim": 54,
+        "n": 200000,
+        "max_leaves": 1000,
+        "n_leaves": 901,
+        "rss_before": 128880640,
+        "rss_after": 147648512,
+        "delta": 18767872
+      },
+      {
+        "feature": "fd",
+        "dim": 54,
+        "n": 200000,
+        "max_leaves": 2000,
+        "n_leaves": 1845,
+        "rss_before": 129044480,
+        "rss_after": 164552704,
+        "delta": 35508224
+      },
+      {
+        "feature": "fd",
+        "dim": 54,
+        "n": 200000,
+        "max_leaves": 4000,
+        "n_leaves": 3804,
+        "rss_before": 128876544,
+        "rss_after": 197287936,
+        "delta": 68411392
+      }
+    ]
+  },
+  {
+    "feature": "fd",
+    "dim": 784,
+    "measured": 246711.23943027353,
+    "modelled": 12656,
+    "ratio": 19.493618791898985,
+    "r2": 0.9999904879128365,
+    "intercept_mib": 344.86707425809203,
+    "points": [
+      {
+        "feature": "fd",
+        "dim": 784,
+        "n": 50000,
+        "max_leaves": 500,
+        "n_leaves": 450,
+        "rss_before": 356085760,
+        "rss_after": 473927680,
+        "delta": 117841920
+      },
+      {
+        "feature": "fd",
+        "dim": 784,
+        "n": 50000,
+        "max_leaves": 1000,
+        "n_leaves": 909,
+        "rss_before": 356179968,
+        "rss_after": 584773632,
+        "delta": 228593664
+      },
+      {
+        "feature": "fd",
+        "dim": 784,
+        "n": 50000,
+        "max_leaves": 2000,
+        "n_leaves": 1809,
+        "rss_before": 356089856,
+        "rss_after": 807321600,
+        "delta": 451231744
+      },
+      {
+        "feature": "fd",
+        "dim": 784,
+        "n": 50000,
+        "max_leaves": 4000,
+        "n_leaves": 3623,
+        "rss_before": 356155392,
+        "rss_after": 1255870464,
+        "delta": 899715072
+      }
+    ]
+  },
+  {
+    "feature": "full",
+    "dim": 2,
+    "measured": 350.9282148377312,
+    "modelled": 136,
+    "ratio": 2.580354520865671,
+    "r2": 0.9973850488609078,
+    "intercept_mib": 45.095429951158856,
+    "points": [
+      {
+        "feature": "full",
+        "dim": 2,
+        "n": 200000,
+        "max_leaves": 500,
+        "n_leaves": 462,
+        "rss_before": 45744128,
+        "rss_after": 47476736,
+        "delta": 1732608
+      },
+      {
+        "feature": "full",
+        "dim": 2,
+        "n": 200000,
+        "max_leaves": 1000,
+        "n_leaves": 900,
+        "rss_before": 45735936,
+        "rss_after": 47587328,
+        "delta": 1851392
+      },
+      {
+        "feature": "full",
+        "dim": 2,
+        "n": 200000,
+        "max_leaves": 2000,
+        "n_leaves": 1801,
+        "rss_before": 45670400,
+        "rss_after": 47890432,
+        "delta": 2220032
+      },
+      {
+        "feature": "full",
+        "dim": 2,
+        "n": 200000,
+        "max_leaves": 4000,
+        "n_leaves": 3680,
+        "rss_before": 45727744,
+        "rss_after": 48590848,
+        "delta": 2863104
+      }
+    ]
+  },
+  {
+    "feature": "full",
+    "dim": 20,
+    "measured": 2308.9552988674086,
+    "modelled": 1936,
+    "ratio": 1.1926421998282069,
+    "r2": 0.9995261680338288,
+    "intercept_mib": 72.72140484628368,
+    "points": [
+      {
+        "feature": "full",
+        "dim": 20,
+        "n": 200000,
+        "max_leaves": 500,
+        "n_leaves": 451,
+        "rss_before": 74584064,
+        "rss_after": 77275136,
+        "delta": 2691072
+      },
+      {
+        "feature": "full",
+        "dim": 20,
+        "n": 200000,
+        "max_leaves": 1000,
+        "n_leaves": 903,
+        "rss_before": 74518528,
+        "rss_after": 78282752,
+        "delta": 3764224
+      },
+      {
+        "feature": "full",
+        "dim": 20,
+        "n": 200000,
+        "max_leaves": 2000,
+        "n_leaves": 1800,
+        "rss_before": 74575872,
+        "rss_after": 80523264,
+        "delta": 5947392
+      },
+      {
+        "feature": "full",
+        "dim": 20,
+        "n": 200000,
+        "max_leaves": 4000,
+        "n_leaves": 3898,
+        "rss_before": 74543104,
+        "rss_after": 85217280,
+        "delta": 10674176
+      }
+    ]
+  },
+  {
+    "feature": "full",
+    "dim": 54,
+    "measured": 14302.121844768448,
+    "modelled": 12408,
+    "ratio": 1.1526532756905583,
+    "r2": 0.9989032355695497,
+    "intercept_mib": 124.59930072840285,
+    "points": [
+      {
+        "feature": "full",
+        "dim": 54,
+        "n": 200000,
+        "max_leaves": 250,
+        "n_leaves": 225,
+        "rss_before": 128958464,
+        "rss_after": 134074368,
+        "delta": 5115904
+      },
+      {
+        "feature": "full",
+        "dim": 54,
+        "n": 200000,
+        "max_leaves": 500,
+        "n_leaves": 497,
+        "rss_before": 128933888,
+        "rss_after": 137306112,
+        "delta": 8372224
+      },
+      {
+        "feature": "full",
+        "dim": 54,
+        "n": 200000,
+        "max_leaves": 1000,
+        "n_leaves": 901,
+        "rss_before": 128884736,
+        "rss_after": 143835136,
+        "delta": 14950400
+      },
+      {
+        "feature": "full",
+        "dim": 54,
+        "n": 200000,
+        "max_leaves": 2000,
+        "n_leaves": 1845,
+        "rss_before": 128942080,
+        "rss_after": 156991488,
+        "delta": 28049408
+      }
+    ]
+  },
+  {
+    "feature": "full",
+    "dim": 784,
+    "measured": 2888602.119492937,
+    "modelled": 2468128,
+    "ratio": 1.1703615531661797,
+    "r2": 0.9998173948577149,
+    "intercept_mib": 344.46248939115566,
+    "points": [
+      {
+        "feature": "full",
+        "dim": 784,
+        "n": 50000,
+        "max_leaves": 50,
+        "n_leaves": 45,
+        "rss_before": 356134912,
+        "rss_after": 486264832,
+        "delta": 130129920
+      },
+      {
+        "feature": "full",
+        "dim": 784,
+        "n": 50000,
+        "max_leaves": 100,
+        "n_leaves": 90,
+        "rss_before": 356151296,
+        "rss_after": 621961216,
+        "delta": 265809920
+      },
+      {
+        "feature": "full",
+        "dim": 784,
+        "n": 50000,
+        "max_leaves": 200,
+        "n_leaves": 180,
+        "rss_before": 356151296,
+        "rss_after": 888524800,
+        "delta": 532373504
+      },
+      {
+        "feature": "full",
+        "dim": 784,
+        "n": 50000,
+        "max_leaves": 400,
+        "n_leaves": 362,
+        "rss_before": 356106240,
+        "rss_after": 1403613184,
+        "delta": 1047506944
+      }
+    ]
+  }
+]

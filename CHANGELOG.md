@@ -6,6 +6,25 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **`memory_budget_mb` no longer under-sizes the divisor it uses, so the budget is met instead of
+  overrun.** The per-leaf cost is now measured rather than derived from the struct definitions: the
+  slope of process RSS against the realised leaf count, at four leaf counts per cell, for each
+  `feature` × `dim` in {2, 20, 54, 784} (`r²` 0.978–1.0000). The old formula under-predicted
+  **every** cell, from 1.15× to **19.5×** — so a 512 MB budget bought a tree of 590 MB at best and
+  10 GB at worst, and it never erred the safe way. Two causes. A resident leaf is more than its
+  declared arrays: its cluster feature is also folded into every ancestor node's feature, a rebuild
+  allocates a second tree whose small chunks glibc keeps in its arena rather than returning to the
+  kernel, and every `Vec` costs a header plus malloc rounding. And `feature="fd"` was costed as if
+  it were `"diagonal"`, ignoring the Frequent-Directions sketch entirely — an `FdSketch` holds
+  `min(32, dim)` sketch rows of `dim` *besides* the mean, which is the whole of the 19.5× at
+  `dim = 784`.
+  The new constants sit 1.02–1.37× **above** every measured cell, deliberately: a divisor that
+  under-predicts blows the budget silently, one that over-predicts hands back a slightly smaller
+  tree than the caller could have afforded. A given `memory_budget_mb` therefore resolves to fewer
+  leaves than in 1.0, which changes labels for callers who set it — `max_leaves` is unaffected.
+
 ## [1.0.0] — 2026-09-10
 
 **1.0 is a promise about compatibility, not a claim about features.** Three things are frozen from

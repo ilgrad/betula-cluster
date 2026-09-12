@@ -495,17 +495,54 @@ def _constraint_pairs(c) -> np.ndarray:
     return a
 
 
+#: Sketch rows an ``FdSketch`` keeps: ``ell = min(dim, 32)``. Mirrors ``FD_DEFAULT_ELL`` in
+#: ``src/feature.rs``; only :func:`_bytes_per_leaf` reads it, and a drift there is wrong only in the
+#: direction of a budget the engine can afford.
+_FD_DEFAULT_ELL = 32
+
+
 def _bytes_per_leaf(feature: str, dim: int) -> int:
-    """Approximate resident bytes per CF-tree leaf for ``feature`` at ``dim`` (mean/scatter arrays +
-    CF / node / Vec overhead). Used only to translate ``memory_budget_mb`` into ``max_leaves`` — a
-    rough target for the tree's resident size, not an exact accounting."""
-    base = {
-        "spherical": 8 * dim + 16,
-        "diagonal": 16 * dim + 16,
-        "full": 8 * dim + 4 * dim * (dim + 1),  # mean + packed upper-triangular scatter
-        "fd": 16 * dim + 16,
-    }.get(feature, 16 * dim + 16)
-    return base + 96
+    """Resident bytes per CF-tree leaf for ``feature`` at ``dim``, **measured**, not derived from
+    the struct. Used only to translate ``memory_budget_mb`` into ``max_leaves``.
+
+    Measured 2026-09-13 as the slope of process RSS against the realized leaf count, four leaf
+    counts per cell, one subprocess each, ``method="kmeans"`` throughout (``r²`` 0.978–1.0000). The
+    slope is what the budget divides by: an absolute RSS carries the interpreter, the input array
+    and the allocator's arenas, and those are constant across a sweep at fixed ``(feature, dim)``.
+
+    ================  =========  ========  ==========
+    feature / dim     measured   this fn   old formula
+    ================  =========  ========  ==========
+    spherical / 2           224       264          128
+    spherical / 784      13 228    13 558        6 384
+    diagonal / 2            321       342          144
+    diagonal / 784       20 050    20 674       12 656
+    fd / 20               4 723     5 070          432
+    fd / 784            246 711   285 042       12 656
+    full / 20             2 309     2 630        1 936
+    full / 784        2 888 602 3 085 370    2 468 128
+    ================  =========  ========  ==========
+
+    The old formula under-predicted every cell — 1.15× to **19.5×** — so a budget always bought a
+    tree larger than it asked for. Two separate causes. The declared arrays are only part of a
+    resident leaf: its cluster feature is also folded into every ancestor node's feature, a rebuild
+    allocates a second tree whose small chunks glibc keeps in its arena rather than returning, and
+    every ``Vec`` costs a header plus malloc rounding. And ``fd`` was modelled as if it were
+    ``diagonal``, ignoring the sketch entirely — an ``FdSketch`` holds ``ell = min(32, dim)`` rows
+    of ``dim`` *besides* the mean (``FD_DEFAULT_ELL`` in ``src/feature.rs``), which is the whole of
+    the 19.5×.
+
+    The constants deliberately sit a few per cent **above** every measured cell. A divisor that
+    under-predicts blows the budget silently, which is the defect being fixed; one that
+    over-predicts gives a slightly smaller tree than the caller could have afforded.
+    """
+    ell = min(dim, _FD_DEFAULT_ELL)
+    return {
+        "spherical": 17 * dim + 230,
+        "diagonal": 26 * dim + 290,
+        "full": 5 * dim * dim + 15 * dim + 330,
+        "fd": 11 * dim * (1 + ell) + 450,
+    }.get(feature, 26 * dim + 290)
 
 
 def _rows_of(X, csr) -> int:

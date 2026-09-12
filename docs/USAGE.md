@@ -1217,9 +1217,14 @@ a partition it did not optimise.
 
 Feed chunks with `partial_fit`, finalize with a no-arg `partial_fit()`, then `predict`. Memory stays
 bounded by `max_leaves` no matter how much data streams through (the CF-tree rebuilds, it never grows
-without limit) — or set **`memory_budget_mb`** and let it size `max_leaves` for you (a target for the
-tree's resident size; most meaningful for streaming, where the data is transient and the tree is what
-grows). Set **`huber_k`** (e.g. `2.0`) to winsorize each incoming point to $\pm k\sigma$ of its target
+without limit) — or set **`memory_budget_mb`** and let it size `max_leaves` for you (a target for
+the tree's resident size; most meaningful for streaming, where the data is transient and the tree is
+what grows). The per-leaf cost it divides by is **measured**, as the slope of process RSS against
+the realised leaf count for each `feature` × `dim`, and the constants sit a few per cent above every
+measured cell — so the budget is met or beaten rather than silently overrun. Before 1.1 the formula
+counted only the declared arrays and under-predicted by 1.15× to 19.5×, worst on `feature="fd"`,
+whose sketch rows it ignored entirely. Set **`huber_k`** (e.g. `2.0`) to winsorize each incoming
+point to $\pm k\sigma$ of its target
 microcluster before folding it in, so outliers in the stream cannot drag a centroid or inflate a radius.
 
 ```python
