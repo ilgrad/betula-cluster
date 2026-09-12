@@ -457,6 +457,49 @@ memory, so the artefact's return flips both 10 M speed cells **win → loss** (7
 below. They are accepted as measured rather than excused, and they are the reason the speed column
 reads 30 rather than 32.
 
+### What a leaf actually costs, and what `memory_budget_mb` thought it cost
+
+The section above measures the footprint of one configuration. `memory_budget_mb` needs the
+*marginal* cost of a leaf, because it divides a budget by it to choose `max_leaves` — and that number
+had never been measured. [`bench/bytes_per_leaf.py`](https://github.com/ilgrad/betula-cluster/blob/main/bench/bytes_per_leaf.py)
+fits at four leaf counts per `(feature, dim)` cell, one subprocess each, and regresses RSS on the
+*realised* leaf count. The slope is the answer; the interpreter, the input array and the allocator's
+arenas are constant across a sweep and cancel. Measured 2026-09-13, `method="kmeans"` throughout,
+`RAYON_NUM_THREADS=1`, `r²` 0.978–1.0000 on every cell. Raw points in
+[`bench/results_bytes_per_leaf.json`](https://github.com/ilgrad/betula-cluster/blob/main/bench/results_bytes_per_leaf.json).
+
+| feature | `dim` | measured B/leaf | 1.0 formula | 1.0 error | 1.1 formula |
+|---|---|---|---|---|---|
+| `spherical` | 2 | 224 | 128 | 0.57× | 264 |
+| `spherical` | 20 | 527 | 272 | 0.52× | 570 |
+| `spherical` | 54 | 1 017 | 544 | 0.53× | 1 148 |
+| `spherical` | 784 | 13 228 | 6 384 | 0.48× | 13 558 |
+| `diagonal` | 2 | 321 | 144 | 0.45× | 342 |
+| `diagonal` | 20 | 749 | 432 | 0.58× | 810 |
+| `diagonal` | 54 | 1 563 | 976 | 0.62× | 1 694 |
+| `diagonal` | 784 | 20 050 | 12 656 | 0.63× | 20 674 |
+| `fd` | 2 | 376 | 144 | 0.38× | 516 |
+| `fd` | 20 | 4 723 | 432 | **0.09×** | 5 070 |
+| `fd` | 54 | 17 365 | 976 | **0.06×** | 20 052 |
+| `fd` | 784 | 246 711 | 12 656 | **0.05×** | 285 042 |
+| `full` | 2 | 351 | 136 | 0.39× | 380 |
+| `full` | 20 | 2 309 | 1 936 | 0.84× | 2 630 |
+| `full` | 54 | 14 302 | 12 408 | 0.87× | 15 720 |
+| `full` | 784 | 2 888 602 | 2 468 128 | 0.85× | 3 085 370 |
+
+Every cell was under-costed, so the budget was always overrun and never met — a 512 MB request bought
+590 MB of tree at best and 10 GB at worst. Two causes, and only the second is a defect in the
+formula. A resident leaf is more than the arrays its cluster feature declares: the feature is folded
+into every ancestor node's feature too, a rebuild allocates a second tree whose small chunks glibc
+keeps in its arena rather than returning, and each `Vec` costs a header plus malloc rounding — which
+is the 1.15–2.6× on `spherical`, `diagonal` and `full`, and is why the 1.1 constants absorb it
+empirically rather than deriving it. `fd` is the defect: it was costed as `diagonal`, so the
+Frequent-Directions sketch — `min(32, dim)` rows of `dim` besides the mean — was not counted at all.
+
+The 1.1 column sits 1.02–1.37× **above** every measured cell on purpose. A divisor that
+under-predicts overruns the budget silently; one that over-predicts hands back a slightly smaller
+tree than the caller could have afforded, which is the failure a caller can see and correct.
+
 ## Real datasets — bounded 4 000-leaf budget
 
 Synthetic data can flatter a method, so the same comparison on real datasets loaded straight from
