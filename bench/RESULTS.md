@@ -3126,6 +3126,54 @@ the achievable score on one. A width that helps has to be chosen against the dat
 parameter is for. The heuristic the table supports — raise it when `d` is large and the classes are
 known to interleave — rests on two datasets and is documented as a heuristic, not wired in.
 
+### The leaf refit had to be told which route it was fitting (task E32)
+
+`leaf_refit` re-routes every row and rebuilds each leaf CF from the rows it won. Until 1.1 it routed
+greedily whatever `route_beam` was set to, so a caller who set both got leaves fitted to a partition
+none of the estimator's own queries reproduce. The change is `CFTree::refit_leaves_beam`, and the
+argument for it is consistency: a Lloyd step is only a Lloyd step against the rule it is read back
+with. **Consistency is not quality**, so this is the separate measurement.
+
+Harness [`bench/leaf_refit_beam.py`](https://github.com/ilgrad/betula-cluster/blob/main/bench/leaf_refit_beam.py),
+output [`bench/results_refit_beam.csv`](https://github.com/ilgrad/betula-cluster/blob/main/bench/results_refit_beam.csv).
+Raw features, arrival order, ARI the median of seeds 0/1/2, everything else at its default —
+the same setup as the `leaf_refit` table in `docs/USAGE.md`, whose arrival columns the `b = 1` arms
+here reproduce digit for digit. The *old* column is the same harness on a build with the one-line
+revert (`refit_tree` passing `1` instead of `self.route_beam`), rebuilt both ways.
+
+| cell | no refit, `b`=1 | refit, `b`=1 | no refit, `b`=8 | refit `b`=8 **old** | **new** | new − old |
+|---|---|---|---|---|---|---|
+| digits\@90 kmeans | 0.625 | 0.650 | 0.625 | 0.650 | 0.620 | **−0.030** |
+| digits\@90 ward | 0.678 | 0.642 | 0.695 | 0.697 | **0.758** | **+0.061** |
+| digits\@90 gmm | 0.520 | 0.599 | 0.520 | 0.599 | 0.596 | −0.003 |
+| mnist-10k\@200 kmeans | 0.359 | 0.343 | 0.359 | 0.343 | 0.377 | **+0.034** |
+| mnist-10k\@200 ward | 0.409 | 0.367 | 0.424 | 0.359 | 0.411 | **+0.052** |
+| mnist-10k\@200 gmm | 0.347 | 0.375 | 0.347 | 0.375 | 0.337 | **−0.038** |
+
+**The first three columns are byte-identical between the two builds**, which is the control: only the
+`b = 8` refit arm can move, and only it did. They also reproduce the scoping rule independently — at
+`leaf_refit=0`, `kmeans` and `gmm` read the same at both widths to every digit printed, because they
+label from their own `k` centres and never consult the tree, while `ward` moves (0.678 → 0.695,
+0.409 → 0.424).
+
+**Three cells up, three down, mean +0.013 — and the split is not noise.** The two `ward` cells, the
+only head here that assigns *by microcluster*, gain +0.061 and +0.052. `kmeans` and `gmm` read the
+tree only through the leaf features their head consumes, and for them the change is a different
+codebook rather than a different assignment: −0.030/+0.034 and −0.003/−0.038, which is the spread of
+a non-convex head across a perturbation. The consistency argument is specifically about the
+row → microcluster map, and the head that consumes that map is the one that pays for the mismatch.
+
+**Where the mismatch was worst is where the fix is worth most.** `mnist-10k ward` at `b = 8` reads
+0.424 without the refit and **0.359** with the greedy one — the pass was destroying 0.065 ARI, more
+than `route_beam` had bought. Consistent it reads 0.411, so the pass still costs 0.014 there but no
+longer undoes the width. `digits ward` goes the other way and ends at 0.758, the highest ARI anywhere
+in this table, against 0.678 for the plain fit.
+
+**It is not free.** `refit_cost_ratio` — the wide refit's fit time over the narrow refit's, same
+build — runs 0.84 to 2.46, worst on `mnist-10k ward`, which is the linear factor in the width landing
+on the pass's own route. The old build's ratios run 0.97 to 1.88 on the same cells, since its refit
+never widened and only the labelling route did.
+
 ## Restarts pass scikit-learn on MNIST, and the same count loses on digits (`n_init`)
 
 Lloyd converges to a *local* optimum of the inertia, so the k-means head has always run several

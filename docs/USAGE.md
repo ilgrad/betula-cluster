@@ -1212,6 +1212,17 @@ the tree itself moves, so every head sees it — including `kmeans` and the mixt
 otherwise width-blind — and the pass costs a linear factor in the width on its route. At the default
 `route_beam=1` nothing changes: `beam <= 1` is the plain descent and the pass is what it always was.
 
+What it is worth, measured against a build with the change reverted (six cells, ARI the median of
+seeds 0/1/2, full table in
+[`bench/RESULTS.md`](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md)): three
+cells up, three down, mean **+0.013** — and the gain sits where the argument says it should. `ward`,
+the only head in the table that assigns by microcluster, gains **+0.061** on `digits` and **+0.052**
+on `mnist-10k`; `kmeans` and `gmm`, which never consult the tree for a label, move in both directions
+by about as much as a seed does. The case for the change is the worst cell rather than the mean: on
+`mnist-10k` with `ward` and `route_beam=8`, the greedy pass read 0.359 against 0.424 for no refit at
+all — it was destroying 0.065 ARI, more than the width had bought — where the consistent pass reads
+0.411.
+
 **It is an estimator parameter.** The free `fit_predict` / `fit_predict_sparse` are the engine
 functions re-exported verbatim and route with the plain descent; use `Betula(route_beam=b)` to widen
 it. Same split as the fractional `max_leaves` above, and for the same reason.

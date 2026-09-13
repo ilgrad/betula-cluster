@@ -26,6 +26,14 @@ All notable changes to this project are documented here. The format follows
   a plain fit one narrow pass already costs. At the default `route_beam=1` nothing changes —
   `beam <= 1` *is* the plain descent, and the leaf statistics are bit-identical to 1.0. The free
   `fit_predict` / `fit_predict_sparse` engine functions take no width and keep refitting greedily.
+  **Measured** against a build with the change reverted, over six cells (`digits`\@90 and
+  `mnist-10k`\@200 × `kmeans`/`ward`/`gmm`, ARI the median of seeds 0/1/2): three cells up, three
+  down, mean **+0.013**, and the split follows the argument rather than cutting across it — the two
+  `ward` cells, the only head that assigns *by microcluster*, gain **+0.061** and **+0.052**, while
+  the two heads that label from their own centres move −0.030/+0.034 and −0.003/−0.038. Worst case
+  first: on `mnist-10k ward` the greedy pass under a width of 8 was destroying 0.065 ARI, more than
+  the width had bought. The table is in
+  [`bench/RESULTS.md`](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md).
 
 ### Fixed
 
