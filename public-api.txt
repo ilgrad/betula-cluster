@@ -1814,6 +1814,7 @@ pub fn betula_cluster::tree::CFTree<R, C, D, A>::new(usize, usize, usize, R, usi
 pub fn betula_cluster::tree::CFTree<R, C, D, A>::num_leaves(&self) -> usize
 pub fn betula_cluster::tree::CFTree<R, C, D, A>::rebuilds(&self) -> usize
 pub fn betula_cluster::tree::CFTree<R, C, D, A>::refit_leaves(&mut self, &[R], usize)
+pub fn betula_cluster::tree::CFTree<R, C, D, A>::refit_leaves_beam(&mut self, &[R], usize, usize)
 pub fn betula_cluster::tree::CFTree<R, C, D, A>::set_auto_balance(&mut self, bool)
 pub fn betula_cluster::tree::CFTree<R, C, D, A>::set_balance(&mut self, core::option::Option<R>)
 pub fn betula_cluster::tree::CFTree<R, C, D, A>::set_huber_k(&mut self, core::option::Option<R>)

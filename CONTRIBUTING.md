@@ -66,7 +66,7 @@ outside this contract by construction — the same command reports moving one *i
 which is why it is a release-boundary decision. CI runs this on every pull request; before 1.0.0 was
 published it reported rather than gated, since 0.x was allowed to break.
 
-`public-api.txt` is the same contract as a list — 1 033 items, regenerated with
+`public-api.txt` is the same contract as a list — 1 034 items, regenerated with
 
 ```bash
 cargo public-api --simplified > public-api.txt   # needs a nightly toolchain: rustdoc JSON

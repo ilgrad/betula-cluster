@@ -861,7 +861,10 @@ class Betula:
         # exact route is worth +0.037 ARI (0.3533 -> 0.3902). Wider keeps the `route_beam` nearest
         # nodes at each level instead of one, at a linear cost in routing time, and only the heads
         # that assign by microcluster (ward, spectral, leiden, hdbscan) can see the difference --
-        # kmeans and the mixtures label from their own centres and never consult the tree.
+        # kmeans and the mixtures label from their own centres and never consult the tree. The one
+        # exception is `leaf_refit`, which routes at this width too (since 1.1): a Lloyd step is a
+        # Lloyd step against the rule it is read back with, so with both set the leaves move and
+        # every head sees it.
         self.route_beam = route_beam
         # Subspace rank q of the two subspace heads: each component's covariance is W Wᵀ + σ²I
         # (method="mppca") or W Wᵀ + diag(ψ) (method="mfa") with W of rank q, clamped to at most

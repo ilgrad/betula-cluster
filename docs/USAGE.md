@@ -956,10 +956,12 @@ than assuming.
 clusters, before it — and it exists because a leaf CF is not a summary of a region, it is an
 **absorption history**. It holds the rows that happened to arrive while that entry was the nearest
 one, in the order they arrived; the tree those rows finished in routes a different partition
-entirely. Each pass routes every row through the finished tree, rebuilds each leaf CF from exactly
-the rows it wins, and drops the entries that win none. Same restrictions as `refine`: in-memory
-`fit` / `fit_predict` only, since `partial_fit` keeps a tree and not the data. It is **off by
-default** because it relabels.
+entirely. Each pass routes every row through the finished tree — at the estimator's `route_beam`
+width (see *Widening the descent* below), so the leaves are fitted to the partition the labelling
+step reproduces — rebuilds each leaf CF from exactly the rows it wins, and drops the entries that
+win none. Same restrictions as `refine`: in-memory `fit` / `fit_predict` only, since
+`partial_fit` keeps a tree and not the data. It is **off by default** because it relabels. Every
+number in this section is at the default width of 1.
 
 **Since 2026-09-10 it is close to a coin flip, and it used to pay 11 of 12.** ARI against the labels,
 medians of seeds 0/1/2, on **raw features** (`sklearn.datasets.load_digits().data` and the first
@@ -1195,23 +1197,27 @@ classes are known to interleave; leave it alone otherwise, and measure rather th
 Two scoping rules. Only the heads that assign **by microcluster** — `ward`, `spectral`, `leiden`,
 `hdbscan` — can see the parameter at all: `kmeans` and every mixture head install a rule that labels
 from the `k` cluster centres (or the mixture posterior) and never consults the tree, so their labels
-are bit-identical at any width. And it applies to routing, not to building: insertion, the leaf
-clustering and `leaf_refit` are untouched, so the tree and the head are identical across widths and
-only the final row → microcluster map moves. `predict`, `predict_proba`, `assign_microclusters` and
+are bit-identical at any width. And it applies to routing, not to building: insertion and the leaf
+clustering are untouched, so the tree and the head are identical across widths and only the final
+row → microcluster map moves. `predict`, `predict_proba`, `assign_microclusters` and
 `outlier_scores` all honour it, including the sparse CSR path.
+
+**`leaf_refit` is the one exception to the second rule, and since 1.1 it is deliberate.** That pass
+is itself a route — it reassigns every row and rebuilds the leaf statistics from what each entry
+won — so it runs at `route_beam` like every other route on the estimator. A Lloyd step is only a
+Lloyd step against the rule it is read back with; before 1.1 the pass routed greedily whatever the
+width, which handed back leaves fitted to a partition none of the estimator's own queries reproduce.
+That is not a cheaper answer, it is a mismatched one. The consequence is that with **both** knobs set
+the tree itself moves, so every head sees it — including `kmeans` and the mixtures, which are
+otherwise width-blind — and the pass costs a linear factor in the width on its route. At the default
+`route_beam=1` nothing changes: `beam <= 1` is the plain descent and the pass is what it always was.
 
 **It is an estimator parameter.** The free `fit_predict` / `fit_predict_sparse` are the engine
 functions re-exported verbatim and route with the plain descent; use `Betula(route_beam=b)` to widen
 it. Same split as the fractional `max_leaves` above, and for the same reason.
 
-That second rule has one edge worth stating plainly rather than leaving to be discovered: `leaf_refit`
-reassigns its rows with the **plain descent**, whatever `route_beam` is set to. Combining the two
-gives leaves fitted against a narrow routing and then queried with a wide one. That is deliberate —
-letting the width reshape the tree would make it a build parameter and put it in the same class as
-`threshold` — but it means the two knobs do not compose into "a Lloyd step under the routing you
-actually use". Since 2026-09-10 the pass *is* consistent with the routing it uses — it re-routes
-after the rebalance that used to invalidate it — so a widened beam is now the only way to ask it for
-a partition it did not optimise.
+The engine functions therefore also refit greedily: `CFTree::refit_leaves` is unchanged and is the
+`beam = 1` case of the additive `CFTree::refit_leaves_beam`, which is what the estimator calls.
 
 ## Streaming / out-of-core — the `Betula` estimator
 

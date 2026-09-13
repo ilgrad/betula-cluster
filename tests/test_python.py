@@ -4710,6 +4710,32 @@ def test_route_beam_wide_enough_reaches_the_exact_nearest_microcluster():
     assert np.allclose(d_got, d_exact)
 
 
+def test_route_beam_reaches_leaf_refit_and_nothing_else_in_the_build():
+    """`route_beam` is a routing width, not a build parameter — with one exception, and since 1.1
+    the exception is deliberate. `leaf_refit` *is* a route: it reassigns every row and rebuilds the
+    leaf statistics from what each entry won. Running it greedily under a wide `route_beam` fits the
+    leaves to a partition none of the estimator's own queries reproduce.
+
+    Both halves are asserted, because either alone is satisfied by a bug. With `leaf_refit=0` the
+    leaves must be identical across widths, or the width has leaked into the build. With
+    `leaf_refit=1` they must not be, or the pass is ignoring it. `kmeans` labels from its own `k`
+    centres and never consults the tree, so a head that is otherwise width-blind is the sharpest
+    place to read the difference."""
+    x = _blobs(n=1500, d=6, k=4, seed=3)
+    kw = dict(feature="diagonal", method="kmeans", n_clusters=4, max_leaves=200, seed=0)
+
+    def leaves(beam, refit):
+        est = betula_cluster.Betula(route_beam=beam, leaf_refit=refit, **kw).fit(x)
+        return np.asarray(est.microcluster_centers_)
+
+    narrow, wide = leaves(1, 0), leaves(8, 0)
+    assert narrow.shape == wide.shape
+    assert np.array_equal(narrow, wide)
+
+    narrow, wide = leaves(1, 1), leaves(8, 1)
+    assert narrow.shape != wide.shape or not np.array_equal(narrow, wide)
+
+
 def test_route_beam_survives_the_sklearn_parameter_protocol():
     est = betula_cluster.Betula(route_beam=4)
     assert est.get_params()["route_beam"] == 4

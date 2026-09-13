@@ -6,6 +6,27 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **`CFTree::refit_leaves_beam`** — [`refit_leaves`](https://github.com/ilgrad/betula-cluster/blob/main/src/tree.rs)
+  with the pass's own route widened, so the leaves are fitted to the partition a `beam`-wide route
+  reproduces. `refit_leaves` is unchanged and is its `beam = 1` case; a width argument on
+  `refit_leaves` itself would have been a breaking change to a module frozen under semver, which is
+  the promise working rather than an obstacle to route around.
+
+### Changed
+
+- **`leaf_refit` now routes at `route_beam` instead of always greedily.** A Lloyd step is only a
+  Lloyd step against the rule it is read back with. Setting both knobs used to hand back leaves
+  fitted to a greedy partition while every query the estimator performs — `predict`,
+  `predict_proba`, `assign_microclusters`, `outlier_scores` — used the wide one; that is not a
+  cheaper answer, it is a mismatched one. Two consequences for callers who set **both**: the tree
+  itself moves, so every head sees it including `kmeans` and the mixtures, which are otherwise
+  width-blind; and the pass costs a linear factor in the width on its route, on top of the 1.8–2.5×
+  a plain fit one narrow pass already costs. At the default `route_beam=1` nothing changes —
+  `beam <= 1` *is* the plain descent, and the leaf statistics are bit-identical to 1.0. The free
+  `fit_predict` / `fit_predict_sparse` engine functions take no width and keep refitting greedily.
+
 ### Fixed
 
 - **`memory_budget_mb` no longer under-sizes the divisor it uses, so the budget is met instead of

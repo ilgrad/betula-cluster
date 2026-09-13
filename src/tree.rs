@@ -514,13 +514,37 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> CF
     /// least one entry always survives (every row is assigned to some entry, and `n > 0`), so it
     /// runs at most `entries.len()` times. Two routes is the ceiling in practice, and one pass costs
     /// 1.8–2.5× a plain fit on `digits`, MNIST-10k and 200 000 × 8 blobs.
+    ///
+    /// The route here is the greedy descent. To fit the leaves to the partition a *wider* route
+    /// produces, call [`refit_leaves_beam`](Self::refit_leaves_beam) instead.
     pub fn refit_leaves(&mut self, flat: &[R], n: usize) {
+        self.refit_leaves_beam(flat, n, 1);
+    }
+
+    /// [`refit_leaves`](Self::refit_leaves) with the pass's own route widened to `beam`, so the
+    /// partition it fits is the one a `beam`-wide route reproduces.
+    ///
+    /// The pass is a Lloyd step, and a Lloyd step is only a Lloyd step against the assignment rule
+    /// it will be read back with. `refit_leaves` routes with the greedy descent
+    /// ([`nearest_entry`](Self::nearest_entry)); every *other* place a row meets the tree takes a
+    /// width. Set both and the leaves end up fitted to a partition the labelling step does not
+    /// reproduce — not a cheaper answer, a mismatched one.
+    ///
+    /// `beam <= 1` is exactly the greedy descent, so `refit_leaves` is this method's `beam = 1`
+    /// case and stays allocation-free. The wider pass costs a linear factor in `beam` on its route,
+    /// which is already the expensive half: one narrow pass runs 1.8–2.5× a plain fit.
+    ///
+    /// It is a separate method rather than a width argument on `refit_leaves` for the reason
+    /// [`nearest_entry_beam`](Self::nearest_entry_beam) is separate from `nearest_entry`, and for
+    /// one more: `refit_leaves` is public API in a module frozen under semver, so a parameter added
+    /// to it would break every caller that has one.
+    pub fn refit_leaves_beam(&mut self, flat: &[R], n: usize, beam: usize) {
         if self.entries.is_empty() || n == 0 || self.dim == 0 {
             return;
         }
         let mut rebalances = 0usize;
         loop {
-            let alive = self.reaccumulate(flat, n);
+            let alive = self.reaccumulate(flat, n, beam);
             if alive.iter().all(|&a| a) {
                 break;
             }
@@ -540,10 +564,10 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> CF
 
     /// Route every row against the tree as it stands and replace each entry with the exact
     /// sufficient statistic of the rows it won, returning which entries won any.
-    fn reaccumulate(&mut self, flat: &[R], n: usize) -> Vec<bool> {
+    fn reaccumulate(&mut self, flat: &[R], n: usize, beam: usize) -> Vec<bool> {
         let dim = self.dim;
         let assign: Vec<usize> = (0..n)
-            .map(|i| self.nearest_entry(&flat[i * dim..(i + 1) * dim]))
+            .map(|i| self.nearest_entry_beam(&flat[i * dim..(i + 1) * dim], beam))
             .collect();
         let mut fresh: Vec<C> = (0..self.entries.len()).map(|_| C::new(dim)).collect();
         for (i, &e) in assign.iter().enumerate() {
@@ -3174,6 +3198,115 @@ mod tests {
              entries the pass built from them"
         );
         verify(&tree, n);
+    }
+
+    /// A Lloyd step is only a Lloyd step against the rule it is read back with. `refit_leaves`
+    /// routes greedily, so a caller who also widens the route gets leaves fitted to a partition
+    /// none of its own queries reproduce — and `refit_leaves_beam` is the fix.
+    ///
+    /// The claim is the exact-statistic one of
+    /// [`refit_leaves_replaces_the_absorption_history_with_the_routed_partition`] restated at a
+    /// width, and against the same tree that test uses: accumulate the rows a `beam`-wide route
+    /// assigns *before* the pass, and require the entries the widened pass leaves behind to be that
+    /// accumulation to the last bit. The greedy pass on the same fixture is not, and the third
+    /// assertion is what makes the first two mean something — without it both would pass on a
+    /// fixture where the two routes agree, and so on a `refit_leaves_beam` that ignored its width.
+    ///
+    /// Taking the reference assignment before the call rather than after is not a convenience:
+    /// `refold_node_cfs` runs once at the end of the pass, so the node CFs the last route descended
+    /// through are not the ones a later query descends through. That residual is the greedy
+    /// descent's, not the pass's, and it is what
+    /// [`refit_leaves_leaves_the_tree_routing_rows_to_the_entries_it_built`] bounds.
+    #[test]
+    fn a_beam_routed_refit_fits_the_partition_a_beam_routed_query_reproduces() {
+        const BEAM: usize = 8;
+        let (d, n) = (3usize, 900usize);
+        let pts = gaussian_blobs(n, d, 5, 1);
+        let flat = flatten(&pts);
+        let build = || {
+            let mut tree: CFTree<f64, Spherical<f64>, _, _> =
+                CFTree::new(d, 4, 4, 0.0, 24, CentroidEuclidean, Radius);
+            for p in &pts {
+                tree.insert(p);
+            }
+            tree
+        };
+        // The partition a beam-`BEAM` query produces against the tree as the pass receives it.
+        let base = build();
+        let assign: Vec<usize> = pts
+            .iter()
+            .map(|p| base.nearest_entry_beam(p, BEAM))
+            .collect();
+        let mut want: Vec<Spherical<f64>> =
+            (0..base.num_leaves()).map(|_| Spherical::new(d)).collect();
+        for (p, &e) in pts.iter().zip(&assign) {
+            want[e].push(p, 1.0);
+        }
+        // Total weight sitting in an entry other than the one that partition assigns it to.
+        let residual = |tree: &CFTree<f64, Spherical<f64>, CentroidEuclidean, Radius>| {
+            assert_eq!(
+                tree.num_leaves(),
+                want.len(),
+                "the fixture must not drop an entry, or the pass rebalances and `want` is an \
+                 assignment the tree no longer produces"
+            );
+            tree.leaf_features()
+                .iter()
+                .zip(&want)
+                .map(|(g, w)| (g.weight() - w.weight()).abs())
+                .sum::<f64>()
+        };
+
+        let mut wide = build();
+        wide.refit_leaves_beam(&flat, n, BEAM);
+        assert_eq!(
+            residual(&wide),
+            0.0,
+            "the widened pass must fit its own route"
+        );
+        for (e, (g, w)) in wide.leaf_features().iter().zip(&want).enumerate() {
+            for j in 0..d {
+                assert!(close(g.mean()[j], w.mean()[j]), "mean {e}/{j}");
+            }
+            assert!(close(g.ssd(), w.ssd()), "ssd {e}");
+        }
+
+        let mut greedy = build();
+        greedy.refit_leaves(&flat, n);
+        assert!(
+            residual(&greedy) > 0.0,
+            "the fixture cannot tell the two passes apart — the greedy route already agrees with \
+             the beam-{BEAM} one, so this test would pass on a `refit_leaves_beam` that ignored \
+             its width"
+        );
+        verify(&wide, n);
+    }
+
+    /// `beam <= 1` is the greedy descent, so the default path must stay exactly what it was — not
+    /// approximately, since `refit_leaves` now delegates.
+    #[test]
+    fn a_refit_at_width_zero_or_one_is_the_plain_refit() {
+        let (d, n) = (3usize, 900usize);
+        let pts = gaussian_blobs(n, d, 5, 1);
+        let flat = flatten(&pts);
+        let means = |beam: Option<usize>| {
+            let mut tree: CFTree<f64, Spherical<f64>, _, _> =
+                CFTree::new(d, 4, 4, 0.0, 24, CentroidEuclidean, Radius);
+            for p in &pts {
+                tree.insert(p);
+            }
+            match beam {
+                None => tree.refit_leaves(&flat, n),
+                Some(b) => tree.refit_leaves_beam(&flat, n, b),
+            }
+            tree.leaf_features()
+                .iter()
+                .map(|c| (c.weight(), c.mean().to_vec(), c.ssd()))
+                .collect::<Vec<_>>()
+        };
+        let plain = means(None);
+        assert_eq!(means(Some(0)), plain);
+        assert_eq!(means(Some(1)), plain);
     }
 
     /// `k` isotropic unit-variance blobs on centres drawn `N(0, 6²)`, from a splitmix64/Box-Muller

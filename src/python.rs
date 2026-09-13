@@ -2262,12 +2262,13 @@ impl<R: Real> TreeState<R> {
         share.unwrap_or(0.0)
     }
 
-    fn refit_leaves(&mut self, flat: &[R], n: usize) {
+    /// `beam` is the descent width the pass routes with; `0` and `1` are both the plain descent.
+    fn refit_leaves(&mut self, flat: &[R], n: usize, beam: usize) {
         match self {
-            TreeState::Spherical(t) => t.refit_leaves(flat, n),
-            TreeState::Diagonal(t) => t.refit_leaves(flat, n),
-            TreeState::Full(t) => t.refit_leaves(flat, n),
-            TreeState::Fd(t) => t.refit_leaves(flat, n),
+            TreeState::Spherical(t) => t.refit_leaves_beam(flat, n, beam),
+            TreeState::Diagonal(t) => t.refit_leaves_beam(flat, n, beam),
+            TreeState::Full(t) => t.refit_leaves_beam(flat, n, beam),
+            TreeState::Fd(t) => t.refit_leaves_beam(flat, n, beam),
         }
     }
 
@@ -3295,6 +3296,10 @@ impl Betula {
     /// each pass re-routes every row against the finished tree and rebuilds the leaf CFs from the
     /// rows they won. See [`CFTree::refit_leaves`] for why that is not the same summary.
     ///
+    /// The pass routes at `route_beam`, the same width every other route on this estimator uses, so
+    /// the leaves are fitted to the partition the labelling step reproduces. At the default width
+    /// of 1 that is the plain descent and the pass is byte-identical to what it always was.
+    ///
     /// Like [`Self::refine_rule`], only the in-memory entry points can run it: a `partial_fit`
     /// stream keeps a tree, not the rows. It runs in the tree's own dtype, because it rewrites the
     /// tree's own features rather than a `f64` centre rule.
@@ -3302,13 +3307,13 @@ impl Betula {
         if self.leaf_refit == 0 {
             return Ok(());
         }
-        let (prep, passes) = (self.row_prep(), self.leaf_refit);
+        let (prep, passes, beam) = (self.row_prep(), self.leaf_refit, self.route_beam);
         if let Some(t) = self.state64.as_mut() {
             let (src, n, _) = flat_as::<f64>(data, prep)?;
             let flat = src.as_slice();
             py.detach(|| {
                 for _ in 0..passes {
-                    t.refit_leaves(flat, n);
+                    t.refit_leaves(flat, n, beam);
                 }
             });
         } else if let Some(t) = self.state32.as_mut() {
@@ -3316,7 +3321,7 @@ impl Betula {
             let flat = src.as_slice();
             py.detach(|| {
                 for _ in 0..passes {
-                    t.refit_leaves(flat, n);
+                    t.refit_leaves(flat, n, beam);
                 }
             });
         }
