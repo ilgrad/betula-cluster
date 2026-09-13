@@ -39,6 +39,9 @@
 # every line in it. `src/tree.rs` was re-measured a third time (**2026-09-13 whole-file**, 293
 # mutants) after `refit_leaves_beam` was added and the 2026-08-21 run turned out to have been
 # stopped by the local 90-minute cap at 130 of its 156 mutants -- see that section.
+# `src/clustering/kmeans.rs` was re-measured a third time (**2026-09-13 whole-file**, 158
+# mutants in 27m) and came back with the same five survivors at four new lines -- a
+# re-anchoring confirmed by measurement rather than inferred from a description match.
 #
 # The entry-by-entry runs used `cargo test --lib`, not the `--test-tool nextest` the CI job uses.
 # The difference is `tests/integration_api.rs`, whose four tests assert label counts and a 4-blob
@@ -453,6 +456,15 @@ src/clustering/scalespace.rs:300:21: replace + with * in prominence_modes
 src/clustering/scalespace.rs:301:56: replace > with >= in prominence_modes
 
 # ── src/clustering/kmeans.rs (5) ──
+# **Re-measured 2026-09-13, whole file**: 158 mutants in 27m at -j4 -- 131 caught, 5 missed, 20
+# unviable, 2 timeouts. The same five survivors, by description, as the 2026-08-27 run below;
+# four of them had moved (228 -> 236, 304 -> 312, 311 -> 319, 411 -> 440) and are re-anchored
+# here from measurement rather than from a description match. **No test was added**, and that is
+# the finding rather than an omission: three of the five are no-ops at equality or a constant
+# shift of a score nothing reads, and the other two would pin an arbitrary tie-break through the
+# RNG's draw order. The arguments below are unchanged and were re-checked against the current
+# lines.
+#
 # Re-measured 2026-08-27 together with `xmeans.rs` and `model.rs`: 417 mutants in 2h03 at -j2 under
 # `systemd-run --user --scope --unit=betula-mut-cap -p MemoryMax=10G -p MemorySwapMax=0`, frozen at
 # a0b1a3e in a throwaway worktree. 349 caught / 25 missed / 40 unviable / 3 timeouts, of which this
@@ -475,25 +487,25 @@ src/clustering/scalespace.rs:301:56: replace > with >= in prominence_modes
 # union-find path walk into an infinite loop, which the suite detects by hanging.
 #
 # Believed equivalent, with the argument:
-#   228:31  `inertia = inertia + f.ssd() + ...` -> `- f.ssd()`. `Σ_i f.ssd()` does not depend on the
+#   236:31  `inertia = inertia + f.ssd() + ...` -> `- f.ssd()`. `Σ_i f.ssd()` does not depend on the
 #           assignment, so negating it shifts *every* restart's score by the same constant and the
 #           `inertia >= *bi` comparison that picks the best restart is unchanged. The value itself
 #           never leaves `cop_kmeans` -- only `assign` is returned.
-#   311:19  `if nd < *di { *di = nd }` -> `<=`. The two differ only at `nd == *di`, where the
+#   319:19  `if nd < *di { *di = nd }` -> `<=`. The two differ only at `nd == *di`, where the
 #           assignment is a no-op. `sq_euclidean` sums squares, so neither side can be `-0.0`.
-#   411:21  `else if d < d2 { d2 = d }` -> `<=`. The same no-op, in `nearest_two`.
+#   440:21  `else if d < d2 { d2 = d }` -> `<=`. The same no-op, in `nearest_two`.
 #
 # Debt: the greedy k-means++ trial draw and the sweep's argmax.
-#   304:20  `if pot < best_pot` -> `<=`: on two candidates of *exactly* equal potential the later
+#   312:20  `if pot < best_pot` -> `<=`: on two candidates of *exactly* equal potential the later
 #           one wins instead of the earlier. Both are optimal by the algorithm's own criterion, so
 #           any test would pin an arbitrary choice through the RNG's draw order.
-#   589:16  `if bic > best_bic` -> `>=` in `kmeans_auto`: a tie between two different `k` on a score
+#   621:16  `if bic > best_bic` -> `>=` in `kmeans_auto`: a tie between two different `k` on a score
 #           built from a float variance. Not reachable by construction, and `best_bic` starts at
 #           `-inf`, which `pelleg_moore_bic` cannot return (the variance is floored at 1e-12).
-src/clustering/kmeans.rs:228:31: replace + with - in cop_kmeans
-src/clustering/kmeans.rs:304:20: replace < with <= in kmeans_plus_plus
-src/clustering/kmeans.rs:311:19: replace < with <= in kmeans_plus_plus
-src/clustering/kmeans.rs:411:21: replace < with <= in nearest_two
+src/clustering/kmeans.rs:236:31: replace + with - in cop_kmeans
+src/clustering/kmeans.rs:312:20: replace < with <= in kmeans_plus_plus
+src/clustering/kmeans.rs:319:19: replace < with <= in kmeans_plus_plus
+src/clustering/kmeans.rs:440:21: replace < with <= in nearest_two
 src/clustering/kmeans.rs:621:16: replace > with >= in kmeans_auto
 
 # ── src/clustering/xmeans.rs (8) ──
