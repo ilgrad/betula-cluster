@@ -826,6 +826,7 @@ mod tests {
             !empty.is_empty(),
             "the fixture handed every component a member, so it cannot see the fallback"
         );
+        let full = (0..5).find(|c| !empty.contains(c)).unwrap();
 
         let f = gmm_full_once::<f64, _>(&micros, 5, 200, 7);
         assert!(f.loglik.is_finite(), "log-likelihood is {}", f.loglik);
@@ -838,6 +839,24 @@ mod tests {
             }
         }
         assert!(f.resp.iter().flatten().all(|r| r.is_finite()));
+
+        // Finiteness alone is not the claim, and on its own it is met by accident: the downstream
+        // Cholesky fallback repairs a NaN covariance into *something*, and after 200 iterations the
+        // variance floor has pulled every component back to the same place. The claim is the one the
+        // diagonal head's test makes — an empty component is seeded from the global spread, so it
+        // enters the E-step broad enough to compete for members instead of a thousand times more
+        // confident than any real one. Read it after a single step, which is the only point at which
+        // the seed is still the seed: it reads 300x a real component's spread here, and 9x if the
+        // fallback is skipped.
+        let one = gmm_full_once::<f64, _>(&micros, 5, 1, 7);
+        for &c in &empty {
+            assert!(
+                one.covs[c][0][0] > 100.0 * one.covs[full][0][0],
+                "component {c} was seeded at {} against a within-cluster {}",
+                one.covs[c][0][0],
+                one.covs[full][0][0]
+            );
+        }
     }
 
     /// `k` isotropic Gaussian blobs in `dim` dimensions, summarised into micro-clusters of five points

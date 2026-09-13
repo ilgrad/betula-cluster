@@ -608,11 +608,23 @@ src/sketch/kll.rs:62:18: replace ^= with |= in KllSketch::coin
 src/sketch/kll.rs:62:30: replace << with >> in KllSketch::coin
 
 # ── src/clustering/gmm.rs (13) ──
-# Re-measured 2026-08-21, entry by entry, each mutation applied at its own line:col and
-# run against the full library suite. Six of the nineteen this replaces are now caught:
-# both BIC slopes (`selection_sweep`, added 2026-08-20, already killed three of them --
-# the list was stale, not the tests), the triangular covariance count, and both
-# empty-warm-start fallbacks.
+# **Re-measured 2026-09-13, whole file**: 329 mutants in 26m at -j4 -- 283 caught, 14 missed, 32
+# unviable, no timeouts. The section this replaces was measured entry by entry on 2026-08-21 and
+# five of its thirteen entries had since moved by twelve lines (159 -> 171, 178 -> 190, 396 -> 408
+# twice, 455 -> 467, 491 -> 503); the rest were already anchored where the run found them.
+#
+# One survivor the old section did not list, and it contradicts a claim the old section made. The
+# k-means warm-start guard in `gmm_full_once` (now 397:22) was recorded there as "reachable and
+# pinned"; the run reports it missed. It is now killed, by strengthening
+# `an_empty_warm_start_does_not_make_the_full_head_singular`. That test asserted only that nothing
+# came back NaN, which is met by accident: the downstream Cholesky fallback repairs a 0/0
+# covariance into *something*, and after 200 iterations the variance floor has pulled every
+# component back to the same place, so the whole difference showed up as the tenth significant
+# digit of the log-likelihood. The claim the diagonal head's test already made is the right one --
+# an empty component must be seeded from the *global* spread, broad enough to compete for members
+# rather than entering the E-step far more confident than any real one -- and it is visible after a
+# single EM step, where the seed is still the seed: 300x a real component's spread with the guard,
+# 9x without it, and 16x the responsibility mass on a component with no members.
 #
 # Believed equivalent -- a constant offset in a BIC parameter count. `bic = -2 lnL +
 # p*ln n`, so a change that adds the same amount to `p` for every `k` shifts every score
@@ -627,17 +639,19 @@ src/clustering/gmm.rs:672:50: replace - with / in gmm_full_auto
 # else { floor }` or `if x < floor { x = floor }`; at `raw == floor` both branches store
 # the same bits, so no execution can tell them apart.
 src/clustering/gmm.rs:105:37: replace > with >= in gmm_diagonal_once
-src/clustering/gmm.rs:178:41: replace > with >= in gmm_diagonal_once
-src/clustering/gmm.rs:396:34: replace < with <= in gmm_full_once
-src/clustering/gmm.rs:491:38: replace < with <= in gmm_full_once
+src/clustering/gmm.rs:190:41: replace > with >= in gmm_diagonal_once
+src/clustering/gmm.rs:408:34: replace < with <= in gmm_full_once
+src/clustering/gmm.rs:503:38: replace < with <= in gmm_full_once
 #
 # Debt. The M-step guard `nk[c] > 0` needs a component whose *total* responsibility
 # underflows to exactly 0.0 -- every micro-cluster more than ~746 nats behind the
 # log-sum-exp, including at the component's own mean. Not constructible while the mean
 # stays inside the convex hull of the data and the variance is floored at 1e-3*gvar.
-# (The *warm-start* guards one loop up, 100:36 and 385:22, are reachable and are pinned.)
-src/clustering/gmm.rs:159:22: replace > with >= in gmm_diagonal_once
-src/clustering/gmm.rs:455:22: replace > with >= in gmm_full_once
+# These are the guards *inside* the EM loop, where `nk` is a sum of responsibilities; the two
+# warm-start guards one loop up (100:36 and 397:22), where `nk` is a sum of leaf weights and an
+# empty k-means cluster makes it exactly zero, are reachable and are both pinned.
+src/clustering/gmm.rs:171:22: replace > with >= in gmm_diagonal_once
+src/clustering/gmm.rs:467:22: replace > with >= in gmm_full_once
 #
 # Debt. `<` -> `==` disables the *initialisation* covariance floor, which is a
 # conditioning guard that EM erases: measured on a fixture whose init diagonals sit at
@@ -645,8 +659,8 @@ src/clustering/gmm.rs:455:22: replace > with >= in gmm_full_once
 # 7.09723733379987731 to 7.09723733390917122 -- the eleventh significant digit -- and on
 # `blobs` it did not move at all. A killing fixture needs the near-singular direction to
 # survive to convergence, which is the high-dimensional regime the comment at
-# `gmm.rs:482` cites and which no cheap unit fixture reproduces.
-src/clustering/gmm.rs:396:34: replace < with == in gmm_full_once
+# `gmm.rs:494` cites and which no cheap unit fixture reproduces.
+src/clustering/gmm.rs:408:34: replace < with == in gmm_full_once
 #
 # Debt. `score < best_score` -> `<=` differs only when two `k` produce a bit-identical
 # BIC. `p` is strictly increasing in `k`, so that needs the log-likelihoods to differ by
