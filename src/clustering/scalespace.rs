@@ -922,4 +922,124 @@ mod tests {
             );
         }
     }
+
+    /// [`select_scale`] is a pure function on a mode-count curve, and nothing tested it directly:
+    /// every case below went through a fitted tree, where the arithmetic that picks the plateau is
+    /// three layers under the assertion. The cases are the contract, written as the doc comment
+    /// states it — widest `>= 2` plateau wins outright, ties go to the earlier (finer) one, the
+    /// answer is that plateau's midpoint, and the coarsest scale is the fallback when there is no
+    /// plateau at all.
+    #[test]
+    fn select_scale_takes_the_midpoint_of_the_widest_plateau_and_breaks_ties_finer() {
+        // Widest multi-mode plateau wins over an earlier, narrower one; the answer is its midpoint.
+        assert_eq!(select_scale(&[5, 1, 3, 3, 3]), 3);
+        // Even width: the midpoint is `start + len/2`, not `start + len%2` and not `start * len/2`.
+        assert_eq!(select_scale(&[5, 1, 3, 3, 3, 3]), 4);
+        // Two plateaus of equal width: the tie goes to the earlier, finer one (the 0.3845 vs 0.3509
+        // measurement in the doc comment above), so `>` and not `>=`.
+        assert_eq!(select_scale(&[3, 3, 2, 2]), 1);
+        // No `>= 2` plateau wider than one: fall back to the widest single-mode run's midpoint.
+        assert_eq!(select_scale(&[5, 1, 1, 9]), 2);
+        // Two single-mode runs of *equal* width: again the earlier one, so `>` and not `>=`.
+        assert_eq!(select_scale(&[9, 1, 7, 1]), 1);
+        // A wider single-mode run later beats a narrower one earlier.
+        assert_eq!(select_scale(&[9, 1, 1, 7, 1]), 2);
+        // Neither a multi-mode plateau nor any single-mode scale: the coarsest index, `len - 1`.
+        assert_eq!(select_scale(&[5, 9]), 1);
+        assert_eq!(select_scale(&[4, 6, 8]), 2);
+    }
+
+    /// The sweep's grid has to *reach* `hi`, not stop short of it: `hi` is the scale the previous
+    /// pass found single-moded, so a grid that never evaluates it leaves the cascade's ceiling
+    /// unmeasured and the refinement narrows onto the wrong interval. Off by one in the step
+    /// divisor is invisible in every mode count on a clean fixture, which is why this asserts the
+    /// grid and not the labels.
+    #[test]
+    fn the_sweep_grid_spans_its_closed_range_when_nothing_merges_early() {
+        let mu: Vec<Vec<f64>> = (0..6).map(|i| vec![i as f64 * 4.0]).collect();
+        let n = vec![1.0; 6];
+        let var = vec![0.0; 6];
+        let (lo, hi) = (0.05_f64, 0.30_f64);
+        let steps = 7;
+        let out = sweep(&mu, &n, &var, lo, hi, steps, 50);
+        assert_eq!(
+            out.len(),
+            steps,
+            "the fixture must not merge early: {out:?}"
+        );
+        let first = out[0].0;
+        let last = out[out.len() - 1].0;
+        assert!(
+            (first - lo).abs() < 1e-12,
+            "grid starts at {first}, not {lo}"
+        );
+        assert!((last - hi).abs() < 1e-12, "grid ends at {last}, not {hi}");
+    }
+
+    /// `scale_space` derives each leaf's per-dimension variance as `ssd / (weight · dim)` before it
+    /// ever calls the kernel, and nothing checked that line: every other test here hands `mean_shift`
+    /// a `var` vector of its own, so a wrong derivation inside the head was invisible. The fixture is
+    /// two-dimensional on purpose — at `dim = 1` the mutation `weight / dim` is the identity.
+    #[test]
+    fn the_head_derives_each_leafs_variance_from_its_own_scatter() {
+        // Two triples with the *same* geometry and different scatter, which is what makes the
+        // derivation observable in the head's output rather than only inside it: the left leaves
+        // carry sigma^2 = ssd / (w · dim) = 3840 / (30 · 2) = 64 and overlap into one mode low in the
+        // sweep, the right leaves carry none and stay three. Get `var` wrong — zero it, or divide by
+        // `w + dim` or `w / dim` — and the left triple stops merging where it should, which moves
+        // the plateau `select_scale` lands on and with it every label.
+        let micros: Vec<Spherical<f64>> = [(0.0, 3840.0), (4.0, 3840.0), (8.0, 3840.0)]
+            .into_iter()
+            .chain([(30.0, 0.0), (34.0, 0.0), (38.0, 0.0)])
+            .map(|(x, ssd)| Spherical::from_moments(30.0, vec![x, 0.0], ssd))
+            .collect();
+        let var = leaf_variances(&micros);
+        assert_eq!(var, vec![64.0, 64.0, 64.0, 0.0, 0.0, 0.0], "{var:?}");
+
+        // Re-run the head's own schedule, differing from it in one thing only: where `var` comes
+        // from. Everything else — `bandwidth_range`, `sweep`, `select_scale` — is the same call, so
+        // a mutation in any of those moves both sides equally and this test says nothing about them
+        // (they have their own). What it does pin is that the head derives `var` as above, at every
+        // bandwidth the sweep visits rather than only at the one it settles on.
+        let steps = 9;
+        let mu: Vec<Vec<f64>> = micros.iter().map(|f| f.mean().to_vec()).collect();
+        let (h_min, h_max) = bandwidth_range(&mu);
+        let mut hi = h_max;
+        let mut curve = sweep(&mu, &n_of(&micros), &var, h_min, hi, steps, 200);
+        for _ in 1..REFINEMENTS {
+            let cascade = curve.iter().filter(|(_, r)| r.1 >= 2).count();
+            match curve.last() {
+                Some(&(h, (_, 1))) if cascade >= 2 && h > h_min => {
+                    hi = h;
+                    curve = sweep(&mu, &n_of(&micros), &var, h_min, hi, steps, 200);
+                }
+                _ => break,
+            }
+        }
+        let counts: Vec<usize> = curve.iter().map(|(_, r)| r.1).collect();
+        let (want_h, (want_labels, want_modes)) = curve.swap_remove(select_scale(&counts));
+
+        let got = scale_space(&micros, steps, 200);
+        assert_eq!(got.n_modes, want_modes, "mode count");
+        assert_eq!(got.labels, want_labels, "labels");
+        assert!(
+            (got.bandwidth - want_h).abs() < 1e-12,
+            "bandwidth {} vs {want_h}",
+            got.bandwidth
+        );
+
+        // The scatter has to be load-bearing on this fixture, or the comparison above is vacuous.
+        // It is, low in the sweep: at `h = 1` the mollified kernel joins each triple and the point
+        // kernel does not. (Not at `want_h`, which is high enough to merge a triple on its own —
+        // the curve is what the head selects on, and the curve is decided down here.)
+        let h = 1.0;
+        let point = mean_shift(&mu, &n_of(&micros), &vec![0.0; micros.len()], h, 200);
+        let mollified = mean_shift(&mu, &n_of(&micros), &var, h, 200);
+        assert!(
+            point.1 > mollified.1,
+            "fixture is insensitive to the variance: {} vs {}",
+            point.1,
+            mollified.1
+        );
+    }
 }
