@@ -758,6 +758,30 @@ mod tests {
         assert_eq!(m.assign(&x), argmax(&r));
     }
 
+    /// Subtracting the maximum before `exp` is what keeps a sharp component a posterior. A variance
+    /// floor small enough pushes the log-joint past `ln f64::MAX`, and exponentiating the unshifted
+    /// scores overflows *every* component to `+∞` at once — which normalizes to `NaN`, not to 1.
+    #[test]
+    fn a_component_sharp_enough_to_overflow_exp_still_normalizes() {
+        let m = Mixture::diagonal(
+            &[0.5_f64, 0.5],
+            &[vec![0.0, 0.0, 0.0], vec![10.0, 10.0, 10.0]],
+            &[vec![1e-300; 3], vec![1.0; 3]],
+        );
+        let x = [0.0_f64, 0.0, 0.0];
+        let mut lj = Vec::new();
+        m.log_joint(&x, &mut lj);
+        assert!(
+            lj[0] > 709.0,
+            "the fixture does not reach the overflow it is for: {}",
+            lj[0]
+        );
+        let mut r = Vec::new();
+        m.responsibilities(&x, &mut r);
+        assert!((r[0] - 1.0).abs() < 1e-12, "r = {r:?}");
+        assert_eq!(r[1], 0.0);
+    }
+
     #[test]
     fn restrict_to_makes_unclaimed_components_unreachable() {
         let mut m = Mixture::diagonal(
@@ -769,6 +793,8 @@ mod tests {
         assert_eq!(m.assign(&x), 1);
         m.restrict_to(&[0, 0, 0]); // no leaf ever lands in component 1
         assert_eq!(m.assign(&x), 0);
+        // Silenced is not removed: the fitted component numbers still index `cluster_centers_`.
+        assert_eq!(m.n_components(), 2);
         let mut r = Vec::new();
         m.responsibilities(&x, &mut r);
         assert_eq!(r[1], 0.0);
@@ -782,6 +808,67 @@ mod tests {
         for scale in [0.01_f64, 1.0, 1000.0] {
             assert_eq!(m.assign(&[0.9 * scale, 0.4 * scale]), 0);
             assert_eq!(m.assign(&[0.4 * scale, 0.9 * scale]), 1);
+        }
+    }
+
+    /// The direction rule at score level, where `vmf_assignment_follows_direction_not_magnitude`
+    /// only sees the argmax: with equal weights and equal `κ` the normalization by `‖x‖` cancels out
+    /// of every comparison, so a fixture that reads the same label is no evidence the scale was
+    /// applied at all. The reference is the definition, `ln π_c + ln C_d(κ_c) + κ_c ⟨μ_c, x⟩/‖x‖`.
+    #[test]
+    fn vmf_log_joint_matches_the_longhand_directional_density() {
+        let weights = [0.35_f64, 0.65];
+        let logc = [0.75_f64, -1.5];
+        let kappas = [3.0_f64, 7.0];
+        let means = vec![vec![1.0_f64, 0.0, 0.0], vec![0.0, 0.6, -0.8]];
+        let m = Mixture::vmf(&weights, &means, &kappas, &logc);
+
+        // `‖x‖ ≠ 1`, or the scale could be dropped, doubled or inverted without moving a score.
+        let x = [1.0_f64, -2.0, 0.5];
+        let norm = x.iter().map(|v| v * v).sum::<f64>().sqrt();
+        assert!((norm - 1.0).abs() > 1.0);
+        let mut got = Vec::new();
+        m.log_joint(&x, &mut got);
+        for c in 0..2 {
+            let dot: f64 = x.iter().zip(&means[c]).map(|(&xd, &md)| xd * md).sum();
+            let want = weights[c].ln() + logc[c] + kappas[c] * dot / norm;
+            assert!((got[c] - want).abs() < 1e-12, "c={c}: {} vs {want}", got[c]);
+        }
+    }
+
+    /// The Watson arm had no test of its own: every case that reached it went through the head, which
+    /// reads the argmax. The reference is the definition, `ln π_c + ln c(κ_c) + κ_c ⟨μ_c, x⟩²/‖x‖²`.
+    #[test]
+    fn watson_log_joint_matches_the_longhand_axial_density() {
+        let weights = [0.3_f64, 0.7];
+        let logc = [-1.25_f64, 0.4];
+        let kappas = [4.0_f64, 9.0];
+        let axes = vec![vec![1.0_f64, 0.0, 0.0], vec![0.0, 0.6, -0.8]];
+        let m = Mixture::watson(&weights, &axes, &kappas, &logc);
+
+        let x = [1.0_f64, -2.0, 0.5];
+        let norm = x.iter().map(|v| v * v).sum::<f64>().sqrt();
+        assert!((norm - 1.0).abs() > 1.0);
+        let mut got = Vec::new();
+        m.log_joint(&x, &mut got);
+        for c in 0..2 {
+            let dot: f64 = x.iter().zip(&axes[c]).map(|(&xd, &md)| xd * md).sum();
+            let cos = dot / norm;
+            let want = weights[c].ln() + logc[c] + kappas[c] * cos * cos;
+            assert!((got[c] - want).abs() < 1e-12, "c={c}: {} vs {want}", got[c]);
+        }
+
+        // Axial, not directional: the antipode is the same axis and must score identically. This is
+        // the whole difference from the vMF arm above, which the squared cosine carries.
+        let mut anti = Vec::new();
+        m.log_joint(&[-1.0_f64, 2.0, -0.5], &mut anti);
+        assert_eq!(anti, got);
+
+        // A point with no direction has no axis to align with, so the density is the folded weight
+        // alone — not the `0/0` that reaches the cosine when the guard on `‖x‖` is let through.
+        m.log_joint(&[0.0_f64, 0.0, 0.0], &mut got);
+        for (c, &v) in got.iter().enumerate() {
+            assert_eq!(v, weights[c].ln() + logc[c], "c={c}");
         }
     }
 
@@ -874,6 +961,80 @@ mod tests {
         }
     }
 
+    /// The same Woodbury check for the factor-analysis arm, whose noise is a *vector*: `Ψ` enters the
+    /// projection, the Gram matrix and the log-determinant separately, and a component built from one
+    /// isotropic `σ²` cannot tell those three uses apart.
+    #[test]
+    fn factor_analysis_matches_the_dense_covariance_it_never_forms() {
+        let dim = 4;
+        let loads = vec![
+            vec![vec![1.0_f64, -2.0, 0.5, 3.0], vec![0.0, 1.0, 2.0, -1.0]],
+            vec![vec![2.0_f64, 0.0, -1.0, 1.0]],
+        ];
+        let noise = vec![vec![0.75_f64, 1.25, 0.5, 0.8], vec![1.5, 0.25, 3.0, 2.0]];
+        let means = vec![vec![0.0_f64, 1.0, -1.0, 2.0], vec![1.0, 1.0, 1.0, 1.0]];
+        let weights = [0.35_f64, 0.65];
+
+        let mut chol = Vec::new();
+        let mut logdet = Vec::new();
+        for (rows, psi) in loads.iter().zip(&noise) {
+            let mut cov = vec![vec![0.0_f64; dim]; dim];
+            for r in rows {
+                for i in 0..dim {
+                    for j in 0..dim {
+                        cov[i][j] += r[i] * r[j];
+                    }
+                }
+            }
+            for (i, row) in cov.iter_mut().enumerate() {
+                row[i] += psi[i];
+            }
+            let l = crate::linalg::cholesky_lower(&cov).expect("Sigma is positive definite");
+            logdet.push(crate::linalg::logdet_from_chol(&l));
+            chol.push(l);
+        }
+
+        let dense = Mixture::full(&weights, &means, &chol, &logdet);
+        let mfa = Mixture::factor_analysis(&weights, &means, &loads, &noise);
+        let (mut a, mut b) = (Vec::new(), Vec::new());
+        for x in [
+            [0.0_f64, 0.0, 0.0, 0.0],
+            [1.3, -0.4, 2.2, 0.1],
+            [-5.0, 4.0, -3.0, 6.0],
+        ] {
+            dense.log_joint(&x, &mut a);
+            mfa.log_joint(&x, &mut b);
+            for (c, (u, v)) in a.iter().zip(&b).enumerate() {
+                assert!((u - v).abs() < 1e-10, "c={c}: {u} vs {v}");
+            }
+        }
+    }
+
+    /// A loading row large enough to overflow its own Gram matrix leaves a component that cannot be
+    /// factorized. The documented answer is to drop the loadings — so that component must read as the
+    /// isotropic Gaussian its noise alone defines, and the others must be untouched.
+    #[test]
+    fn an_unfactorizable_component_falls_back_to_its_isotropic_noise() {
+        let means = vec![vec![0.0_f64, 1.0], vec![2.0, -1.0]];
+        let weights = [0.4_f64, 0.6];
+        let noise = [2.0_f64, 0.5];
+        let loads = vec![vec![vec![1e200_f64, 1e200]], vec![vec![0.25_f64, -0.5]]];
+        let vars: Vec<Vec<f64>> = noise.iter().map(|&s2| vec![s2, s2]).collect();
+        let sphere = Mixture::diagonal(&weights, &means, &vars);
+        let lowrank = Mixture::low_rank(&weights, &means, &loads, &noise);
+        let (mut a, mut b) = (Vec::new(), Vec::new());
+        let x = [0.7_f64, 0.3];
+        sphere.log_joint(&x, &mut a);
+        lowrank.log_joint(&x, &mut b);
+        assert!((a[0] - b[0]).abs() < 1e-12, "{} vs {}", a[0], b[0]);
+        assert!(
+            (a[1] - b[1]).abs() > 1e-6,
+            "the fixture's second component has no loadings to keep: {} vs {}",
+            a[1],
+            b[1]
+        );
+    }
+
     #[test]
     fn stationary_ar0_is_an_isotropic_gaussian_about_a_scalar_level() {
         let covs = vec![StationaryCov::Ar {
@@ -893,23 +1054,25 @@ mod tests {
     /// coefficient list were all reachable only through a head that never distinguished them.
     #[test]
     fn the_toeplitz_arm_scores_a_gaussian_and_reports_no_ar_coefficients() {
-        // L = [[2, 0], [1, 3]] ⇒ Σ = L Lᵀ = [[4, 2], [2, 10]], |Σ| = 36, ln|Σ| = ln 36.
-        let chol = vec![vec![2.0, 0.0], vec![1.0, 3.0]];
+        // L = [[3, 0], [1, 2]] ⇒ Σ = L Lᵀ = [[9, 3], [3, 5]], |Σ| = 36, ln|Σ| = ln 36.
+        let chol = vec![vec![3.0, 0.0], vec![1.0, 2.0]];
         let logdet = 36.0_f64.ln();
         let cov: StationaryCov<f64> = StationaryCov::Toeplitz {
             chol: chol.clone(),
             logdet,
         };
 
-        // Σ⁻¹ = (1/36)·[[10, −2], [−2, 4]]; for δ = (1, 1): δᵀΣ⁻¹δ = (10 − 2 − 2 + 4)/36 = 10/36.
+        // Σ⁻¹ = (1/36)·[[5, −3], [−3, 9]]; for δ = (1, 1): δᵀΣ⁻¹δ = (5 − 3 − 3 + 9)/36 = 8/36.
         let delta = [1.0, 1.0];
-        let quad = 10.0 / 36.0;
+        let quad = 8.0 / 36.0;
         let want = -0.5 * (2.0 * std::f64::consts::TAU.ln() + logdet + quad);
         let got = cov.loglik(&delta);
         assert!((got - want).abs() < 1e-12, "loglik = {got}, want {want}");
 
-        // The innovation variance of the general model is Σ₀₀ = L₀₀², not L₀₀ and not 2·L₀₀.
-        assert!((cov.innov() - 4.0).abs() < 1e-12, "innov = {}", cov.innov());
+        // The innovation variance of the general model is Σ₀₀ = L₀₀², not L₀₀ and not 2·L₀₀. The
+        // fixture's L₀₀ = 3 is what separates the square from the double; at L₀₀ = 2 they coincide
+        // and the assertion this comment describes holds for the wrong arithmetic too.
+        assert!((cov.innov() - 9.0).abs() < 1e-12, "innov = {}", cov.innov());
         assert!(
             cov.ar_coeffs().is_empty(),
             "the Toeplitz arm reported AR coefficients: {:?}",
@@ -937,16 +1100,33 @@ mod tests {
         );
     }
 
-    /// Sparse rows over `n_features` columns, as the CSR triples the entry points validate.
+    /// The tie rule is load-bearing, not cosmetic: `best_of` reads the argmax of an all-`-∞` score
+    /// vector before deciding to fall back, and `responsibilities` puts its point mass wherever that
+    /// lands. Taking the last index instead would make both depend on the component order.
+    #[test]
+    fn argmax_takes_the_first_index_on_ties() {
+        assert_eq!(argmax(&[1.0, 1.0, 0.5]), 0);
+        assert_eq!(argmax(&[0.5, 1.0, 1.0]), 1);
+        assert_eq!(argmax(&[f64::NEG_INFINITY; 3]), 0);
+    }
+
+    /// Every support over `n_features` columns, as the CSR triples the entry points validate: sorted,
+    /// deduplicated indices, from the empty row through every singleton to the full one.
+    ///
+    /// Exhaustive rather than hand-picked, because `label_of` returns a *label* and a label is a
+    /// coarse view of the scores it came from. Six rows sitting well inside their own component keep
+    /// their label under an arithmetic slip that moves every score by a lot; sweeping the supports
+    /// puts rows on both sides of each boundary the fixture has, which is what makes the agreement
+    /// with the dense scorer an assertion about the scores rather than about six easy rows.
     fn sparse_rows(n_features: usize) -> Vec<(Vec<usize>, Vec<f64>)> {
-        vec![
-            (vec![], vec![]),
-            (vec![0], vec![2.5]),
-            (vec![1, 4], vec![3.0, -1.5]),
-            (vec![0, 2, 5], vec![1.0, 4.0, 2.0]),
-            (vec![2, 3], vec![-2.0, 0.5]),
-            ((0..n_features).collect(), vec![0.75; n_features]),
-        ]
+        const VALUES: [f64; 5] = [2.5, -1.5, 0.75, 4.0, -0.25];
+        (0..1usize << n_features)
+            .map(|mask| {
+                let idx: Vec<usize> = (0..n_features).filter(|j| (mask >> j) & 1 == 1).collect();
+                let val = idx.iter().map(|&j| VALUES[(j + mask) % 5]).collect();
+                (idx, val)
+            })
+            .collect()
     }
 
     fn densify(idx: &[usize], val: &[f64], n_features: usize) -> Vec<f64> {
@@ -960,6 +1140,13 @@ mod tests {
     /// The `O(nnz)` split is a rearrangement of the same quadratic form, so it must pick the same
     /// component the dense scorer picks — including on the all-zero row, where the sparse form is
     /// nothing but the `zero_quad` constant.
+    ///
+    /// Component 0 is tight enough that its *folded* log-weight comes out positive, which is what
+    /// makes this an assertion about the scores and not only about the geometry: while every folded
+    /// weight is negative, `ln π_c − ½q_c` and any rescaling of it order the components the same way,
+    /// and a label is all a caller of `label_of` can see. One positive weight makes the two terms
+    /// pull in opposite directions for that component, so a slip in either of them moves a row across
+    /// a boundary instead of sliding the whole score vector.
     #[test]
     fn the_sparse_assigner_agrees_with_the_dense_diagonal_scorer() {
         let d = 6;
@@ -969,11 +1156,12 @@ mod tests {
             vec![0.0, 0.0, 4.0, 0.5, 0.0, 2.0],
         ];
         let vars = vec![
-            vec![1.0_f64; 6],
+            vec![0.05_f64; 6],
             vec![0.5, 2.0, 1.0, 1.0, 0.25, 3.0],
             vec![3.0, 1.0, 0.5, 2.0, 1.0, 0.75],
         ];
         let m = Mixture::diagonal(&[0.2_f64, 0.5, 0.3], &means, &vars);
+        assert!(m.logw[0] > 0.0, "component 0 is not tight: {}", m.logw[0]);
         let assigner = m.sparse_assigner().expect("a diagonal kernel splits");
 
         let mut seen = vec![false; 3];
@@ -1014,6 +1202,51 @@ mod tests {
             let want = m.assign(&x);
             let got = assigner.label_of(&idx, &val, x_sq);
             assert_eq!(got, want, "row {idx:?} = {val:?}");
+            seen[want] = true;
+        }
+        assert!(
+            seen.iter().all(|&s| s),
+            "the fixture never separates: {seen:?}"
+        );
+    }
+
+    /// The axial arm of the sparse scorer, which the vMF fixture above cannot stand in for: squaring
+    /// the cosine makes the sign of `⟨μ_c, x⟩` irrelevant, so a row and its antipode must land in the
+    /// same component, and the empty row — where the cosine is `0/0` — must fall back to the weights.
+    /// The heaviest folded weight is deliberately not component 0, so that fallback is visible.
+    #[test]
+    fn the_sparse_assigner_agrees_with_the_dense_watson_scorer() {
+        let d = 6;
+        let axes = vec![
+            vec![1.0_f64, 0.0, 0.0, 0.0, 0.0, 0.0],
+            vec![0.0, 0.6, 0.0, 0.0, -0.8, 0.0],
+            vec![0.0, 0.0, 0.8, 0.1, 0.0, 0.59],
+        ];
+        let weights = [0.3_f64, 0.4, 0.3];
+        let logc = [0.0_f64, 0.5, 0.0];
+        let m = Mixture::watson(&weights, &axes, &[5.0_f64, 6.0, 7.0], &logc);
+        assert_eq!(
+            argmax(&m.logw),
+            1,
+            "the empty row cannot distinguish component 0"
+        );
+        let assigner = m
+            .sparse_assigner()
+            .expect("a Watson kernel is already O(nnz)");
+
+        let mut seen = vec![false; 3];
+        for (idx, val) in sparse_rows(d) {
+            let x = densify(&idx, &val, d);
+            let x_sq: f64 = val.iter().map(|v| v * v).sum();
+            let want = m.assign(&x);
+            let got = assigner.label_of(&idx, &val, x_sq);
+            assert_eq!(got, want, "row {idx:?} = {val:?}");
+            let flipped: Vec<f64> = val.iter().map(|v| -v).collect();
+            assert_eq!(
+                assigner.label_of(&idx, &flipped, x_sq),
+                want,
+                "the antipode of {idx:?} = {val:?} changed component"
+            );
             seen[want] = true;
         }
         assert!(

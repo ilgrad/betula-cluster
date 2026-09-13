@@ -42,6 +42,8 @@
 # `src/clustering/kmeans.rs` was re-measured a third time (**2026-09-13 whole-file**, 158
 # mutants in 27m) and came back with the same five survivors at four new lines -- a
 # re-anchoring confirmed by measurement rather than inferred from a description match.
+# `src/mixture.rs` was re-measured (**2026-09-14 whole-file**, 288 mutants in 2h) and its section
+# is now empty: the 65 survivors were three untested kernels, and seven tests closed all of them.
 #
 # The entry-by-entry runs used `cargo test --lib`, not the `--test-tool nextest` the CI job uses.
 # The difference is `tests/integration_api.rs`, whose four tests assert label counts and a 4-blob
@@ -829,23 +831,53 @@ src/clustering/nmf.rs:116:51: replace + with - in randomized_svd
 # give the fill a floor that does not vanish with the data and this stops being equivalent.
 src/clustering/nmf.rs:731:40: replace > with >= in project
 
-# ── src/mixture.rs (15) ──
-# Debt: `Mixture::log_joint` term arithmetic.
-src/mixture.rs:250:47: replace + with * in Mixture::vmf
-src/mixture.rs:250:47: replace + with - in Mixture::vmf
-src/mixture.rs:421:9: replace Mixture::n_components -> usize with 0
-src/mixture.rs:421:9: replace Mixture::n_components -> usize with 1
-src/mixture.rs:290:56: replace * with + in Mixture::log_joint
-src/mixture.rs:290:56: replace * with / in Mixture::log_joint
-src/mixture.rs:291:37: replace > with >= in Mixture::log_joint
-src/mixture.rs:291:49: replace / with % in Mixture::log_joint
-src/mixture.rs:291:49: replace / with * in Mixture::log_joint
-src/mixture.rs:294:39: replace * with + in Mixture::log_joint
-src/mixture.rs:294:45: replace * with + in Mixture::log_joint
-src/mixture.rs:294:45: replace * with / in Mixture::log_joint
-src/mixture.rs:614:22: replace - with + in Mixture::responsibilities
-src/mixture.rs:690:14: replace > with >= in argmax
-src/mixture.rs:56:64: replace * with + in StationaryCov<R>::innov
+# ── src/mixture.rs (0) ──
+# Deliberately empty, and kept as a heading so the next reader does not read the absence as "never
+# measured". Re-measured 2026-09-14, whole file at -j4 under a 10G cap, 288 mutants in 2h:
+#   systemd-run --user --scope -p MemoryMax=10G -p MemorySwapMax=0 \
+#     --setenv=TMPDIR=$HOME/.cache/mutants-tmp -- \
+#     cargo mutants -f src/mixture.rs -j4 --test-tool nextest
+#   caught 201 | missed 65 | unviable 22
+# The 15 entries the 2026-08-20 whole-crate sweep left here -- 8 of them already stale -- are gone.
+#
+# The 65 were whole *kernels* with no test, not scattered arithmetic debt: every mutant of the
+# Watson arm of `log_joint` survived (17), every mutant of the Watson arm of
+# `SparseAssigner::label_of` survived (13), and so did the whole factor-analysis construction with
+# its scoring arm (19). Each of those is reachable only through its own head, and the heads assert
+# on labels. So the answer was seven tests rather than seven equivalence arguments. All 65 are
+# closed, each verified against its own mutant diff by `cargo test --lib mixture`, entry by entry:
+#   271:47 x2, 532:56 x2, 533:37 x3, 533:49 x2, 535:81 x2, 536:33 x2, 537:33/39/43 x2 each
+#                   watson_log_joint_matches_the_longhand_axial_density
+#   364:62 x2, 369:79 x2, 373:25 x2, 380:38 x2, 385:36/42/49/62 x2 each, 513:76, 520:33, 520:46
+#                   factor_analysis_matches_the_dense_covariance_it_never_forms
+#   662:37 x3, 664:73 x2, 665:33 x2, 666:36/42/46 x2 each
+#                   the_sparse_assigner_agrees_with_the_dense_watson_scorer
+#   525:49, 528:45  vmf_log_joint_matches_the_longhand_directional_density
+#   558:72, 649:55, 651:36
+#                   the_sparse_assigner_agrees_with_the_dense_diagonal_scorer
+#   658:42, 658:48  the_sparse_assigner_agrees_with_the_dense_vmf_scorer
+#   319:54 x2       an_unfactorizable_component_falls_back_to_its_isotropic_noise
+#   421:9 x2        restrict_to_makes_unclaimed_components_unreachable
+#   614:22          a_component_sharp_enough_to_overflow_exp_still_normalizes
+#   690:14          argmax_takes_the_first_index_on_ties
+#   56:64           the_toeplitz_arm_scores_a_gaussian_and_reports_no_ar_coefficients
+#
+# Two of the 65 were the *fixture's* fault rather than a missing test, and both are worth carrying
+# into the next one.
+#
+# `56:64` (`Σ₀₀ = L₀₀ * L₀₀` -> `L₀₀ + L₀₀`) already had a test whose own comment said the
+# innovation variance is "not L₀₀ and not 2·L₀₀" -- written against a fixture with `L₀₀ = 2`, where
+# the square and the double are the same number. The fixture is now `L = [[3,0],[1,2]]`, which
+# leaves `|Σ| = 36` and every other hand-derived constant in that test standing.
+#
+# `651:36` (`ln π_c − ½q_c` -> `(ln π_c / ½)·q_c = 2·ln π_c·q_c`) survived the first attempt to
+# close it, and survived an exhaustive 64-row sweep of every sparse support as well. `label_of`
+# returns a *label*, not a score: while every folded log-weight is negative both expressions are
+# decreasing in `q_c` with per-component factors that differ by under 20 %, so they order the
+# components identically on every row whose quadratic forms are not nearly tied. Giving one
+# component a variance small enough that its folded weight comes out *positive* reverses that
+# component's dependence on `q` and separates the two orderings. A sparse fixture that varies only
+# the geometry cannot test the weights.
 
 # ── src/sketch/ddsketch.rs (8) ──
 # Debt: bucket-index arithmetic.
