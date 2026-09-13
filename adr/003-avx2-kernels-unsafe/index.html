@@ -1,0 +1,876 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Numerically stable, memory-bounded BETULA clustering with a Rust core">
+      
+      
+      
+        <link rel="canonical" href="https://ilgrad.github.io/betula-cluster/adr/003-avx2-kernels-unsafe/">
+      
+      
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>ADR 003 — the distance kernels get a hand-written AVX2 path, and the crate's first unsafe - betula-cluster</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/_mkdocstrings.css">
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="teal" data-md-color-accent="teal">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#adr-003-the-distance-kernels-get-a-hand-written-avx2-path-and-the-crates-first-unsafe" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="betula-cluster" class="md-header__button md-logo" aria-label="betula-cluster" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            betula-cluster
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              ADR 003 — the distance kernels get a hand-written AVX2 path, and the crate's first unsafe
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="teal" data-md-color-accent="teal"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m17.75 4.09-2.53 1.94.91 3.06-2.63-1.81-2.63 1.81.91-3.06-2.53-1.94L12.44 4l1.06-3 1.06 3zm3.5 6.91-1.64 1.25.59 1.98-1.7-1.17-1.7 1.17.59-1.98L15.75 11l2.06-.05L18.5 9l.69 1.95zm-2.28 4.95c.83-.08 1.72 1.1 1.19 1.85-.32.45-.66.87-1.08 1.27C15.17 23 8.84 23 4.94 19.07c-3.91-3.9-3.91-10.24 0-14.14.4-.4.82-.76 1.27-1.08.75-.53 1.93.36 1.85 1.19-.27 2.86.69 5.83 2.89 8.02a9.96 9.96 0 0 0 8.02 2.89m-1.64 2.02a12.08 12.08 0 0 1-7.8-3.47c-2.17-2.19-3.33-5-3.49-7.82-2.81 3.14-2.7 7.96.31 10.98 3.02 3.01 7.84 3.12 10.98.31"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="teal" data-md-color-accent="teal"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 7a5 5 0 0 1 5 5 5 5 0 0 1-5 5 5 5 0 0 1-5-5 5 5 0 0 1 5-5m0 2a3 3 0 0 0-3 3 3 3 0 0 0 3 3 3 3 0 0 0 3-3 3 3 0 0 0-3-3m0-7 2.39 3.42C13.65 5.15 12.84 5 12 5s-1.65.15-2.39.42zM3.34 7l4.16-.35A7.2 7.2 0 0 0 5.94 8.5c-.44.74-.69 1.5-.83 2.29zm.02 10 1.76-3.77a7.131 7.131 0 0 0 2.38 4.14zM20.65 7l-1.77 3.79a7.02 7.02 0 0 0-2.38-4.15zm-.01 10-4.14.36c.59-.51 1.12-1.14 1.54-1.86.42-.73.69-1.5.83-2.29zM12 22l-2.41-3.44c.74.27 1.55.44 2.41.44.82 0 1.63-.17 2.37-.44z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/ilgrad/betula-cluster" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    ilgrad/betula-cluster
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="betula-cluster" class="md-nav__button md-logo" aria-label="betula-cluster" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    betula-cluster
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/ilgrad/betula-cluster" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    ilgrad/betula-cluster
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../USAGE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Usage guide
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../FEATURES/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Features
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../MATH/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    The math
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../changelog/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Changelog
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#context" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Context
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#decision" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Decision
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#evidence" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Evidence
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-length-gate-and-the-regression-that-forced-it" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The length gate, and the regression that forced it
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#float32-relabels-and-why-that-is-not-a-behaviour-change" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        float32 relabels, and why that is not a behaviour change
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#consequences" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Consequences
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#alternatives-considered" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Alternatives considered
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="adr-003-the-distance-kernels-get-a-hand-written-avx2-path-and-the-crates-first-unsafe">ADR 003 — the distance kernels get a hand-written AVX2 path, and the crate's first <code>unsafe</code><a class="headerlink" href="#adr-003-the-distance-kernels-get-a-hand-written-avx2-path-and-the-crates-first-unsafe" title="Permanent link">&para;</a></h1>
+<p><strong>Status:</strong> Accepted, on measurement, in <strong>0.7.0</strong>. Scope: <code>src/kernels.rs</code> only. Amended after the
+first version shipped a 1.55× regression at <code>d = 2</code> — see <em>The length gate</em> below.</p>
+<h2 id="context">Context<a class="headerlink" href="#context" title="Permanent link">&para;</a></h2>
+<p><code>src/kernels.rs</code> holds three reductions — <code>sq_euclidean</code>, <code>dot</code>, <code>manhattan</code> — and its module doc
+claimed they were "plain inlinable loops the compiler vectorizes at each call site". A profile taken
+for task #40 showed how much rides on that claim and that the claim was false.</p>
+<p>Single-threaded <code>perf record -F 997 --call-graph fp</code>, extension built with frame pointers:</p>
+<table>
+<thead>
+<tr>
+<th>shape</th>
+<th>fit</th>
+<th>share of samples inside these kernels</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1 000 000 × 20</td>
+<td><code>kmeans</code></td>
+<td><code>RouteKind::point</code> 31.5% + <code>CFTree::descend</code> 24.7% = <strong>56%</strong></td>
+</tr>
+<tr>
+<td>20 000 × 784</td>
+<td><code>gmm</code></td>
+<td><code>RouteKind::point</code> 10.6% + <code>descend</code> 12.6% = 23%</td>
+</tr>
+</tbody>
+</table>
+<p><code>perf annotate</code> on the 31.5% symbol returns <strong>only <code>subsd</code>, <code>mulsd</code>, <code>addsd</code></strong> — not one packed
+instruction.</p>
+<p>The reason is a language rule, not a missing build flag. <code>a.iter().zip(b).map(…).sum()</code> is
+<code>Iterator::sum</code>, a strictly-ordered left fold; IEEE addition is not associative; so LLVM may not
+reassociate the reduction, and without reassociation there is nothing legal to pack. Adding
+<code>-C target-cpu=native</code> cannot change this, and the crate does not set it anyway — the shipped wheels
+target baseline <code>x86-64</code>, where even a legal vectorization would only get SSE2's two <code>f64</code> lanes.</p>
+<p>A microbenchmark separates the two blockers. Against the shipped scalar fold, on this machine:</p>
+<table>
+<thead>
+<tr>
+<th><code>d</code></th>
+<th>4 independent accumulators (baseline ISA)</th>
+<th>explicit AVX2 + FMA</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>20</td>
+<td><strong>0.93×</strong> (slower)</td>
+<td><strong>2.35×</strong></td>
+</tr>
+<tr>
+<td>64</td>
+<td>1.13×</td>
+<td><strong>3.89×</strong></td>
+</tr>
+<tr>
+<td>784</td>
+<td>1.46×</td>
+<td><strong>2.43×</strong></td>
+</tr>
+</tbody>
+</table>
+<p>So breaking the dependency chain alone is not the win — at <code>d = 20</code> it is a small loss. The win is
+the register width, and at baseline ISA the only way to reach it is to write the intrinsics out and
+detect the feature at run time. That requires <code>unsafe</code>, which this crate had none of.</p>
+<h2 id="decision">Decision<a class="headerlink" href="#decision" title="Permanent link">&para;</a></h2>
+<p><strong>Write the AVX2 + FMA kernels by hand in <code>src/kernels.rs</code>, dispatched at run time, for <code>f64</code> and
+<code>f32</code>. Accept <code>unsafe</code> in that one module and nowhere else.</strong></p>
+<p>Shape of the implementation, and why each part is the way it is:</p>
+<ul>
+<li><strong>Two packed accumulators, then a scalar tail in the original order.</strong> A vector shorter than the
+  step is byte-for-byte the old code.</li>
+<li><strong>A length gate: the packed path is taken only at <code>d ≥ 16</code>.</strong> See below; this was not in the first
+  version and its absence was a regression, not a missed optimisation.</li>
+<li><strong><code>n = a.len().min(b.len())</code>, passed explicitly into every kernel.</strong> This is the soundness guard.
+  <code>zip</code> truncates to the shorter operand and <code>CFTree::insert</code> documents that it accepts a point
+  longer than the tree's dimension, so an intrinsic loop bounded by <code>a.len()</code> would be an
+  out-of-bounds <code>loadu</code>, not merely a wrong number. It has its own test, which calls the kernel
+  directly — the public wrapper's <code>debug_assert_eq!</code> makes the case unreachable through the API in a
+  debug build, which is exactly why the guard needs testing from underneath.</li>
+<li><strong>Dispatch through a macro, not a function pointer.</strong> An earlier attempt with the <code>multiversion</code>
+  crate was measured <em>slower</em> for small <code>d</code>; this is why. An indirect call cannot inline, and at
+  <code>d = 20</code> the call overhead is a fifth of the total work. A macro expands the branch at each call
+  site and keeps the intrinsic body inlinable.</li>
+<li><strong><code>TypeId</code> to reach a concrete type from <code>R: Real</code>.</strong> <code>Real</code> is a blanket impl over
+  <code>num_traits::Float</code>, so there is no <code>f64</code> to specialize on. <code>TypeId</code> is injective over <code>'static</code>
+  types, so a match <em>proves</em> <code>R</code> is <code>f64</code> and the slice reinterpretation is a layout no-op. The
+  result comes back through <code>FromPrimitive</code>, which is exact and needs no <code>unsafe</code> at all.</li>
+<li><strong><code>#[allow(unused_unsafe)]</code> on the module.</strong> Rust 1.87 made the arithmetic intrinsics safe to call
+  inside a matching <code>#[target_feature]</code> function; the declared MSRV is 1.85, where the blocks are
+  mandatory. The lint is silenced rather than the floor raised, with a note to remove it when
+  <code>rust-version</code> passes 1.87.</li>
+</ul>
+<h2 id="evidence">Evidence<a class="headerlink" href="#evidence" title="Permanent link">&para;</a></h2>
+<p>End-to-end, A-B-A-B on the same build with only this module differing, <code>RAYON_NUM_THREADS=1</code>,
+best of three per cell:</p>
+<table>
+<thead>
+<tr>
+<th>shape</th>
+<th>scalar</th>
+<th>AVX2</th>
+<th>speedup</th>
+<th>labels</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>300 000 × 20, <code>kmeans</code>, <code>max_leaves=4000</code></td>
+<td>0.390 s</td>
+<td>0.282 s</td>
+<td><strong>1.38×</strong></td>
+<td><code>dc646b4dc9b9a7be</code> both</td>
+</tr>
+<tr>
+<td>20 000 × 784, <code>gmm</code>, <code>max_leaves=2000</code></td>
+<td>2.111 s</td>
+<td>1.326 s</td>
+<td><strong>1.59×</strong></td>
+<td><code>e887117b6aaa25c2</code> both</td>
+</tr>
+</tbody>
+</table>
+<p>The task's acceptance gate was "no label changes". Eight partial sums and an FMA are a different
+rounding from one serial chain, so an argmin decided by less than an ulp could in principle flip, and
+the honest claim is a measurement rather than a theorem. What was measured: the label digests above;
+the 518-test Rust suite, which includes the SciPy dendrogram cross-checks, the ELKI cross-check and
+several exact-value pins; and a re-run of the whole quality benchmark at seed 1.</p>
+<p>That last one is the interesting evidence, because it did <strong>not</strong> come back clean at first. Three of
+78 quality rows and two of the real-dataset rows moved, all of them <code>betula-hdbscan</code>, one of them by
+a lot (<code>aniso</code> ARI 0.571 → 0.993). A direct A/B on exactly those cells — same fixture, same
+arguments, the two builds differing only in <code>src/kernels.rs</code> — returned <strong>identical label digests on
+both sides</strong>, so the kernels are not the cause: the committed CSVs simply predate <code>835d05f</code>, the
+commit that made <code>min_samples</code> and <code>min_cluster_size</code> count points rather than leaves and whose own
+message says "on a summary the labels change". The other 75 rows reproduce cell for cell. Re-running
+the benchmark and diffing against the record is what turned a scary-looking diff into two separate,
+correctly-attributed facts.</p>
+<h2 id="the-length-gate-and-the-regression-that-forced-it">The length gate, and the regression that forced it<a class="headerlink" href="#the-length-gate-and-the-regression-that-forced-it" title="Permanent link">&para;</a></h2>
+<p>The first version dispatched on feature detection alone. That was wrong, and the measurement that
+found it was the one that should have been taken before committing: sweep <code>d</code>, not just the two
+profiled shapes.</p>
+<p>A <code>#[target_feature]</code> function cannot be inlined into a caller that does not carry the same features.
+So taking the AVX2 path replaces an inlined loop with a real call plus a horizontal sum — a fixed
+cost of maybe twenty instructions. At <code>d = 20</code> that is noise against 20 fused multiply-adds. At
+<code>d = 2</code> the scalar body <em>is</em> two multiply-adds, and the fixed cost is the entire function.</p>
+<p>Measured end-to-end, <code>kmeans</code>, <code>RAYON_NUM_THREADS=1</code>, best of three, ungated against the pre-AVX2
+build: <strong>0.65× at <code>d = 2</code></strong> (500 000 rows, 0.136 s → 0.210 s) and <strong>0.89× at <code>d = 8</code></strong>. Two-dimensional
+input is not a corner case — the crate's own published scaling table is measured on <code>d = 2</code> blobs, and
+geospatial input is a documented use — so this would have shipped a 1.55× slowdown on the shape the
+benchmark advertises.</p>
+<p>The fix is a constant, <code>AVX2_MIN = 16</code>, plus <code>#[inline(never)]</code> on the dispatch helper so the public
+wrapper stays small enough to inline and the scalar fold keeps the codegen it had before this module
+grew. Both halves were needed: with the gate but the dispatch inlined, <code>d = 8</code> measured 1.26× <em>slower</em>
+than the ungated version it was meant to fix, because the bulk made LLVM decline to inline the wrapper
+at all.</p>
+<p>Where the constant comes from: at <code>d = 12</code> the packed path measured 0.95× and at <code>d = 16</code> it measured
+1.08×, so 16 is the first width that pays. <code>f32</code> crosses over at the same element count despite its
+packed step being twice as wide.</p>
+<p><strong>A residual remains and is not explained.</strong> With the gate in place, <code>d ≤ 8</code> still measures ≈0.92× —
+about 8% — even though those inputs execute the same scalar fold plus one compare against a constant.
+It is real and not build noise: three rebuilds of the unmodified base from identical source measured
+0.135 / 0.137 / 0.138 s, a ±1% spread. Gating on the loop-invariant operand so LLVM could hoist the
+compare, and <code>#[inline(always)]</code> on the wrappers, each moved it by under 2%. The likely cause is
+second-order codegen in the inlined callers rather than the branch itself. It is recorded rather than
+argued away.</p>
+<p>Final position, against the pre-AVX2 build:</p>
+<table>
+<thead>
+<tr>
+<th>shape</th>
+<th>before</th>
+<th>after</th>
+<th></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>500 000 × 2, <code>kmeans</code></td>
+<td>0.136 s</td>
+<td>0.146 s</td>
+<td><strong>0.93×</strong></td>
+</tr>
+<tr>
+<td>300 000 × 8, <code>kmeans</code></td>
+<td>0.230 s</td>
+<td>0.251 s</td>
+<td><strong>0.92×</strong></td>
+</tr>
+<tr>
+<td>300 000 × 16, <code>kmeans</code></td>
+<td>0.342 s</td>
+<td>0.318 s</td>
+<td><strong>1.08×</strong></td>
+</tr>
+<tr>
+<td>300 000 × 20, <code>kmeans</code></td>
+<td>0.397 s</td>
+<td>0.321 s</td>
+<td><strong>1.24×</strong></td>
+</tr>
+<tr>
+<td>300 000 × 16, <code>kmeans</code>, <code>float32</code></td>
+<td>0.303 s</td>
+<td>0.256 s</td>
+<td><strong>1.18×</strong></td>
+</tr>
+<tr>
+<td>300 000 × 24, <code>kmeans</code>, <code>float32</code></td>
+<td>0.374 s</td>
+<td>0.237 s</td>
+<td><strong>1.58×</strong></td>
+</tr>
+<tr>
+<td>20 000 × 784, <code>gmm</code></td>
+<td>2.12 s</td>
+<td>1.35 s</td>
+<td><strong>1.57×</strong></td>
+</tr>
+</tbody>
+</table>
+<p>That is the trade being accepted: about 8% below <code>d = 16</code>, 1.1–1.6× above it. The library's own real
+datasets sit at <code>d</code> = 54, 64, 100 and 784.</p>
+<h2 id="float32-relabels-and-why-that-is-not-a-behaviour-change"><code>float32</code> relabels, and why that is not a behaviour change<a class="headerlink" href="#float32-relabels-and-why-that-is-not-a-behaviour-change" title="Permanent link">&para;</a></h2>
+<p>On <code>float32</code> input the SHA-256 label digest <strong>does</strong> differ between the two builds at <code>d = 24</code> and
+<code>d = 32</code> — 87% and 25% of rows carry a different integer. The <strong>ARI between the two label vectors is
+exactly 1.000000</strong>: the partition is identical and only the cluster numbering is permuted, because
+k-means++ draws its seeds in a different order when a sampling weight moves by an <code>f32</code> ulp. <code>f64</code>
+digests are identical everywhere measured.</p>
+<p>Reported because a digest comparison alone would have called this a behaviour change, and an ARI
+alone would have hidden that the ids move. Both are true and they mean different things.</p>
+<h2 id="consequences">Consequences<a class="headerlink" href="#consequences" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>The crate is no longer <code>unsafe</code>-free.</strong> Roughly 130 lines in one leaf module with no callers'
+  invariants to uphold: two preconditions (features detected, <code>n</code> bounds both slices), both
+  established one call frame above and both tested.</li>
+<li><strong>Non-<code>x86_64</code> targets are unaffected</strong> — the module is <code>#[cfg]</code>-gated and the scalar fold is the
+  fallback, so aarch64 and everything else compile and behave exactly as before, just without the
+  speedup. A NEON path is the obvious follow-up and is deliberately not in this change.</li>
+<li><strong>Pre-AVX2 <code>x86_64</code> is unaffected</strong>, by run-time detection rather than by build configuration, so
+  one wheel keeps serving both.</li>
+<li><strong>The published speed tables are now stale by 1.4–1.6× on the two profiled shapes</strong> and are
+  re-measured alongside this change; that is a benefit, but it is also the maintenance cost of
+  every future edit to this module.</li>
+<li><strong><code>f32</code> gets the same treatment as <code>f64</code></strong> (8 lanes instead of 4). Shipping the fast path for only
+  one of the two scalar types the crate is generic over would have been an arbitrary seam.</li>
+</ul>
+<h2 id="alternatives-considered">Alternatives considered<a class="headerlink" href="#alternatives-considered" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>Do nothing and correct the module doc.</strong> Rejected once the ceiling was measured: 56% of a
+  <code>kmeans</code> fit sitting in a kernel running at 40% of the machine's width is not a documentation
+  problem. The doc is corrected as well, either way.</li>
+<li><strong><code>-C target-cpu=native</code> in <code>.cargo/config.toml</code>.</strong> Rejected twice over: it cannot legalise the
+  reassociation, so it would not vectorize these loops at all; and it produces binaries that
+  <code>SIGILL</code> on any older CPU, which is not a property to give a published wheel.</li>
+<li><strong>The <code>multiversion</code> crate.</strong> A new dependency, and the thing it does — dispatch through a function
+  pointer — is the thing already measured slower at the <code>d</code> that matters most here.</li>
+<li><strong>Four independent accumulators, no intrinsics, no <code>unsafe</code>.</strong> The honest safe alternative, and the
+  one that would have been taken if the numbers supported it. They do not: 0.93× at <code>d = 20</code>, and it
+  still changes the summation order, so it pays the same label-identity price for a fraction of the
+  gain.</li>
+<li><strong><code>core::simd</code>.</strong> Portable, safe, and nightly-only. Revisit when it stabilises; it would let the
+  <code>unsafe</code> and the <code>#[cfg]</code> fork both go away.</li>
+<li><strong>Narrow <code>Real</code> to a sealed trait over <code>f32</code>/<code>f64</code> and specialize properly.</strong> Cleaner than <code>TypeId</code>,
+  but it is a breaking change to a public trait in service of an internal dispatch detail. Worth
+  doing at a major version if <code>Real</code> is narrowed for other reasons; not worth doing for this.</li>
+</ul>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+    <div class="md-copyright__highlight">
+      MIT-licensed · a Rust core with a scikit-learn API
+    </div>
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.sections", "navigation.top", "content.code.copy", "toc.follow"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+        <script src="../../javascripts/mathjax.js"></script>
+      
+        <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+      
+    
+  </body>
+</html>
