@@ -36,7 +36,9 @@
 # production edit -- re-measure the file whole then, which also renumbers every `line:col` in that
 # section. `src/clustering/kprototypes.rs` is the standing example: it was re-measured entry by
 # entry on 2026-08-22 and again (**2026-09-01 whole-file**) once the third, directional block moved
-# every line in it.
+# every line in it. `src/tree.rs` was re-measured a third time (**2026-09-13 whole-file**, 293
+# mutants) after `refit_leaves_beam` was added and the 2026-08-21 run turned out to have been
+# stopped by the local 90-minute cap at 130 of its 156 mutants -- see that section.
 #
 # The entry-by-entry runs used `cargo test --lib`, not the `--test-tool nextest` the CI job uses.
 # The difference is `tests/integration_api.rs`, whose four tests assert label counts and a 4-blob
@@ -263,29 +265,97 @@ src/clustering/kprototypes.rs:407:19: replace < with <= in kpp_init
 src/clustering/kprototypes.rs:466:31: replace > with >= in kprototypes
 src/clustering/kprototypes.rs:475:31: replace + with - in kprototypes
 
-# ── src/tree.rs (2) ──
-# Re-measured 2026-08-21 against the five fixtures added with it: 130 of 156 mutants
-# before the local 90-minute cap stopped the run (112 caught / 2 missed / 6 timeout /
-# 10 unviable). `660:25` sits in `split`, which the cap never reached, and was measured
-# on its own -- it is caught by `a_split_seeds_on_two_distinct_children`, and it is *not*
-# the equivalent mutant it looks like: `Radius` and `AverageIntercluster` both give a
-# child a nonzero distance to itself, so `(i * 1)..k` can seed both sides on one child.
-# All twenty of the twenty-two entries this replaces except the two below are now caught
-# -- the grown-threshold arithmetic, both `sibling_pairs` scans, the per-shard leaf
-# budget, both rebuild triggers, the compaction margin, `rebuilds()`, the rebalance pass
-# and the seed scan. The 6 timeouts
-# are genuine non-termination in `rebuild` (a mutated break condition or liveness test)
-# and are detections, not survivors.
+# ── src/tree.rs (9) ──
+# **Re-measured 2026-09-13, whole file** (`cargo mutants -f src/tree.rs -j4 --test-tool nextest`,
+# under `MemoryMax=10G` with a disk-backed `TMPDIR`): 293 mutants in 3h -- 238 caught, 40 missed,
+# 13 unviable, 2 timeouts. The section this replaces was measured on 2026-08-21 against a run the
+# local 90-minute cap stopped at 130 of 156 mutants; both of its entries are still survivors and
+# still carry the same argument, but they have moved (319:19 -> 718:19, 323:22 -> 722:22) and the
+# file has grown by 38 mutants since -- the auto-balance machinery, the beam descent and
+# `refit_leaves_beam` all postdate it.
 #
-# Both remaining are believed equivalent, and both sit in `rebuild`:
-#   319:19  `merged > 0` -> `>=`. Entering the block with `merged == 0` runs
-#           `drop_merged` against an all-alive mask, which is a no-op; `widest` is
-#           still zero, so `grown` is zero and cannot exceed a non-negative threshold,
-#           and `merged_since_rebalance` gains nothing.
-#   323:22  `grown > self.threshold` -> `>=`. At equality the assignment stores the
-#           value that is already there.
-src/tree.rs:319:19: replace > with >= in CFTree<R, C, D, A>::rebuild
-src/tree.rs:323:22: replace > with >= in CFTree<R, C, D, A>::rebuild
+# Nine tests were added against the 40 survivors and verified **entry by entry** rather than by a
+# second whole-file run -- only test code changed, and a test can kill a mutant but never create
+# one, which is the exception this file's header documents. They kill 31:
+#
+#   - `the_mass_cap_is_the_balance_times_the_ideal_share_and_a_non_positive_multiple_turns_it_off`,
+#     `top1_mass_is_the_heaviest_leafs_share_of_the_total` and
+#     `the_automatic_cap_checks_on_a_stride_arms_strictly_above_the_share_and_defers_to_the_caller`
+#     read `balance`, `mass_cap()` and the stride counter directly. The three behavioural tests that
+#     were already there assert a *bound* on the heaviest leaf, which a cap armed too early, armed
+#     at exactly the share, armed over the caller's own value, or computed as `balance / ideal`
+#     still satisfies. 7 killed (169:46, 196:31, 200:42, 208:31, 211:29, 225:16, 256:13).
+#   - `the_mass_cap_filters_the_cf_absorption_scan_at_both_edges` covers `try_absorb_cf` with a cap
+#     set, which nothing did: a rebuild compacts in place, so that filter is reached only by a
+#     caller holding features directly, and all eight measured (fixture x balance x budget) cells
+#     gave byte-identical trees with the filter mutated. 5 killed (623:50 x2, 628:62 x3).
+#   - `the_mass_cap_holds_at_every_site_that_could_breach_it` pins the compaction filter with the
+#     fixture's measured heaviest leaf as well as the contract, since the contract alone is
+#     satisfied by any filter that is merely *tighter*. 4 killed (701:68 x2, 701:96 `==` and `<`).
+#   - `a_refit_with_no_rows_leaves_the_tree_exactly_as_it_was` and
+#     `a_refit_drops_the_starved_entries_rebalances_once_and_does_not_cascade`. 7 killed
+#     (542:36, 542:46, 555:35, 556:32, 556:46, 560:24, 576:64). The second separates three
+#     policies by leaf count and arena size on one fixture: capped at `REFIT_REBALANCE_ROUNDS`
+#     leaves 27 of 30 prototypes, no rebalance at all leaves 29 and does not touch the arena, and
+#     iterating to a fixpoint leaves 15 -- a cascade, since each `reinsert` starves more entries.
+#   - `a_narrow_beam_is_a_budget_and_not_a_free_exact_scan`. 1 killed (442:29 `==`, which never
+#     truncates the frontier and so makes any width an exhaustive search). `beam_fixture` cannot
+#     see it: at `max_leaves = 2000` for 4 000 points a width of 2 is already exact on every row,
+#     measured at branchings 4/16/32 and `d` up to 20. The new fixture spends 400 leaves instead,
+#     where widths 1/2/4 miss 677/112/28.
+#   - `folding_no_children_gives_the_empty_feature` (872:13; without the `[]` arm an empty slice
+#     splits into two empty slices forever) and the accepting half of
+#     `validate_rejects_parameters_that_would_not_terminate` (963:27/48/71; `branching = 2`,
+#     `leaf_cap = 1` and `max_leaves = 1` are legal and a `<=` would reject a file nothing is
+#     wrong with). 4 killed.
+#
+# The 2 timeouts are detections, not survivors: `427:40` deletes the `!` from the beam descent's
+# loop condition, which then never terminates, and `1244:9` stubs `split` to return 0.
+#
+# Eight of the nine below are believed equivalent, with the argument:
+#   255:42  `if b > a { b } else { a }` -> `>=`, folding the maximum weight. At equality the two
+#           branches return the same value, and NaN takes the `else` either way.
+#   442:29  `scored.len() > beam` -> `>=`. At `len == beam` the `truncate(beam)` that follows
+#           removes nothing, so the only effect is the reorder `select_nth_unstable_by` performs,
+#           and the frontier is used order-insensitively except on exact distance ties.
+#   443:52  `select_nth_unstable_by(beam - 1, ..)` -> `beam / 1`, i.e. `beam`. Both are followed by
+#           `truncate(beam)` and both therefore keep the `beam` smallest elements: `select_nth(k)`
+#           puts the k-th order statistic at index k with everything smaller before it, so
+#           `select_nth(beam-1)` leaves indices `0..beam` as the beam smallest and
+#           `select_nth(beam)` leaves `0..=beam` as the beam+1 smallest, of which `truncate` drops
+#           exactly the largest. The index is in range because the branch is guarded by
+#           `scored.len() > beam`.
+#   457:22  `d < bd` -> `<=` in the final scan over the frontier's leaves. Picks the last tied
+#           minimum instead of the first; same distance either way.
+#   689:31  `merged == want || (respect_cap && cap.is_none())` -> `&&`. The guard is a fast path
+#           for a pass that would do nothing anyway. With `cap.is_none()` the cap-respecting pass
+#           runs but its own `respect_cap && cap.is_some_and(..)` filter is false for every pair,
+#           so it performs exactly the merges the uncapped pass would have; with `merged == want`
+#           the inner loop breaks on its first iteration.
+#   713:24  `gap > widest` -> `>=`, folding the maximum gap. Same argument as 255:42.
+#   718:19  `merged > 0` -> `>=`. Entering the block at `merged == 0` runs `drop_merged` against an
+#           all-alive mask (a no-op), leaves `widest` at zero so `grown` cannot exceed a
+#           non-negative threshold, and adds nothing to `merged_since_rebalance` -- which is always
+#           below `max_leaves` on entry, because the only place it crosses is inside this block and
+#           it resets there.
+#   722:22  `grown > self.threshold` -> `>=`. At equality the assignment stores the value that is
+#           already there.
+#
+# Debt, one entry:
+#   701:96  `weight(ei) + weight(ej) > c` -> `>=`, the compaction's cap filter at exact equality.
+#           It changes which pair a rebuild merges only when the cap-respecting pass alone meets
+#           the budget *and* a pair sits exactly on the cap; on every fixture measured the budget
+#           is not met by that pass, so the uncapped second pass merges the same sorted list and
+#           the two are indistinguishable. Killing it needs a hand-built arena, not a fixture.
+src/tree.rs:255:42: replace > with >= in CFTree<R, C, D, A>::top1_mass
+src/tree.rs:442:29: replace > with >= in CFTree<R, C, D, A>::nearest_entry_beam
+src/tree.rs:443:52: replace - with / in CFTree<R, C, D, A>::nearest_entry_beam
+src/tree.rs:457:22: replace < with <= in CFTree<R, C, D, A>::nearest_entry_beam
+src/tree.rs:689:31: replace || with && in CFTree<R, C, D, A>::rebuild
+src/tree.rs:701:96: replace > with >= in CFTree<R, C, D, A>::rebuild
+src/tree.rs:713:24: replace > with >= in CFTree<R, C, D, A>::rebuild
+src/tree.rs:718:19: replace > with >= in CFTree<R, C, D, A>::rebuild
+src/tree.rs:722:22: replace > with >= in CFTree<R, C, D, A>::rebuild
 
 # ── src/stream.rs (33) ──
 # Debt, partly closed on 2026-08-20 (the DenStream prune thresholds are now checked

@@ -1510,6 +1510,43 @@ mod tests {
         );
     }
 
+    /// The mass cap turns the absorption scan into a *filtered* scan: an entry the incoming feature
+    /// would push past the cap is not a candidate, so the search falls through to the next entry
+    /// with room rather than refusing outright. Both edges of that filter are here, because they
+    /// fail in opposite directions — one refuses a merge the budget allows, the other allows one it
+    /// forbids, and a one-sided test sees only its own half.
+    ///
+    /// `entries_at` builds with `max_leaves = usize::MAX`, so the ideal share underflows to zero and
+    /// `mass_cap` is exactly its floor of 2 whatever the multiple. That is what makes the arithmetic
+    /// here exact rather than approximate.
+    ///
+    /// This is the CF path (`try_absorb_cf`, the rebuild's reinsert). Nothing that goes through
+    /// `insert` reaches it: a rebuild compacts in place, so the filter here is exercised only by a
+    /// caller holding features directly.
+    #[test]
+    fn the_mass_cap_filters_the_cf_absorption_scan_at_both_edges() {
+        let mut t = entries_at(&[0.0, 10.0], 4.0);
+        t.set_balance(Some(1.0));
+        assert_eq!(t.mass_cap(), Some(2.0), "the floor is the cap here");
+
+        // Landing exactly *on* the cap is allowed — the cap is a maximum, not a strict bound, and
+        // an entry of weight 1 has room for one more point.
+        assert!(
+            t.try_absorb_cf(t.root, &feature_at(1.0)),
+            "a merge that reaches the cap exactly must still be a candidate"
+        );
+        assert_eq!(t.entries[0].weight(), 2.0);
+
+        // And going past it is refused: entry 0 is now full, so it drops out of the scan, entry 1
+        // is the nearest with room and the threshold gate rejects it at a squared distance of 81.
+        assert!(!t.try_absorb_cf(t.root, &feature_at(1.0)));
+        assert_eq!(
+            (t.entries[0].weight(), t.entries[1].weight()),
+            (2.0, 1.0),
+            "a full entry must not absorb past the cap"
+        );
+    }
+
     /// The point path (`try_absorb`, reached through `insert`) is a second copy of the same
     /// scan-then-gate; the entry weights and the entry count are the observables.
     #[test]
@@ -3455,6 +3492,14 @@ mod tests {
             t.max_leaves = max_leaves;
             assert!(t.validate().unwrap_err().contains("cannot terminate"));
         }
+        // And accepts the smallest values that do terminate. Without this the bound reads as
+        // "reject small" rather than as the exact boundary, and rejecting a legal `branching = 2`
+        // would fail a load of a file nothing is wrong with.
+        let mut smallest = a_fitted_tree(64);
+        smallest.branching = 2;
+        smallest.leaf_cap = 1;
+        smallest.max_leaves = 1;
+        assert!(smallest.validate().is_ok(), "{:?}", smallest.validate());
         for bad in [f64::NAN, f64::INFINITY, -1.0] {
             let mut t = a_fitted_tree(64);
             t.threshold = bad;
@@ -3466,6 +3511,332 @@ mod tests {
             t.balance = Some(bad);
             assert!(t.validate().unwrap_err().contains("balance"), "{bad}");
         }
+    }
+
+    /// The cap is `balance × (total mass / max_leaves)`, floored at 2, and a non-positive multiple
+    /// turns it off rather than asking for the floor.
+    ///
+    /// The boundary is the point: `Some(0.0)` is a legal `f64` and a caller writing "no balancing"
+    /// as zero would otherwise arm a cap of exactly two points per leaf — the strictest cap the
+    /// type can express, from the input that means the loosest.
+    #[test]
+    fn the_mass_cap_is_the_balance_times_the_ideal_share_and_a_non_positive_multiple_turns_it_off()
+    {
+        let mut t: CFTree<f64, Spherical<f64>, _, _> =
+            CFTree::new(2, 8, 8, 1.0, 40, CentroidEuclidean, CentroidEuclidean);
+        for p in &dense_core(1000) {
+            t.insert(p);
+        }
+        // 1000 points over a budget of 40 is an ideal share of 25.
+        t.set_balance(Some(2.0));
+        assert_eq!(t.mass_cap(), Some(50.0));
+        t.set_balance(Some(0.04));
+        assert_eq!(
+            t.mass_cap(),
+            Some(2.0),
+            "the floor keeps two singletons mergeable"
+        );
+        for off in [Some(0.0), Some(-1.0), None] {
+            t.set_balance(off);
+            assert_eq!(t.mass_cap(), None, "{off:?} must leave the cap off");
+        }
+    }
+
+    /// Weights 2, 1, 1 in one leaf: the first pair is inside the absorption threshold and the rest
+    /// are not, so the heaviest entry holds exactly half the mass.
+    fn lopsided() -> EuclidTree {
+        let mut t = EuclidTree::new(1, 8, 8, 0.5, 8, CentroidEuclidean, CentroidEuclidean);
+        for p in [[0.0], [0.2], [5.0], [9.0]] {
+            t.insert(&p);
+        }
+        t
+    }
+
+    /// `top1_mass` is a *share*, not a weight — `balance="auto"` compares it against a constant of
+    /// 0.5, so a version that returned the weight would arm on any tree of more than two points.
+    #[test]
+    fn top1_mass_is_the_heaviest_leafs_share_of_the_total() {
+        let t = lopsided();
+        assert_eq!(t.num_leaves(), 3);
+        assert_eq!(t.top1_mass(), 0.5);
+        assert_eq!(
+            EuclidTree::new(1, 8, 8, 0.0, 8, CentroidEuclidean, CentroidEuclidean).top1_mass(),
+            0.0,
+            "an empty tree has no share to report"
+        );
+    }
+
+    /// Three separate claims about the automatic cap, each of which its own guard makes:
+    /// the mass check runs on a stride and not per insert, it arms *strictly* above
+    /// [`AUTO_BALANCE_TOP1`], and it never overwrites a cap the caller set.
+    ///
+    /// All three are read off `balance` and the stride counter directly. The behavioural tests
+    /// above them assert a *bound* on the heaviest leaf, which a cap armed too early, too eagerly
+    /// or over the caller's own value still satisfies.
+    #[test]
+    fn the_automatic_cap_checks_on_a_stride_arms_strictly_above_the_share_and_defers_to_the_caller()
+    {
+        let core = dense_core(1000);
+        let fresh = || {
+            CFTree::<f64, Spherical<f64>, _, _>::new(
+                2,
+                8,
+                8,
+                1.0,
+                40,
+                CentroidEuclidean,
+                CentroidEuclidean,
+            )
+        };
+
+        // Off: the stride counter does not even run, which is what makes the feature free.
+        let mut off = fresh();
+        for p in &core[..5] {
+            off.insert(p);
+        }
+        assert_eq!(off.inserts_since_auto_check, 0);
+        assert_eq!(off.balance, None);
+
+        // On: the check is every `max_leaves` inserts. This core collapses into one entry, so its
+        // top-1 share is 1.0 from the first point — if the check ran per insert it would arm there.
+        let mut strided = fresh();
+        strided.set_auto_balance(true);
+        for p in &core[..39] {
+            strided.insert(p);
+        }
+        assert_eq!(strided.inserts_since_auto_check, 39);
+        assert_eq!(
+            strided.balance, None,
+            "the check is on a stride, not per insert"
+        );
+        strided.insert(&core[39]);
+        assert_eq!(
+            strided.inserts_since_auto_check, 0,
+            "the 40th insert is the check"
+        );
+        assert_eq!(strided.balance, Some(AUTO_BALANCE_MULTIPLE));
+
+        // Strictly above: the lopsided tree puts the share exactly on the constant.
+        let mut on_threshold = lopsided();
+        on_threshold.set_auto_balance(true);
+        assert_eq!(on_threshold.top1_mass(), AUTO_BALANCE_TOP1);
+        on_threshold.arm_auto_balance();
+        assert_eq!(
+            on_threshold.balance, None,
+            "exactly the share is not above it"
+        );
+
+        // And the caller's own cap survives a tree that would otherwise arm the automatic one.
+        let mut explicit = fresh();
+        explicit.set_balance(Some(2.0));
+        explicit.set_auto_balance(true);
+        for p in &core {
+            explicit.insert(p);
+        }
+        assert_eq!(explicit.balance, Some(2.0));
+
+        // `arm_auto_balance` repeats its caller's guard, and the repetition is load-bearing rather
+        // than defensive noise: the stride check is the only caller *today*, so a copy of this
+        // assertion routed through `insert` would pass on an `arm_auto_balance` that had no guard
+        // at all. Three quarters of the mass in one entry is well above the constant.
+        let mut armed_directly =
+            EuclidTree::new(1, 8, 8, 0.5, 8, CentroidEuclidean, CentroidEuclidean);
+        for p in [[0.0], [0.2], [0.4], [9.0]] {
+            armed_directly.insert(&p);
+        }
+        assert_eq!(armed_directly.top1_mass(), 0.75);
+        armed_directly.set_balance(Some(2.0));
+        armed_directly.set_auto_balance(true);
+        armed_directly.arm_auto_balance();
+        assert_eq!(
+            armed_directly.balance,
+            Some(2.0),
+            "an explicit cap is never overwritten"
+        );
+    }
+
+    /// The cap has to hold at every site mass is combined, or the other site undoes it: point
+    /// absorption, CF absorption on the rebuild path, and the compaction that merges pairs.
+    ///
+    /// Two fixtures because one is not enough to reach all three. The plain core never fills its
+    /// leaf budget, so it exercises only point absorption; adding far-apart satellites blows the
+    /// budget eight times over and puts the rebuild's two sites under the same cap. Each assertion
+    /// is a pair — the contract (`heaviest <= cap`) and the fixture's measured heaviest — because
+    /// the contract alone is satisfied by any filter that is merely *tighter* than the cap, and a
+    /// cap that refuses more than it should is a budget the caller cannot spend.
+    #[test]
+    fn the_mass_cap_holds_at_every_site_that_could_breach_it() {
+        let mut core = dense_core(1000);
+        for (label, pts, want_cap, want_heaviest, want_rebuilds) in [
+            ("point absorption only", core.clone(), 50.0, 48.0, 0),
+            (
+                "and the rebuild's two sites",
+                {
+                    for i in 0..300 {
+                        let u = i as f64;
+                        core.push(vec![10.0 + u * 7.0, 10.0 - u * 3.0]);
+                    }
+                    core.clone()
+                },
+                65.0,
+                55.0,
+                8,
+            ),
+        ] {
+            let mut t: CFTree<f64, Spherical<f64>, _, _> =
+                CFTree::new(2, 8, 8, 1.0, 40, CentroidEuclidean, CentroidEuclidean);
+            t.set_balance(Some(2.0));
+            for p in &pts {
+                t.insert(p);
+            }
+            let heaviest = t
+                .leaf_features()
+                .iter()
+                .map(ClusterFeature::weight)
+                .fold(0.0, f64::max);
+            assert_eq!(t.mass_cap(), Some(want_cap), "{label}");
+            assert_eq!(t.rebuilds(), want_rebuilds, "{label}: fixture");
+            assert!(heaviest <= want_cap, "{label}: {heaviest} over the cap");
+            assert_eq!(heaviest, want_heaviest, "{label}: the cap moved");
+            verify(&t, pts.len());
+        }
+    }
+
+    /// Each clause of the refit's guard is load-bearing on its own. With no rows the pass would
+    /// otherwise re-accumulate every entry from nothing, find them all empty and drop the lot —
+    /// the tree would come back as a root with no children.
+    #[test]
+    fn a_refit_with_no_rows_leaves_the_tree_exactly_as_it_was() {
+        let (d, n) = (3usize, 300usize);
+        let pts = gaussian_blobs(n, d, 4, 2);
+        let mut tree: CFTree<f64, Spherical<f64>, _, _> =
+            CFTree::new(d, 4, 4, 0.0, 24, CentroidEuclidean, Radius);
+        for p in &pts {
+            tree.insert(p);
+        }
+        let before: Vec<(f64, Vec<f64>)> = tree
+            .leaf_features()
+            .iter()
+            .map(|c| (c.weight(), c.mean().to_vec()))
+            .collect();
+        tree.refit_leaves(&[], 0);
+        let after: Vec<(f64, Vec<f64>)> = tree
+            .leaf_features()
+            .iter()
+            .map(|c| (c.weight(), c.mean().to_vec()))
+            .collect();
+        assert_eq!(after, before);
+        verify(&tree, n);
+    }
+
+    /// Two properties of one pass over a fixture built to starve prototypes, and the second is why
+    /// the loop has a cap at all.
+    ///
+    /// An entry that wins no row is dropped, so nothing weightless survives the pass. And the
+    /// rebalance is capped at [`REFIT_REBALANCE_ROUNDS`] because iterating it is a *cascade*, not a
+    /// refinement: each `reinsert` moves the structure out from under the entries, which starves
+    /// more of them, which drops more. Run to a fixpoint this fixture loses half its codebook —
+    /// 30 prototypes down to 15 — where the capped pass stops at 27. Skipping the rebalance
+    /// entirely stops at 29 and leaves the node arena exactly as it found it, which is the third
+    /// state the assertions have to separate.
+    #[test]
+    fn a_refit_drops_the_starved_entries_rebalances_once_and_does_not_cascade() {
+        let d = 2usize;
+        let mut pts: Vec<Vec<f64>> = Vec::new();
+        for i in 0..400 {
+            let u = i as f64 * 0.01;
+            pts.push(vec![u.sin() * 0.05, u.cos() * 0.05]);
+            pts.push(vec![40.0 + u.cos() * 0.05, 40.0 + u.sin() * 0.05]);
+        }
+        for i in 0..60 {
+            let u = i as f64;
+            pts.push(vec![1.0 + u * 0.6, 1.0 + u * 0.6]);
+        }
+        let n = pts.len();
+        let flat = flatten(&pts);
+        let mut tree: CFTree<f64, Spherical<f64>, _, _> =
+            CFTree::new(d, 4, 4, 0.0, 32, CentroidEuclidean, Radius);
+        for p in &pts {
+            tree.insert(p);
+        }
+        let (leaves_before, nodes_before) = (tree.num_leaves(), tree.nodes.len());
+        assert_eq!(leaves_before, 30, "fixture");
+
+        tree.refit_leaves(&flat, n);
+
+        assert!(
+            tree.leaf_features().iter().all(|c| c.weight() > 0.0),
+            "an entry that won no row must be dropped, not kept at weight 0"
+        );
+        assert!(
+            tree.num_leaves() < leaves_before,
+            "the fixture must actually starve an entry, or nothing above is tested"
+        );
+        assert!(
+            tree.num_leaves() * 5 >= leaves_before * 4,
+            "the rebalance ran to a fixpoint: {} of {leaves_before} prototypes left",
+            tree.num_leaves()
+        );
+        assert!(
+            tree.nodes.len() < nodes_before,
+            "the one discretionary rebalance did not happen: the arena is still {nodes_before} \
+             nodes, so `reinsert` never ran"
+        );
+        verify(&tree, n);
+    }
+
+    /// A width is a budget. Wide enough it *is* the exact scan — that is
+    /// [`a_beam_wider_than_the_tree_is_the_exact_scan`] — but a narrow one has to prune, and
+    /// nothing above says so: every other beam test is satisfied by a frontier that never
+    /// truncates, which is an exhaustive search wearing the parameter's name.
+    ///
+    /// [`beam_fixture`] cannot show it. At `max_leaves = 2000` for 4 000 points the tree barely
+    /// compresses, and a width of 2 is already exact on every row — measured, not assumed, and the
+    /// same at branchings 4, 16 and 32 and at `d` up to 20. Compression is what makes the descent
+    /// lossy, so this fixture spends 400 leaves on the same 4 000 points: widths 1, 2 and 4 then
+    /// miss 677, 112 and 28 rows.
+    #[test]
+    fn a_narrow_beam_is_a_budget_and_not_a_free_exact_scan() {
+        let (d, ml) = (3usize, 400usize);
+        let pts = pseudo(4000, d);
+        let mut tree: BeamTree = CFTree::new(d, 8, 8, 0.0, ml, CentroidEuclidean, Radius);
+        for p in &pts {
+            tree.insert(p);
+        }
+        let m = tree.leaf_features().len();
+        let missed = |beam: usize| {
+            pts.iter()
+                .filter(|p| {
+                    let exact = (0..m)
+                        .map(|e| dist_to(&tree, p, e))
+                        .fold(f64::INFINITY, f64::min);
+                    dist_to(&tree, p, tree.nearest_entry_beam(p, beam)) > exact + 1e-12
+                })
+                .count()
+        };
+        let (narrow, wider) = (missed(2), missed(4));
+        assert!(
+            narrow > 0,
+            "a width of 2 reached the exact nearest entry for all {} rows, so the frontier is \
+             never truncated and the width is not a budget",
+            pts.len()
+        );
+        assert!(
+            wider < narrow,
+            "widening from 2 to 4 recovered nothing: {wider} against {narrow} misses"
+        );
+    }
+
+    /// `fold_balanced` halves recursively, and `[]` is the base case that stops it: without it an
+    /// empty slice splits into two empty slices forever. Reachable only defensively — a leaf with
+    /// no children is the state `refit_leaves` exists to avoid — which is exactly why nothing else
+    /// covers it.
+    #[test]
+    fn folding_no_children_gives_the_empty_feature() {
+        let t = entries_at(&[0.0, 1.0, 2.0], 0.0);
+        let empty = t.fold_balanced(&[], true);
+        assert_eq!(empty.weight(), 0.0);
+        assert_eq!(t.fold_balanced(&[], false).weight(), 0.0);
     }
 }
 
