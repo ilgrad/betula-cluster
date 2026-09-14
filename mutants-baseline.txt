@@ -50,6 +50,11 @@
 # `src/stream.rs` was re-measured (**2026-09-14 whole-file**, 469 mutants in 7h) and went from 33
 # carried entries with no arguments at all to 9 argued ones: 15 of the 24 measured survivors are
 # closed by six tests, and 17 of the 33 carried entries turned out to have been caught for weeks.
+# `src/clustering/hdbscan.rs` was re-measured twice on 2026-09-14 -- once whole-file to replace the
+# section 2026-09-10 had emptied down to a single entry (268 mutants in 54m, 30 survivors), and
+# again after three tests and the `condense` extraction (**269 mutants in 43m**, 15 survivors). The
+# second run returned exactly the fifteen the entry-by-entry killcheck had predicted, at exactly the
+# predicted lines.
 #
 # The entry-by-entry runs used `cargo test --lib`, not the `--test-tool nextest` the CI job uses.
 # The difference is `tests/integration_api.rs`, whose four tests assert label counts and a 4-blob
@@ -760,59 +765,107 @@ src/clustering/gmm.rs:408:34: replace < with == in gmm_full_once
 src/clustering/gmm.rs:646:18: replace < with <= in gmm_diagonal_auto
 src/clustering/gmm.rs:674:18: replace < with <= in gmm_full_auto
 
-# ── src/clustering/hdbscan.rs (1) ──
-# **2026-09-10: 20 of these 21 entries were deleted -- their mutations no longer exist.** Five
-# commits landed in this file after the measurement below (`457cb76` Selection::Persistence,
-# `045ca29` the reachability plot, `ab24130` dc-dist, `06ad6b5` the O(m²) parallel rewrite,
-# `562a104` min_samples from leaf mass), and every line the condense-loop block argued about moved
-# or went away. What is left is one entry that still matches. Read the argument below as history:
-# **this file is now unmeasured, not clean**, and its section has to be rebuilt from a whole-file
-# run before the ratchet means anything here. Under a memory cap -- see the note at the top.
+# ── src/clustering/hdbscan.rs (15) ──
+# Re-measured 2026-09-14, WHOLE FILE, at `06b0a59` -- three tests plus the `condense` extraction,
+# which is a production edit, so every line:col here is from this run.
+#   systemd-run --user --scope -p MemoryMax=10G -p MemorySwapMax=0 \
+#     --setenv=TMPDIR=$HOME/.cache/mutants-tmp -- \
+#     cargo mutants -f src/clustering/hdbscan.rs -j4 --test-tool nextest
+#   269 mutants in 43m | caught 246 | missed 15 | unviable 7 | timeout 1
+# The one entry this replaces (`104:31`) is the last survivor of the 2026-08-24 run whose other 20
+# were deleted on 2026-09-10 as vanished. It still survives, at the same line.
 #
-# Re-measured **2026-08-24 whole-file**, locally and under a memory cap, after the point-count fix
-# (835d05f) and the dendrogram-walk fix (d34dd17): 88 mutants in 30 min, 65 caught, 21 missed,
-# 1 timeout, 1 unviable. Every line:col below is against that revision.
+# The measurement that motivated the tests ran first, on the file as it stood: 268 mutants in 54 min,
+# 231 caught / 30 missed / 6 unviable / 1 timeout. **Fifteen of those 30 are closed here**, and this
+# run returned exactly the other fifteen, at exactly the lines the entry-by-entry killcheck
+# predicted -- which cross-validates both. The fifteen closed fell into two blocks with the same
+# shape: a *number* that only ever reaches a label through a comparison, so no label-level fixture
+# can see it move.
 #
-# **21 is not a regression against the old 17.** The old figure came from CI run 32347677860, whose
-# shard 39 uploaded no artifact; the six extra entries here are all *additional operators at sites
-# the old list already names* (`+= -> -=` where it had only `+= -> *=`, `* -> /` where it had only
-# `* -> +`, and so on), which is exactly what a lost shard looks like. The two fixes closed the four
-# mutual-reachability entries the old list carried at 117:36 and 151:22/203:15. This whole-file local
-# run is the first complete measurement of the file.
+# The excess-of-mass stability integral (9 of the 10 entries the earlier run put at 683:26, 701:15,
+# 728:25, 728:47, 733:25 x2, 733:35, 733:47, 738:25, 738:47). Instrumentation, not inference: all
+# four condense arms run heavily on the fixtures here (724 `lbig` + 154 neither + 83 `rbig` hits,
+# dmass ~2 each), and the fall-out terms do land on non-leaf clusters -- 156 `leaf=false`
+# accumulations change under a mutant. What keeps them alive is the *margin*: every parent's
+# `stab[c] - sum(prop[kids])` sits between 0.45 and 11.4 units, and perturbing the integral moves
+# both sides of that comparison together. An earlier attempt at a halo fixture was measured against
+# all 30 and killed none of them; it was reverted rather than kept.
+# `from_mst` had no seam to read the vector through, so the condensation is now
+# `condense() -> Condensed { stab, kids, point_cluster }`, and
+# `the_stability_integral_matches_an_independent_per_point_re_derivation` compares what it returns
+# against a recursive per-point re-derivation, as a sorted multiset so no numbering is shared.
 #
-# `35:30: replace != with == in UnionFind::find` is a **timeout, not a survivor**, and so is absent:
-# it makes `find` spin forever on a root, which no test can pass. A timeout is a detection.
+# The persistence trace (6 entries at 487:33 x2, 503:31, 505:36 x2, 534:29). The same blindness:
+# only the trace's argmax reaches a label. `the_persistence_trace_totals_the_lifetime_of_every_
+# segment_alive_at_each_size` reads the curve against a quadratic re-derivation over hand-built
+# barcodes carrying the cases a real dendrogram reaches only by accident -- a zero-length segment,
+# one dead below the floor, one born under it, a shared pair of endpoints, and a barcode with
+# nothing alive at all. `the_persistence_arm_reports_the_trace_argmax_not_the_last_candidate_size`
+# closes `534:29`, the fold that picks the argmax, and the fixture it needed is the finding: on
+# `uneven(11, 0.5)` at every `min_samples` tried, and on seven other (seed, cell, min_samples)
+# triples probed, the peak IS the last candidate -- so "the best" and "the last one the fold looked
+# at" are the same answer and the guard is invisible. The test asserts the peak is interior before
+# it asserts anything else.
 #
-# The 16 entries from 269:43 down share one measured cause, established by instrumenting the condense
-# loop rather than guessed at. All four arms execute heavily on the current fixtures (per run:
-# `split` 1-15, `lbig` 0-31, `rbig` 0-7, `neither` 0-10), so this is **covered by execution and not
-# by assertion**: excess-of-mass compares `stab[c]` against the sum over `kids[c]`, and on every
-# fixture in the suite that comparison has a wide margin -- e.g. 139.5 against children summing to
-# 106.4. Perturbing a fall-out term moves the numbers without moving the sign, so the partition is
-# unchanged. Each of the 21 was re-applied by hand and the whole `hdbscan::` suite re-run; all 21
-# survived and every mutant *not* on this list died, which cross-validates the run.
+# The timeout is a detection, not a survivor, and is not listed: `82:30 != -> ==` in
+# `UnionFind::find` makes the path-compression walk stop advancing.
 #
-# Strengthening `the_excess_of_mass_boundary_sits_where_the_reference_puts_it` from a cluster-count
-# comparison to a full-partition one (ARI against the independent reference at all 16 sweep steps)
-# was measured against all 21 and killed **none** of them. Closing this block needs a fixture whose
-# excess-of-mass decision is genuinely contested, which is a fixture-search problem, not a missing
-# assertion. Recorded as debt rather than tuned to a bit pattern.
-#
-# Believed equivalent, with the argument:
-#   57:31  `self.rank[ra] += 1` -> `*= 1` pins every rank at 0, so `cmp` is always `Equal` and union
-#          always attaches `rb` under `ra`. That is still a correct union with path compression --
-#          only the tree depth grows. No observable output depends on it.
-#   239:26 `node_dist[nd] > 0.0` -> `>= 0.0` reaches `1.0 / 0.0`, which is `f64::INFINITY` -- exactly
-#          what the `else` supplies. `node_dist` is a `sqrt` of a sum of squares, so `-0.0` (whose
-#          reciprocal would be `-INFINITY`) is unreachable.
-# Debt, unproven but unobserved:
-#   191:39 and 206:22 are Prim's two tie-breaks. Single-linkage partitions at a threshold are the
-#          connected components of the `<= t` graph, which no choice among equal-weight MST edges can
-#          change; the condensed tree's *merge order* among tied edges is not covered by that
-#          argument, so this is evidence, not a proof.
-#   257:15 `nd < m` -> `<=` really does skip the first merge. It is a genuine defect that no fixture
-#          in the suite observes.
+# Believed equivalent -- the two parallel gates. Both are `#[cfg(feature = "parallel")] if m >=
+# PAR_MIN_FEATURES`, and inverting the comparison only takes the other arm of a pair that computes
+# the same vector: `core_distances` maps a pure `row` closure, and `prim_complete`'s relaxation
+# writes only `v`'s own two slots off a pure `weight`, which is why the comment above it says the
+# pass is exact however the range is divided.
+src/clustering/hdbscan.rs:184:10: replace >= with < in core_distances
+src/clustering/hdbscan.rs:613:14: replace >= with < in prim_complete
+# Believed equivalent -- union by rank. `rank[ra] += 1` -> `*= 1` pins every rank at 0, so `cmp` is
+# always `Equal` and `union` always attaches `rb` under `ra`. Rank bounds the tree height and
+# nothing else; with path compression on top, no rank assignment changes which elements are
+# connected, only how deep the walk is.
 src/clustering/hdbscan.rs:104:31: replace += with *= in UnionFind::union
+# Believed equivalent -- a reciprocal that agrees with its own fallback. `node_dist[nd] > 0.0` ->
+# `>= 0.0` reaches `1.0 / 0.0`, which is `f64::INFINITY`, exactly what the `else` supplies.
+# `node_dist` is a `sqrt` of a sum of squares, so the `-0.0` whose reciprocal would be `-INFINITY`
+# is unreachable. This is the one entry the `condense` extraction moved (683:26 -> 692:26).
+src/clustering/hdbscan.rs:692:26: replace > with >= in condense
+# Believed equivalent -- a mean that cannot be zero. `graph_degree_for` reads `if mean > 0.0`, where
+# `mean` is the average leaf mass; a leaf exists because a point landed in it, so every entry is at
+# least 1. The guard is there for the division, not for a reachable case.
+src/clustering/hdbscan.rs:228:24: replace > with >= in graph_degree_for
+# Believed equivalent -- the adjacency's own invariants. `mst_over_graph` deduplicates the symmetric
+# adjacency with `if i < j`. `knn::build` ends in `symmetrise`, so `i > j` selects the *same*
+# undirected edge set with the endpoints written the other way round, and `mreach` and the
+# dendrogram are both symmetric in them; and `i <= j` can only add a self-edge, which the builder
+# forbids -- the comment there about publishing shortcuts only *after* the search is in place
+# because a self-loop was a real defect once. Both mutants change the tie-break order among exactly
+# equal weights and nothing else.
+src/clustering/hdbscan.rs:284:18: replace < with > in mst_over_graph
+src/clustering/hdbscan.rs:284:18: replace < with <= in mst_over_graph
+# Believed equivalent -- Prim's two tie-breaks. `best[v] < bu` and `w < *b` widened to `<=` take the
+# last vertex attaining the minimum instead of the first. On a complete graph every vertex is
+# reachable, so the widened argmin never selects an unreached `f64::INFINITY` slot; what is left is
+# a different MST of the same total weight whenever two mutual-reachability weights are exactly
+# equal. Single-linkage partitions at a threshold are the connected components of the `<= t` graph,
+# which no choice among equal-weight edges can change. The condensed tree's merge *order* among tied
+# edges is not covered by that argument, so this is evidence rather than a proof.
+src/clustering/hdbscan.rs:589:39: replace < with <= in prim_complete
+src/clustering/hdbscan.rs:606:22: replace < with <= in prim_complete
+# Believed equivalent -- a zero-length contribution. `persistence_trace` guards its difference array
+# with `if birth < s_max[nd]`; widened to `<=`, the one extra segment it admits has
+# `p = s_max - birth = 0`, so both `diff` writes add nothing. The same widening on the *cuts* loop
+# at 487:33 is a different mutant and is killed -- that one publishes a candidate size.
+src/clustering/hdbscan.rs:502:18: replace < with <= in persistence_trace
+# Believed equivalent -- the component-linking loop is unreachable. `mst_over_graph`'s doc comment
+# states why: every vertex `i >= 1` takes at least one random shortcut into `0..i` during the build,
+# so induction gives a path to vertex 0 and the graph is connected. The loop therefore breaks on its
+# first iteration with `mst.len() + 1 >= m`, and all five mutants inside it are inert. Two of them
+# would otherwise be loud -- `anchor == usize::MAX` -> `!=` indexes `uf.find(usize::MAX)` -- which is
+# a measure of how firmly the break holds. The loop is not dead code: it exists so that a future
+# change to the index degrades into a coarse hierarchy rather than a silently truncated one.
+src/clustering/hdbscan.rs:302:26: replace >= with < in mst_over_graph
+src/clustering/hdbscan.rs:302:22: replace + with - in mst_over_graph
+src/clustering/hdbscan.rs:302:22: replace + with * in mst_over_graph
+src/clustering/hdbscan.rs:305:19: replace == with != in mst_over_graph
+src/clustering/hdbscan.rs:307:35: replace != with == in mst_over_graph
 
 # ── src/feature.rs (3) ──
 # Re-measured **2026-09-11 whole-file** at `f521df0`, locally at -j4 under a 10 GB cap: 512 mutants
