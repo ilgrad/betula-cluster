@@ -47,6 +47,9 @@
 # `src/clustering/vmf.rs` was re-measured a third time (**2026-09-14 whole-file**, 495 mutants in
 # 4h) after the Hamerly bounds landed: all 18 recorded survivors held, 7 of them at new lines, and
 # 35 new ones arrived with the bounds -- 19 closed by two tests, 16 argued.
+# `src/stream.rs` was re-measured (**2026-09-14 whole-file**, 469 mutants in 7h) and went from 33
+# carried entries with no arguments at all to 9 argued ones: 15 of the 24 measured survivors are
+# closed by six tests, and 17 of the 33 carried entries turned out to have been caught for weeks.
 #
 # The entry-by-entry runs used `cargo test --lib`, not the `--test-tool nextest` the CI job uses.
 # The difference is `tests/integration_api.rs`, whose four tests assert label counts and a 4-blob
@@ -424,42 +427,66 @@ src/tree.rs:713:24: replace > with >= in CFTree<R, C, D, A>::rebuild
 src/tree.rs:718:19: replace > with >= in CFTree<R, C, D, A>::rebuild
 src/tree.rs:722:22: replace > with >= in CFTree<R, C, D, A>::rebuild
 
-# ── src/stream.rs (33) ──
-# Debt, partly closed on 2026-08-20 (the DenStream prune thresholds are now checked
-# against a geometric-series reference). The rest is DbStream and `try_merge`.
-src/stream.rs:284:14: replace > with >= in DenStream<R, C>::try_merge
-src/stream.rs:284:27: replace / with * in DenStream<R, C>::try_merge
-src/stream.rs:350:19: replace > with < in DenStream<R, C>::tick
-src/stream.rs:350:19: replace > with == in DenStream<R, C>::tick
-src/stream.rs:350:19: replace > with >= in DenStream<R, C>::tick
-src/stream.rs:350:42: replace % with + in DenStream<R, C>::tick
-src/stream.rs:231:30: replace * with / in DenStream<R, C>::prune
-src/stream.rs:233:53: replace * with + in DenStream<R, C>::prune
-src/stream.rs:234:32: replace * with / in DenStream<R, C>::prune
-src/stream.rs:234:37: replace - with + in DenStream<R, C>::prune
-src/stream.rs:234:37: replace - with / in DenStream<R, C>::prune
-src/stream.rs:364:44: replace + with * in DenStream<R, C>::prune
-src/stream.rs:364:44: replace + with - in DenStream<R, C>::prune
-src/stream.rs:364:65: replace / with * in DenStream<R, C>::prune
-src/stream.rs:243:22: replace * with + in DenStream<R, C>::cluster
-src/stream.rs:243:22: replace * with / in DenStream<R, C>::cluster
-src/stream.rs:376:25: replace + with * in DenStream<R, C>::cluster
-src/stream.rs:260:61: replace * with + in DenStream<R, C>::cluster
-src/stream.rs:260:61: replace * with / in DenStream<R, C>::cluster
-src/stream.rs:404:21: delete - in DenStream<R, C>::cluster
-src/stream.rs:284:20: delete - in DenStream<R, C>::predict
-src/stream.rs:443:33: replace > with >= in DenStream<R, C>::potential_stats
-src/stream.rs:644:19: replace > with >= in DbStream<R, C>::tick
-src/stream.rs:496:50: replace && with || in DbStream<R, C>::cleanup
-src/stream.rs:496:61: replace * with + in DbStream<R, C>::cleanup
-src/stream.rs:496:61: replace * with / in DbStream<R, C>::cleanup
-src/stream.rs:684:27: replace || with && in DbStream<R, C>::cluster
-src/stream.rs:526:24: replace * with / in DbStream<R, C>::cluster
-src/stream.rs:713:44: replace < with <= in DbStream<R, C>::nearest
-src/stream.rs:563:20: delete - in DbStream<R, C>::predict
-src/stream.rs:756:33: replace > with >= in DbStream<R, C>::micro_stats
-src/stream.rs:768:10: replace < with <= in pair
+# ── src/stream.rs (9) ──
+# Re-measured 2026-09-14, WHOLE FILE, after `d59793a` added the checked entry points and `7f3f33e`
+# re-bounded the parameters -- a production edit, so every line:col here is new.
+#   systemd-run --user --scope -p MemoryMax=10G -p MemorySwapMax=0 \
+#     --setenv=TMPDIR=$HOME/.cache/mutants-tmp -- \
+#     cargo mutants -f src/stream.rs -j4 --test-tool nextest
+#   469 mutants in 7h | caught 437 | missed 24 | unviable 5 | timeout 3
+# The 33 entries carried from the 2026-08-20 whole-crate sweep are replaced by a measurement. Of
+# those 33: **15 are still survivors** (6 at new lines -- 284:20 -> 421:20, 496:50 -> 657:50,
+# 496:61 -> 657:61 x2, 526:24 -> 687:24, 563:20 -> 731:20), **1 is now a timeout** (713:44) and
+# **17 are caught** -- the DenStream prune and cluster arithmetic that `48a0439` closed and this
+# section was never re-measured to notice.
+#
+# Of the 24 measured survivors, 15 are closed by six tests here and 9 are equivalent. The 9 new ones
+# were all in the **checked entry points** `try_insert` / `try_predict`, which no test in this file
+# touched at all: every test drives the `pub(crate)` `insert` / `predict` directly, so a `try_insert`
+# replaced by `Ok(())` absorbed nothing and a `try_predict` replaced by a constant label agreed with
+# every assertion in the file.
+#   295:9, 412:9 x3    the_denstream_entry_points_check_the_length_before_doing_the_work
+#   586:9, 722:9 x3    the_dbstream_entry_points_check_the_length_before_doing_the_work
+#   421:20, 731:20     predict_without_a_prior_cluster_is_noise_on_both_heads
+#   657:50, 657:61 x2  a_shared_density_fades_out_while_its_micro_clusters_are_still_fed
+#   684:27             a_weak_micro_cluster_does_not_bridge_two_strong_ones
+#   687:24             a_shared_density_that_has_faded_below_the_bridge_no_longer_joins
+#
+# Two of those are worth the note. `cleanup` drops a shared density for **two** reasons and the test
+# that existed exercised one of them: it pushed the clock until everything faded at once, so a pair
+# could be dropped for referencing a gone micro-cluster and its own decay was never read. And the
+# weak-endpoint test in `cluster` is the whole of DBSTREAM's noise handling -- spelled `&&` it skips
+# a pair only when *both* endpoints are weak, so a thin bridge of noise merges two dense regions,
+# which is the one thing shared density exists to prevent.
+#
+# The 3 timeouts are detections, not survivors, and are not listed: `48:30 != -> ==` in
+# `UnionFind::find` (the path-compression walk stops advancing), `603:19 <= -> >` in
+# `DbStream::insert` and `713:44 < -> <=` in `DbStream::nearest`.
+#
+# Believed equivalent -- a balancing heuristic, a self-union and two ties. `64:31` drops the
+# union-by-rank increment: rank bounds the tree height, and with path compression on top no rank
+# assignment changes which elements are connected, only how deep the walk is. `376:25` turns
+# `(i+1)..np` into `(i*1)..np`, which adds the self-pairs `(i, i)`; `sq_euclidean` of a mean with
+# itself is 0, so each one reaches `union(i, i)`, which returns early on `ra == rb`. `318:55` and
+# `768:10` are `min(a, b)` and an ordered pair: at `a == b` both arms return the same value.
 src/stream.rs:64:31: replace += with *= in UnionFind::union
+src/stream.rs:376:25: replace + with * in DenStream<R, C>::cluster
+src/stream.rs:318:55: replace < with <= in DenStream<R, C>::insert
+src/stream.rs:768:10: replace < with <= in pair
+# Believed equivalent -- a guard on a quantity that is positive by construction. `284:14` widens
+# `w > 0` to `w >= 0` on a candidate merge whose CF has just absorbed a point, so `w >= 1`; and even
+# at `w == 0` the second conjunct would read `0/0 = NaN <= eps2`, which is false, so the `if` does
+# not fire either way. `443:33` and `756:33` widen the same test on a micro-cluster's raw weight,
+# which is the unfaded mass of at least the point that seeded it.
+src/stream.rs:284:14: replace > with >= in DenStream<R, C>::try_merge
+src/stream.rs:443:33: replace > with >= in DenStream<R, C>::potential_stats
+src/stream.rs:756:33: replace > with >= in DbStream<R, C>::micro_stats
+# Believed equivalent -- a period that cannot be zero. Both sites are `if period > 0 && t % period
+# == 0`, and both periods are a `(...).ceil().max(1.0)` cast to `u64`, so `period >= 1` always and
+# `>=` cannot differ from `>`. The guard is there for the cast, not for a reachable case -- and were
+# it ever reachable the mutant would divide by zero rather than change a label.
+src/stream.rs:350:19: replace > with >= in DenStream<R, C>::tick
+src/stream.rs:644:19: replace > with >= in DbStream<R, C>::tick
 
 # ── src/clustering/scalespace.rs (17) ──
 # **2026-09-13 whole-file**, 213 mutants in 90 min: 170 caught, 36 missed, 6 timeouts, 1 unviable.

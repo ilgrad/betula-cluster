@@ -947,6 +947,49 @@ mod tests {
         assert!(ari(&assigned, &truth) > 0.9, "ARI too low");
     }
 
+    /// The checked entry points are the only public way into this head, and nothing in this file
+    /// reached them: every test above drives the `pub(crate)` `insert` / `predict` directly. Pin all
+    /// three claims the pair makes — the length is checked, a refused point changes nothing, and the
+    /// point is then actually absorbed and labelled the way the unchecked path labels it.
+    #[test]
+    fn the_denstream_entry_points_check_the_length_before_doing_the_work() {
+        let mut rng = SplitMix64::new(7);
+        let (pts, _) = blobs(&mut rng, 250, &[[0.0, 0.0], [9.0, 0.0]], 0.5);
+        let mut d = ds(1.5, 0.001);
+        for p in &pts {
+            d.try_insert(p).expect("a 2-d point into a 2-d head");
+        }
+        assert!(d.potential_count() > 0, "try_insert absorbed nothing");
+        d.cluster();
+        assert_eq!(d.n_clusters(), 2);
+
+        let before = (d.potential_count(), d.n_clusters());
+        let err = d
+            .try_insert(&[0.0, 0.0, 0.0])
+            .expect_err("three coordinates into a 2-d head");
+        assert_eq!((err.expected, err.got), (2, 3));
+        assert_eq!((d.potential_count(), d.n_clusters()), before);
+        assert!(d.try_predict(&[0.0, 0.0, 0.0]).is_err());
+
+        // The checked label is the unchecked one, over a fixture carrying noise and both clusters,
+        // so no constant label can agree with it.
+        let mut seen: Vec<i64> = pts
+            .iter()
+            .map(|p| {
+                let got = d.try_predict(p).expect("a 2-d point into a 2-d head");
+                assert_eq!(got, d.predict(p));
+                got
+            })
+            .collect();
+        seen.push(
+            d.try_predict(&[100.0, 100.0])
+                .expect("a 2-d point into a 2-d head"),
+        );
+        seen.sort_unstable();
+        seen.dedup();
+        assert_eq!(seen, vec![-1, 0, 1], "the fixture cannot see a constant");
+    }
+
     #[test]
     fn denstream_fades_and_prunes_stale_clusters() {
         let mut rng = SplitMix64::new(1);
@@ -1048,6 +1091,44 @@ mod tests {
         assert_eq!(d.n_clusters(), 2);
         let assigned: Vec<usize> = pts.iter().map(|p| d.predict(p).max(0) as usize).collect();
         assert!(ari(&assigned, &truth) > 0.9, "ARI too low");
+    }
+
+    /// The same three claims for `DbStream`'s checked entry points, untested for the same reason.
+    #[test]
+    fn the_dbstream_entry_points_check_the_length_before_doing_the_work() {
+        let mut rng = SplitMix64::new(7);
+        let (pts, _) = blobs(&mut rng, 250, &[[0.0, 0.0], [9.0, 0.0]], 0.5);
+        let mut d = db(1.5, 0.0005);
+        for p in &pts {
+            d.try_insert(p).expect("a 2-d point into a 2-d head");
+        }
+        assert!(d.micro_count() > 0, "try_insert absorbed nothing");
+        d.cluster();
+        assert_eq!(d.n_clusters(), 2);
+
+        let before = (d.micro_count(), d.n_clusters());
+        let err = d
+            .try_insert(&[0.0, 0.0, 0.0])
+            .expect_err("three coordinates into a 2-d head");
+        assert_eq!((err.expected, err.got), (2, 3));
+        assert_eq!((d.micro_count(), d.n_clusters()), before);
+        assert!(d.try_predict(&[0.0, 0.0, 0.0]).is_err());
+
+        let mut seen: Vec<i64> = pts
+            .iter()
+            .map(|p| {
+                let got = d.try_predict(p).expect("a 2-d point into a 2-d head");
+                assert_eq!(got, d.predict(p));
+                got
+            })
+            .collect();
+        seen.push(
+            d.try_predict(&[100.0, 100.0])
+                .expect("a 2-d point into a 2-d head"),
+        );
+        seen.sort_unstable();
+        seen.dedup();
+        assert_eq!(seen, vec![-1, 0, 1], "the fixture cannot see a constant");
     }
 
     #[test]
@@ -1274,6 +1355,48 @@ mod tests {
         }
     }
 
+    /// `predict` is documented to need a prior `cluster`, and the answer when there is none is the
+    /// *noise* label. A head that returned a cluster number there would hand out a label for a
+    /// partition that does not exist yet, and `labels_` would not contain it.
+    #[test]
+    fn predict_without_a_prior_cluster_is_noise_on_both_heads() {
+        // Five points, not three: a DenStream component needs a faded weight of `mu` to be labelled
+        // at all, and a fixture that comes out noise cannot tell the guard from the label.
+        let seed = [[0.0, 0.0], [0.1, 0.1], [0.2, 0.0], [0.0, 0.2], [0.15, 0.05]];
+
+        let mut d = ds(1.5, 0.001);
+        for p in &seed {
+            d.insert(p);
+        }
+        assert!(d.potential_count() > 0, "nothing to label either way");
+        assert_eq!(
+            d.predict(&[0.0, 0.0]),
+            -1,
+            "DenStream labelled a point before `cluster`"
+        );
+        d.cluster();
+        assert!(
+            d.predict(&[0.0, 0.0]) >= 0,
+            "the fixture produces no label at all"
+        );
+
+        let mut b = db(1.5, 0.0005);
+        for p in &seed {
+            b.insert(p);
+        }
+        assert!(b.micro_count() > 0, "nothing to label either way");
+        assert_eq!(
+            b.predict(&[0.0, 0.0]),
+            -1,
+            "DbStream labelled a point before `cluster`"
+        );
+        b.cluster();
+        assert!(
+            b.predict(&[0.0, 0.0]) >= 0,
+            "the fixture produces no label at all"
+        );
+    }
+
     #[test]
     fn each_insert_advances_the_clock_by_exactly_one_tick() {
         let mut d = db(1.5, 0.05);
@@ -1310,6 +1433,118 @@ mod tests {
             d.shared.is_empty(),
             "shared densities outlived the micro-clusters they reference"
         );
+    }
+
+    /// `cleanup` drops a shared density for **two** reasons, and the test above exercises only one:
+    /// there, everything faded at once, so a pair could be dropped for referencing a gone
+    /// micro-cluster and its own decay never had to be read. The other reason is a pair that has
+    /// faded out while both endpoints are still being fed — and that is the one the *faded* value
+    /// carries, since `value + fade` and `value / fade` are both at least 1 for any live pair and can
+    /// never fall under a floor below 1.
+    #[test]
+    fn a_shared_density_fades_out_while_its_micro_clusters_are_still_fed() {
+        let mut d = db(1.0, 0.5);
+        d.insert(&[0.0, 0.0]);
+        d.insert(&[1.4, 0.0]);
+        d.insert(&[0.7, 0.0]); // inside both radii: the pair records a shared density
+        assert_eq!(d.shared.len(), 1, "no shared density was recorded");
+        let live = d.micros.len();
+        assert!(d.clean_floor < 1.0, "the floor cannot separate a live pair");
+
+        // Both micro-clusters keep being fed; the overlap between them does not. `last_t` is the
+        // whole of the difference, and it is what the fade reads.
+        d.t = 40.0;
+        for m in &mut d.micros {
+            m.last_t = d.t;
+        }
+        d.cleanup();
+        assert_eq!(
+            d.micros.len(),
+            live,
+            "a micro-cluster that is still fed was pruned"
+        );
+        assert!(
+            d.shared.is_empty(),
+            "a shared density outlived its own decay"
+        );
+    }
+
+    /// A weak micro-cluster must not chain two clusters together: `cluster` skips a pair as soon as
+    /// *either* endpoint is weak, and that skip is the whole of DBSTREAM's noise handling. Spelled
+    /// `&&` it skips only when *both* are weak, and a thin bridge of noise between two dense regions
+    /// merges them — which is exactly what shared density exists to prevent.
+    #[test]
+    fn a_weak_micro_cluster_does_not_bridge_two_strong_ones() {
+        let mut d: DbStream<f64, Spherical<f64>> = DbStream::new(2, 1.0, 0.5, 0.1, 4.0).unwrap();
+        for &(w, at) in &[(6.0, 0.0), (1.0, 2.0), (6.0, 4.0)] {
+            let mut cf = Spherical::new(2);
+            cf.push(&[at, 0.0], w);
+            let id = d.next_id;
+            d.next_id += 1;
+            d.micros.push(DbMicro {
+                cf,
+                last_t: 0.0,
+                id,
+            });
+        }
+        // A—M and M—B overlap; A and B do not. Every value is unfaded, so only the strength test
+        // can decide this one.
+        for (i, j) in [(0, 1), (1, 2)] {
+            let key = pair(d.micros[i].id, d.micros[j].id);
+            d.shared.insert(
+                key,
+                Shared {
+                    value: 3.0,
+                    last_t: 0.0,
+                },
+            );
+        }
+        d.cluster();
+        assert_eq!(d.labels[1], -1, "the bridge is not weak");
+        assert_ne!(
+            d.labels[0], d.labels[2],
+            "a weak micro-cluster chained two clusters together"
+        );
+        assert_eq!(d.n_clusters(), 2);
+    }
+
+    /// The bridge test reads the *faded* shared density, not the raw count: a pair that has not
+    /// co-absorbed anything in a long time falls apart even though both endpoints are still strong.
+    /// `value / fade` is never below `value`, so a slip in that direction can only bridge more
+    /// eagerly — a merge the data stopped supporting.
+    #[test]
+    fn a_shared_density_that_has_faded_below_the_bridge_no_longer_joins() {
+        let mut d: DbStream<f64, Spherical<f64>> = DbStream::new(2, 1.0, 0.5, 0.1, 4.0).unwrap();
+        d.t = 20.0;
+        for at in [0.0, 2.0] {
+            let mut cf = Spherical::new(2);
+            cf.push(&[at, 0.0], 6.0);
+            let id = d.next_id;
+            d.next_id += 1;
+            d.micros.push(DbMicro {
+                cf,
+                last_t: d.t, // still being fed: both are strong
+                id,
+            });
+        }
+        let key = pair(d.micros[0].id, d.micros[1].id);
+        d.shared.insert(
+            key,
+            Shared {
+                value: 1.0,
+                last_t: 0.0, // the overlap is 20 ticks stale
+            },
+        );
+        // Raw, the value clears the bridge; faded, it is three orders of magnitude under it.
+        let bridge = 0.1 * 4.0;
+        assert!(1.0 >= bridge && fade(d.lambda, d.t, 0.0) < bridge);
+        d.cluster();
+        assert_eq!(
+            d.n_clusters(),
+            2,
+            "a faded-out overlap still joined two clusters"
+        );
+        assert_ne!(d.labels[0], d.labels[1]);
     }
 
     #[test]
