@@ -55,6 +55,10 @@
 # again after three tests and the `condense` extraction (**269 mutants in 43m**, 15 survivors). The
 # second run returned exactly the fifteen the entry-by-entry killcheck had predicted, at exactly the
 # predicted lines.
+# `src/clustering/spectral.rs` was measured for the first time on 2026-09-14 (**115 mutants in
+# 49m**, 31 survivors -- the worst rate of any module so far) and again after four tests and two
+# extractions (**121 mutants in 44m**, 11 survivors), which likewise returned exactly the eleven
+# the killcheck predicted.
 #
 # The entry-by-entry runs used `cargo test --lib`, not the `--test-tool nextest` the CI job uses.
 # The difference is `tests/integration_api.rs`, whose four tests assert label counts and a 4-blob
@@ -1158,9 +1162,94 @@ src/clustering/graph.rs:186:30: replace > with >= in log_covariances
 src/clustering/graph.rs:125:21: replace + with * in knn_affinity_impl
 src/clustering/graph.rs:54:23: replace + with - in grassmann_sq
 
-# ── src/clustering/spectral.rs (0) ──
-# Both entries deleted 2026-09-10: `1db3883` made the head cluster every leaf by filtering the
-# Laplacian, and neither mutation exists any more. Unmeasured, not clean.
+# ── src/clustering/spectral.rs (11) ──
+# First complete measurement this file has ever had, and the two entries it replaces were deleted
+# 2026-09-10 as vanished, so the section was empty and the module unmeasured rather than clean.
+# Measured twice on 2026-09-14, WHOLE FILE both times, locally under a memory cap:
+#   systemd-run --user --scope -p MemoryMax=10G -p MemorySwapMax=0 \
+#     --setenv=TMPDIR=$HOME/.cache/mutants-tmp -- \
+#     cargo mutants -f src/clustering/spectral.rs -j4 --test-tool nextest
+#   at `39943e6`: 115 mutants in 49m | caught  77 | missed 31 | unviable 6 | timeout 1
+#   at `8babaa3`: 121 mutants in 44m | caught 100 | missed 11 | unviable 9 | timeout 1
+# 31 survivors out of 115 is the worst rate of any module measured so far. **Twenty are closed by
+# four tests**; the second run returned exactly the other eleven, at exactly the lines the
+# entry-by-entry killcheck predicted.
+#
+# One cause covers most of it, and it is the same one `src/clustering/hdbscan.rs` and
+# `src/mixture.rs` turned out to have: the defect lives in a *number* that only reaches a label
+# through a comparison.
+#
+# **The Chebyshev filter is an accelerator, not an answer.** Any polynomial of `P` leaves the
+# subspace iteration's fixed point alone, so the block converges to the right invariant subspace
+# whether the filter works or not -- only slower. Every assertion about the *returned subspace* is
+# therefore blind to the filter's own arithmetic, Davis-Kahan included: corrupt the affine map, the
+# three-term recurrence or the rescale and `the_chebyshev_solver_finds_the_subspace_the_exact_one_does`
+# still passes. `the_chebyshev_filter_is_the_polynomial_its_recurrence_claims` evaluates the same
+# degree-12 recurrence in **matrix** form and compares directions, which closes the eleven entries
+# the run put at 289:17, 289:23, 290:18 x2, 299:32, 299:41 x2, 307:61, 310:19 (== and <),
+# 312:29 x2 and 315:29 x2.
+#
+# **Two steps had no seam and now do** -- both pure moves, no behaviour change.
+#   `density_normalize`  the Coifman-Lafon α-normalisation (189:25, 189:33). The only test that
+#                        reached it asserted the labels merely *differ* from `alpha = 0`, which
+#                        inverting the division satisfies too. The shipped head runs
+#                        `DIFFUSION_ALPHA = 0.0`, so nothing but a test reaches the branch at all.
+#   `njw_embedding`      the row normalisation (206:46, 208:25). `x * x -> x / x` makes every row
+#                        norm `sqrt(k)` and `/ norm -> % norm` is the identity, so both mutants
+#                        delete the normalisation outright -- and the test named for it did not
+#                        notice. Measured on `lopsided_groups`, the raw row norms are 1.11e-1,
+#                        3.12e-1 and 4.47e-1 by group -- `1/sqrt(80)`, `1/sqrt(10)`, `1/sqrt(5)` to
+#                        three digits, so the 7x spread that test was built on is real -- and the
+#                        partition is identical with the scaling removed, because three tight
+#                        groups on near-orthogonal rays separate at three radii as easily as at
+#                        one. A fixture search over moons, circles and thinned moons (3 fixtures x
+#                        3 sizes x 3 noise levels x 3 seeds) found no case where removing it costs
+#                        more than 0.09 ARI, and every such case was already in the regime where
+#                        the head is failing anyway. That test's comment claimed the opposite and
+#                        was corrected; unit length is the contract and is now asserted directly.
+#
+# The timeout is a detection, not a survivor, and is not listed: `176:21 <= with >` inverts
+# [`SPECTRAL_EXACT_NODES`], which puts the `O(n³)` dense eigensolver on the graphs the Chebyshev
+# path exists for.
+#
+# Debt, with the measurement rather than a guess. Above [`SPECTRAL_DENSE_GRAPH_MAX`] the head does
+# take the approximate builder -- checked at 5 467, 8 001 and 12 228 nodes, where its labels match
+# the approximate pipeline and not the exact one. Below the cap the choice is asserted by
+# `below_the_dense_graph_cap_the_head_uses_the_exact_builder`, which is what closed `169:19` and the
+# `false` arm of this guard. The `true` arm needs a fixture that clears 2 048 nodes *and* separates
+# the two builders; at 2 049 and 2 400 nodes of Gaussian blobs they agree, and the sizes where they
+# do not cost 4-10 s of the debug suite for one mutant. Recorded rather than paid for.
+src/clustering/spectral.rs:167:17: replace match guard n <= SPECTRAL_DENSE_GRAPH_MAX with true in spectral_core_alpha
+# Believed equivalent -- an overflow guard at exact equality. `mx > huge` widened to `>=` differs
+# only when the block's largest entry is exactly `1e150`. The other two operators at this site are
+# killed by the filter test's overflow case.
+src/clustering/spectral.rs:330:19: replace > with >= in chebyshev_filter
+# Believed equivalent -- three knobs that set the convergence *rate* and not the answer. The block
+# size `s = (k + CHEB_OVERSAMPLE).min(n)` becomes `k * CHEB_OVERSAMPLE`, which is still at least
+# `k + 1` for every `k >= 2` and only gives the iteration more room; `clamp_lo = -0.9` loses its
+# sign, which pins `hi` into `[0.9, 0.95]` and widens the damping interval instead of narrowing it;
+# and `s > k` decides whether the damping bound is refreshed from `theta[k]` -- `s >= k` is the same
+# branch, since the `k >= n` early return makes `s > k` unconditional, and `==`/`<` leave `hi` at
+# zero, which is the value the first outer step uses anyway. All three converge to the same
+# invariant subspace in more or fewer outer steps, and the residual criterion is what stops the
+# loop, not the step count.
+src/clustering/spectral.rs:357:16: replace + with * in chebyshev_top_eigenvectors
+src/clustering/spectral.rs:370:32: delete - in chebyshev_top_eigenvectors
+src/clustering/spectral.rs:427:19: replace > with == in chebyshev_top_eigenvectors
+src/clustering/spectral.rs:427:19: replace > with < in chebyshev_top_eigenvectors
+src/clustering/spectral.rs:427:19: replace > with >= in chebyshev_top_eigenvectors
+# Believed equivalent -- the random start, which the suite already asserts does not matter.
+# `seed ^ CHEB_STREAM_OFFSET` becomes `&` or `|`, i.e. a different stream for the Gaussian block.
+# `the_chebyshev_subspace_does_not_depend_on_the_random_start` exists precisely to say that a
+# converged iteration lands on the same subspace from any start, so no seed can be asserted here
+# without contradicting it.
+src/clustering/spectral.rs:358:40: replace ^ with & in chebyshev_top_eigenvectors
+src/clustering/spectral.rs:358:40: replace ^ with | in chebyshev_top_eigenvectors
+# Believed equivalent -- a clamp that cannot bind. The return reads `x[r.min(s - 1)]` for `r` in
+# `0..k`, and `s = (k + CHEB_OVERSAMPLE).min(n)` with `k < n` guaranteed by the `k >= n` early
+# return, so `s >= k + 1` and `r <= k - 1 <= s - 2`. Both `s + 1` and `s / 1` leave `r.min(..) = r`.
+src/clustering/spectral.rs:432:43: replace - with + in chebyshev_top_eigenvectors
+src/clustering/spectral.rs:432:43: replace - with / in chebyshev_top_eigenvectors
 
 # ── src/clustering/ward.rs (1) ──
 # Debt.
