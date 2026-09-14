@@ -664,21 +664,30 @@ fn dendrogram(m: usize, mass: &[f64], mut mst: Vec<(f64, usize, usize)>) -> Dend
     }
 }
 
-fn from_mst(
-    m: usize,
-    mass: &[f64],
-    mst: Vec<(f64, usize, usize)>,
-    min_cluster_size: usize,
-) -> Hdbscan {
+/// The condensed cluster tree: one entry per condensed cluster, plus the cluster each point is born
+/// into. `stab[c]` is the excess-of-mass integral `Σ (λ_leave − λ_birth)·m` over everything that
+/// leaves `c` — the node that splits it and every point that merely falls out of it on the way.
+struct Condensed {
+    stab: Vec<f64>,
+    kids: Vec<Vec<usize>>,
+    point_cluster: Vec<usize>,
+}
+
+/// Condense the dendrogram and integrate each condensed cluster's stability.
+///
+/// Separate from [`from_mst`] because it is the only part of the selection that is a *number* rather
+/// than a decision: a slip in the integral moves every stability and, because the comparison that
+/// reads them moves with it, changes no label on any fixture that is not near a tie. The labels are
+/// the wrong instrument for it, so the tests read the vector.
+fn condense(m: usize, mass: &[f64], d: &Dendrogram, min_cluster_size: usize) -> Condensed {
     let Dendrogram {
         children,
         node_dist,
         node_mass,
         root,
-    } = dendrogram(m, mass, mst);
-    let total = children.len();
+    } = d;
+    let (root, total) = (*root, children.len());
 
-    // condense + mass-weighted stability
     let lam = |nd: usize| -> f64 {
         if node_dist[nd] > 0.0 {
             1.0 / node_dist[nd]
@@ -715,31 +724,49 @@ fn from_mst(
             let cr = new_cluster(&mut birth, &mut stab, &mut kids, split);
             kids[c].push(cl);
             kids[c].push(cr);
-            for p in collect_leaves(l, m, &children) {
+            for p in collect_leaves(l, m, children) {
                 point_cluster[p] = cl;
             }
-            for p in collect_leaves(r, m, &children) {
+            for p in collect_leaves(r, m, children) {
                 point_cluster[p] = cr;
             }
             stack.push((l, cl));
             stack.push((r, cr));
         } else if lbig {
-            for p in collect_leaves(r, m, &children) {
+            for p in collect_leaves(r, m, children) {
                 stab[c] += (split - birth[c]) * mass[p];
             }
             stack.push((l, c));
         } else if rbig {
-            for p in collect_leaves(l, m, &children) {
+            for p in collect_leaves(l, m, children) {
                 stab[c] += (split - birth[c]) * mass[p];
             }
             stack.push((r, c));
         } else {
-            for p in collect_leaves(nd, m, &children) {
+            for p in collect_leaves(nd, m, children) {
                 stab[c] += (split - birth[c]) * mass[p];
             }
         }
     }
-    let n_cl = birth.len();
+    Condensed {
+        stab,
+        kids,
+        point_cluster,
+    }
+}
+
+fn from_mst(
+    m: usize,
+    mass: &[f64],
+    mst: Vec<(f64, usize, usize)>,
+    min_cluster_size: usize,
+) -> Hdbscan {
+    let Condensed {
+        stab,
+        kids,
+        point_cluster,
+    } = condense(m, mass, &dendrogram(m, mass, mst), min_cluster_size);
+    let n_cl = stab.len();
 
     // excess-of-mass selection (root cluster 0 is never selected on its own)
     let mut selected = vec![false; n_cl];
@@ -1521,6 +1548,119 @@ mod tests {
         (m, mass, d)
     }
 
+    /// Every condensed cluster's excess-of-mass integral, re-derived from the definition instead of
+    /// from the production walk: for each cluster, sum `(λ_leave − λ_birth) · mass[p]` over the points
+    /// that leave it, **one point at a time**. Production adds the splitting node's own mass in one
+    /// go where it can, so the two agree only if that shortcut is the same number. Recursive in
+    /// shape where production is an explicit stack, and the stabilities come back unordered — the
+    /// caller compares them as a sorted multiset, so no cluster-numbering convention is shared.
+    ///
+    /// Written for a well-formed dendrogram; it has no counterpart to the `condensed` guard that
+    /// production carries for a node that is its own two children.
+    fn reference_stabilities(m: usize, mass: &[f64], d: &Dendrogram, mcs: usize) -> Vec<f64> {
+        let lam = |nd: usize| {
+            if d.node_dist[nd] > 0.0 {
+                1.0 / d.node_dist[nd]
+            } else {
+                f64::INFINITY
+            }
+        };
+        let points = |nd: usize| {
+            let (mut out, mut stack) = (Vec::new(), vec![nd]);
+            while let Some(x) = stack.pop() {
+                if x < m {
+                    out.push(x);
+                } else {
+                    let (l, r) = d.children[x];
+                    stack.push(l);
+                    stack.push(r);
+                }
+            }
+            out
+        };
+        let want = mcs as f64;
+        let (mut out, mut todo) = (Vec::new(), vec![(d.root, 0.0f64)]);
+        while let Some((start, birth)) = todo.pop() {
+            let (mut s, mut cur) = (0.0, start);
+            while cur >= m {
+                let (l, r) = d.children[cur];
+                let split = lam(cur);
+                let mut shed = |ns: Vec<usize>| {
+                    for p in ns {
+                        s += (split - birth) * mass[p];
+                    }
+                };
+                match (d.node_mass[l] >= want, d.node_mass[r] >= want) {
+                    (true, true) => {
+                        shed(points(cur));
+                        todo.push((l, split));
+                        todo.push((r, split));
+                        break;
+                    }
+                    (true, false) => {
+                        shed(points(r));
+                        cur = l;
+                    }
+                    (false, true) => {
+                        shed(points(l));
+                        cur = r;
+                    }
+                    (false, false) => {
+                        shed(points(cur));
+                        break;
+                    }
+                }
+            }
+            out.push(s);
+        }
+        out
+    }
+
+    /// The excess-of-mass integral is the one part of the selection that is a *number* rather than a
+    /// decision, and the labels cannot see it. Measured on the fixtures in this file, every parent's
+    /// margin `stab[c] − Σ prop[kids]` sits between 0.45 and 11.4 units, and a slip in the integral
+    /// moves both sides of that comparison together — so the fall-out arithmetic can be corrupted
+    /// outright and every partition here still comes out identical. This reads the vector.
+    #[test]
+    fn the_stability_integral_matches_an_independent_per_point_re_derivation() {
+        let mut seen_split = false;
+        for feats in [
+            nested_micros(),
+            split_fixture(1.6, 91),
+            split_fixture(3.4, 7),
+        ] {
+            for (ms, mcs) in [(1usize, 3usize), (2, 3), (3, 4), (3, 5), (5, 8), (2, 12)] {
+                let (m, mass, d) = mst_of(&feats, ms);
+                let mut got = condense(m, &mass, &d, mcs).stab;
+                let mut want = reference_stabilities(m, &mass, &d, mcs);
+                assert_eq!(
+                    got.len(),
+                    want.len(),
+                    "ms {ms}, mcs {mcs}: {} condensed clusters vs {}",
+                    got.len(),
+                    want.len()
+                );
+                seen_split |= got.len() > 1;
+                got.sort_by(f64::total_cmp);
+                want.sort_by(f64::total_cmp);
+                for (i, (a, b)) in got.iter().zip(&want).enumerate() {
+                    assert!(
+                        (a - b).abs() < 1e-9 * b.abs().max(1.0),
+                        "ms {ms}, mcs {mcs}: stability {i} is {a}, re-derived {b}"
+                    );
+                }
+                assert!(
+                    got.iter().any(|&s| s > 0.0),
+                    "ms {ms}, mcs {mcs}: every stability is zero, the fixture integrates nothing"
+                );
+            }
+        }
+        assert!(
+            seen_split,
+            "no fixture ever condensed past the root cluster"
+        );
+    }
+
     /// Independent re-derivation of "which segments are leaf clusters at minimum size `t`": prune the
     /// dendrogram directly. A split is admitted only when both sides carry `t` points; otherwise the
     /// cluster follows the surviving side and keeps the identity of the node it entered on. The
@@ -1572,6 +1712,119 @@ mod tests {
                     .filter(|&nd| s_min[nd] < t && t <= s_max[nd])
                     .collect();
                 assert_eq!(got, want, "seed {seed}, minimum cluster size {t}");
+            }
+        }
+    }
+
+    /// The trace, re-derived from its definition: at each candidate size, the total lifetime of the
+    /// segments alive there. Quadratic and direct where production accumulates a difference array
+    /// over a partition-point index, and it re-reads `floor` per segment rather than carrying the
+    /// clamp forward.
+    fn reference_trace(s_min: &[f64], s_max: &[f64], floor: f64) -> (Vec<f64>, Vec<f64>) {
+        let live: Vec<(f64, f64)> = s_min
+            .iter()
+            .zip(s_max)
+            .map(|(&b, &e)| (b.max(floor), e))
+            .filter(|&(b, e)| b < e)
+            .collect();
+        let mut cuts: Vec<f64> = live.iter().flat_map(|&(b, e)| [b, e]).collect();
+        cuts.sort_by(f64::total_cmp);
+        cuts.dedup();
+        let trace = cuts
+            .iter()
+            .map(|&c| {
+                live.iter()
+                    .filter(|&&(b, e)| b < c && c <= e)
+                    .map(|&(b, e)| e - b)
+                    .sum()
+            })
+            .collect();
+        (cuts, trace)
+    }
+
+    /// Only the trace's *argmax* ever reaches a label, and an argmax cannot see an error that moves
+    /// the whole curve — the difference array could accumulate the lifetimes with the wrong sign and
+    /// every partition in this file would come out unchanged. So read the curve. The hand-built
+    /// barcodes carry the cases a real dendrogram reaches only by accident: a segment of zero
+    /// lifetime, one that dies below the floor, one born under it, two that share both endpoints,
+    /// and a barcode with no live segment at all.
+    #[test]
+    fn the_persistence_trace_totals_the_lifetime_of_every_segment_alive_at_each_size() {
+        let check = |s_min: &[f64], s_max: &[f64], floor: f64, what: &str| {
+            let (cuts, trace) = persistence_trace(s_min.len() - 1, s_min, s_max, floor);
+            let (want_cuts, want_trace) = reference_trace(s_min, s_max, floor);
+            assert_eq!(cuts, want_cuts, "{what}, floor {floor}: candidate sizes");
+            assert_eq!(trace.len(), want_trace.len(), "{what}, floor {floor}");
+            for (i, (&got, &want)) in trace.iter().zip(&want_trace).enumerate() {
+                assert!(
+                    (got - want).abs() < 1e-9 * want.abs().max(1.0),
+                    "{what}, floor {floor}: total at size {} is {got}, re-derived {want}",
+                    cuts[i]
+                );
+            }
+        };
+
+        let hand: [(&[f64], &[f64], &str); 4] = [
+            (
+                &[0.0, 2.0, 3.0],
+                &[5.0, 9.0, 4.0],
+                "three overlapping segments",
+            ),
+            (
+                &[4.0, 0.0, 1.0, 6.0],
+                &[4.0, 2.0, 7.0, 6.5],
+                "zero lifetime, dead below the floor, born under it",
+            ),
+            (
+                &[1.0, 1.0, 2.0],
+                &[8.0, 8.0, 3.0],
+                "a shared pair of endpoints",
+            ),
+            (&[3.0, 1.0], &[3.0, 0.5], "nothing is ever a leaf cluster"),
+        ];
+        for (s_min, s_max, what) in hand {
+            for floor in [0.0f64, 1.5, 3.0, 12.0] {
+                check(s_min, s_max, floor, what);
+            }
+        }
+
+        for seed in [7u64, 23] {
+            let (micros, _, _) = uneven(seed, 0.5);
+            let (m, _, d) = mst_of(&micros, 3);
+            let (s_min, s_max) = leaf_barcode(m, &d);
+            for floor in [0.0f64, 3.0, 25.0] {
+                check(
+                    &s_min[..=d.root],
+                    &s_max[..=d.root],
+                    floor,
+                    "a real barcode",
+                );
+            }
+        }
+    }
+
+    /// The size the arm reports is the trace's argmax with ties going to the finer clustering — not
+    /// the largest candidate on offer. The fixture guard is the point: unless the peak sits strictly
+    /// inside the sweep, "the best" and "the last one looked at" are the same answer and the fold
+    /// that picks between them is untested.
+    #[test]
+    fn the_persistence_arm_reports_the_trace_argmax_not_the_last_candidate_size() {
+        for seed in [7u64, 23, 31] {
+            for ms in [3usize, 10, 25] {
+                let (micros, _, _) = uneven(seed, 0.5);
+                let (m, _, d) = mst_of(&micros, ms);
+                let (s_min, s_max) = leaf_barcode(m, &d);
+                let (cuts, trace) = persistence_trace(d.root, &s_min, &s_max, ms as f64);
+                let top = trace.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+                let want = cuts[trace.iter().position(|&t| t == top).unwrap()];
+                assert_ne!(
+                    want,
+                    *cuts.last().unwrap(),
+                    "seed {seed}, min_samples {ms}: the peak is the last candidate on offer, so the \
+                     fixture cannot tell the two apart"
+                );
+                let res = hdbscan_selected(&micros, ms, Selection::Persistence, 0, 0);
+                assert_eq!(res.selected_size, want, "seed {seed}, min_samples {ms}");
             }
         }
     }
