@@ -155,8 +155,6 @@ fn spectral_core_alpha<R: Real>(
     if k >= n {
         return (0..n).collect(); // more clusters requested than nodes ⇒ each its own
     }
-    let tiny = R::from_f64(1e-12).unwrap();
-
     // Symmetric self-tuning k-NN affinity graph, kept sparse. `A` is exactly symmetric by
     // construction, so the normalized affinity `P = D^{-1/2} A D^{-1/2}` is too.
     //
@@ -170,25 +168,7 @@ fn spectral_core_alpha<R: Real>(
         None => knn_affinity_approx(centers, seed),
     };
     if alpha != 0.0 {
-        // `q` is the kernel density estimate the affinity itself induces; dividing it out is what
-        // separates the geometry from the sampling. It must be taken *before* any weight is
-        // rewritten, or later rows would be normalised against already-normalised ones.
-        let exponent = R::from_f64(alpha).unwrap_or_else(R::zero);
-        let q: Vec<R> = adj
-            .iter()
-            .map(|row| {
-                row.iter()
-                    .map(|&(_, w)| w)
-                    .sum::<R>()
-                    .max(tiny)
-                    .powf(exponent)
-            })
-            .collect();
-        for (i, row) in adj.iter_mut().enumerate() {
-            for (j, w) in row.iter_mut() {
-                *w = *w / (q[i] * q[*j]);
-            }
-        }
+        density_normalize(&mut adj, alpha);
     }
     let p = normalized_affinity(&adj);
 
@@ -199,9 +179,50 @@ fn spectral_core_alpha<R: Real>(
         chebyshev_top_eigenvectors(&p, k, seed)
     };
 
-    // Row-normalized eigenvector embedding (Ng-Jordan-Weiss), then k-means on the rows.
-    let embed: Vec<Spherical<R>> = vecs
-        .into_iter()
+    kmeans(&njw_embedding(vecs, k), k, max_iter, n_init, seed).labels
+}
+
+/// Coifman–Lafon α-normalisation: divide every weight by `(q_i q_j)^α`, where `q` is the kernel
+/// density estimate the affinity itself induces. Dividing it out is what separates the geometry from
+/// the sampling.
+///
+/// `q` is taken over the whole graph *before* any weight is rewritten — computing it row by row
+/// would normalise later rows against already-normalised ones, and the result would depend on the
+/// node order. Separate from [`spectral_core_alpha`] because it is arithmetic on the operator, and
+/// the labels can only see it through a k-means that has already thrown the magnitudes away.
+fn density_normalize<R: Real>(adj: &mut [Vec<(usize, R)>], alpha: f64) {
+    let tiny = R::from_f64(1e-12).unwrap();
+    let exponent = R::from_f64(alpha).unwrap_or_else(R::zero);
+    let q: Vec<R> = adj
+        .iter()
+        .map(|row| {
+            row.iter()
+                .map(|&(_, w)| w)
+                .sum::<R>()
+                .max(tiny)
+                .powf(exponent)
+        })
+        .collect();
+    for (i, row) in adj.iter_mut().enumerate() {
+        for (j, w) in row.iter_mut() {
+            *w = *w / (q[i] * q[*j]);
+        }
+    }
+}
+
+/// The Ng–Jordan–Weiss embedding: each row of the eigenvector block, scaled to unit length.
+///
+/// Eigenvector entries scale like `1/sqrt(cluster size)`, so the raw rows of a small group are
+/// several times longer than a large group's. Normalising sends every row onto the unit sphere, so
+/// the k-means that follows separates them by *direction* and never by that magnitude.
+///
+/// Separate from [`spectral_core_alpha`] for the reason the mutation record gives: on a
+/// well-separated graph the rows already lie on near-orthogonal rays, so dropping the scaling
+/// changes three tight groups at three radii into three tight groups at one, and no label moves.
+/// The unit length is the contract; the labels are not the instrument for it.
+fn njw_embedding<R: Real>(vecs: Vec<Vec<R>>, k: usize) -> Vec<Spherical<R>> {
+    let tiny = R::from_f64(1e-12).unwrap();
+    vecs.into_iter()
         .map(|mut row| {
             let norm = row.iter().map(|&x| x * x).sum::<R>().sqrt().max(tiny);
             for x in row.iter_mut() {
@@ -211,8 +232,7 @@ fn spectral_core_alpha<R: Real>(
             f.push(&row, R::one());
             f
         })
-        .collect();
-    kmeans(&embed, k, max_iter, n_init, seed).labels
+        .collect()
 }
 
 /// `P = D^{-1/2} A D^{-1/2}` from a sparse symmetric affinity, in the same sparse layout.
@@ -501,6 +521,39 @@ mod tests {
             spectral_core_alpha(&centers, 2, 100, 4, 1, DIFFUSION_ALPHA, None),
             "the head and the constant have drifted apart"
         );
+    }
+
+    /// What the α branch does, as a number rather than as "something changed". The only test that
+    /// reached it asserted the labels merely *differ* from `alpha = 0`, which any perturbation of
+    /// the operator satisfies -- inverting the division satisfies it too.
+    #[test]
+    fn density_normalization_divides_each_weight_by_the_density_it_measured_first() {
+        let adj = vec![
+            vec![(0usize, 0.5f64), (1, 1.5)],
+            vec![(0, 1.5), (1, 0.5), (2, 2.0)],
+            vec![(1, 2.0), (2, 0.25)],
+        ];
+        for alpha in [0.5f64, 1.0, 2.0] {
+            // Taken off the untouched graph, which is the ordering constraint the function carries:
+            // row sums 2.0, 4.0 and 2.25, all distinct, so `q_i q_j` and `q_i / q_j` cannot agree.
+            let q: Vec<f64> = adj
+                .iter()
+                .map(|row| row.iter().map(|&(_, w)| w).sum::<f64>().powf(alpha))
+                .collect();
+            let mut got = adj.clone();
+            density_normalize(&mut got, alpha);
+            for (i, (row, orig)) in got.iter().zip(&adj).enumerate() {
+                assert_eq!(row.len(), orig.len(), "α = {alpha}: row {i} changed shape");
+                for (&(j, w), &(oj, ow)) in row.iter().zip(orig) {
+                    assert_eq!(j, oj, "α = {alpha}: row {i} was reordered");
+                    let want = ow / (q[i] * q[j]);
+                    assert!(
+                        (w - want).abs() <= 1e-12 * want.abs(),
+                        "α = {alpha}: weight ({i}, {j}) is {w}, expected {want}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
@@ -805,6 +858,133 @@ mod tests {
         assert!(sin_theta_max(&a, &b) < 1e-6);
     }
 
+    /// The sparse row layout the affinity builders, `spmv` and the filter all share.
+    type Sparse = Vec<Vec<(usize, f64)>>;
+
+    /// A small sparse symmetric `P` to drive the filter, and the same matrix densified.
+    fn small_operator(n: usize, seed: u64) -> (Sparse, Vec<Vec<f64>>) {
+        let mut rng = SplitMix64::new(seed);
+        let centers: Vec<Vec<f64>> = (0..n)
+            .map(|_| vec![3.0 * rng.gauss(), 3.0 * rng.gauss()])
+            .collect();
+        let p = normalized_affinity(&knn_affinity(&centers));
+        let mut dense = vec![vec![0.0; n]; n];
+        for (i, row) in p.iter().enumerate() {
+            for &(j, w) in row {
+                dense[i][j] = w;
+            }
+        }
+        (p, dense)
+    }
+
+    /// `T_deg(σ(P)) · v` for every row `v`, by the **matrix** form of the same recurrence: build
+    /// `σ(P) = (P − cI)/e` once, carry `T_{m−1}` and `T_m` as full matrices, and divide both by the
+    /// same factor at every step so the degree-12 growth cannot overflow. Production carries the
+    /// recurrence on vectors and rescales only past `1e150`, so the two agree up to one positive
+    /// scalar per row — which is all the span the caller wants is defined up to anyway.
+    fn reference_filter(
+        dense: &[Vec<f64>],
+        x: &[Vec<f64>],
+        lo: f64,
+        hi: f64,
+        deg: usize,
+    ) -> Vec<Vec<f64>> {
+        let n = dense.len();
+        let c = (lo + hi) / 2.0;
+        let e = ((hi - lo) / 2.0).max(1e-6);
+        let s: Vec<Vec<f64>> = (0..n)
+            .map(|i| {
+                (0..n)
+                    .map(|j| (dense[i][j] - if i == j { c } else { 0.0 }) / e)
+                    .collect()
+            })
+            .collect();
+        let mut t_prev: Vec<Vec<f64>> = (0..n)
+            .map(|i| (0..n).map(|j| f64::from(u8::from(i == j))).collect())
+            .collect();
+        let mut t_cur = s.clone();
+        for _ in 1..deg {
+            let mut t_next: Vec<Vec<f64>> = (0..n)
+                .map(|i| {
+                    (0..n)
+                        .map(|j| {
+                            2.0 * (0..n).map(|q| s[i][q] * t_cur[q][j]).sum::<f64>() - t_prev[i][j]
+                        })
+                        .collect()
+                })
+                .collect();
+            let mx = t_next
+                .iter()
+                .flatten()
+                .fold(0.0f64, |m, &t| m.max(t.abs()))
+                .max(f64::MIN_POSITIVE);
+            for row in t_next.iter_mut().chain(t_cur.iter_mut()) {
+                for t in row {
+                    *t /= mx;
+                }
+            }
+            t_prev = std::mem::replace(&mut t_cur, t_next);
+        }
+        x.iter()
+            .map(|v| {
+                (0..n)
+                    .map(|i| (0..n).map(|j| t_cur[i][j] * v[j]).sum())
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// The filter is an *accelerator*, and [`chebyshev_top_eigenvectors`] converges to the same
+    /// invariant subspace whether or not it works: any polynomial of `P` leaves the fixed point
+    /// alone, so every assertion about the returned subspace — Davis–Kahan included — is blind to
+    /// the filter's own arithmetic. Corrupt the affine map, the three-term recurrence or the rescale
+    /// and the block still lands where it should, only slower. So test the polynomial itself.
+    ///
+    /// The last case is the rescale guard, which nothing in production reaches: `lo = −1` and
+    /// `clamp_lo = −0.9` bound `e ≥ 0.05`, so `|σ| ≤ 39` and `T_12(39) ≈ 2·10²²`, twelve decades
+    /// short of `1e150`. Calling the filter directly is the only way to exercise the contract the
+    /// comment above it claims — that dividing the current *and* previous terms by the same factor
+    /// leaves the recurrence exact — and it also puts `e`'s `1e-6` floor to work, which `hi ≥ −0.9`
+    /// likewise keeps out of reach.
+    #[test]
+    fn the_chebyshev_filter_is_the_polynomial_its_recurrence_claims() {
+        let n = 28;
+        let (p, dense) = small_operator(n, 17);
+        let mut rng = SplitMix64::new(4242);
+        let x0: Vec<Vec<f64>> = (0..3)
+            .map(|_| (0..n).map(|_| rng.gauss()).collect())
+            .collect();
+
+        for (lo, hi, what) in [
+            (-1.0f64, 0.0f64, "the first outer step"),
+            (-1.0, -0.9, "the narrowest damping interval on offer"),
+            (-1.0, 0.95, "the widest"),
+            (-1.0, 0.3, "an interior bound"),
+            (1e32, 1e32, "past the rescale guard, on the interval floor"),
+            (1e146, 1e146, "far enough past it to rescale at every step"),
+        ] {
+            let mut got = x0.clone();
+            chebyshev_filter(&p, &mut got, lo, hi);
+            let want = reference_filter(&dense, &x0, lo, hi, CHEB_DEGREE);
+            for (r, (a, b)) in got.iter().zip(&want).enumerate() {
+                let (na, nb) = (norm_of(a), norm_of(b));
+                assert!(
+                    na.is_finite() && na > 0.0,
+                    "{what}: row {r} came back {na}, so the recurrence left the reals"
+                );
+                let cos = a.iter().zip(b).map(|(&u, &v)| u * v).sum::<f64>() / (na * nb);
+                assert!(
+                    (cos - 1.0).abs() < 1e-9,
+                    "{what}: row {r} points elsewhere, cos = {cos}"
+                );
+            }
+        }
+    }
+
+    fn norm_of(v: &[f64]) -> f64 {
+        v.iter().map(|&x| x * x).sum::<f64>().sqrt()
+    }
+
     #[test]
     fn the_sparse_solver_keeps_the_blobs_above_the_exact_cap() {
         // > SPECTRAL_EXACT_NODES microclusters route through the approximate graph and the
@@ -849,11 +1029,48 @@ mod tests {
         (pts, truth)
     }
 
+    /// [`SPECTRAL_DENSE_GRAPH_MAX`] chooses the *graph*, and the head's labels are the only place
+    /// that choice shows. So the fixture has to be one where the two builders disagree, and this one
+    /// is: 240 nodes of `circles` get a different partition from the approximate graph than from the
+    /// exact one, at a node count where the solver below is still the deterministic dense path.
+    ///
+    /// Only the sub-cap direction is checked. Above the cap the head does follow the approximate
+    /// builder -- measured at 5 467, 8 001 and 12 228 nodes, where its labels match the approximate
+    /// pipeline and not the exact one -- but no fixture that clears 2 048 nodes *and* separates the
+    /// two builders runs in less than several seconds of the debug suite, so that half is recorded
+    /// in `mutants-baseline.txt` rather than paid for here.
+    #[test]
+    fn below_the_dense_graph_cap_the_head_uses_the_exact_builder() {
+        let mut rng = SplitMix64::new(5);
+        let (pts, _) = circles(&mut rng, 120, 0.08);
+        let n = pts.len();
+        assert!(
+            n <= SPECTRAL_EXACT_NODES,
+            "{n} nodes reaches the Chebyshev solver, which is not what this is measuring"
+        );
+        let run = |adj: Sparse| -> Vec<usize> {
+            let p = normalized_affinity(&adj);
+            let vecs = dense_top_eigenvectors(&p, 2);
+            kmeans(&njw_embedding(vecs, 2), 2, 100, 4, 5).labels
+        };
+        let exact = run(knn_affinity(&pts));
+        let approx = run(knn_affinity_approx(&pts, 5));
+        assert_ne!(
+            exact, approx,
+            "the two builders agree on this fixture, so the cap cannot be observed through it"
+        );
+        assert_eq!(spectral_core(&pts, 2, 100, 4, 5), exact);
+    }
+
+    /// Groups of 80, 10 and 5 recovered exactly, not to an ARI threshold. It does **not** show the
+    /// row normalization is load-bearing: measured on this fixture the raw row norms are 1.11e-1,
+    /// 3.12e-1 and 4.47e-1 by group -- `1/sqrt(80)`, `1/sqrt(10)`, `1/sqrt(5)` to three digits, a
+    /// 7x spread -- and the partition is the same with the scaling removed, because the three
+    /// groups sit on near-orthogonal rays and k-means separates three tight blobs at three radii as
+    /// happily as three at one. The contract is asserted in
+    /// [`the_njw_embedding_puts_every_row_on_the_unit_sphere_without_turning_it`] instead.
     #[test]
     fn the_embedding_is_row_normalized_before_the_final_kmeans() {
-        // Without the normalization the k-means at the end separates rows by *length* -- the large
-        // group's short rows cluster together with whichever small group is nearest the origin --
-        // so an exact partition, not an ARI threshold, is what makes the step visible.
         let (pts, truth) = lopsided_groups();
         let labels = spectral_core(&pts, 3, 100, 4, 5);
         assert_eq!(n_distinct(&labels), 3, "{labels:?}");
@@ -862,5 +1079,35 @@ mod tests {
             "ARI = {}",
             ari(&labels, &truth)
         );
+    }
+
+    /// Unit length is the whole of what the step promises, and no partition in this file can see it.
+    #[test]
+    fn the_njw_embedding_puts_every_row_on_the_unit_sphere_without_turning_it() {
+        let rows = vec![
+            vec![3.0f64, 4.0, 0.0], // a 3-4-5, so the norm is not near 1 to start with
+            vec![-0.02, 0.0, 0.0],  // short and negative: the scaling must not be a sign
+            vec![1.0, 1.0, 1.0],
+            vec![0.0, 0.0, 0.0], // the `tiny` floor -- a zero row must not divide by zero
+        ];
+        for (r, (f, raw)) in njw_embedding(rows.clone(), 3).iter().zip(&rows).enumerate() {
+            let got = f.mean().to_vec();
+            let len = norm_of(&got);
+            let raw_len = norm_of(raw);
+            if raw_len == 0.0 {
+                assert_eq!(
+                    got,
+                    vec![0.0; 3],
+                    "row {r}: a zero row came back as {got:?}"
+                );
+                continue;
+            }
+            assert!(
+                (len - 1.0).abs() < 1e-12,
+                "row {r}: length {len}, from {raw:?}"
+            );
+            let cos = got.iter().zip(raw).map(|(&u, &v)| u * v).sum::<f64>() / (len * raw_len);
+            assert!((cos - 1.0).abs() < 1e-12, "row {r}: it turned, cos = {cos}");
+        }
     }
 }
