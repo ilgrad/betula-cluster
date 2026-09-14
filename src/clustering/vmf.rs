@@ -1599,6 +1599,74 @@ mod tests {
         }
     }
 
+    /// The same criterion as a *sweep*, because it is a universal claim and the two fixtures above
+    /// are two points. An error in a bound has a direction: loosening it only costs dot products and
+    /// is invisible in any output, while tightening it skips a leaf whose best center has moved, and
+    /// that is wrong on some shapes and right on most. One fixture cannot tell the two apart.
+    ///
+    /// The leaf means here carry a **length**, on both sides of one. `scale[i] = ‖μ_i‖` is what turns
+    /// the stored dot products into the cosines the bounds are stated in, and on unit leaves every
+    /// use of it cancels — which is what both fixtures above happen to be, and what the head never
+    /// hands this function, since the update needs the mergeable resultant `Σ n_i μ_i`.
+    #[test]
+    fn the_cosine_bounds_never_change_a_label_at_any_shape() {
+        let mut rng = SplitMix64::new(0x5EED_104D);
+        for dim in [2usize, 3, 5] {
+            for k in [2usize, 3, 4] {
+                for trial in 0..8 {
+                    let means: Vec<Vec<f64>> = (0..24)
+                        .map(|_| {
+                            let v: Vec<f64> = (0..dim).map(|_| rng.gauss()).collect();
+                            let nrm = v.iter().map(|x| x * x).sum::<f64>().sqrt();
+                            let len = 0.25 + 3.0 * rng.next_f64();
+                            v.iter().map(|x| x / nrm * len).collect()
+                        })
+                        .collect();
+                    let n: Vec<f64> = (0..24).map(|i| 1.0 + 0.37 * i as f64).collect();
+                    // Every seed near the same leaf, so the first update has to swing the centers
+                    // apart: a bound only carries weight while the centers are still moving.
+                    let init: Vec<Vec<f64>> = (0..k)
+                        .map(|_| {
+                            let v: Vec<f64> =
+                                means[0].iter().map(|x| x + 0.05 * rng.gauss()).collect();
+                            let nrm = v.iter().map(|x| x * x).sum::<f64>().sqrt();
+                            v.iter().map(|x| x / nrm).collect()
+                        })
+                        .collect();
+
+                    let got = spherical_lloyd(&means, &n, init.clone(), 50, dim);
+                    let (want_labels, want_centers, _) =
+                        reference_spherical_lloyd(&means, &n, &init, 50);
+                    assert_eq!(got.labels, want_labels, "dim={dim} k={k} trial={trial}");
+                    for (c, (a, b)) in got.centers.iter().zip(&want_centers).enumerate() {
+                        for (d, (x, y)) in a.iter().zip(b).enumerate() {
+                            assert!(
+                                (x - y).abs() < 1e-12,
+                                "dim={dim} k={k} trial={trial} center {c}[{d}]: {x} vs {y}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// `two_smallest` feeds the relaxation of the `high` bound, and the direction of an error in it
+    /// decides whether a slip costs work or correctness: a value *larger* than the true second
+    /// smallest drift under-relaxes the bound and skips a leaf whose best center has moved. Pin all
+    /// three returned numbers, including the degenerate shapes the loop can hand it.
+    #[test]
+    fn two_smallest_reports_the_smallest_its_index_and_the_runner_up() {
+        assert_eq!(two_smallest(&[0.9, 0.2, 0.5, 0.7]), (1, 0.2, 0.5));
+        assert_eq!(two_smallest(&[0.2, 0.9, 0.5]), (0, 0.2, 0.5));
+        assert_eq!(two_smallest(&[0.9, 0.5, 0.2]), (2, 0.2, 0.5));
+        // A tie is its own runner-up, and the *first* of the two is the index reported — the same
+        // rule as `argmin` above, and the one the caller's `slowest == labels[i]` test assumes.
+        assert_eq!(two_smallest(&[0.4, 0.4, 0.8]), (0, 0.4, 0.4));
+        assert_eq!(two_smallest(&[0.6]), (0, 0.6, f64::INFINITY));
+        assert_eq!(two_smallest(&[]), (0, f64::INFINITY, f64::INFINITY));
+    }
+
     #[test]
     fn a_center_that_turns_past_the_point_is_bounded_by_one_not_by_the_addition_formula() {
         // The exact numbers that broke the first implementation: a center 3.5 degrees off the leaf

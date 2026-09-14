@@ -44,6 +44,9 @@
 # re-anchoring confirmed by measurement rather than inferred from a description match.
 # `src/mixture.rs` was re-measured (**2026-09-14 whole-file**, 288 mutants in 2h) and its section
 # is now empty: the 65 survivors were three untested kernels, and seven tests closed all of them.
+# `src/clustering/vmf.rs` was re-measured a third time (**2026-09-14 whole-file**, 495 mutants in
+# 4h) after the Hamerly bounds landed: all 18 recorded survivors held, 7 of them at new lines, and
+# 35 new ones arrived with the bounds -- 19 closed by two tests, 16 argued.
 #
 # The entry-by-entry runs used `cargo test --lib`, not the `--test-tool nextest` the CI job uses.
 # The difference is `tests/integration_api.rs`, whose four tests assert label counts and a 4-blob
@@ -168,35 +171,50 @@ src/stats.rs:83:30: replace < with == in gcf
 src/stats.rs:94:10: replace < with <= in reg_lower_gamma
 src/stats.rs:94:14: replace + with * in reg_lower_gamma
 
-# ── src/clustering/vmf.rs (18) ──
-# Re-measured 2026-08-23, WHOLE FILE, after the `log_iv` asymptotic branch -- a production edit, so the
-# entry-by-entry form was unsound and every line:col here is new.
-#   394 mutants in 2h at `cargo mutants -f src/clustering/vmf.rs -j4 -- --lib`
-#   caught 322 | missed 18 | unviable 30 | timeout 23
-# Two changes against the 19 recorded on 2026-08-22, in opposite directions and both explained:
-#   - `73:15 > with ==` (now 108:15) left this list for the TIMEOUT column. `m == kappa*0.5` is true
-#     only when kappa/2 is an integer that `m` lands on exactly, so for the fixtures' kappa it never
-#     fires and the loop runs to the 200_000 hard cap on every call. That is the same argument the
-#     old entry gave -- the run now shows its cost rather than its silence.
-#   - `80:43`, the p^6 sign in the new `log_iv_asymptotic`, was missed and is now CLOSED by a golden
-#     at nu = 4095 (d = 8192). p = 1/sqrt(1+(kappa/nu)^2) grows towards 1 as kappa/nu falls, so U_2's
-#     high powers only become visible at large nu: flipping that sign moves the value by 1.28e-14
-#     relative there, against 8.78e-17 for the correct expression, and is invisible at nu <= 2047.
-#     Verified to fail on revert.
-# The 23 timeouts are almost all in `ln_gamma` and `log_iv_series`: they mutate the series' own
-# termination, so the loop runs to its 200_000 cap for every call in a 404-test suite. They are
-# reported by the summary job but not gated by it.
+# ── src/clustering/vmf.rs (34) ──
+# Re-measured 2026-09-14, WHOLE FILE, after `bb2a279` put Hamerly bounds on the spherical Lloyd pass
+# -- a production edit, so the entry-by-entry form was unsound and every line:col here is new.
+#   systemd-run --user --scope -p MemoryMax=10G -p MemorySwapMax=0 \
+#     --setenv=TMPDIR=$HOME/.cache/mutants-tmp -- \
+#     cargo mutants -f src/clustering/vmf.rs -j4 --test-tool nextest
+#   495 mutants in 4h | caught 407 | missed 53 | unviable 30 | timeout 5
+# All 18 entries recorded on 2026-08-23 are still survivors and all 18 keep their arguments. Seven
+# moved -- 357:35 -> 470:35, 306:27 -> 404:27, 475:34 -> 588:34, 478:26 -> 591:26 (x2),
+# 525:21 -> 638:21, 486:33 -> 599:33 -- which was the whole of this file's recorded staleness, and
+# the move is measured rather than inferred from a description match.
+#
+# The 35 new survivors are all in the Hamerly block, and the split between the 19 that are closed
+# and the 16 that cannot be is the same in every case: **an error in a bound has a direction.**
+# Loosening a bound only costs dot products and cannot be observed in any output; tightening one
+# skips a leaf whose best center has moved, which is a wrong label. Every equivalent mutant below
+# loosens; the two tests below close the ones that tighten.
+#
+# `the_cosine_bounds_never_change_a_label_at_any_shape` closes 386:29 (`<` and `==`), 392:73 (x2)
+# and 394:62 (x2). The two hand fixtures could not see those because their leaf means are **unit
+# vectors**, and `scale[i] = ‖μ_i‖` is exactly what turns a stored dot product into the cosine the
+# bounds are stated in -- at ‖μ‖ = 1 every use of it cancels and `/scale` is indistinguishable from
+# `*scale`. The production comment says in so many words that the leaf means are not unit and must
+# not be, since the update needs the mergeable resultant. The sweep gives them lengths on both
+# sides of one, over 3 dimensions x 3 values of k x 8 draws, against the unpruned reference.
+# `two_smallest_reports_the_smallest_its_index_and_the_runner_up` closes 314:5 (x10), 316:14 and
+# 320:21 (`==` and `>`) by pinning all three returned numbers, ties and degenerate shapes included.
+#
+# The 5 timeouts are all in `log_iv_series` and all mutate the series' own termination, so the loop
+# runs to its 200_000 hard cap on every call in an 800-test suite. They are detections, not
+# survivors, and are not listed: 108:56 `|| -> &&`, 108:15 `> -> ==` and `> -> <`, 108:38 `< -> ==`,
+# 111:11 `+= -> -=`. (The 2026-08-23 run had 23 of these; the count fell with the branch point, not
+# with the suite.)
 #
 # Believed equivalent -- the series' stopping rule and two ties that assign the value they already
 # hold. The series is all-positive with `sum_exp >= 1`, so a term below e^-40 (about half an ulp of
 # the running sum) cannot move it: both `108:23` mutants *widen* the peak test (`k + 0.5` and `2k`
 # both exceed `k/2` for every k > 0) and only sum more negligible terms; `108:15` `>=` fires one
 # iteration earlier than `>`, which is also a widening; `108:61` mutates the 200_000 hard cap, which
-# is now unreachable *by construction* -- `log_iv` enters the series only below the branch point, and
+# is unreachable *by construction* -- `log_iv` enters the series only below the branch point, and
 # `kappa_max(dim)` holds the low orders that have no branch below it too, so kappa <= 1e4 always and
 # the peak sits at m <= 5000; `108:38` differs only on an exact float coincidence, one term below
 # half an ulp. `101:18` `log_a >= max_log` takes the other arm of an if whose two arms coincide at
-# equality. `265:19`'s `nd <= *di` writes `*di = nd` when the two are already equal. `357:35` negates
+# equality. `265:19`'s `nd <= *di` writes `*di = nd` when the two are already equal. `470:35` negates
 # `cohesion_of`'s accumulator, which is only ever read through `norm`, and ‖−v‖ = ‖v‖.
 src/clustering/vmf.rs:101:18: replace > with >= in log_iv_series
 src/clustering/vmf.rs:108:15: replace > with >= in log_iv_series
@@ -206,32 +224,76 @@ src/clustering/vmf.rs:108:38: replace < with <= in log_iv_series
 src/clustering/vmf.rs:108:61: replace > with == in log_iv_series
 src/clustering/vmf.rs:108:61: replace > with >= in log_iv_series
 src/clustering/vmf.rs:265:19: replace < with <= in spherical_pp
-src/clustering/vmf.rs:357:35: replace + with - in cohesion_of
+src/clustering/vmf.rs:470:35: replace + with - in cohesion_of
+# Believed equivalent -- the guard sits exactly on the value its own formula already returns.
+# `shift_lower` hands back `-1` past `θ + φ = π`, and at `l == -p` the addition formula gives
+# `-p² - sqrt((1-p²)²) = -1` as well, so `<=` takes the same number by the other route. Measured
+# rather than argued, because the equality relies on `sqrt` recovering a squared f64: over 204 006
+# values of `p` (200 000 uniform draws, a 4001-point grid and the endpoints) the expression is
+# bit-identical to `-1.0` in every case.
+src/clustering/vmf.rs:288:10: replace < with <= in shift_lower
+# Believed equivalent -- a tie that reassigns the value already held. `p <= lo2` writes `lo2 = p`
+# when the two are equal, which is what `lo2` already is.
+src/clustering/vmf.rs:320:21: replace < with <= in two_smallest
 # Believed equivalent -- a loop that never breaks early. `it < 0` is never true for a usize, so
 # `spherical_lloyd` runs all `max_iter` rounds instead of stopping at convergence; the update is
 # idempotent once the labelling is stationary, so labels, centers and cohesion are bit-identical and
 # only the work differs.
-src/clustering/vmf.rs:306:27: replace > with < in spherical_lloyd
+src/clustering/vmf.rs:404:27: replace > with < in spherical_lloyd
+# Believed equivalent -- the Hamerly skip cannot fire on the iteration or the leaf these admit.
+# `374:19` widens the *iteration* test: at `it == 0` the bounds are still `low = -∞` and
+# `high = +∞`, so `low - high` is `-∞` and never reaches `BOUND_SLACK`; `it < 0` is never true for a
+# usize and simply never skips. `374:35` and `391:25` widen the *leaf* test from `‖μ_i‖ > 0` to `< 0`,
+# `== 0` or `>= 0`, which admits only the zero-length leaves -- and a zero leaf never has its bounds
+# written (`391:25` guards that with the same test), so it carries `low = -1`, `high = 1` from the
+# relaxation and its `low - high = -2` never reaches the slack either. Where `391:25` does write
+# them, `0/0` is `NaN`, and a `NaN` bound fails the skip test as well.
+src/clustering/vmf.rs:374:19: replace > with < in spherical_lloyd
+src/clustering/vmf.rs:374:19: replace > with == in spherical_lloyd
+src/clustering/vmf.rs:374:19: replace > with >= in spherical_lloyd
+src/clustering/vmf.rs:374:35: replace > with < in spherical_lloyd
+src/clustering/vmf.rs:374:35: replace > with == in spherical_lloyd
+src/clustering/vmf.rs:374:35: replace > with >= in spherical_lloyd
+src/clustering/vmf.rs:391:25: replace > with < in spherical_lloyd
+src/clustering/vmf.rs:391:25: replace > with == in spherical_lloyd
+src/clustering/vmf.rs:391:25: replace > with >= in spherical_lloyd
+# Believed equivalent -- relaxing a bound that is about to be overwritten, or that belongs to a
+# center with no rival. `356:15` runs the relaxation at `it == 0` too, where `low = -∞` and
+# `high = +∞` relax to `-1` and `1` and every leaf is then recomputed anyway, because the skip test
+# still carries its own `it > 0`. `360:22` relaxes `high` for `k == 1`, where the assignment loop has
+# already pinned it to `-∞` and no second center exists to take a leaf: the label cannot move, and
+# `served` is read only to reseed an empty cluster, which `k == 1` over a non-empty input never has.
+# `393:32` chooses `second / scale` over `-∞` for `k == 1`, and `second` is `-∞` there because the
+# `1..k` loop never ran.
+src/clustering/vmf.rs:356:15: replace > with >= in spherical_lloyd
+src/clustering/vmf.rs:360:22: replace > with >= in spherical_lloyd
+src/clustering/vmf.rs:393:32: replace > with >= in spherical_lloyd
+# Believed equivalent -- a tie that assigns the value already held (`d == second` writes `second = d`).
+src/clustering/vmf.rs:386:29: replace > with >= in spherical_lloyd
+# Believed equivalent -- an unreachable fallback. `.unwrap_or(-1.0)` fires only when
+# `ToPrimitive::to_f64` returns `None` on a drift cosine, and `Real` is `f32` or `f64`, for which it
+# is total.
+src/clustering/vmf.rs:443:28: delete - in spherical_lloyd
 # Believed equivalent -- zero total responsibility. `ntot = sum_c sum_i n_i r_ic = sum_i n_i`, because
 # the E-step normalizes each row of `resp` to sum to one and every leaf mass is positive. So `ntot > 0`
-# always holds, `>=` cannot differ from `>`, and the `1/k` fallback that the `478:26` pair rewrites is
+# always holds, `>=` cannot differ from `>`, and the `1/k` fallback that the `591:26` pair rewrites is
 # unreachable.
-src/clustering/vmf.rs:475:34: replace > with >= in movmf_once
-src/clustering/vmf.rs:478:26: replace / with % in movmf_once
-src/clustering/vmf.rs:478:26: replace / with * in movmf_once
+src/clustering/vmf.rs:588:34: replace > with >= in movmf_once
+src/clustering/vmf.rs:591:26: replace / with % in movmf_once
+src/clustering/vmf.rs:591:26: replace / with * in movmf_once
 # Believed equivalent -- `init_kappas` accumulates `-sum n_i mu_i` instead of `+sum`, and the result is
 # only ever read through `norm`, so `rbar` is unchanged.
-src/clustering/vmf.rs:525:21: replace + with - in init_kappas
+src/clustering/vmf.rs:638:21: replace + with - in init_kappas
 # Believed equivalent -- a constant offset in a selection score, the same argument as gmm.rs:632:32.
 # `bic = -2 lnL + p ln n`, and `(k-1) -> (k+1)` adds exactly 2 to p for every k while `(k-1) -> (k/1)`
 # adds exactly 1, so every score shifts by the same c·ln n and the argmin cannot move.
 src/clustering/vmf.rs:672:34: replace - with + in movmf_auto
 src/clustering/vmf.rs:672:34: replace - with / in movmf_auto
 # Debt: two exact-coincidence guards.
-#   486:33  needs a component whose *total* responsibility underflows to exactly 0.0 -- the same
+#   599:33  needs a component whose *total* responsibility underflows to exactly 0.0 -- the same
 #           constraint that keeps gmm.rs:159:22 and 455:22 open, and unreachable for the same reason.
-#   561:18  needs two k with a bit-identical BIC.
-src/clustering/vmf.rs:486:33: replace > with >= in movmf_once
+#   674:18  needs two k with a bit-identical BIC.
+src/clustering/vmf.rs:599:33: replace > with >= in movmf_once
 src/clustering/vmf.rs:674:18: replace < with <= in movmf_auto
 
 # ── src/clustering/kprototypes.rs (3) ──
