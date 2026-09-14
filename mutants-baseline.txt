@@ -59,6 +59,10 @@
 # 49m**, 31 survivors -- the worst rate of any module so far) and again after four tests and two
 # extractions (**121 mutants in 44m**, 11 survivors), which likewise returned exactly the eleven
 # the killcheck predicted.
+# `src/sparse.rs` was re-measured (**2026-09-14 whole-file**, 273 mutants in 3h) and its two
+# "Debt."-only entries became 12 measured ones. That section is a measurement and not a closure:
+# eight of the twelve are in `SparseCentroids`, whose `‖μ‖²` column, `unit` branch and `nearest`
+# are reached by no assertion, and the tests for them are still to write.
 #
 # The entry-by-entry runs used `cargo test --lib`, not the `--test-tool nextest` the CI job uses.
 # The difference is `tests/integration_api.rs`, whose four tests assert label counts and a 4-blob
@@ -1151,10 +1155,58 @@ src/linalg.rs:110:27: replace + with - in jacobi_eigen
 src/linalg.rs:110:37: replace * with / in jacobi_eigen
 src/linalg.rs:68:21: replace + with * in solve_upper_t
 
-# ── src/sparse.rs (2) ──
-# Debt.
-src/sparse.rs:110:18: replace < with <= in summarize_sparse
+# ── src/sparse.rs (12) ──
+# Re-measured 2026-09-14, WHOLE FILE, at `b170dc9`, replacing two entries whose only argument was
+# the word "Debt".
+#   systemd-run --user --scope -p MemoryMax=10G -p MemorySwapMax=0 \
+#     --setenv=TMPDIR=$HOME/.cache/mutants-tmp -- \
+#     cargo mutants -f src/sparse.rs -j4 --test-tool nextest
+#   273 mutants in 3h | caught 215 | missed 12 | unviable 46 | timeout 0
+# Both carried entries still survive: `427:64` at the same line, and `110:18` at **239:18** -- the
+# same argmin tie-break, moved, not gone.
+#
+# **This section is a measurement, not a closure.** The tests that would shrink it are not written
+# yet; what the run establishes is *where* the hole is, and it is one place. Eight of the twelve sit
+# in `SparseCentroids`, and they say that its constructor's `‖μ‖²` column, its `unit` branch and its
+# `nearest` are reached by no assertion at all:
+#   296:45  `musq.push(mean.iter().map(|v| v * v).sum())` -> `v + v`, i.e. `‖μ‖²` becomes `2·Σμ`.
+#           That term is the whole of what makes `nearest`'s expansion a distance, and nothing
+#           notices it is wrong.
+#   385:39  the same quantity at the point of use: `x_sq - 2·dot + musq[i]` accepts `-` and `*`.
+#   362:41  the `unit` branch's own indexing: `means_t[c * len..(c + 1) * len]` accepts `c / len`
+#   362:56  and `(c + 1) / len`, which both collapse every column onto column 0 -- the `.zip(&scale)`
+#           truncates the widened slice, so it scales the same `len` entries `n_features` times.
+#   323:28  `if n_features == 0 || k == 0` -> `&&`. An all-noise label vector gives `k == 0` with
+#           `n_features > 0`, so the mutant runs the body on a zero-cluster request instead of
+#           returning `None`. That is a reachable input, not a degenerate one.
+#   322:72  is the fourth of this group and is argued below rather than listed as debt.
+# The remaining three are `223:40` in `summarize_sparse` -- the forced-split mass share, which no
+# fixture drives to its boundary -- and the two argmin tie-breaks.
+src/sparse.rs:296:45: replace * with + in SparseCentroids::from_features
+src/sparse.rs:385:39: replace + with - in SparseCentroids::nearest
+src/sparse.rs:385:39: replace + with * in SparseCentroids::nearest
+src/sparse.rs:362:41: replace * with / in SparseCentroids::pooled
+src/sparse.rs:362:56: replace * with / in SparseCentroids::pooled
+src/sparse.rs:323:28: replace || with && in SparseCentroids::pooled
+src/sparse.rs:223:40: replace * with + in summarize_sparse
 src/sparse.rs:427:64: delete - in validate_csr
+# Believed equivalent -- a growth schedule. `LeaderSet::grow` takes `(cap * 2).min(hard_cap)` to
+# `(cap + 2).min(hard_cap)`, which still satisfies the `new_cap > cap` the function asserts and still
+# stops at the hard cap. It reallocates far more often and produces the same buffer contents; the
+# doubling is there so the re-stride is amortised, not so the result differs.
+src/sparse.rs:87:33: replace * with + in LeaderSet::grow
+# Believed equivalent -- an unreachable `unwrap_or`. `max().unwrap_or(-1) + 1` -> `unwrap_or(1) + 1`
+# differs only on an empty label vector, and `labels` is asserted to be as long as `micros`, so an
+# empty one comes with empty `micros`, which makes `n_features == 0` and returns `None` through the
+# other disjunct of the very next line.
+src/sparse.rs:322:72: delete - in SparseCentroids::pooled
+# Debt, unproven but unobserved -- two argmin tie-breaks. `d < bd` widened to `<=` keeps the *last*
+# index among equally near leaders instead of the first, which is the convention `nearest` documents
+# ("equally near centroids keep the lowest index"). Observing it needs two candidates at exactly
+# equal squared distance from the same row, which on a real sparse fixture is a measure-zero event;
+# that is evidence the mutant is harmless, not a proof, so it is recorded here rather than argued.
+src/sparse.rs:140:18: replace < with <= in LeaderSet::nearest_under
+src/sparse.rs:239:18: replace < with <= in summarize_sparse
 
 # ── src/clustering/graph.rs (3) ──
 # Debt.
