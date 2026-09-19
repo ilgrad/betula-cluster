@@ -109,7 +109,7 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - uses: astral-sh/setup-uv@v10.0.1
+      - uses: astral-sh/setup-uv@v10.1.0
       # `examples/` is linted but deliberately not formatted: each `.py` there is one half of a
       # jupytext pair, and reflowing a cell desyncs it from the `.ipynb` nothing here re-executes.
       # The four rules that describe the notebook form rather than a defect are in `pyproject.toml`.
@@ -153,7 +153,7 @@ jobs:
         python-version: ["3.11", "3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10.0.1
+      - uses: astral-sh/setup-uv@v10.1.0
       - uses: actions/download-artifact@v8
         with:
           name: wheel
@@ -192,7 +192,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - uses: astral-sh/setup-uv@v10.0.1
+      - uses: astral-sh/setup-uv@v10.1.0
       - name: build (maturin develop) + GIL check + pytest
         run: |
           uv venv --python 3.14t
@@ -221,7 +221,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - uses: astral-sh/setup-uv@v10.0.1
+      - uses: astral-sh/setup-uv@v10.1.0
       # The published abi3 wheel is Linux-only in CI; build from source here so the extension is
       # exercised natively on macOS and Windows (where release.yml also ships wheels).
       - name: build (maturin develop) + pytest (wrapper coverage, floor 100%)
@@ -246,7 +246,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - uses: astral-sh/setup-uv@v10.0.1
+      - uses: astral-sh/setup-uv@v10.1.0
       - name: every head, fitted at 1 and 8 threads, compared by digest
         run: |
           uv venv --python 3.12
@@ -289,6 +289,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10.0.1
+      - uses: astral-sh/setup-uv@v10.1.0
       - name: scoreboard --check (no cell may regress)
         run: uv run --with pandas python bench/scoreboard.py --check
