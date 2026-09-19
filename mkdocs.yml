@@ -59,4 +59,10 @@ nav:
   - Features: FEATURES.md
   - The math: MATH.md
   - API reference: api.md
+  - Design decisions:
+      - "ADR 001 — Toeplitz GMM covariance head": adr/001-gmm-toeplitz.md
+      - "ADR 002 — Bregman-Ward needs Anderberg": adr/002-bregman-ward-anderberg.md
+      - "ADR 003 — AVX2 kernels and the first unsafe": adr/003-avx2-kernels-unsafe.md
+      - "ADR 004 — Bregman as a second estimator": adr/004-bregman-public-api.md
+      - "ADR 005 — the canonical order's projection constant": adr/005-canonical-order-projection-seed.md
   - Changelog: changelog.md
