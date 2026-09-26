@@ -1009,6 +1009,14 @@ Single-threaded, seed 0, `max_leaves = 2000`, one subprocess per row so peak RSS
 One contest is a win once both sides answer the same question; the other is a loss on quality and a
 win on cost. Both are recorded as such rather than dropped.
 
+The two `betula-hdbscan` rows are the 2026-08-25 run, on the tree before 1.0.0's cost-ranked
+rebuild. On 1.0.0 the same call reads **ARI 0.480 with 24 clusters** at 100 000 and **0.490 with 88**
+at 500 000 (`local/scratch/hdbscan_ab.py`, which reproduces the rows above exactly on the rebuild
+commit's parent). `min_samples = 10` is below the leaf mass at both sizes, so the head is single
+linkage over leaf centroids on either tree — the old one chained the overlap into three clusters, the
+new one fragments it — and the verdict is the same loss. The time and RSS columns were not re-taken
+with them.
+
 ### The FAISS row is two rows, because FAISS's defaults are not a like-for-like fit
 
 **At its own defaults FAISS is 2.7×–8.8× faster and does not recover the partition** (0.62–0.63
@@ -1061,26 +1069,30 @@ already credits raw HDBSCAN with owning. Swept on n = 100 000 with `min_cluster_
 | `min_samples` | 10 | 100 | 1 000 | 2 000 |
 |---|---:|---:|---:|---:|
 | fast-hdbscan | **0.910** (6) | 0.900 (6) | 0.845 (6) | 0.762 (5) |
-| betula, `max_leaves` 2 000 | 0.478 (3) | 0.566 (4) | 0.785 (5) | 0.762 (5) |
-| betula, `max_leaves` 8 000 | 0.566 (4) | 0.799 (5) | **0.843** (6) | 0.764 (5) |
+| betula, `max_leaves` 2 000 | 0.480 (24) | 0.477 (24) | 0.784 (5) | 0.761 (6) |
+| betula, `max_leaves` 8 000 | 0.569 (4) | 0.800 (5) | **0.849** (6) | 0.762 (5) |
 
-So best-against-best the gap is 0.910 in ~1.4 s against 0.843 in 2.1 s, not the 0.910-against-0.478
+The betula rows are the 1.0.0 tree; before its cost-ranked rebuild they read 0.478 (3), 0.566 (4),
+0.785 (5), 0.762 (5) and 0.566 (4), 0.799 (5), 0.843 (6), 0.764 (5). So best-against-best the gap is
+0.910 against 0.849 (timed at ~1.4 s against 2.1 s on the earlier tree), not the 0.910 against ~0.48
 the contest row shows — and the shape of the table is the mechanism. HDBSCAN\* separates overlapping
 densities through the core distance, the radius enclosing `min_samples` points. Over raw points that
 radius is small and varies with local density; over leaf centroids a single leaf already holds
 n/`max_leaves` = 50 points, so any `min_samples` below that is enclosed at **distance zero**, every
 core distance collapses, and mutual reachability degenerates to plain distance — single linkage,
-which chains straight through the overlap. Raising `min_samples` past the leaf mass, or raising
+which chains straight through the overlap (on the 1.0.0 tree it also sheds two dozen small
+clusters off it at 2 000 leaves). Raising `min_samples` past the leaf mass, or raising
 `max_leaves` until the leaf mass drops below `min_samples`, restores the estimate; both columns of the
 table move for that one reason.
 
 That looked like it pointed at a fix rather than a tuning note: the leaf is not a point, and its own
 mass should be enclosed at its own radius, which the cluster feature already carries as
-`√(ssd/weight)`. **Measured, it is not the mechanism.** Replacing the self-pair's zero with the
-enclosed-mass radius of a uniform ball — `ρ = r_rms·√((d+2)/d)·(m/w)^(1/d)`, the closed form behind
-Data Bubbles' `nnDist` — reproduces every cell of the table above **to four decimals**, at
-`max_leaves` 200, 500, 2 000 and 8 000 and `min_samples` 10, 100 and 1 000, over the same three
-seeds. Not a small improvement: no label moved at all.
+`√(ssd/weight)`. **Measured on the tree before 1.0.0, it is not the mechanism.** Replacing the
+self-pair's zero with the enclosed-mass radius of a uniform ball —
+`ρ = r_rms·√((d+2)/d)·(m/w)^(1/d)`, the closed form behind Data Bubbles' `nnDist` — reproduces every
+cell of the table above **to four decimals**, at `max_leaves` 200, 500, 2 000 and 8 000 and
+`min_samples` 10, 100 and 1 000, over the same three seeds. Not a small improvement: no label moved
+at all.
 
 The scale is why. Mutual reachability is `max(core_i, core_j, dist(i,j))`, so a core distance only
 matters if it exceeds the distance to the leaves it competes with, and the leaves here are far
@@ -1093,19 +1105,27 @@ put back.
 
 **The tuning note is now the default.** `min_samples=None` asks for the mass of ten average leaves
 — the conventional ten-*point* default translated into the currency the head counts in, the same
-translation the proximity-graph degree already made in the other direction. It reads **0.820** at
-`max_leaves = 2 000` and **0.896** at 8 000 on the table above, so best-against-best becomes 0.910
-against 0.896 and the *untuned* answer stops being 0.478. The plateau is wide: 5 to 40 leaves are
-all inside the seed spread, so the ten is the shape of the rule and not a fit to this fixture.
+translation the proximity-graph degree already made in the other direction. On the 1.0.0 tree it
+reads **0.821** at `max_leaves = 2 000` and **0.822** at 8 000 (medians of seeds 0/1/2, against 0.612
+and 0.717 for the fixed ten and `fast_hdbscan`'s 0.910 over the same seeds). It was published at
+0.820 and **0.896**, measured on the tree before the cost-ranked rebuild that shipped in the same
+release. Only the 8 000-leaf median moved, but seed 0 fell at both budgets — 0.790 → 0.561 at
+2 000 and 0.896 → 0.799 at 8 000 — losing one cluster at each. The plateau is still wide: 5 to 40
+leaves are all inside the seed spread at both budgets, so the ten is the shape of the rule and not a
+fit to this fixture.
 
-Checked against the six published quality fixtures at N = 30 000 (median of seeds 0/1/2), the rule
-costs nothing where the fixed ten already worked — `moons` 0.9999 → 0.9995, `circles` 1.0000 →
-0.9999, `highdim` 1.0000 → 1.0000, `aniso` 0.568 → 0.565 — and gains where it did not: `blobs`
-**0.142 → 0.444**, `varied` **0.479 → 0.548**. Swept more widely (two- and six-blob fixtures ×
-N ∈ {2 000, 10 000, 100 000} × `max_leaves` ∈ {200, 2 000, 8 000}, `local/scratch/q4_rule_grid.out`)
-it wins or ties in 16 of 18 cells; the two it loses are the two-blob fixture at a 200-leaf budget,
-where the head reads ARI 0.074 with the fixed ten and 0.000 with the rule — a loss between two
-failures, on a summary too coarse to hold the answer either way.
+Checked against the six published quality fixtures at N = 30 000 (median of seeds 0/1/2, 1.0.0
+tree), the rule costs nothing anywhere — `moons` 0.9999 → 0.9996, `circles` 1.0000 → 0.9999,
+`highdim` 1.0000 → 1.0000, `aniso` 0.568 → 0.565, `blobs` 0.423 → 0.429 — and gains on `varied`,
+**0.568 → 0.839**. (On the earlier tree the fixed ten also failed on `blobs`, 0.142 against the
+rule's 0.444, and `varied` read 0.479 → 0.548.) Swept more widely (two- and six-blob fixtures ×
+N ∈ {2 000, 10 000, 100 000} × `max_leaves` ∈ {200, 2 000, 8 000},
+`local/scratch/q4_rule_grid.head.out`) it wins or ties in 16 of 18 cells — one win, fifteen ties —
+and the two it loses are real losses: two overlapping blobs at N = 100 000, where the fixed ten reads
+ARI 0.484 at 200 leaves and 0.452 at 2 000 against the rule's 0.000 and 0.337. On the earlier tree
+(`local/scratch/q4_rule_grid.out`: three wins) the two losses sat at a 200-leaf budget between two
+failures, 0.074 against 0.000; the cost-ranked rebuild lifted the fixed ten on this fixture and not
+the rule.
 
 The units trap found on the way is fixed as of this edition, and was the more serious half. On the
 summary route `min_cluster_size` and `min_samples` used to be counted in **leaves**: `hdbscan.rs`
@@ -1113,8 +1133,9 @@ thresholded `node_size`, a leaf count, while stability used `node_mass`, a point
 point-level value a scikit-learn user passes — 1 250 at n = 500 000 — therefore asked for 1 250 of
 2 000 leaves and returned **zero clusters, ARI 0.0000, with no warning**; it was also not scale-free,
 since the threshold changed meaning whenever `max_leaves` did. Both arguments now count points. The
-n = 500 000 row moved 0.000 → 0.478, which is exactly the n = 100 000 row: the same question now gets
-the same answer at both scales.
+n = 500 000 row moved 0.000 → 0.478, which was exactly the n = 100 000 row: the same question got the
+same answer at both scales. (On the 1.0.0 tree the two read 0.490 and 0.480 — one failure below the
+leaf mass, fragmented differently at each scale; see the note under the contest table.)
 
 One caveat on the timings: `fast_hdbscan` is numba-compiled, so its first call in a cold process pays
 JIT — measured at 9.0 s against 0.3 s once the on-disk cache is warm. The table above is warm-cache.

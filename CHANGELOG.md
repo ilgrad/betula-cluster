@@ -123,6 +123,28 @@ All notable changes to this project are documented here. The format follows
   `partial_fit` depend on the rows that came before it. The check is at the Python boundary;
   `CFTree::try_insert` in Rust takes any finite row, as before.
   [*How large a row can be*](https://github.com/ilgrad/betula-cluster/blob/main/docs/USAGE.md#how-large-a-row-can-be).
+- **The HDBSCAN blobs-contest numbers are re-measured on the tree 1.0.0 shipped, and the automatic
+  `min_samples` reads 0.822 at 8 000 leaves, not the published 0.896.** The rule was measured on the
+  tree before 1.0.0's cost-ranked rebuild, and the rebuild's own re-measurement covered the quality
+  tables but not the contest section of `bench/RESULTS.md`, `docs/USAGE.md` or the
+  `AUTO_MIN_SAMPLES_LEAVES` doc, so all three quoted a tree that was never released. The rebuild
+  (`7e5471f`) is the whole cause: built as a wheel beside its parent, the parent reproduces the grid
+  the numbers came from to the fourth decimal and the commit reproduces today's build on every cell.
+  On 1.0.0
+  the rule reads **0.821** at 2 000 leaves and **0.822** at 8 000 (medians of seeds 0/1/2; the fixed
+  ten 0.612 and 0.717), against `fast_hdbscan`'s 0.910. The drop is all seed 0, which loses one
+  cluster at each budget (0.790 → 0.561 at 2 000 leaves, 0.896 → 0.799 at 8 000; the 2 000-leaf
+  median is another seed's and did not move). On the six quality fixtures its gain on `blobs` is
+  gone — the fixed ten no longer fails there, 0.423 against 0.429 — and on `varied` it grew,
+  0.568 → 0.839. Over the wider grid it still wins or ties in 16 of 18 cells, but the two
+  losses are no longer between two failures: on two overlapping blobs at N = 100 000 the fixed ten
+  reads 0.484 at 200 leaves and 0.452 at 2 000 against the rule's 0.000 and 0.337. Below the leaf
+  mass the head is single linkage on either tree, and it now fragments where it chained: the
+  contest's `min_samples=10` call finds 24 clusters at 100 000 points and 88 at 500 000 instead of
+  3, at ARI 0.480 and 0.490 against the published 0.478. The constant is unchanged — 5 to 40 leaves
+  are still inside the seed spread at both budgets — and no code changed. The contest table's time
+  and RSS columns are the 2026-08-25 run, and now say so.
+  [`bench/RESULTS.md`](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md).
 
 ## [1.0.0] — 2026-09-10
 
@@ -462,10 +484,11 @@ on its own contest. `README.md` names the three cases where a different tool is 
   real-set cells and gains none (`mnist` 0.315 → 0.285, `covtype` 0.064 → 0.049 — both inside the
   seed spread of the cell). Synthetic k-means and gmm cells move by ≤ 0.001. `absorb="chi2"` is
   bit-identical, because its gate binds long before the leaf budget and no rebuild ever runs. Every
-  quality table in `bench/RESULTS.md` was re-measured for this. **`canonical_order=True` is
-  unaffected as a guarantee**: the order study rewrote 50 of its 81 cells and all 27 canonical cells
-  still read spread `0.0000` and pairwise ARI `1.0000`, which `bench/insertion_order.py` asserts
-  rather than reports.
+  quality table in `bench/RESULTS.md` was re-measured for this. (The HDBSCAN contest section was
+  not, and went on quoting the earlier tree; the re-measurement is in `[Unreleased]`.)
+  **`canonical_order=True` is unaffected as a guarantee**: the order study rewrote 50 of its 81
+  cells and all 27 canonical cells still read spread `0.0000` and pairwise ARI `1.0000`, which
+  `bench/insertion_order.py` asserts rather than reports.
 
   Three tuning knobs lose most of what they were worth, because the tree now does their job.
   `balance="auto"` fires in **none** of the 27 cells it was shipped on (the heaviest-leaf share it
@@ -515,7 +538,9 @@ on its own contest. `README.md` names the three cases where a different tool is 
   0.9999 → 0.9995, `circles` 1.0000 → 0.9999, `highdim` unchanged, `aniso` 0.568 → 0.565) and gains
   where it did not (`blobs` 0.142 → 0.444, `varied` 0.479 → 0.548). Over a wider grid it wins or ties
   in 16 of 18 cells, the two losses being a two-blob fixture at a 200-leaf budget where both answers
-  are ARI < 0.08.
+  are ARI < 0.08. (Measured before the cost-ranked rebuild above, which shipped in the same release;
+  on 1.0.0 as tagged the rule reads 0.821 and 0.822. The re-measurement, and what else it moved, is
+  in `[Unreleased]`.)
 
   **Labels change** for `method="hdbscan"` / `"dc-center"` / `"dc-median"` fits that did not name a
   `min_samples`; an explicit integer is used exactly as before. `get_params()` reports `None` for the

@@ -862,31 +862,37 @@ N = 100 000, `min_cluster_size = 250` (ARI, clusters found):
 
 | `min_samples` | 10 | 100 | 1 000 |
 |---|---:|---:|---:|
-| `max_leaves = 2 000` (leaf mass 50) | 0.478 (3) | 0.566 (4) | 0.785 (5) |
-| `max_leaves = 8 000` (leaf mass 12) | 0.566 (4) | 0.799 (5) | **0.843** (6) |
+| `max_leaves = 2 000` (leaf mass 50) | 0.480 (24) | 0.477 (24) | 0.784 (5) |
+| `max_leaves = 8 000` (leaf mass 12) | 0.569 (4) | 0.800 (5) | **0.849** (6) |
 
 So set `min_samples` comfortably above `N / max_leaves`, or raise `max_leaves` until the leaf mass
 falls below the `min_samples` you want. On well-separated clusters neither matters; on overlapping
-ones it is the difference between finding three clusters and finding six.
+ones it is the difference between single linkage — which here sheds two dozen fragments off the
+overlap — and finding six.
 
 **That is a rule the library can apply itself, and by default it does.** `min_samples=None` — the
 default, spelled `"auto"` if you prefer to say it — asks for the mass of **ten average leaves**,
 which is the conventional ten-point default translated into the currency the head is counting in.
-On the table above it reads 0.820 at `max_leaves = 2 000` and 0.896 at 8 000, against
-`fast_hdbscan`'s 0.910 over the raw points. The plateau is wide — five to forty leaves are all
-inside the seed spread there — so the constant is the shape of the rule rather than a fit to it.
+On the same fixture it reads 0.821 at `max_leaves = 2 000` and 0.822 at 8 000 (medians of seeds
+0/1/2, where the fixed ten reads 0.612 and 0.717), against `fast_hdbscan`'s 0.910 over the raw
+points. The plateau is wide — five to forty leaves are all inside the seed spread there — so the
+constant is the shape of the rule rather than a fit to it.
 
 On the six published quality fixtures at N = 30 000 (median of seeds 0/1/2) the same rule costs
-nothing where the fixed ten already worked and gains where it did not:
+nothing anywhere and gains on `varied`:
 
 | fixture | `min_samples=10` | automatic |
 |---|---:|---:|
-| blobs | 0.142 | **0.444** |
-| varied | 0.479 | **0.548** |
+| blobs | 0.423 | 0.429 |
+| varied | 0.568 | **0.839** |
 | aniso | 0.568 | 0.565 |
-| moons | 0.9999 | 0.9995 |
+| moons | 0.9999 | 0.9996 |
 | circles | 1.0000 | 0.9999 |
 | highdim | 1.0000 | 1.0000 |
+
+It is not a win everywhere. On two overlapping blobs at N = 100 000 the fixed ten beats it at 200
+and 2 000 leaves — ARI 0.484 and 0.452 against 0.000 and 0.337 — and ties it at 8 000; the grid is
+in [`bench/RESULTS.md`](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md).
 
 Pass an integer whenever you want the scikit-learn number instead; it is used exactly as given. The
 same automatic value serves `dc-center` / `dc-median`, which read the same core distances.

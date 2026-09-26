@@ -197,7 +197,7 @@ fn core_distances(
 /// is counting in, the same translation [`graph_degree_for`] makes in the other direction.
 ///
 /// Measured on the 100 000-point blobs contest (`bench/RESULTS.md`), the translation moves the
-/// answer from ARI 0.478 to 0.820 at 2 000 leaves and from 0.678 to 0.896 at 8 000, against
+/// answer from ARI 0.612 to 0.821 at 2 000 leaves and from 0.717 to 0.822 at 8 000, against
 /// `fast_hdbscan`'s 0.910 over the raw points. The plateau is wide — 5 to 40 leaves are all inside
 /// the seed spread there — so the constant is the shape of the rule rather than a fit to it.
 pub const AUTO_MIN_SAMPLES_LEAVES: f64 = 10.0;
