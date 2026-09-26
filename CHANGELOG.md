@@ -67,6 +67,12 @@ All notable changes to this project are documented here. The format follows
   comes back a unit vector orthogonal to the rows above it — which is what every caller in the
   crate needs, since each is a subspace iteration in which a zero row is a fixed point. The
   behaviour is unchanged and now asserted; only a residual below `1e-150` is zeroed.
+- **A rebuild could silently drop rows.** Six finite rows — ±1e200, ±3e200, 0 and 5 — fitted at
+  `max_leaves=2` kept three. When every merge candidate in a leaf cost `+inf` (a centroid gap that
+  squares past `f64::MAX`) or NaN, the entry was paired with *itself*, merged into itself and
+  deleted. A candidate is now always two entries and a NaN cost ranks last. A gap that overflowed no
+  longer grows the threshold either: it carries no scale, growing to it would absorb every later
+  row, and `+inf` is the one threshold `load` refuses.
 
 ## [1.0.0] — 2026-09-10
 

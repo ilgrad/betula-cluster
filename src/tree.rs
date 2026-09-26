@@ -710,15 +710,19 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> CF
                 self.entries[ei].merge(&absorbed);
                 alive[ej] = false;
                 merged += 1;
-                if gap > widest {
+                // A gap that overflowed carries no scale, and growing to it would absorb every later
+                // row — as `+inf`, the one threshold `validate` refuses on load.
+                if gap.is_finite() && gap > widest {
                     widest = gap;
                 }
             }
         }
         if merged > 0 {
             // Absorption is gated on `<= threshold`, so the widest gap merged here must itself pass;
-            // `1 + 4ε` covers the `sqrt(d)² < d` rounding the linear-space scan introduces.
-            let grown = widest * (R::one() + R::from_f64(4.0).unwrap() * R::epsilon());
+            // `1 + 4ε` covers the `sqrt(d)² < d` rounding the linear-space scan introduces, and
+            // would overflow a gap within that margin of the largest float.
+            let grown = (widest * (R::one() + R::from_f64(4.0).unwrap() * R::epsilon()))
+                .min(R::max_value());
             if grown > self.threshold {
                 self.threshold = grown;
             }
@@ -755,19 +759,23 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> CF
             let ch = &node.children;
             for (i, &ei) in ch.iter().enumerate() {
                 let entry = &self.entries[ei];
-                let mut best = ei;
-                let mut bd = R::infinity();
+                // Seeded empty, not with the entry itself: when every cost is `+inf` or NaN the
+                // self-seed survived, and the rebuild merged the entry into itself and dropped it.
+                // NaN ranks as `+inf`, last, which also keeps the sort below a total order.
+                let mut best: Option<(R, usize)> = None;
                 for (j, &ej) in ch.iter().enumerate() {
                     if i == j {
                         continue;
                     }
                     let d = self.abs.merge_cost(entry, &self.entries[ej]);
-                    if d < bd {
-                        bd = d;
-                        best = ej;
+                    let d = if d.is_nan() { R::infinity() } else { d };
+                    if best.is_none_or(|(bd, _)| d < bd) {
+                        best = Some((d, ej));
                     }
                 }
-                out.push((bd, ei, best));
+                if let Some((bd, ej)) = best {
+                    out.push((bd, ei, ej));
+                }
             }
         }
         out
@@ -1953,6 +1961,55 @@ mod tests {
             );
             verify(&tree, pts.len());
         }
+    }
+
+    /// A merge candidate is two entries whatever the costs. The scan was seeded with the entry
+    /// itself against an infinite best, so when every sibling cost `+inf` — a centroid gap squared
+    /// past `f64::MAX` — or NaN, the self-seed survived and the rebuild merged the entry into itself
+    /// and dropped it. `fuzz/fuzz_targets/insert.rs` found it as a NaN row that vanished.
+    #[test]
+    fn a_merge_candidate_names_two_entries_even_when_every_cost_overflows() {
+        let mut t: CFTree<f64, Spherical<f64>, _, _> =
+            CFTree::new(1, 8, 8, 0.0, 64, CentroidEuclidean, CentroidEuclidean);
+        for x in [1e200, -1e200, f64::NAN, 3e200] {
+            t.insert(&[x]);
+        }
+        let pairs = t.sibling_pairs();
+        assert_eq!(pairs.len(), 4);
+        for (cost, a, b) in pairs {
+            assert_ne!(a, b);
+            assert_eq!(cost, f64::INFINITY, "a NaN cost ranks last, as +inf");
+        }
+    }
+
+    /// Finite rows only — the Python boundary accepts every one of these — and before the pairing
+    /// above was fixed the budget of two kept 3 of the 6 rows. Merging across an overflowed gap is
+    /// forced by the budget, but it carries no scale for the threshold to grow to: `+inf` would
+    /// absorb every later row, and is the value `validate` refuses on load.
+    #[test]
+    fn a_rebuild_forced_across_an_overflowing_gap_keeps_every_row() {
+        let mut t: CFTree<f64, Spherical<f64>, _, _> =
+            CFTree::new(1, 4, 4, 0.0, 2, CentroidEuclidean, CentroidEuclidean);
+        let rows = [1e200, -1e200, 0.0, 3e200, -3e200, 5.0];
+        for x in rows {
+            t.insert(&[x]);
+        }
+        let mass: f64 = t.leaf_features().iter().map(|c| c.weight()).sum();
+        assert_eq!(mass, rows.len() as f64);
+        assert_eq!(t.validate(), Ok(()));
+        assert!(
+            t.threshold() < 1e3,
+            "{:e}: the threshold took the scale of the overflowed merges, not of the rows 0 and 5",
+            t.threshold()
+        );
+
+        // A finite gap one rounding step from `f64::MAX`: the `1 + 4ε` margin alone overflows it.
+        let mut edge: CFTree<f64, Spherical<f64>, _, _> =
+            CFTree::new(1, 4, 4, 0.0, 1, CentroidEuclidean, CentroidEuclidean);
+        edge.insert(&[0.0]);
+        edge.insert(&[f64::MAX.sqrt()]);
+        assert!(edge.threshold().is_finite() && edge.threshold() > 1e308);
+        assert_eq!(edge.validate(), Ok(()));
     }
 
     #[test]
