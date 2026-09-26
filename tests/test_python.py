@@ -3768,6 +3768,21 @@ def test_one_iteration_is_accepted_and_is_a_fit(blobs):
     assert len(np.unique(labels)) > 1
 
 
+@pytest.mark.parametrize("shape", [{"branching": 1}, {"branching": 0}, {"leaf_cap": 0}])
+def test_a_tree_shape_load_refuses_is_refused_at_every_entry_point(blobs, shape):
+    """These fitted without complaint, and the model they left behind saved and then failed to
+    load -- the mistake surfaced as far from where it was made as it could."""
+    x, _ = blobs
+    for call in (
+        lambda: betula_cluster.Betula(n_clusters=4, **shape).fit(x),
+        lambda: betula_cluster.fit_predict(x, n_clusters=4, **shape),
+        lambda: betula_cluster.BregmanBetula(n_clusters=4, **shape).fit(np.abs(x)),
+        lambda: betula_cluster.WindowStream(**shape).partial_fit(x, 0.0),
+    ):
+        with pytest.raises(ValueError, match="branching must be >= 2 and leaf_cap >= 1"):
+            call()
+
+
 def test_one_entry_leaves_are_accepted_and_hold_the_leaf_budget(blobs):
     """With no sibling inside a leaf to merge, every rebuild at `leaf_cap=1` merged nothing, and
     the fit kept each of the 2400 rows as a leaf of its own against a budget of 50."""

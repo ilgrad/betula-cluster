@@ -110,6 +110,9 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> CF
     /// New empty tree. `branching` = max children per internal node, `leaf_cap` = max entries
     /// per leaf, `threshold` = absorption limit (units of `abs`, squared for euclidean),
     /// `max_leaves` = entry count that triggers a rebuild with a grown threshold.
+    ///
+    /// Take `branching >= 2`, `leaf_cap >= 1` and `max_leaves >= 1`: a tree built below any of them
+    /// still takes inserts, but a model saved from it does not load back.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         dim: usize,

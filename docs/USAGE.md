@@ -32,7 +32,7 @@ tree-rebuild fix removed most of the Euclidean collapse it used to compensate fo
 tabular data where magnitude is signal: it takes covtype ward to **−0.049**, worse than random),
 `n_shards` (shard+merge tree build — `>1` gives ~4–5× on large
 `N`, and **changes the labels**, since the shards are the partition; `canonical_order=True` derives
-the shard count from `n` instead and rejects a caller-set one), `threshold`, `branching`, `leaf_cap`, `max_leaves` (an integer is an absolute leaf cap; a
+the shard count from `n` instead and rejects a caller-set one), `threshold`, `branching` (≥ 2), `leaf_cap` (≥ 1), `max_leaves` (an integer is an absolute leaf cap; a
 float in `(0, 1)` is a **fraction of the row count**, resolved as `ceil(frac·N)` at `fit` time —
 ELKI's `-cftree.maxleaves` convention, whose own default is `0.05`. A fraction is undefined for
 `partial_fit`, which never sees a final `N`, and raises there rather than guessing a batch size;

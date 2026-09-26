@@ -105,6 +105,10 @@ All notable changes to this project are documented here. The format follows
   four blobs as leaves. When no leaf node holds two entries, the rebuild now pairs across the leaves
   of one internal node and then rebuilds the node structure, since those merges empty leaves. At
   `leaf_cap >= 2` a rebuild always finds a pair inside a leaf, so no such fit changes.
+- **`branching` below 2 and `leaf_cap=0` are refused** by `Betula`, `fit_predict`, `BregmanBetula`
+  and `WindowStream`, with a `ValueError` naming both values. They used to fit — `leaf_cap=0`
+  without honouring `max_leaves` — and a `Betula` fitted with them saved a model that `load` then
+  refused, as it always has.
 
 ## [1.0.0] — 2026-09-10
 

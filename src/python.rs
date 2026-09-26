@@ -306,6 +306,21 @@ fn parse_max_iter(max_iter: usize) -> PyResult<usize> {
     Ok(max_iter)
 }
 
+/// Reject a tree shape `CFTree::validate` refuses, at the boundary that takes it from a caller.
+///
+/// Neither value fails the fit itself — measured on 2000 rows, `branching` 0 or 1 builds a tree,
+/// and `leaf_cap = 0` builds one that ignores `max_leaves` — so the mistake surfaced only when the
+/// model it produced was saved and then refused by `load`, far from where it was made.
+fn check_tree_shape(branching: usize, leaf_cap: usize) -> PyResult<()> {
+    if branching < 2 || leaf_cap < 1 {
+        return Err(PyValueError::new_err(format!(
+            "branching must be >= 2 and leaf_cap >= 1, got branching={branching}, \
+             leaf_cap={leaf_cap}: a tree below either saves as a model that cannot be loaded"
+        )));
+    }
+    Ok(())
+}
+
 /// `min_samples` as the density heads take it: an explicit point count, or the `0` sentinel that
 /// asks for [`auto_min_samples`] once the leaf features exist.
 ///
@@ -2051,6 +2066,7 @@ fn fit_predict<'py>(
     let nmf_dim = parse_projection(projection, projection_dim, projection_max_iter)?;
     let n_init = parse_n_init(n_init, kind, method)?;
     let max_iter = parse_max_iter(max_iter)?;
+    check_tree_shape(branching, leaf_cap)?;
     require_dimensionwise_feature(feature, kind, method)?;
     let (balance, auto_balance) = parse_balance(balance)?;
     let (labels, leaves) = if let Ok(a) = data.extract::<PyReadonlyArray2<'py, f64>>() {
@@ -3699,6 +3715,7 @@ impl Betula {
         let (balance, balance_auto) = parse_balance(balance)?;
         parse_n_init(n_init, kind, method)?; // validated here, lowered to the sentinel at use
         parse_max_iter(max_iter)?;
+        check_tree_shape(branching, leaf_cap)?;
         Ok(Self {
             feature: feature.to_string(),
             kind,
@@ -4593,8 +4610,9 @@ impl PyWindowStream {
         branching: usize,
         leaf_cap: usize,
         seed: u64,
-    ) -> Self {
-        Self {
+    ) -> PyResult<Self> {
+        check_tree_shape(branching, leaf_cap)?;
+        Ok(Self {
             frame_width,
             capacity,
             max_micros,
@@ -4604,7 +4622,7 @@ impl PyWindowStream {
             leaf_cap,
             seed,
             inner: None,
-        }
+        })
     }
 
     /// Construction params as a dict (read by the Python wrapper's scikit-learn `get_params`).
@@ -5443,6 +5461,7 @@ impl PyBregmanBetula {
         seed: u64,
     ) -> PyResult<Self> {
         parse_max_iter(max_iter)?;
+        check_tree_shape(branching, leaf_cap)?;
         Ok(Self {
             n_clusters,
             divergence,
