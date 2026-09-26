@@ -28,7 +28,7 @@ Python (against the built extension):
 
 ```bash
 pytest tests/test_python.py --cov=betula_cluster --cov-fail-under=100   # 100% wrapper coverage is enforced
-pytest tests/test_python.py -q   # again with NO optional deps installed: 501 passed, 48 skipped
+pytest tests/test_python.py -q   # again with NO optional deps installed: 502 passed, 48 skipped
 ruff check python/ tests/ bench/ examples/   # examples/ is linted but not formatted -- it is
 ruff format --check python/ tests/ bench/    # notebook cells, and reflowing them desyncs the .ipynb
 ty check python/                                   # or mypy / pyright
