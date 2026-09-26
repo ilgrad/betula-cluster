@@ -1,0 +1,40 @@
+[package]
+name = "betula-cluster-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+ciborium = "0.2"
+libfuzzer-sys = "0.4"
+
+# `parallel` is off: the only code it gates is `build_sharded`, which no target reaches, and a rayon
+# pool in the fuzzed process is nondeterminism libFuzzer cannot replay.
+[dependencies.betula-cluster]
+path = ".."
+default-features = false
+features = ["persistence"]
+
+[[bin]]
+name = "csr"
+path = "fuzz_targets/csr.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "insert"
+path = "fuzz_targets/insert.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "decode"
+path = "fuzz_targets/decode.rs"
+test = false
+doc = false
+bench = false

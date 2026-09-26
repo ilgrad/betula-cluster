@@ -51,6 +51,18 @@ Floating-point addition does not associate, so a work-stealing fold makes the an
 how the threads interleaved. It is invisible at one thread, which is why `cargo test` cannot see it,
 and it shipped once in `nmf.rs`. CI runs this as the `threads` job.
 
+When a PR touches an entry point that takes untrusted input — `sparse::validate_csr` and
+`summarize_sparse`, `CFTree::try_insert`, or `CFTree::validate` and the model format it guards:
+
+```bash
+cargo +nightly fuzz run -a csr -- -max_total_time=300   # likewise insert, decode
+```
+
+The targets are in `fuzz/`, a crate of its own that ships in neither package. `-a` builds with
+debug assertions, which several of the library's invariants are written as. It is not a CI job:
+libFuzzer needs a nightly toolchain, and five minutes a target is a budget for the PRs that touch
+those entry points rather than for every push.
+
 Public surface, when a PR touches one of the thirteen documented modules (`tree`, `feature`,
 `distance`, `bregman`, `model`, `clustering`, `types`, `sparse`, `order`, `coreset`, `stream`,
 `window`, `validity` — see *Compatibility* in `README.md`):

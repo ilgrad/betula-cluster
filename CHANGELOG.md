@@ -22,6 +22,13 @@ All notable changes to this project are documented here. The format follows
   which head are in
   [`docs/USAGE.md`](https://github.com/ilgrad/betula-cluster/blob/main/docs/USAGE.md), *A
   concentration per cluster, and where it costs*.
+- **Fuzz targets for the three entry points that take untrusted input** — `csr` (`validate_csr`,
+  then `summarize_sparse` on whatever it accepted), `insert` (`CFTree::try_insert` on arbitrary
+  floats under every feature model, then `refit_leaves_beam`) and `decode` (a model's CBOR through
+  `CFTree::validate`, then routed through and inserted into). They live in
+  [`fuzz/`](https://github.com/ilgrad/betula-cluster/tree/main/fuzz), a crate of its own that is in
+  neither the crates.io package nor the sdist, and run with `cargo +nightly fuzz run -a <target>`.
+  What the first runs found is under *Fixed*.
 
 ### Changed
 
@@ -88,6 +95,10 @@ All notable changes to this project are documented here. The format follows
   node with no children, and an entry listed twice (the next rebuild merged it into itself and
   emptied a leaf). Each is now refused with the index at fault. Every tree this library builds
   satisfies all four, so no file it wrote stops loading.
+
+  The first three change nothing for data whose squares stay finite. Each fix has a unit test that
+  fails without it, and every one came out of the fuzz targets or out of reading the code a finding
+  pointed at.
 
 ## [1.0.0] — 2026-09-10
 
