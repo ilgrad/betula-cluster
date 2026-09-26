@@ -315,6 +315,12 @@ src/clustering/vmf.rs:599:33: replace > with >= in movmf_once
 src/clustering/vmf.rs:674:18: replace < with <= in movmf_auto
 
 # ── src/clustering/kprototypes.rs (3) ──
+# Re-measured **2026-09-26 whole-file** at `5d166c1`, in one run with `src/order.rs`: 162 mutants,
+# 144 caught / 3 missed / 15 unviable / 0 timeout, `--test-tool nextest`. The same three as the
+# 2026-09-01 run below. `475:31` is now `477:31`, pushed down two lines by the borrowed `Prototype`
+# cache above it; the construct is unchanged, the first `+` of
+# `inertia + m.numeric_ssd() + micro_dist(..)`, so its argument holds as written.
+#
 # Re-measured **2026-09-01 whole-file** after the module grew a third (directional) block: the
 # schema, the block weights and the resultant summary renumbered every line here. 162 mutants,
 # 143 caught / 4 missed / 15 unviable / 0 timeout, `--test-tool nextest`. The three below are the
@@ -330,7 +336,7 @@ src/clustering/vmf.rs:674:18: replace < with <= in movmf_auto
 # (twelve micros of weight 100 at the origin against one of weight 0.01 three units away) and fails
 # on its first seed under the mutation.
 #   407:19  believed equivalent -- `nd <= *di` writes `*di = nd` when the two are already equal.
-#   475:31  believed equivalent -- the mutated `+` is the *first* one, so the objective becomes
+#   477:31  believed equivalent -- the mutated `+` is the *first* one, so the objective becomes
 #           `-sum ssd_i + sum micro_dist_i`. `sum ssd_i` runs over every micro regardless of the
 #           labelling, so it is the same constant for every restart and the argmin is unchanged.
 #           Measured against the whole library suite, which includes
@@ -348,7 +354,7 @@ src/clustering/vmf.rs:674:18: replace < with <= in movmf_auto
 #           angular term is the *maximum* `2·mass` against every micro.
 src/clustering/kprototypes.rs:407:19: replace < with <= in kpp_init
 src/clustering/kprototypes.rs:466:31: replace > with >= in kprototypes
-src/clustering/kprototypes.rs:475:31: replace + with - in kprototypes
+src/clustering/kprototypes.rs:477:31: replace + with - in kprototypes
 
 # ── src/tree.rs (9) ──
 # **Re-measured 2026-09-13, whole file** (`cargo mutants -f src/tree.rs -j4 --test-tool nextest`,

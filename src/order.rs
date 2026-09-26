@@ -69,6 +69,18 @@ use crate::types::Real;
 /// The most rows a canonical order can address, since a rank is a `u32`.
 pub const MAX_ROWS: usize = u32::MAX as usize;
 
+/// `n` as a `u32` rank count, or the refusal past [`MAX_ROWS`] that both entry points share.
+///
+/// Separate so its boundary is testable: at `MAX_ROWS` either entry point allocates the whole rank
+/// vector (17 GB) before returning, and the sparse one cannot pass `MAX_ROWS` at all without an
+/// `indptr` longer than that.
+fn rank_count(n: usize) -> Result<u32, &'static str> {
+    if n > MAX_ROWS {
+        return Err("canonical_order needs at most u32::MAX rows");
+    }
+    Ok(n as u32)
+}
+
 /// Projections mixed into the code. `PROJECTIONS * BITS` is exactly 64, so a code is one `u64`.
 const PROJECTIONS: usize = 8;
 /// Quantisation levels per projection, as a bit count.
@@ -119,10 +131,7 @@ pub fn canonical_permutation<R: Real>(
     n: usize,
     dim: usize,
 ) -> Result<Vec<u32>, &'static str> {
-    if n > MAX_ROWS {
-        return Err("canonical_order needs at most u32::MAX rows");
-    }
-    let mut idx: Vec<u32> = (0..n as u32).collect();
+    let mut idx: Vec<u32> = (0..rank_count(n)?).collect();
     if n <= 1 || dim == 0 {
         return Ok(idx);
     }
@@ -167,10 +176,7 @@ pub fn canonical_permutation_csr<R: Real>(
     dim: usize,
 ) -> Result<Vec<u32>, &'static str> {
     let n = indptr.len().saturating_sub(1);
-    if n > MAX_ROWS {
-        return Err("canonical_order needs at most u32::MAX rows");
-    }
-    let mut idx: Vec<u32> = (0..n as u32).collect();
+    let mut idx: Vec<u32> = (0..rank_count(n)?).collect();
     if n <= 1 || dim == 0 {
         return Ok(idx);
     }
@@ -656,8 +662,15 @@ mod tests {
         // the only reason this case is testable at all. Past `u32::MAX` the ranks wrap: the
         // permutation would look valid, order the wrong rows, and never visit the tail.
         assert!(canonical_permutation::<f64>(&[], MAX_ROWS + 1, 4).is_err());
-        // No `MAX_ROWS` companion case: the accepting branch allocates the rank vector, which is
-        // 17 GB at that length.
+        // The accepting side is asserted on `rank_count` below: through this entry point it would
+        // allocate the rank vector, which is 17 GB at `MAX_ROWS`.
+    }
+
+    #[test]
+    fn the_rank_count_accepts_exactly_the_rows_a_u32_rank_can_address() {
+        assert_eq!(rank_count(MAX_ROWS), Ok(u32::MAX));
+        assert!(rank_count(MAX_ROWS + 1).is_err());
+        assert_eq!(rank_count(0), Ok(0));
     }
 
     #[test]
