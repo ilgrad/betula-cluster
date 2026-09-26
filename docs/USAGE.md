@@ -1398,6 +1398,27 @@ that has to be past 16.8 M rows before it is wrong at all. If that leaf is your 
 `float64`, or lower `threshold` / raise `max_leaves` / set `balance` so the mass spreads over more
 leaves — the same three levers as before, now for a 0.9 % variance rather than for lost rows.
 
+### How large a row can be
+
+A row whose squared norm is past **`dtype.max / 2⁵⁶`** is refused with a `ValueError` that names it
+— about `4.7e21` for `float32` (a norm of `6.9e10`) and `2.5e291` for `float64` (`5.0e145`). The
+`dtype` is the one the fit runs in: an estimator that computes in `float64` widens a `float32` row
+first, and a `float32` model casts a `float64` chunk down before checking it, so `1e39` — finite in
+`float64`, `inf` in `float32` — is caught.
+
+Every sum a fit takes over squared distances — a leaf's scatter, a merge's cost, a head's objective —
+is at most `5·W·M` for `W` rows of squared norm at most `M`, because whatever it squares lies in the
+rows' convex hull. The bound keeps that inside the type for every `W` up to 2⁵³, so it needs no row
+count and a stream's domain does not narrow as the stream grows. Until 2026-09-27 such rows were
+taken in, and what followed depended on the head: on a `float64` row at `1e200`, `kmeans` indexed
+out of bounds and `normalize=True` scaled the row to zero; 3000 `float32` rows spread over
+`±4.5e18` left the radii of every non-directional head non-finite and made `kmedoids` panic.
+
+What is checked is what gets squared: the row as given, except under `method="hyperbolic"`, which
+lifts the row onto the sheet and squares the lifted one. Needing no count has a price — a small
+`float32` fit past the bound that happened to stay in range is refused too. Rescale the data, or pass
+`float64`.
+
 ## Saving and loading a model
 
 ```python

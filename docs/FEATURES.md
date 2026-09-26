@@ -224,8 +224,8 @@ A capability-by-capability reference. For runnable code see [`USAGE.md`](USAGE.m
   `save` / `load` + pickle (`joblib`-compatible) persistence of a fitted model. The estimator
   implements the full scikit-learn parameter protocol (`get_params` / `set_params`), so it drops
   into `clone`, `Pipeline`, and `GridSearchCV`; the wheel is typed (PEP 561 `py.typed` + stubs).
-  Inputs are validated at the boundary — a `NaN` / `Inf` raises instead of silently corrupting the
-  tree.
+  Inputs are validated at the boundary — a `NaN` / `Inf`, or a row whose squares would overflow the
+  fit, raises instead of silently corrupting the tree.
 - Dataset-structure inspection (not just labels) — the estimator exposes its microcluster and
   cluster geometry (`microcluster_centers_` / `_weights_` / `_radii_`, `cluster_centers_` /
   `_radii_` / `_sizes_`) and, on top of it, `summary()`, `validity()` (Calinski–Harabasz,

@@ -1412,6 +1412,7 @@ fn to_rows<R: Real + Element>(
     if prep == RowPrep::None && data.as_array().is_standard_layout() {
         if let Ok(s) = data.as_slice() {
             finite(s)?;
+            check_norms(s, dim)?;
             return Ok((Rows::Borrowed(data), n, dim));
         }
     }
@@ -1423,8 +1424,59 @@ fn to_rows<R: Real + Element>(
         None => arr.iter().copied().collect(), // non-contiguous (e.g. a transposed view)
     };
     finite(&flat)?;
-    prepare_rows(&mut flat, n, dim, prep);
+    prepare_checked(&mut flat, n, dim, prep)?;
     Ok((Rows::Owned(flat), n, dim))
+}
+
+/// The largest squared norm a row may have: `R::MAX / 2^56`, about `4.7e21` for `f32` (a norm of
+/// `6.9e10`) and `2.5e291` for `f64` (`5.0e145`).
+///
+/// Every sum a fit takes over squared distances — a leaf's scatter, a merge's cost, a head's
+/// objective — is at most `4·W·M + T ≤ 5·W·M` over `W` rows of squared norm at most `M`: whatever it
+/// squares lies in the rows' convex hull, and `T = Σ‖x‖²` is at most `W·M`. This bound keeps that
+/// under `R::MAX` for every `W` up to `2^53`, the row counts an `f64` weight holds exactly, so the
+/// check needs no count and a stream's domain does not narrow with the rows that came before. An
+/// `f32` tree keeps some of those sums in `f32`, which is why its bound is the tighter one.
+fn max_sq_norm<R: Real>() -> f64 {
+    R::max_value().to_f64().unwrap() / 2f64.powi(56)
+}
+
+/// Refuse row `i` when its squared norm passes [`max_sq_norm`], naming it. The norm is taken in `R`,
+/// so a row whose square overflows reads `inf` and fails like any other excess.
+fn check_norm<R: Real>(i: usize, row: &[R]) -> PyResult<()> {
+    let sq = crate::kernels::dot(row, row).to_f64().unwrap();
+    let max = max_sq_norm::<R>();
+    if sq <= max {
+        return Ok(());
+    }
+    let (dtype, or_widen) = if std::mem::size_of::<R>() == 4 {
+        ("float32", " or fit in float64")
+    } else {
+        ("float64", "")
+    };
+    Err(PyValueError::new_err(format!(
+        "row {i} has squared norm {sq:.3e}, past the {max:.3e} a {dtype} fit can square and sum \
+         without overflowing; rescale the data{or_widen}"
+    )))
+}
+
+fn check_norms<R: Real>(flat: &[R], dim: usize) -> PyResult<()> {
+    flat.chunks_exact(dim)
+        .enumerate()
+        .try_for_each(|(i, row)| check_norm(i, row))
+}
+
+/// [`prepare_rows`], refusing any row [`check_norms`] refuses. The check reads whatever is squared
+/// next: normalising squares the row as given, so that is checked before; the sheet lifts the row
+/// and the tree squares the lifted one, so that is checked after.
+fn prepare_checked<R: Real>(flat: &mut [R], n: usize, dim: usize, prep: RowPrep) -> PyResult<()> {
+    if prep == RowPrep::Sheet {
+        prepare_rows(flat, n, dim, prep);
+        return check_norms(flat, dim);
+    }
+    check_norms(flat, dim)?;
+    prepare_rows(flat, n, dim, prep);
+    Ok(())
 }
 
 /// Map each row index `0..n` to one value, in parallel above a size threshold (with the `parallel`
@@ -2761,9 +2813,15 @@ impl<R: Real> TreeState<R> {
 /// Validate CSR arrays at the untrusted boundary before the `O(nnz)` row expansion. Delegates to the
 /// pure-Rust [`crate::sparse::validate_csr`] (matched lengths, well-formed `indptr`, in-range indices,
 /// finite values, and an `n_features` upper bound so a hostile caller can't force an unbounded
-/// allocation), mapping its message to a Python `ValueError`.
+/// allocation), mapping its message to a Python `ValueError`, then refuses a row the dense path's
+/// [`check_norm`] would.
 fn validate_csr(data: &[f64], indices: &[i64], indptr: &[i64], n_features: usize) -> PyResult<()> {
-    crate::sparse::validate_csr(data, indices, indptr, n_features).map_err(PyValueError::new_err)
+    crate::sparse::validate_csr(data, indices, indptr, n_features)
+        .map_err(PyValueError::new_err)?;
+    indptr
+        .windows(2)
+        .enumerate()
+        .try_for_each(|(i, w)| check_norm(i, &data[w[0] as usize..w[1] as usize]))
 }
 
 /// Extract an `(m, 2)` integer constraint array as row-index pairs (validates the second axis).
@@ -3007,7 +3065,8 @@ fn flat_as<'py, R: Real + Element>(
             "data must be a 2-D float32 or float64 array",
         ));
     };
-    prepare_rows(&mut flat, n, dim, prep);
+    // After the cast: a finite `f64` past `f32::MAX` narrows to `inf`, which only the cast value shows.
+    prepare_checked(&mut flat, n, dim, prep)?;
     Ok((Rows::Owned(flat), n, dim))
 }
 

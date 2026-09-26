@@ -109,6 +109,20 @@ All notable changes to this project are documented here. The format follows
   and `WindowStream`, with a `ValueError` naming both values. They used to fit — `leaf_cap=0`
   without honouring `max_leaves` — and a `Betula` fitted with them saved a model that `load` then
   refused, as it always has.
+- **A finite row whose squares a fit would overflow is refused** by every method that takes rows,
+  dense or sparse, with a `ValueError` naming the row. The bound is `dtype.max / 2⁵⁶` on the squared
+  norm — about `4.7e21` for `float32`, `2.5e291` for `float64` — which keeps every sum of squared
+  distances a fit takes inside the type for any row count up to 2⁵³. Past it a row went through the
+  finiteness check and then: on a `float64` row at `1e200`, `kmeans` indexed out of bounds (a
+  `PanicException`, through `Betula.fit` on sparse input as well) and `normalize=True` scaled the row
+  to zero; 3000 `float32` rows spread over `±4.5e18` left the radii of every non-directional head
+  non-finite and made `kmedoids` panic. A `float64` chunk that a `float32` model casts down is
+  checked after the cast, where `1e39` is `inf`. Needing no row count has a price: a small `float32`
+  fit past the bound that happened to stay in range is refused too — rescale, or pass `float64`. A
+  bound on rows × largest square was the alternative, and it would have made the domain of
+  `partial_fit` depend on the rows that came before it. The check is at the Python boundary;
+  `CFTree::try_insert` in Rust takes any finite row, as before.
+  [*How large a row can be*](https://github.com/ilgrad/betula-cluster/blob/main/docs/USAGE.md#how-large-a-row-can-be).
 
 ## [1.0.0] — 2026-09-10
 

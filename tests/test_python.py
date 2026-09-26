@@ -3791,6 +3791,76 @@ def test_one_entry_leaves_are_accepted_and_hold_the_leaf_budget(blobs):
     assert est.n_leaves_ <= 50
 
 
+def _with_row_7(x, dtype, value):
+    out = x.astype(dtype)
+    out[7, 1] = value
+    return out
+
+
+@pytest.mark.parametrize(("dtype", "big"), [(np.float64, 1e200), (np.float32, 1e20)])
+def test_a_row_a_fit_cannot_square_is_refused_at_every_entry_point(blobs, dtype, big):
+    """Finite, so past the finiteness check: `kmeans` then indexed `usize::MAX` on the float64 row,
+    `normalize=True` scaled it to zero without a word, and the rest took it in."""
+    x, _ = blobs
+    bad = _with_row_7(x, dtype, big)
+    fitted = betula_cluster.Betula(n_clusters=4).fit(x.astype(dtype))
+    for call in (
+        lambda: betula_cluster.Betula(n_clusters=4, method="kmeans").fit(bad),
+        lambda: betula_cluster.fit_predict(bad, n_clusters=4),
+        lambda: betula_cluster.Betula(n_clusters=4, normalize=True).fit(bad),
+        lambda: betula_cluster.Betula(n_clusters=4, method="hyperbolic").fit(bad),
+        lambda: fitted.partial_fit(bad),
+        lambda: fitted.predict(bad),
+    ):
+        with pytest.raises(ValueError, match="row 7 has squared norm"):
+            call()
+
+
+def test_the_float64_estimators_refuse_a_row_they_cannot_square(blobs):
+    """They widen a float32 row to float64 first, so only a float64 row can be past their bound."""
+    x, _ = blobs
+    bad = _with_row_7(x, np.float64, 1e200)
+    for call in (
+        lambda: betula_cluster.BregmanBetula(n_clusters=4).fit(np.abs(bad)),
+        lambda: betula_cluster.WindowStream().partial_fit(bad, 0.0),
+        lambda: betula_cluster.KPrototypes(n_clusters=4, categorical=[0]).fit(bad),
+    ):
+        with pytest.raises(ValueError, match="row 7 has squared norm"):
+            call()
+
+
+@pytest.mark.parametrize("dtype", [np.float64, np.float32])
+def test_the_row_norm_bound_is_the_dtype_max_over_2_to_the_56(blobs, dtype):
+    x, _ = blobs
+    edge = math.sqrt(float(np.finfo(dtype).max) / 2.0**56)
+    betula_cluster.Betula(n_clusters=4, method="kmeans").fit(_with_row_7(x, dtype, 0.99 * edge))
+    with pytest.raises(ValueError, match="row 7 has squared norm"):
+        betula_cluster.Betula(n_clusters=4, method="kmeans").fit(_with_row_7(x, dtype, 1.01 * edge))
+
+
+def test_a_float64_chunk_past_float32_is_refused_by_a_float32_model(blobs):
+    """A float32 model casts a float64 chunk down, and 1e39 is finite until the cast makes it
+    `inf` -- after the finiteness check, which read the float64 values."""
+    x, _ = blobs
+    est = betula_cluster.Betula(n_clusters=4, method="kmeans").fit(x.astype(np.float32))
+    with pytest.raises(ValueError, match="row 7 has squared norm inf"):
+        est.partial_fit(_with_row_7(x, np.float64, 1e39))
+
+
+def test_a_sparse_row_a_fit_cannot_square_is_refused(blobs):
+    sparse = pytest.importorskip("scipy.sparse")
+    x, _ = blobs
+    bad = sparse.csr_matrix(_with_row_7(x, np.float64, 1e200))
+    fitted = betula_cluster.Betula(n_clusters=4).fit(sparse.csr_matrix(x))
+    for call in (
+        lambda: betula_cluster.Betula(n_clusters=4).fit(bad),
+        lambda: betula_cluster.fit_predict_sparse(bad, n_clusters=4),
+        lambda: fitted.predict(bad),
+    ):
+        with pytest.raises(ValueError, match="row 7 has squared norm"):
+            call()
+
+
 def test_a_head_specific_keyword_left_at_its_default_is_not_a_request(blobs):
     """The default cannot be evidence of intent: `rank=2` is what every caller passes who never
     thought about `rank` at all, so only a changed value is an error."""
