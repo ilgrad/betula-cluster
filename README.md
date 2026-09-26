@@ -118,7 +118,7 @@ which ones refuse to run on what — is in
 | elliptical / correlated shapes, soft assignment, a generative model | probabilistic | `gmm` (diagonal) | `gmm-full` when the covariance is rotated, `mppca` / `mfa` when `d` is too large for a full one, `gmm-toeplitz` on ordered signals |
 | variable density, noise, count unknown | density | `hdbscan` | `scale-space` when there is neither a `k` nor a bandwidth to pick, `dc-median` when `k` is known and noise is not wanted |
 | non-convex shapes, manifolds, communities | graph | `spectral` with `k`, `leiden` without | `leiden-cpm` when the resolution limit bites, `mapper` for a skeleton rather than a partition |
-| L2-normalized embeddings, cosine geometry | directional | `vmf` (soft) or `spherical-kmeans` (hard) | `watson` when `x` and `−x` mean the same thing |
+| L2-normalized embeddings, cosine geometry | directional | `spherical-kmeans` | `vmf` for a soft assignment and a spread per cluster — read its cluster sizes first: on diffuse text one broad component absorbs the ambiguous rows; `watson` when `x` and `−x` mean the same thing |
 
 Outside the five: `hyperbolic` for a Poincaré / Lorentz embedding of a hierarchy, `fuzzy-cmeans` for
 a graded membership with no density behind it, and `KPrototypes` for mixed numeric + categorical +

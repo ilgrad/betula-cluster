@@ -190,7 +190,7 @@ answer.
 | elliptical / correlated / anisotropic, soft assignment | `gmm` (diag) or `gmm-full` | yes (or `0` = BIC) |
 | clusters on **low-dimensional subspaces**, `d` too large for `gmm-full` | `mppca` + `feature="fd"`, `rank` = the intrinsic dimension — read *`rank`, and where `mppca` loses* first | yes (or `0` = BIC) |
 | the same, but the **columns are in different units** and cannot be standardised | `mfa` — per-axis noise instead of one `σ²` — read *Per-axis noise, and the narrow case for it* first: on a common scale `mppca` wins every table measured | yes (or `0` = BIC) |
-| **L2-normalized embeddings** (CLIP / face / sentence / speaker), cosine geometry | `vmf` (soft) or `spherical-kmeans` (hard) | yes (or `0` = BIC, `vmf`) |
+| **L2-normalized embeddings** (CLIP / face / sentence / speaker), cosine geometry | `spherical-kmeans` (hard) or `vmf` (soft) — read *A concentration per cluster, and where it costs* before `vmf` | yes (or `0` = BIC, `vmf`) |
 | the same, but the **sign is arbitrary** — eigenvectors, SVD/PCA axes, line orientations, any feature where `x` and `−x` mean the same thing | `watson` — read *Directions without a sign* | yes (or `0` = BIC) |
 | a **hyperbolic embedding** of a hierarchy (Poincaré / Lorentz coordinates of a tree, taxonomy, scale-free graph) | `hyperbolic` — read *Clustering in the hyperbolic plane* first: the win is **invariance**, not ARI, and a Poincaré-ball chart plus `gmm-full` scores higher on a centred embedding | yes — **no** auto-`k` |
 | a cluster *hierarchy* / merge structure | `ward` | yes (or `0` = dendrogram cut) |
@@ -552,6 +552,34 @@ saturated, the two partitions come apart — ARI 0.909 between them, not 1.
 
 The `fd` rows start at 300 because at `max_leaves=2000` every leaf holds one point, where the sketch
 has nothing to truncate and reproduces `full` to the last digit.
+
+### A concentration per cluster, and where it costs — `method="vmf"`
+
+`vmf` fits every cluster a mean direction **and its own concentration** `κ`. `spherical-kmeans` is the
+same model with one `κ` shared by all clusters and taken to infinity, so the per-cluster `κ` is the
+whole of what `vmf` adds — and on diffuse data it is the whole of its weakness. A row far from every
+mean direction is more probable under a broad, low-`κ` component than under any tight one, so a broad
+component out-bids the others for every ambiguous row and keeps growing.
+
+Measured on 20-newsgroups, through the bench's own text pipeline (TF-IDF over 2 000 terms, English
+stopwords removed), reduced to 50 dimensions and L2-normalised: 18 200 non-empty posts, every row its
+own leaf, medians of seeds 0/1/2.
+
+| head | ARI | largest cluster, share of rows |
+|---|---|---|
+| `spherical-kmeans` | **0.175** | 0.103 |
+| `vmf` | 0.073 | 0.379 |
+| an independent movMF, one `κ` per cluster | 0.074 | 0.375 |
+| the same movMF, one `κ` shared by all clusters | 0.159 | 0.142 |
+
+The true topics are near-equal, the largest 0.053 of the rows. The independent EM (Banerjee et al.,
+JMLR 2005, started from a k-means partition) collapses the same way, and tying `κ` removes the
+collapse, so this is the model and not the implementation. It is not the summary either: at 500, 2 000
+and 8 000 leaves `vmf` reads 0.073–0.100 and `spherical-kmeans` 0.146–0.174. On data like this —
+many rows about equally far from every cluster — start with `spherical-kmeans`, and read `vmf`'s
+cluster sizes before its labels. The case the extra parameter is for is tight clusters of unequal
+spread, such as identities in a face or speaker embedding; that case is not measured here. On
+`digits`-PCA20 (below) the two heads tie.
 
 ### Directions without a sign — `method="watson"`
 

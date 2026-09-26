@@ -13,6 +13,15 @@ All notable changes to this project are documented here. The format follows
   reproduces. `refit_leaves` is unchanged and is its `beam = 1` case; a width argument on
   `refit_leaves` itself would have been a breaking change to a module frozen under semver, which is
   the promise working rather than an obstacle to route around.
+- **`vmf` is measured on real text, and the embedding row of the head table no longer leads with
+  it.** On 20-newsgroups (the bench's TF-IDF, reduced to 50 dimensions and L2-normalised, every row
+  its own leaf, medians of three seeds) `vmf` reads ARI 0.073 against `spherical-kmeans`' 0.175, with
+  38 % of the rows in one cluster where the largest topic holds 5 %. An independent movMF EM collapses
+  the same way and tying the concentration across clusters removes it, so the cause is the
+  per-cluster `κ` — neither the implementation nor the summary. The measurement and when to prefer
+  which head are in
+  [`docs/USAGE.md`](https://github.com/ilgrad/betula-cluster/blob/main/docs/USAGE.md), *A
+  concentration per cluster, and where it costs*.
 
 ### Changed
 
