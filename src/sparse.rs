@@ -706,6 +706,23 @@ mod tests {
         let (idx, val) = (vec![0usize, 2], vec![1.0, 2.0]);
         let c = centroids(&[vec![1.0, 0.0, 0.0], vec![0.0, 0.0, 2.0]]);
         assert_eq!(c.nearest(&idx, &val, 5.0), 1);
+        // The cached norms, read directly: that fixture cannot see them, because `2·2 = 2²` makes
+        // `‖μ1‖²` come out right under `Σ 2v` as well as under `Σ v²`.
+        assert_eq!(c.musq, vec![1.0, 4.0]);
+
+        // A row orthogonal to every centroid has `⟨x, μ⟩ = 0`, so `‖μ‖²` alone decides -- the regime
+        // `pooled`'s note describes, where it dominates the overlap term. The smaller norm is at
+        // index 1, so a mangled norm term that flattens both distances to a tie lands on index 0.
+        let c = centroids(&[
+            vec![3.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            vec![0.0, 1.0, 1.0, 1.0, 1.0, 0.0],
+        ]);
+        assert_eq!(c.musq, vec![9.0, 4.0]);
+        assert_eq!(
+            c.nearest(&[5], &[1.0], 1.0),
+            1,
+            "d0 = 1 + 9 against d1 = 1 + 4"
+        );
 
         // Exact tie: μ0 = (1,0,2) and μ1 = (1,0,2) are both at distance 0; the first must win.
         let c = centroids(&[vec![1.0, 0.0, 2.0], vec![1.0, 0.0, 2.0]]);
@@ -766,8 +783,7 @@ mod tests {
 
     #[test]
     fn summarize_keeps_the_first_of_two_equally_near_leaders() {
-        // Threshold 0 forces every distinct row into its own leader; the two seeds are equidistant
-        // from the probe row, so only the scan's tie rule decides which absorbs it.
+        // Threshold 0 keeps every distinct row apart -- a tie that nothing absorbs decides nothing.
         let data = [1.0, 1.0, 1.0];
         let indices = [0i64, 2, 1];
         let indptr = [0i64, 1, 2, 3];
@@ -778,6 +794,28 @@ mod tests {
         let (capped, _) = summarize_sparse(&data, &indices, &indptr, 3, 0.0, 1);
         assert_eq!(capped.len(), 1, "max_leaders was not enforced");
         assert!((capped[0].weight() - 3.0).abs() < 1e-12);
+
+        // Seeds `e0` and `e2`, then the probe `(e0 + e2)/2`, which is `0.5` from each -- exactly, in
+        // floating point -- while the seeds are `2` apart. Two scans read that tie and each has its
+        // own rule to keep: the gated one, when the threshold admits the probe, and the forced one,
+        // when the budget is spent and the threshold refuses it.
+        let data = [1.0, 1.0, 0.5, 0.5];
+        let indices = [0i64, 2, 0, 2];
+        let indptr = [0i64, 1, 2, 4];
+        for (threshold, max_leaders, what) in [
+            (1.0, 8, "gated: the threshold admits the probe"),
+            (0.0, 2, "forced: the budget is spent"),
+        ] {
+            let (leaders, of_row) =
+                summarize_sparse(&data, &indices, &indptr, 3, threshold, max_leaders);
+            assert_eq!(leaders.len(), 2, "{what}: the seeds were not kept apart");
+            assert_eq!(
+                of_row,
+                vec![0, 1, 0],
+                "{what}: the tie went to the later leader"
+            );
+            assert_eq!(leaders[0].weight(), 2.0, "{what}");
+        }
     }
 
     /// A sparse "documents × terms" corpus in the shape of `examples/10_sparse_highdim.py`: rows of
@@ -889,8 +927,12 @@ mod tests {
             .iter()
             .map(ClusterFeature::weight)
             .fold(0.0f64, f64::max);
-        assert!(
-            heaviest <= share,
+        // Equality, not `<=`: on this fixture the cap binds -- seven leaders fill to exactly 128 --
+        // so it pins the share's *value* as well as its direction. A bound alone passes any cap
+        // tighter than the real one, and a cap that is too tight is a defect of its own: it forces
+        // rows into leaders farther from them than the one they would have joined.
+        assert_eq!(
+            heaviest, share,
             "a leader holds {heaviest} of a {share}-point share"
         );
         let total: f64 = micros.iter().map(ClusterFeature::weight).sum();
@@ -950,6 +992,21 @@ mod tests {
         let (zero, _) = SparseCentroids::pooled(&origin, &[0], true).unwrap();
         assert_eq!(zero.means_t, vec![0.0, 0.0]);
         assert_eq!(zero.musq, vec![0.0]);
+
+        // Two centroids, so the feature-major stride is not 1: with one centroid `c * len` and
+        // `c / len` are the same number, and the cases above cannot tell which row a feature's
+        // block starts on.
+        let two = vec![
+            Spherical::from_moments(1.0, vec![3.0, 4.0], 0.0),
+            Spherical::from_moments(1.0, vec![0.0, 2.0], 0.0),
+        ];
+        let (unit, _) = SparseCentroids::pooled(&two, &[0, 1], true).unwrap();
+        for (got, want) in unit.means_t.iter().zip([0.6, 0.0, 0.8, 1.0]) {
+            assert!((got - want).abs() < 1e-12, "{:?}", unit.means_t);
+        }
+        for m in &unit.musq {
+            assert!((m - 1.0).abs() < 1e-12, "{:?}", unit.musq);
+        }
     }
 
     #[test]
@@ -957,5 +1014,11 @@ mod tests {
         let micros = vec![Spherical::from_moments(1.0, vec![1.0], 0.0)];
         assert!(SparseCentroids::pooled(&micros, &[-1], false).is_none());
         assert!(SparseCentroids::pooled(&[], &[], false).is_none());
+
+        // The other half of the documented `None`: features with no dimension, under a label that
+        // is real. The all-noise case above cannot stand in for it -- a zero-cluster request falls
+        // through to the empty-`keep` return and comes out `None` by that route as well.
+        let flat = vec![Spherical::from_moments(1.0, vec![], 0.0)];
+        assert!(SparseCentroids::pooled(&flat, &[0], false).is_none());
     }
 }

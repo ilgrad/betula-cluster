@@ -60,9 +60,8 @@
 # extractions (**121 mutants in 44m**, 11 survivors), which likewise returned exactly the eleven
 # the killcheck predicted.
 # `src/sparse.rs` was re-measured (**2026-09-14 whole-file**, 273 mutants in 3h) and its two
-# "Debt."-only entries became 12 measured ones. That section is a measurement and not a closure:
-# eight of the twelve are in `SparseCentroids`, whose `‖μ‖²` column, `unit` branch and `nearest`
-# are reached by no assertion, and the tests for them are still to write.
+# "Debt."-only entries became 12 measured ones; on 2026-09-26 nine were closed entry by entry
+# (test code only), and the three left are argued.
 #
 # The entry-by-entry runs used `cargo test --lib`, not the `--test-tool nextest` the CI job uses.
 # The difference is `tests/integration_api.rs`, whose four tests assert label counts and a 4-blob
@@ -1155,58 +1154,52 @@ src/linalg.rs:110:27: replace + with - in jacobi_eigen
 src/linalg.rs:110:37: replace * with / in jacobi_eigen
 src/linalg.rs:68:21: replace + with * in solve_upper_t
 
-# ── src/sparse.rs (12) ──
+# ── src/sparse.rs (3) ──
 # Re-measured 2026-09-14, WHOLE FILE, at `b170dc9`, replacing two entries whose only argument was
-# the word "Debt".
+# the word "Debt"; then closed entry by entry on 2026-09-26, which is sound because only test code
+# changed -- a test can kill a mutant but never create one.
 #   systemd-run --user --scope -p MemoryMax=10G -p MemorySwapMax=0 \
 #     --setenv=TMPDIR=$HOME/.cache/mutants-tmp -- \
 #     cargo mutants -f src/sparse.rs -j4 --test-tool nextest
 #   273 mutants in 3h | caught 215 | missed 12 | unviable 46 | timeout 0
-# Both carried entries still survive: `427:64` at the same line, and `110:18` at **239:18** -- the
-# same argmin tie-break, moved, not gone.
+# Both carried entries were still survivors -- `427:64` at the same line, `110:18` moved to `239:18`.
 #
-# **This section is a measurement, not a closure.** The tests that would shrink it are not written
-# yet; what the run establishes is *where* the hole is, and it is one place. Eight of the twelve sit
-# in `SparseCentroids`, and they say that its constructor's `‖μ‖²` column, its `unit` branch and its
-# `nearest` are reached by no assertion at all:
-#   296:45  `musq.push(mean.iter().map(|v| v * v).sum())` -> `v + v`, i.e. `‖μ‖²` becomes `2·Σμ`.
-#           That term is the whole of what makes `nearest`'s expansion a distance, and nothing
-#           notices it is wrong.
-#   385:39  the same quantity at the point of use: `x_sq - 2·dot + musq[i]` accepts `-` and `*`.
-#   362:41  the `unit` branch's own indexing: `means_t[c * len..(c + 1) * len]` accepts `c / len`
-#   362:56  and `(c + 1) / len`, which both collapse every column onto column 0 -- the `.zip(&scale)`
-#           truncates the widened slice, so it scales the same `len` entries `n_features` times.
-#   323:28  `if n_features == 0 || k == 0` -> `&&`. An all-noise label vector gives `k == 0` with
-#           `n_features > 0`, so the mutant runs the body on a zero-cluster request instead of
-#           returning `None`. That is a reachable input, not a degenerate one.
-#   322:72  is the fourth of this group and is argued below rather than listed as debt.
-# The remaining three are `223:40` in `summarize_sparse` -- the forced-split mass share, which no
-# fixture drives to its boundary -- and the two argmin tie-breaks.
-src/sparse.rs:296:45: replace * with + in SparseCentroids::from_features
-src/sparse.rs:385:39: replace + with - in SparseCentroids::nearest
-src/sparse.rs:385:39: replace + with * in SparseCentroids::nearest
-src/sparse.rs:362:41: replace * with / in SparseCentroids::pooled
-src/sparse.rs:362:56: replace * with / in SparseCentroids::pooled
-src/sparse.rs:323:28: replace || with && in SparseCentroids::pooled
-src/sparse.rs:223:40: replace * with + in summarize_sparse
-src/sparse.rs:427:64: delete - in validate_csr
+# **Nine of the twelve are closed**, each checked against its own recorded mutant diff. Every one
+# of them sat under a test that already existed and named the very thing the mutant broke; what
+# those tests lacked was a fixture that could see it.
+#   296:45, 385:39 x2  `SparseCentroids`' norm column. The expansion test's own fixture had
+#                      `‖μ1‖² = 4` with `μ1 = (0, 0, 2)`, where `Σ 2v = Σ v²` -- the one value at which
+#                      the broken sum is right. Now asserted directly, plus a row orthogonal to every
+#                      centroid, where `‖μ‖²` alone decides and the smaller norm sits at index 1.
+#   362:41, 362:56     the `unit` branch's stride. The test used one centroid, where `c * len` and
+#                      `c / len` are the same number. Two centroids now.
+#   323:28             `n_features == 0 || k == 0`. The all-noise case cannot see `&&`: a zero-cluster
+#                      request falls through to the empty-`keep` return and is `None` by that route
+#                      too. The half that differs is the documented one -- zero-dimensional features
+#                      under a real label -- and `sparse` is a `pub` module, so a Rust caller reaches it.
+#   239:18, 140:18     both argmin tie-breaks, under a test named for exactly this that ran at
+#                      threshold 0 -- where a tied probe is refused by the gate and becomes its own
+#                      leader, so the tie decided nothing. The probe `(e0 + e2)/2` now sits exactly
+#                      `0.5` from both seeds, once with the gate admitting it and once with the
+#                      budget spent.
+#   223:40             the forced-mass share, `32 · n / cap` against the offset `32 + n / cap`. The
+#                      test bounded the heaviest leader from above only, and a *tighter* cap passes an
+#                      upper bound. Measured on its fixture the cap binds -- seven leaders fill to
+#                      exactly 128 -- so it now asserts equality.
+#
 # Believed equivalent -- a growth schedule. `LeaderSet::grow` takes `(cap * 2).min(hard_cap)` to
 # `(cap + 2).min(hard_cap)`, which still satisfies the `new_cap > cap` the function asserts and still
-# stops at the hard cap. It reallocates far more often and produces the same buffer contents; the
+# stops at the hard cap. It re-strides far more often and leaves the same buffer contents; the
 # doubling is there so the re-stride is amortised, not so the result differs.
 src/sparse.rs:87:33: replace * with + in LeaderSet::grow
-# Believed equivalent -- an unreachable `unwrap_or`. `max().unwrap_or(-1) + 1` -> `unwrap_or(1) + 1`
-# differs only on an empty label vector, and `labels` is asserted to be as long as `micros`, so an
-# empty one comes with empty `micros`, which makes `n_features == 0` and returns `None` through the
-# other disjunct of the very next line.
+# Believed equivalent -- two `unwrap_or` fallbacks that the line's other disjunct makes unreadable.
+# `322:72`: `max().unwrap_or(-1) + 1` -> `unwrap_or(1) + 1` differs only on an empty label vector,
+# and `labels` is asserted as long as `micros`, so it comes with empty `micros`, `n_features == 0`,
+# and the `None` of the very next line. `427:64`: `indptr.last().unwrap_or(&-1)` is read only when
+# `indptr` is empty, and then `indptr.first() != Some(&0)` -- the left operand of the same `||` --
+# is already true, so the right one is never evaluated.
 src/sparse.rs:322:72: delete - in SparseCentroids::pooled
-# Debt, unproven but unobserved -- two argmin tie-breaks. `d < bd` widened to `<=` keeps the *last*
-# index among equally near leaders instead of the first, which is the convention `nearest` documents
-# ("equally near centroids keep the lowest index"). Observing it needs two candidates at exactly
-# equal squared distance from the same row, which on a real sparse fixture is a measure-zero event;
-# that is evidence the mutant is harmless, not a proof, so it is recorded here rather than argued.
-src/sparse.rs:140:18: replace < with <= in LeaderSet::nearest_under
-src/sparse.rs:239:18: replace < with <= in summarize_sparse
+src/sparse.rs:427:64: delete - in validate_csr
 
 # ── src/clustering/graph.rs (3) ──
 # Debt.
