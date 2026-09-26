@@ -53,6 +53,11 @@ All notable changes to this project are documented here. The format follows
   under-predicts blows the budget silently, one that over-predicts hands back a slightly smaller
   tree than the caller could have afforded. A given `memory_budget_mb` therefore resolves to fewer
   leaves than in 1.0, which changes labels for callers who set it — `max_leaves` is unaffected.
+- **`linalg::orthonormalize_rows` (Rust) documented the opposite of what it does with a dependent
+  row.** It said such a row is left at zero. Its residual is rounding noise rather than zero, so it
+  comes back a unit vector orthogonal to the rows above it — which is what every caller in the
+  crate needs, since each is a subspace iteration in which a zero row is a fixed point. The
+  behaviour is unchanged and now asserted; only a residual below `1e-150` is zeroed.
 
 ## [1.0.0] — 2026-09-10
 

@@ -206,10 +206,14 @@ pub fn matrix_log<R: Real>(a: &[Vec<R>], floor: R) -> Vec<Vec<R>> {
     out
 }
 
-/// Gram-Schmidt with one re-orthogonalisation pass, in place, over the **rows**.
+/// Gram-Schmidt with one re-orthogonalisation pass, in place, over the **rows** (no more of them
+/// than each row is long).
 ///
-/// A row that collapses is left at zero rather than filled with a random replacement: it then
-/// carries no direction, which is the honest answer when the block has lower rank than it has rows.
+/// A row that depends on the rows above it does not come back zero: its residual is rounding noise,
+/// which is normalised into a unit vector orthogonal to them, in an arbitrary direction. Every caller
+/// here is a subspace iteration in which a zero row is a fixed point, so the noise is a free restart
+/// where a zero would lose the direction for good. Only a residual below `1e-150` is left at zero —
+/// in practice a block its operator annihilated outright.
 /// The second pass is not decoration — one pass loses orthogonality to `O(κ)` on an ill-conditioned
 /// block, and every caller here feeds the result to a Rayleigh quotient, where that loss shows up as
 /// a wrong eigenvalue rather than as a warning.
@@ -498,5 +502,28 @@ mod tests {
         let (mut eig, _) = jacobi_eigen(&a);
         eig.sort_by(|x, y| x.partial_cmp(y).unwrap());
         assert_eq!(eig, vec![-delta, -delta, delta, delta, 1.0]);
+    }
+
+    #[test]
+    fn a_dependent_row_comes_back_a_unit_vector_orthogonal_to_the_rows_above_it() {
+        // `r2 = r0 + r1` exactly, yet its residual after both passes is rounding noise rather than
+        // zero, and it is normalised into a direction of its own. Only exact cancellation is zeroed.
+        let mut rows = vec![
+            vec![1.0, 2.0, 3.0],
+            vec![4.0, 5.0, 6.0],
+            vec![5.0, 7.0, 9.0],
+        ];
+        orthonormalize_rows(&mut rows);
+        for (i, r) in rows.iter().enumerate() {
+            let norm = r.iter().map(|x| x * x).sum::<f64>().sqrt();
+            assert!((norm - 1.0).abs() < 1e-12, "row {i}: norm {norm}");
+            for (j, s) in rows[..i].iter().enumerate() {
+                let dot: f64 = r.iter().zip(s).map(|(a, b)| a * b).sum();
+                assert!(dot.abs() < 1e-12, "rows {j} and {i}: {dot:e}");
+            }
+        }
+        let mut rows = vec![vec![1.0, 0.0, 0.0], vec![2.0, 0.0, 0.0]];
+        orthonormalize_rows(&mut rows);
+        assert_eq!(rows[1], vec![0.0; 3]);
     }
 }

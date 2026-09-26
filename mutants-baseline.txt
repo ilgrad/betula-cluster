@@ -1172,8 +1172,10 @@ src/clustering/community.rs:259:30: replace -= with /= in refine
 # diagonal is finite and positive, so `l[i][i] * +0.0` is `+0.0` and `s` is bit-identical.
 src/linalg.rs:68:21: replace + with * in solve_upper_t
 # Believed equivalent -- a collapse cut-off at exact equality. `norm > tiny` widened to `>=` differs
-# only for a row whose residual norm after both passes is exactly `1e-150`.
-src/linalg.rs:238:17: replace > with >= in orthonormalize_rows
+# only for a row whose residual norm after both passes is exactly `1e-150`. Measured at `238:17`;
+# the corrected doc above the function moved it four lines and changed no code, so
+# `check_mutants_baseline.py --apply` re-anchored it (the description occurs once in the file).
+src/linalg.rs:242:17: replace > with >= in orthonormalize_rows
 
 # ── src/sparse.rs (3) ──
 # Re-measured 2026-09-14, WHOLE FILE, at `b170dc9`, replacing two entries whose only argument was
