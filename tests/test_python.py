@@ -3768,6 +3768,14 @@ def test_one_iteration_is_accepted_and_is_a_fit(blobs):
     assert len(np.unique(labels)) > 1
 
 
+def test_one_entry_leaves_are_accepted_and_hold_the_leaf_budget(blobs):
+    """With no sibling inside a leaf to merge, every rebuild at `leaf_cap=1` merged nothing, and
+    the fit kept each of the 2400 rows as a leaf of its own against a budget of 50."""
+    x, _ = blobs
+    est = betula_cluster.Betula(n_clusters=4, method="kmeans", leaf_cap=1, max_leaves=50).fit(x)
+    assert est.n_leaves_ <= 50
+
+
 def test_a_head_specific_keyword_left_at_its_default_is_not_a_request(blobs):
     """The default cannot be evidence of intent: `rank=2` is what every caller passes who never
     thought about `rank` at all, so only a changed value is an error."""

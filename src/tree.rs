@@ -484,11 +484,12 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> CF
     /// exception, and that exception is the only thing the rebalance below exists for.
     ///
     /// [`Self::drop_merged`] deletes entries from their leaves' child lists, and its other caller —
-    /// compaction — structurally cannot empty a leaf, because it merges *within* a leaf and a merge
-    /// keeps the absorbing entry alive. Here every prototype in a leaf can lose its rows at once,
-    /// and a leaf node with no children is one `descend` away from indexing `children[0]` of an
-    /// empty slice. Rebuilding the node structure from the survivors ([`Self::reinsert`]) removes
-    /// that state rather than guarding the read of it.
+    /// compaction — never leaves a leaf empty: it merges *within* a leaf, where a merge keeps the
+    /// absorbing entry alive, or, when no leaf holds two entries, across leaves and then reinserts.
+    /// Here every prototype in a leaf can lose its rows at once, and a leaf node with no children is
+    /// one `descend` away from indexing `children[0]` of an empty slice. Rebuilding the node
+    /// structure from the survivors ([`Self::reinsert`]) removes that state rather than guarding the
+    /// read of it.
     ///
     /// **A rebalance is always followed by another route, and that is the point of the loop.** It
     /// invalidates the accumulation that caused it: the CFs are the exact statistics of the rows
@@ -657,9 +658,11 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> CF
     /// the two jobs BIRCH's rebuild conflates: *reducing the count*, which is all the leaf bound asks
     /// for, and *rebalancing the node structure*, which costs a descent per entry. Cost is one
     /// `O(Σ_leaf child_count²)` sibling scan plus an `O(m log m)` sort, against `O(m · depth ·
-    /// branching)`. Compaction cannot reach pairs that landed in different leaves, so [`Self::reinsert`]
-    /// remains the fallback — taken only when merging every available sibling pair still leaves the
-    /// tree over budget.
+    /// branching)`. Compaction cannot reach pairs that landed in different leaves; [`Self::reinsert`]
+    /// re-partitions the entries once every `max_leaves` merges, which lets such pairs meet. A tree
+    /// in which no leaf node holds two entries — every tree at `leaf_cap = 1` — has no pair in place
+    /// at all, so there the rebuild pairs across the leaves of one internal node
+    /// ([`Self::cousin_pairs`]) and reinserts straight after, because those merges empty leaves.
     ///
     /// *The number of merges is chosen, not predicted.* Growing the threshold first and merging
     /// whatever falls under it makes the resulting count a guess, and under concentration of measure
@@ -673,7 +676,13 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> CF
     fn rebuild(&mut self) {
         let target = (self.max_leaves - self.max_leaves / 10).max(1);
         let want = self.entries.len().saturating_sub(target);
+        // With no leaf node holding two entries nothing merges in place, and a rebuild that merged
+        // nothing left the tree over budget, so every later insert rebuilt again for nothing.
         let mut pairs = self.sibling_pairs();
+        let across = pairs.is_empty();
+        if across {
+            pairs = self.cousin_pairs();
+        }
         pairs.sort_unstable_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(Ordering::Equal));
 
         let mut alive = vec![true; self.entries.len()];
@@ -728,7 +737,9 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> CF
             }
             self.drop_merged(&alive);
             self.merged_since_rebalance += merged;
-            if self.merged_since_rebalance >= self.max_leaves {
+            // A merge across leaves empties one, and `descend` indexes `children[0]`; rebuilding
+            // the structure from the survivors removes that state, as it does for `refit_leaves`.
+            if across || self.merged_since_rebalance >= self.max_leaves {
                 self.merged_since_rebalance = 0;
                 self.reinsert();
             }
@@ -756,29 +767,53 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> CF
             if !node.leaf || node.children.len() < 2 {
                 continue;
             }
-            let ch = &node.children;
-            for (i, &ei) in ch.iter().enumerate() {
-                let entry = &self.entries[ei];
-                // Seeded empty, not with the entry itself: when every cost is `+inf` or NaN the
-                // self-seed survived, and the rebuild merged the entry into itself and dropped it.
-                // NaN ranks as `+inf`, last, which also keeps the sort below a total order.
-                let mut best: Option<(R, usize)> = None;
-                for (j, &ej) in ch.iter().enumerate() {
-                    if i == j {
-                        continue;
-                    }
-                    let d = self.abs.merge_cost(entry, &self.entries[ej]);
-                    let d = if d.is_nan() { R::infinity() } else { d };
-                    if best.is_none_or(|(bd, _)| d < bd) {
-                        best = Some((d, ej));
-                    }
-                }
-                if let Some((bd, ej)) = best {
-                    out.push((bd, ei, ej));
-                }
-            }
+            self.push_cheapest_partners(&node.children, &mut out);
         }
         out
+    }
+
+    /// [`Self::sibling_pairs`] one level up: every entry paired with its cheapest partner among the
+    /// entries of all the leaves one internal node holds. It is the rebuild's source of pairs when
+    /// no leaf node holds two entries, which at `leaf_cap = 1` is every time.
+    fn cousin_pairs(&self) -> Vec<(R, usize, usize)> {
+        let mut out = Vec::with_capacity(self.entries.len());
+        let mut group = Vec::new();
+        for node in &self.nodes {
+            if node.leaf || !node.children.iter().all(|&c| self.nodes[c].leaf) {
+                continue;
+            }
+            group.clear();
+            for &c in &node.children {
+                group.extend_from_slice(&self.nodes[c].children);
+            }
+            self.push_cheapest_partners(&group, &mut out);
+        }
+        out
+    }
+
+    /// Push `(cost, entry, partner)` for every entry of `group`, with the partner the other entry of
+    /// `group` cheapest to merge it with.
+    fn push_cheapest_partners(&self, group: &[usize], out: &mut Vec<(R, usize, usize)>) {
+        for &ei in group {
+            let entry = &self.entries[ei];
+            // Seeded empty, not with the entry itself: when every cost is `+inf` or NaN the
+            // self-seed survived, and the rebuild merged the entry into itself and dropped it.
+            // NaN ranks as `+inf`, last, which also keeps the sort below a total order.
+            let mut best: Option<(R, usize)> = None;
+            for &ej in group {
+                if ej == ei {
+                    continue;
+                }
+                let d = self.abs.merge_cost(entry, &self.entries[ej]);
+                let d = if d.is_nan() { R::infinity() } else { d };
+                if best.is_none_or(|(bd, _)| d < bd) {
+                    best = Some((d, ej));
+                }
+            }
+            if let Some((bd, ej)) = best {
+                out.push((bd, ei, ej));
+            }
+        }
     }
 
     /// Compact the entry arena after a merge pass, dropping every entry marked dead and rewriting the
@@ -2400,8 +2435,8 @@ mod tests {
     #[test]
     fn no_sibling_pairs_when_every_leaf_holds_one_entry() {
         // `leaf_cap = 1` ⇒ every leaf node holds a single entry ⇒ there is no sibling pair to merge.
-        // The scan must come back empty rather than pairing an entry with itself; a rebuild here has
-        // nothing to compact and falls through to a reinsertion.
+        // The scan must come back empty rather than pairing an entry with itself; the rebuild pairs
+        // across leaves instead, and each of those pairs names two entries as well.
         let mut tree: CFTree<f64, Spherical<f64>, _, _> = CFTree::new(
             1,
             2,
@@ -2415,6 +2450,39 @@ mod tests {
             tree.insert(&p);
         }
         assert!(tree.sibling_pairs().is_empty());
+        let cousins = tree.cousin_pairs();
+        assert!(!cousins.is_empty());
+        assert!(cousins.iter().all(|&(_, a, b)| a != b), "{cousins:?}");
+    }
+
+    #[test]
+    fn one_entry_leaves_still_hold_the_leaf_budget() {
+        // With no sibling inside a leaf, every rebuild used to merge nothing: at `branching = 2`
+        // this fixture (4000 rows, 1009 distinct) kept 1407 entries against a budget of 50 and
+        // rebuilt on 3950 of its inserts. Pairing across leaves: 49 entries, two rebuilds.
+        for branching in [2, 4] {
+            let mut t: CFTree<f64, Spherical<f64>, _, _> = CFTree::new(
+                2,
+                branching,
+                1,
+                0.0,
+                50,
+                CentroidEuclidean,
+                CentroidEuclidean,
+            );
+            let pts = pseudo(4000, 2);
+            for p in &pts {
+                t.insert(p);
+            }
+            assert!(
+                t.num_leaves() <= 50,
+                "{branching}: {} leaves",
+                t.num_leaves()
+            );
+            assert!(t.rebuilds() < 100, "{branching}: {} rebuilds", t.rebuilds());
+            assert_eq!(t.validate(), Ok(()));
+            verify(&t, pts.len());
+        }
     }
 
     #[test]

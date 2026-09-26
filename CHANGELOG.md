@@ -99,6 +99,12 @@ All notable changes to this project are documented here. The format follows
   The first three change nothing for data whose squares stay finite. Each fix has a unit test that
   fails without it, and every one came out of the fuzz targets or out of reading the code a finding
   pointed at.
+- **`leaf_cap=1` never held a tree to `max_leaves`.** A rebuild merges two entries that share a
+  leaf node, and a leaf holding one entry has no partner, so every rebuild merged nothing and every
+  insert past the budget rebuilt again: `Betula(leaf_cap=1, max_leaves=50)` kept all 2400 rows of
+  four blobs as leaves. When no leaf node holds two entries, the rebuild now pairs across the leaves
+  of one internal node and then rebuilds the node structure, since those merges empty leaves. At
+  `leaf_cap >= 2` a rebuild always finds a pair inside a leaf, so no such fit changes.
 
 ## [1.0.0] — 2026-09-10
 
