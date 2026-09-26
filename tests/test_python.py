@@ -5,6 +5,7 @@ and the streaming `Betula` estimator, plus the error contract.
 """
 
 import collections
+import inspect
 import itertools
 import math
 import os
@@ -2820,6 +2821,45 @@ def test_the_engine_reports_every_parameter_the_wrapper_carries():
     core = set(betula_cluster._core.Betula(n_clusters=4).get_params())
     missing = set(betula_cluster._PARAM_NAMES) - core - {"memory_budget_mb"}
     assert not missing, f"engine get_params omits {sorted(missing)}"
+
+
+@pytest.mark.parametrize(
+    "name", ["Betula", "WindowStream", "DenStream", "DbStream", "BregmanBetula", "KPrototypes"]
+)
+def test_the_wrapper_and_the_engine_default_every_parameter_alike(name):
+    """Every estimator's defaults are written twice — the engine's constructor and the wrapper's
+    `__init__` — and the test above ties only the names. A default that drifts is silent: `load`
+    rebuilds from the engine's `get_params`, so a saved and reloaded default model would describe
+    itself differently from a fresh one. Constructed with nothing but what the engine requires."""
+    wrapper = getattr(betula_cluster, name)().get_params()
+    engine_cls = getattr(betula_cluster._core, name)
+    required = [
+        k for k, p in inspect.signature(engine_cls).parameters.items() if p.default is p.empty
+    ]
+    engine = engine_cls(**{k: wrapper[k] for k in required}).get_params()
+    assert set(engine) <= set(wrapper)
+
+    def plain(v):
+        return list(v) if isinstance(v, tuple) else v
+
+    drifted = {k: (wrapper[k], engine[k]) for k in engine if plain(wrapper[k]) != plain(engine[k])}
+    assert not drifted, f"(wrapper, engine) defaults differ: {drifted}"
+
+
+def test_the_engine_fit_predict_defaults_like_the_estimator():
+    """The free `fit_predict` carries a third copy of `Betula`'s defaults. pyo3 renders a default it
+    cannot print as `...`; those come from the same Rust constants as the constructor's.
+    `fit_predict_sparse` is not a copy: it runs a flat leader pass, and its defaults are its own."""
+    assert betula_cluster.Betula().get_params() == betula_cluster._DEFAULTS
+    params = inspect.signature(betula_cluster.fit_predict).parameters
+    drifted = {
+        k: (p.default, betula_cluster._DEFAULTS[k])
+        for k, p in params.items()
+        if k in betula_cluster._DEFAULTS
+        and p.default is not Ellipsis
+        and p.default != betula_cluster._DEFAULTS[k]
+    }
+    assert not drifted, f"(fit_predict, Betula) defaults differ: {drifted}"
 
 
 def test_projection_survives_save_load(nmf_topics, tmp_path):
