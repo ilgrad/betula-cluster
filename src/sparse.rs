@@ -124,25 +124,24 @@ impl LeaderSet {
         self.n[i] = w_new;
     }
 
-    /// The nearest leader still holding less than `mass_share`, or `None` when every one is full.
+    /// The nearest leader still holding less than `mass_share` — at any distance, `+inf` included —
+    /// or `None` when every one is full.
     ///
     /// Only the forced branch of [`summarize_sparse`] calls this, so the main scan stays exactly the
     /// loop it was; the rescan is `O(len)` arithmetic over the dots that scan already computed, next
     /// to the `O(len · nnz)` it spent computing them.
     fn nearest_under(&self, dots: &[f64], x_sq: f64, mass_share: f64) -> Option<usize> {
-        let mut best = None;
-        let mut bd = f64::INFINITY;
+        let mut best: Option<(usize, f64)> = None;
         for (i, &dot) in dots.iter().enumerate() {
             if self.n[i] >= mass_share {
                 continue;
             }
             let d = self.dist2(i, dot, x_sq);
-            if d < bd {
-                bd = d;
-                best = Some(i);
+            if best.is_none_or(|(_, bd)| d < bd) {
+                best = Some((i, d));
             }
         }
-        best
+        best.map(|(i, _)| i)
     }
 
     /// Materialise each leader into a dense spherical feature `(n, μ = ΣX/n, S)`.
@@ -232,31 +231,32 @@ pub fn summarize_sparse(
         idx_buf.extend(indices[lo..hi].iter().map(|&c| c as usize));
         let x_sq = norm_sq(val);
         leaders.dots(&idx_buf, val, &mut dots);
-        let mut best = usize::MAX;
-        let mut bd = f64::INFINITY;
+        // `None` only while there is no leader. A finite coordinate past ~1.3e154 squares to
+        // infinity, and a row that far from every leader still has a nearest one, which the forced
+        // branch below spends.
+        let mut nearest: Option<(usize, f64)> = None;
         for (li, &dot) in dots.iter().enumerate() {
             let d = leaders.dist2(li, dot, x_sq);
-            if d < bd {
-                bd = d;
-                best = li;
+            if nearest.is_none_or(|(_, bd)| d < bd) {
+                nearest = Some((li, d));
             }
         }
-        if best != usize::MAX && bd <= threshold {
-            leaders.push_into(best, &idx_buf, val, x_sq, dots[best]);
-            of_row.push(best);
-        } else if leaders.len < hard_cap {
-            of_row.push(leaders.len);
-            leaders.push_new(&idx_buf, val, x_sq, hard_cap);
-        } else {
-            debug_assert!(
-                best != usize::MAX,
-                "the budget is spent, so a leader exists"
-            );
-            let target = leaders
-                .nearest_under(&dots, x_sq, mass_share)
-                .unwrap_or(best);
-            leaders.push_into(target, &idx_buf, val, x_sq, dots[target]);
-            of_row.push(target);
+        match nearest {
+            Some((best, bd)) if bd <= threshold => {
+                leaders.push_into(best, &idx_buf, val, x_sq, dots[best]);
+                of_row.push(best);
+            }
+            Some((best, _)) if leaders.len >= hard_cap => {
+                let target = leaders
+                    .nearest_under(&dots, x_sq, mass_share)
+                    .unwrap_or(best);
+                leaders.push_into(target, &idx_buf, val, x_sq, dots[target]);
+                of_row.push(target);
+            }
+            _ => {
+                of_row.push(leaders.len);
+                leaders.push_new(&idx_buf, val, x_sq, hard_cap);
+            }
         }
     }
     (leaders.into_features(), of_row)
@@ -644,6 +644,37 @@ mod tests {
                 prop_assert!(micros.iter().all(|m| m.mean().iter().all(|v| v.is_finite())));
             }
         }
+    }
+
+    /// A finite value can still have an infinite square: past ~1.3e154 `‖x‖²` overflows, and a
+    /// leader seeded by that row sits at `+inf` from every later one. The scan compared `<` against
+    /// an infinite start, so it found no nearest leader at all, and once the budget was spent the
+    /// forced branch indexed `usize::MAX` — a `PanicException` out of `fit_predict_sparse`.
+    /// `validate_csr` asks only that each value be finite, as the dense path does, so the summary
+    /// has to be the side that copes. Found by `fuzz/fuzz_targets/csr.rs`.
+    #[test]
+    fn a_row_at_infinite_distance_from_every_leader_still_has_a_nearest() {
+        // Row 0 seeds the only leader the budget allows; row 1 is empty, so its distance is ‖μ‖².
+        let (data, indices, indptr) = ([1e200], [0], [0, 1, 1]);
+        assert_eq!(validate_csr(&data, &indices, &indptr, 2), Ok(()));
+        let (micros, of_row) = summarize_sparse(&data, &indices, &indptr, 2, 0.0, 1);
+        assert_eq!(of_row, [0, 0]);
+        assert_eq!(micros.len(), 1);
+        assert_eq!(micros[0].weight(), 2.0);
+    }
+
+    /// The forced branch reads `None` from `nearest_under` as "every leader is full" and overrides
+    /// the cap. A leader with room at `+inf` used to read as no leader, so the row went into a full
+    /// one while an open one existed.
+    #[test]
+    fn a_leader_with_room_is_found_at_infinite_distance() {
+        let mut leaders = LeaderSet::new(2, 2);
+        leaders.push_new(&[0], &[1.0], 1.0, 2);
+        leaders.push_new(&[1], &[1e200], f64::INFINITY, 2);
+        leaders.n[0] = 5.0; // full at a share of 2
+        let mut dots = Vec::new();
+        leaders.dots(&[0], &[1.0], &mut dots); // e_0: at 0 from the full leader, +inf from the open one
+        assert_eq!(leaders.nearest_under(&dots, 1.0, 2.0), Some(1));
     }
 
     #[test]

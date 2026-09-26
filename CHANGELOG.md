@@ -73,6 +73,12 @@ All notable changes to this project are documented here. The format follows
   deleted. A candidate is now always two entries and a NaN cost ranks last. A gap that overflowed no
   longer grows the threshold either: it carries no scale, growing to it would absorb every later
   row, and `+inf` is the one threshold `load` refuses.
+- **`fit_predict_sparse` panicked on a finite value past ~1.3e154** once the leader budget was
+  spent, with `index out of bounds: … the index is 18446744073709551615`. The value squares to
+  infinity, every later row sits at `+inf` from its leader, and the nearest-leader scan — `<`
+  against an infinite start — found none, so the forced branch indexed `usize::MAX`. The scan now
+  returns an existing leader whenever one exists, and the capped rescan finds an open leader at any
+  distance, as its documentation always said.
 
 ## [1.0.0] — 2026-09-10
 
