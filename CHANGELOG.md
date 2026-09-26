@@ -79,6 +79,10 @@ All notable changes to this project are documented here. The format follows
   against an infinite start — found none, so the forced branch indexed `usize::MAX`. The scan now
   returns an existing leader whenever one exists, and the capped rescan finds an open leader at any
   distance, as its documentation always said.
+- **`Betula(feature="fd")` panicked on one float32 value past ~1.8e19**, under every head: the
+  square overflowed the sketch's Gram matrix, and the NaN eigenvalues reached a
+  `partial_cmp().unwrap()` sort. The shrink already read every eigenvalue as `max(λ, 0)`; the median
+  it shrinks by now does too.
 
 ## [1.0.0] — 2026-09-10
 

@@ -693,9 +693,11 @@ impl<R: Real> FdSketch<R> {
         // Shrink by the lower-median squared singular value (Ghashami et al.): this zeroes ~half the
         // rows per reduce — so the sketch is rebuilt every ~ℓ/2 inserts instead of every insert —
         // while the dominant directions (and any exact low-rank structure) survive.
-        let mut sorted = eig.clone();
+        // Over `max(λ, 0)`, as the loop below reads each one: that also turns a NaN — a Gram entry
+        // that overflowed — into a null direction before the sort can meet it.
+        let mut sorted: Vec<R> = eig.iter().map(|&l| l.max(R::zero())).collect();
         sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        let delta = sorted[(ell - 1) / 2].max(R::zero());
+        let delta = sorted[(ell - 1) / 2];
         let tiny = R::from_f64(1e-300).unwrap();
         let mut next = vec![vec![R::zero(); dim]; ell];
         let mut new_rows = 0;
@@ -1536,6 +1538,26 @@ mod tests {
         check!(Diagonal<f64>);
         check!(Full<f64>);
         check!(FdSketch<f64>);
+    }
+
+    /// A finite `f32` coordinate past ~1.8e19 squares to `+inf` in the Gram matrix, and Jacobi
+    /// hands back NaN eigenvalues. The shrink already read a NaN as a null direction — every
+    /// eigenvalue passes through `max(λ, 0)` — but the median it shrinks by was sorted with
+    /// `partial_cmp().unwrap()` first and panicked, so `Betula(feature="fd")` raised
+    /// `PanicException` from every head on one such float32 value. Found by
+    /// `fuzz/fuzz_targets/insert.rs`.
+    #[test]
+    fn an_fd_shrink_survives_a_gram_matrix_that_overflowed() {
+        let mut fd: FdSketch<f32> = FdSketch::with_ell(4, 2);
+        for x in [
+            [-3.3e33, 0.0, 0.0, 0.0],
+            [0.0; 4],
+            [0.0; 4],
+            [1.0, 2.0, 3.0, 4.0],
+        ] {
+            fd.push(&x, 1.0);
+        }
+        assert_eq!(fd.weight(), 4.0);
     }
 
     #[test]
