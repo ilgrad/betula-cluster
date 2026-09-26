@@ -946,8 +946,11 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> CF
     ///
     /// What it checks: the arena is non-empty and `root` addresses it; every `parent` and every
     /// child index is in range, and a leaf's children address `entries` while an internal node's
-    /// address `nodes`; no node is reached twice from the root, which is what rules out a cycle;
-    /// every feature is [`ClusterFeature::is_well_formed`] and carries this tree's dimension; and
+    /// address `nodes`; no node is reached twice from the root, and no entry is listed twice by the
+    /// leaves reached; the root names no parent and every other node reached names the one that
+    /// lists it, so the leaf-to-root climb of an insert retraces its descent and ends; every node
+    /// reached has a child to descend into, except the root leaf of a tree with no entries; every
+    /// feature is [`ClusterFeature::is_well_formed`] and carries this tree's dimension; and
     /// `branching`, `leaf_cap` and `max_leaves` are large enough that an insert terminates.
     ///
     /// Unreachable nodes and unreferenced entries are *not* an error: compaction leaves both behind
@@ -1021,7 +1024,11 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> CF
                 ));
             }
         }
+        if let Some(p) = self.nodes[self.root].parent {
+            return Err(format!("the root names node {p} as its parent"));
+        }
         let mut seen = vec![false; self.nodes.len()];
+        let mut listed = vec![false; self.entries.len()];
         let mut stack = vec![self.root];
         while let Some(i) = stack.pop() {
             if std::mem::replace(&mut seen[i], true) {
@@ -1029,8 +1036,33 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> CF
                     "node {i} is reachable twice; the arena has a cycle"
                 ));
             }
-            if !self.nodes[i].leaf {
-                stack.extend_from_slice(&self.nodes[i].children);
+            let node = &self.nodes[i];
+            if node.children.is_empty() && !(i == self.root && node.leaf && self.entries.is_empty())
+            {
+                return Err(format!("node {i} has no children for a descent to take"));
+            }
+            if node.leaf {
+                for &e in &node.children {
+                    if std::mem::replace(&mut listed[e], true) {
+                        return Err(format!(
+                            "entry {e} is listed twice; a rebuild would merge it into itself"
+                        ));
+                    }
+                }
+            } else {
+                if let Some(&c) = node
+                    .children
+                    .iter()
+                    .find(|&&c| self.nodes[c].parent != Some(i))
+                {
+                    let named = self.nodes[c]
+                        .parent
+                        .map_or_else(|| "no node".to_string(), |p| format!("node {p}"));
+                    return Err(format!(
+                        "node {c} is a child of node {i} but names {named} as its parent"
+                    ));
+                }
+                stack.extend_from_slice(&node.children);
             }
         }
         Ok(())
@@ -3538,6 +3570,95 @@ mod tests {
         let mut empty = a_fitted_tree(64);
         empty.nodes.clear();
         assert!(empty.validate().unwrap_err().contains("arena is empty"));
+    }
+
+    /// Every index below is in range, so each of these passed `validate` — and then hung or panicked
+    /// on the first call that walked the tree. An insert climbs `parent` from its leaf to the root
+    /// and a descent reads a node's first child, and neither checks, because nothing this process
+    /// builds can break either. The self-parent is what `fuzz/fuzz_targets/decode.rs` found, as an
+    /// insert that never returned.
+    #[test]
+    fn validate_rejects_a_shape_the_walks_would_not_survive() {
+        let probe = [0.0; 3];
+
+        let mut looped = a_fitted_tree(64);
+        let leaf = looped.descend(&probe);
+        looped.nodes[leaf].parent = Some(leaf);
+        let why = looped.validate().unwrap_err();
+        assert!(
+            why.contains(&format!("node {leaf} is a child of node")),
+            "{why}"
+        );
+
+        let mut rooted = a_fitted_tree(64);
+        let leaf = rooted.descend(&probe);
+        let root = rooted.root;
+        rooted.nodes[root].parent = Some(leaf);
+        let why = rooted.validate().unwrap_err();
+        assert!(why.contains(&format!("root names node {leaf}")), "{why}");
+
+        let mut hollow = a_fitted_tree(64);
+        let root = hollow.root;
+        assert!(
+            !hollow.nodes[root].leaf,
+            "the fixture must have an interior"
+        );
+        hollow.nodes[root].children.clear();
+        let why = hollow.validate().unwrap_err();
+        assert!(
+            why.contains(&format!("node {root} has no children")),
+            "{why}"
+        );
+
+        let mut bare = a_fitted_tree(64);
+        let leaf = bare.descend(&probe);
+        bare.nodes[leaf].children.clear();
+        let why = bare.validate().unwrap_err();
+        assert!(
+            why.contains(&format!("node {leaf} has no children")),
+            "{why}"
+        );
+
+        // An empty root leaf is the tree `new` returns, and legal — but only over no entries, or
+        // `num_leaves` promises a route the root cannot give. And only a *leaf*: an empty interior
+        // root has nothing for `descend` to read.
+        let fresh = || -> CFTree<f64, Spherical<f64>, CentroidEuclidean, Radius> {
+            CFTree::new(3, 4, 4, 0.4, 64, CentroidEuclidean, Radius)
+        };
+        assert_eq!(fresh().validate(), Ok(()));
+        let mut orphans = fresh();
+        orphans.entries.push(Spherical::new(3));
+        let why = orphans.validate().unwrap_err();
+        assert!(why.contains("node 0 has no children"), "{why}");
+        let mut interior = fresh();
+        interior.nodes[0].leaf = false;
+        let why = interior.validate().unwrap_err();
+        assert!(why.contains("node 0 has no children"), "{why}");
+    }
+
+    /// An entry listed twice passed `validate`, and the next rebuild paired the two slots — two
+    /// positions, one entry — merged the entry into itself and dropped it from both, emptying a leaf
+    /// the descent later indexed. `fuzz/fuzz_targets/decode.rs` found it as one overwritten byte,
+    /// `children: [0, 1]` read back as `[0, 0]`.
+    #[test]
+    fn validate_rejects_an_entry_listed_twice() {
+        let t = a_fitted_tree(64);
+        let leaves: Vec<usize> = (0..t.nodes.len())
+            .filter(|&i| t.nodes[i].leaf && t.nodes[i].children.len() >= 2)
+            .collect();
+        assert!(leaves.len() >= 2, "the fixture must have two full leaves");
+
+        let mut within = a_fitted_tree(64);
+        let e = within.nodes[leaves[0]].children[0];
+        within.nodes[leaves[0]].children[1] = e;
+        let why = within.validate().unwrap_err();
+        assert!(why.contains(&format!("entry {e} is listed twice")), "{why}");
+
+        let mut across = a_fitted_tree(64);
+        let e = across.nodes[leaves[0]].children[0];
+        across.nodes[leaves[1]].children[0] = e;
+        let why = across.validate().unwrap_err();
+        assert!(why.contains(&format!("entry {e} is listed twice")), "{why}");
     }
 
     #[test]

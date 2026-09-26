@@ -83,6 +83,11 @@ All notable changes to this project are documented here. The format follows
   square overflowed the sketch's Gram matrix, and the NaN eigenvalues reached a
   `partial_cmp().unwrap()` sort. The shrink already read every eigenvalue as `max(λ, 0)`; the median
   it shrinks by now does too.
+- **`load` accepted four tree shapes that the next call hung or panicked on** — a child that does
+  not name its parent (an insert climbed a parent loop forever), a root that names one, a reachable
+  node with no children, and an entry listed twice (the next rebuild merged it into itself and
+  emptied a leaf). Each is now refused with the index at fault. Every tree this library builds
+  satisfies all four, so no file it wrote stops loading.
 
 ## [1.0.0] — 2026-09-10
 
