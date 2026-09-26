@@ -62,6 +62,9 @@
 # `src/sparse.rs` was re-measured (**2026-09-14 whole-file**, 273 mutants in 3h) and its two
 # "Debt."-only entries became 12 measured ones; on 2026-09-26 nine were closed entry by entry
 # (test code only), and the three left are argued.
+# `src/clustering/graph.rs` and `src/linalg.rs` were re-measured together (**2026-09-26
+# whole-file**, 262 mutants in 58m, 22 survivors); four tests closed 15 of them entry by entry, and
+# the seven left are argued.
 #
 # The entry-by-entry runs used `cargo test --lib`, not the `--test-tool nextest` the CI job uses.
 # The difference is `tests/integration_api.rs`, whose four tests assert label counts and a 4-blob
@@ -1147,12 +1150,20 @@ src/clustering/community.rs:258:29: replace -= with /= in refine
 src/clustering/community.rs:259:30: replace -= with += in refine
 src/clustering/community.rs:259:30: replace -= with /= in refine
 
-# ── src/linalg.rs (4) ──
-# Debt.
-src/linalg.rs:109:25: replace + with * in jacobi_eigen
-src/linalg.rs:110:27: replace + with - in jacobi_eigen
-src/linalg.rs:110:37: replace * with / in jacobi_eigen
+# ── src/linalg.rs (2) ──
+# Re-measured 2026-09-26, WHOLE FILE, in the same run as `src/clustering/graph.rs`, 6 of its 22
+# missed. The four in `jacobi_eigen` were its stopping rule, which no test pinned from either side;
+# two tests closed them -- a matrix already inside `off(A) <= tol` must come back unrotated, and
+# off-diagonal mass spread over entries each between `tol/n` and `tol` must still be rotated away.
+# `110:37` of the old list is caught. The two left:
+#
+# Believed equivalent -- `(i * 1)..d` adds the term `k == i`, which reads `x[i]` before it is
+# written, while it is still `+0.0`. Every caller passes a factor from `cholesky_lower`, whose
+# diagonal is finite and positive, so `l[i][i] * +0.0` is `+0.0` and `s` is bit-identical.
 src/linalg.rs:68:21: replace + with * in solve_upper_t
+# Believed equivalent -- a collapse cut-off at exact equality. `norm > tiny` widened to `>=` differs
+# only for a row whose residual norm after both passes is exactly `1e-150`.
+src/linalg.rs:238:17: replace > with >= in orthonormalize_rows
 
 # ── src/sparse.rs (3) ──
 # Re-measured 2026-09-14, WHOLE FILE, at `b170dc9`, replacing two entries whose only argument was
@@ -1201,11 +1212,26 @@ src/sparse.rs:87:33: replace * with + in LeaderSet::grow
 src/sparse.rs:322:72: delete - in SparseCentroids::pooled
 src/sparse.rs:427:64: delete - in validate_csr
 
-# ── src/clustering/graph.rs (3) ──
-# Debt.
+# ── src/clustering/graph.rs (5) ──
+# Re-measured 2026-09-26, WHOLE FILE, in one run with `src/linalg.rs` at `98ff8f5` (262 mutants in
+# 58m at -j4 under a 10 GB cap: 215 caught, 22 missed, 25 unviable), 16 of the missed here. Two
+# tests closed eleven of them entry by entry: nothing asserted the approximate builder's kernel --
+# seven operators in `exp(-d²/σ_iσ_j)` survived -- nor the forced-degree entry point and its clamp.
+# The five left are equivalent.
+#
+# Believed equivalent -- a clamp repeated downstream. `knn::build` clamps its degree to `m - 1` on
+# entry, and `degree` has no other reader, so capping it at `n + 1` or `n` first changes no graph.
+src/clustering/graph.rs:53:58: replace - with + in knn_affinity_approx
+src/clustering/graph.rs:53:58: replace - with / in knn_affinity_approx
+# Believed equivalent -- the accumulator only ever enters squared. Subtracting every product builds
+# `-(AᵀB)_pq`, and round-to-nearest is symmetric under negation, so `m * m` is bit-identical.
+src/clustering/graph.rs:136:23: replace + with - in grassmann_sq
+# Believed equivalent -- `d > 0` widened to `d >= 0` only changes `d == 0`, where the floor it
+# computes goes to `matrix_log` of a 0×0 matrix, which has no eigenvalue to floor.
 src/clustering/graph.rs:186:30: replace > with >= in log_covariances
-src/clustering/graph.rs:125:21: replace + with * in knn_affinity_impl
-src/clustering/graph.rs:54:23: replace + with - in grassmann_sq
+# Believed equivalent -- `(i * 1)..n` adds the pair `j == i`, which writes `d2[i][i]` and nothing
+# else, and no reader looks there: `idx` filters `j != i` and the edge loop tests `i != j`.
+src/clustering/graph.rs:208:21: replace + with * in knn_affinity_impl
 
 # ── src/clustering/spectral.rs (11) ──
 # First complete measurement this file has ever had, and the two entries it replaces were deleted

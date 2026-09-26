@@ -469,4 +469,34 @@ mod tests {
         assert!(close(v[0][0].abs(), s) && close(v[1][0].abs(), s), "{v:?}");
         assert!(close(v[0][0] * v[1][0], -0.5), "{v:?}");
     }
+
+    #[test]
+    fn a_matrix_already_inside_the_stopping_rule_comes_back_unrotated() {
+        // ‖A‖_F = √2, so tol = eps·√2, and one off-diagonal entry of 0.75·tol already satisfies
+        // `off(A) <= tol`: no sweep runs and the diagonal is the answer. The entry is still above
+        // the `tol/2` skip threshold, so an `off` that counted anything but the strictly-upper
+        // squares would rotate this degenerate pair by a full 45 degrees.
+        let delta = 0.75 * f64::EPSILON * 2f64.sqrt();
+        let (eig, v) = jacobi_eigen(&[vec![1.0, delta], vec![delta, 1.0]]);
+        assert_eq!(eig, vec![1.0, 1.0]);
+        assert_eq!(v, vec![vec![1.0, 0.0], vec![0.0, 1.0]]);
+    }
+
+    #[test]
+    fn off_diagonal_mass_spread_thin_below_the_tolerance_is_still_rotated_away() {
+        // ‖A‖_F = 1, so tol = eps. Each entry is 0.9·tol, yet the two together put `off(A)` at
+        // 1.27·tol. The skip threshold is `tol/n` because no set of entries below it can lift
+        // `off(A)` past `tol`; any looser one skips both here, sweeps to the cap rotating nothing,
+        // and returns the diagonal from a matrix the stopping rule says is not yet diagonal.
+        let delta = 0.9 * f64::EPSILON;
+        let mut a = vec![vec![0.0; 5]; 5];
+        a[0][0] = 1.0;
+        for (p, q) in [(1, 2), (3, 4)] {
+            a[p][q] = delta;
+            a[q][p] = delta;
+        }
+        let (mut eig, _) = jacobi_eigen(&a);
+        eig.sort_by(|x, y| x.partial_cmp(y).unwrap());
+        assert_eq!(eig, vec![-delta, -delta, delta, delta, 1.0]);
+    }
 }

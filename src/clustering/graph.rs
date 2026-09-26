@@ -509,4 +509,61 @@ mod tests {
             assert!((out[1][d][d] - 1e-12f64.ln()).abs() < 1e-9, "{:?}", out[1]);
         }
     }
+
+    #[test]
+    fn the_approximate_builder_weighs_its_edges_with_the_self_tuning_kernel() {
+        // Its neighbour lists come from the beam-search graph and may differ from the exact ones;
+        // what it keeps is the kernel `exp(−d²/σ_iσ_j)` with `σ_i` read off the 7th listed
+        // neighbour. Both are re-derived here from the returned edge lists and the centres alone.
+        let (centers, _, _) = affinity_fixture();
+        let dist = |i: usize, j: usize| -> f64 {
+            let sq: f64 = centers[i]
+                .iter()
+                .zip(&centers[j])
+                .map(|(a, b)| (a - b) * (a - b))
+                .sum();
+            sq.sqrt()
+        };
+        for seed in [3, 11] {
+            let g = knn_affinity_approx(&centers, seed);
+            let sigma: Vec<f64> = g
+                .iter()
+                .enumerate()
+                .map(|(i, row)| {
+                    let mut d: Vec<f64> = row.iter().map(|&(j, _)| dist(i, j)).collect();
+                    d.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                    d[6]
+                })
+                .collect();
+            for (i, row) in g.iter().enumerate() {
+                for &(j, w) in row {
+                    let want = (-dist(i, j).powi(2) / (sigma[i] * sigma[j])).exp();
+                    assert!(
+                        (w - want).abs() <= 1e-12 * want,
+                        "seed {seed}, edge {i}-{j}: {w} vs {want}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_forced_degree_is_honoured_and_saturates_at_every_other_node() {
+        let (centers, _, _) = affinity_fixture();
+        let n = centers.len();
+        assert_eq!(
+            knn_affinity_with_degree(&centers, knn_degree(n)),
+            knn_affinity(&centers)
+        );
+        assert!(knn_affinity(&centers).iter().any(|row| row.len() < 9));
+        assert!(
+            knn_affinity_with_degree(&centers, 9)
+                .iter()
+                .all(|row| row.len() >= 9)
+        );
+        // A degree past `n − 1` is clamped rather than read past the end of the neighbour order.
+        let complete = knn_affinity_with_degree(&centers, n + 3);
+        assert!(complete.iter().all(|row| row.len() == n - 1));
+        assert_eq!(complete, knn_affinity_with_degree(&centers, n - 1));
+    }
 }
