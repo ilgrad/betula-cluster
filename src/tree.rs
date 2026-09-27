@@ -1111,6 +1111,10 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> CF
     /// The checked entry point. The tree is left untouched on error — the length is read before
     /// anything is absorbed — so a caller streaming a mixed batch can skip a bad row and keep the
     /// summary it has.
+    ///
+    /// The shape is all it checks. A finite row whose squared norm passes `R::MAX / 2⁵⁶` can
+    /// overflow the sums a fit later takes over squared distances; the Python boundary refuses such
+    /// a row, and a Rust caller owns that check.
     pub fn try_insert(&mut self, x: &[R]) -> Result<(), ShapeError> {
         ShapeError::check(self.dim, x.len())?;
         self.insert(x);
