@@ -69,6 +69,10 @@
 # whole-file**, 311 mutants in 2h, 12 survivors). kprototypes' three held. Three of order.rs's nine
 # were new and sat on a boundary no test could afford; extracting `rank_count` closed them, and a
 # second whole-file run of order.rs (148 mutants) returned exactly its six argued ones.
+# `src/tree.rs`, `src/sparse.rs` and `src/feature.rs` were re-measured together (**2026-09-27
+# whole-file**, 1093 mutants in 9h, 15 survivors) after the fuzz fixes and `cousin_pairs`: all
+# fifteen are entries this file already carried, all nine of tree.rs's and one of feature.rs's
+# three at new lines, and one argument changed -- tree.rs `732:19`, now debt.
 #
 # The entry-by-entry runs used `cargo test --lib`, not the `--test-tool nextest` the CI job uses.
 # The difference is `tests/integration_api.rs`, whose four tests assert label counts and a 4-blob
@@ -361,15 +365,26 @@ src/clustering/kprototypes.rs:466:31: replace > with >= in kprototypes
 src/clustering/kprototypes.rs:477:31: replace + with - in kprototypes
 
 # ── src/tree.rs (9) ──
-# **Re-measured 2026-09-13, whole file** (`cargo mutants -f src/tree.rs -j4 --test-tool nextest`,
-# under `MemoryMax=10G` with a disk-backed `TMPDIR`): 293 mutants in 3h -- 238 caught, 40 missed,
-# 13 unviable, 2 timeouts. The section this replaces was measured on 2026-08-21 against a run the
-# local 90-minute cap stopped at 130 of 156 mutants; both of its entries are still survivors and
-# still carry the same argument, but they have moved (319:19 -> 718:19, 323:22 -> 722:22) and the
-# file has grown by 38 mutants since -- the auto-balance machinery, the beam descent and
-# `refit_leaves_beam` all postdate it.
+# **Re-measured 2026-09-27, whole file**, in one run with `src/sparse.rs` and `src/feature.rs` at
+# `2c1a126` (`cargo mutants -f src/tree.rs -f src/sparse.rs -f src/feature.rs -j4 --test-tool
+# nextest`, under `MemoryMax=10G` with a disk-backed `TMPDIR`): 1093 mutants in 9h -- 974 caught,
+# 15 missed, 102 unviable, 2 timeouts -- of which this file's 308: 280 caught, 9 missed, 17
+# unviable, 2 timeouts. Three production edits came after the 2026-09-13 run below: the fuzz fixes
+# (the beam frontier's reservation, `push_cheapest_partners` seeded empty, the threshold grown by
+# finite gaps only) and `leaf_cap = 1`'s `cousin_pairs` with the reinsert that follows it. The file
+# gained 15 mutants and none survived: the nine below are the nine this section carried, at new
+# lines, each argument re-read against the code it now sits in. One changed -- `732:19`, which the
+# `across` reinsert turned from believed equivalent into debt.
 #
-# Nine tests were added against the 40 survivors and verified **entry by entry** rather than by a
+# The 2026-09-13 run (`-f src/tree.rs` alone): 293 mutants in 3h -- 238 caught, 40 missed, 13
+# unviable, 2 timeouts. The section it replaced was measured on 2026-08-21 against a run the local
+# 90-minute cap stopped at 130 of 156 mutants; both of its entries were still survivors and still
+# carried the same argument, but had moved (319:19 -> 718:19, 323:22 -> 722:22) and the file had
+# grown by 38 mutants -- the auto-balance machinery, the beam descent and `refit_leaves_beam` all
+# postdate it.
+#
+# Nine tests were added against the 40 survivors (line numbers below are that run's) and verified
+# **entry by entry** rather than by a
 # second whole-file run -- only test code changed, and a test can kill a mutant but never create
 # one, which is the exception this file's header documents. They kill 31:
 #
@@ -404,53 +419,65 @@ src/clustering/kprototypes.rs:477:31: replace + with - in kprototypes
 #     `leaf_cap = 1` and `max_leaves = 1` are legal and a `<=` would reject a file nothing is
 #     wrong with). 4 killed.
 #
-# The 2 timeouts are detections, not survivors: `427:40` deletes the `!` from the beam descent's
-# loop condition, which then never terminates, and `1244:9` stubs `split` to return 0.
+# The 2 timeouts are detections, not survivors, in both runs: `430:40` (then `427:40`) deletes the
+# `!` from the beam descent's loop condition, which then never terminates, and `1322:9` (then
+# `1244:9`) stubs `split` to return 0.
 #
-# Eight of the nine below are believed equivalent, with the argument:
-#   255:42  `if b > a { b } else { a }` -> `>=`, folding the maximum weight. At equality the two
+# Seven of the nine below are believed equivalent, with the argument:
+#   258:42  `if b > a { b } else { a }` -> `>=`, folding the maximum weight. At equality the two
 #           branches return the same value, and NaN takes the `else` either way.
-#   442:29  `scored.len() > beam` -> `>=`. At `len == beam` the `truncate(beam)` that follows
+#   445:29  `scored.len() > beam` -> `>=`. At `len == beam` the `truncate(beam)` that follows
 #           removes nothing, so the only effect is the reorder `select_nth_unstable_by` performs,
 #           and the frontier is used order-insensitively except on exact distance ties.
-#   443:52  `select_nth_unstable_by(beam - 1, ..)` -> `beam / 1`, i.e. `beam`. Both are followed by
+#   446:52  `select_nth_unstable_by(beam - 1, ..)` -> `beam / 1`, i.e. `beam`. Both are followed by
 #           `truncate(beam)` and both therefore keep the `beam` smallest elements: `select_nth(k)`
 #           puts the k-th order statistic at index k with everything smaller before it, so
 #           `select_nth(beam-1)` leaves indices `0..beam` as the beam smallest and
 #           `select_nth(beam)` leaves `0..=beam` as the beam+1 smallest, of which `truncate` drops
 #           exactly the largest. The index is in range because the branch is guarded by
 #           `scored.len() > beam`.
-#   457:22  `d < bd` -> `<=` in the final scan over the frontier's leaves. Picks the last tied
+#   460:22  `d < bd` -> `<=` in the final scan over the frontier's leaves. Picks the last tied
 #           minimum instead of the first; same distance either way.
-#   689:31  `merged == want || (respect_cap && cap.is_none())` -> `&&`. The guard is a fast path
+#   701:31  `merged == want || (respect_cap && cap.is_none())` -> `&&`. The guard is a fast path
 #           for a pass that would do nothing anyway. With `cap.is_none()` the cap-respecting pass
 #           runs but its own `respect_cap && cap.is_some_and(..)` filter is false for every pair,
 #           so it performs exactly the merges the uncapped pass would have; with `merged == want`
-#           the inner loop breaks on its first iteration.
-#   713:24  `gap > widest` -> `>=`, folding the maximum gap. Same argument as 255:42.
-#   718:19  `merged > 0` -> `>=`. Entering the block at `merged == 0` runs `drop_merged` against an
-#           all-alive mask (a no-op), leaves `widest` at zero so `grown` cannot exceed a
-#           non-negative threshold, and adds nothing to `merged_since_rebalance` -- which is always
-#           below `max_leaves` on entry, because the only place it crosses is inside this block and
-#           it resets there.
-#   722:22  `grown > self.threshold` -> `>=`. At equality the assignment stores the value that is
+#           the inner loop breaks on its first iteration. Whether the pairs came from
+#           `sibling_pairs` or `cousin_pairs` does not enter into it.
+#   727:43  `gap.is_finite() && gap > widest` -> `>=`, folding the maximum gap (the `is_finite`
+#           guard is the fuzz fix; it moved the operator from column 24). Same argument as 258:42,
+#           and a non-finite gap fails the left operand either way.
+#   738:22  `grown > self.threshold` -> `>=`. At equality the assignment stores the value that is
 #           already there.
 #
-# Debt, one entry:
-#   701:96  `weight(ei) + weight(ej) > c` -> `>=`, the compaction's cap filter at exact equality.
+# Debt, two entries -- each killable only with a hand-built arena, not a fixture:
+#   713:96  `weight(ei) + weight(ej) > c` -> `>=`, the compaction's cap filter at exact equality.
 #           It changes which pair a rebuild merges only when the cap-respecting pass alone meets
 #           the budget *and* a pair sits exactly on the cap; on every fixture measured the budget
 #           is not met by that pass, so the uncapped second pass merges the same sorted list and
-#           the two are indistinguishable. Killing it needs a hand-built arena, not a fixture.
-src/tree.rs:255:42: replace > with >= in CFTree<R, C, D, A>::top1_mass
-src/tree.rs:442:29: replace > with >= in CFTree<R, C, D, A>::nearest_entry_beam
-src/tree.rs:443:52: replace - with / in CFTree<R, C, D, A>::nearest_entry_beam
-src/tree.rs:457:22: replace < with <= in CFTree<R, C, D, A>::nearest_entry_beam
-src/tree.rs:689:31: replace || with && in CFTree<R, C, D, A>::rebuild
-src/tree.rs:701:96: replace > with >= in CFTree<R, C, D, A>::rebuild
-src/tree.rs:713:24: replace > with >= in CFTree<R, C, D, A>::rebuild
-src/tree.rs:718:19: replace > with >= in CFTree<R, C, D, A>::rebuild
-src/tree.rs:722:22: replace > with >= in CFTree<R, C, D, A>::rebuild
+#           the two are indistinguishable.
+#   732:19  `merged > 0` -> `>=`. Believed equivalent until `cousin_pairs`: entering the block at
+#           `merged == 0` runs `drop_merged` against an all-alive mask (a no-op), leaves `widest` at
+#           zero so `grown` cannot exceed a non-negative threshold, and adds nothing to
+#           `merged_since_rebalance`. The block now also reinserts whenever the pairs came from
+#           `cousin_pairs` (`across`), so the mutant rebuilds the structure of a tree nothing was
+#           merged in. `merged == 0` needs an empty pair list -- the uncapped pass has no filter,
+#           and `push_cheapest_partners` gives every entry of a group of two a partner whatever the
+#           costs -- and no tree the library builds has one once a rebuild runs
+#           (`entries > max_leaves >= 1`): a leaf's first split puts both halves under one parent,
+#           an internal split of `branching + 1 >= 3` children leaves two on one side, compaction
+#           never empties a leaf, and the reinsert after an `across` merge rebuilds by the same
+#           splits. A loaded file whose every leaf-parent holds one single-entry leaf does reach
+#           it, and `validate` does not refuse that shape.
+src/tree.rs:258:42: replace > with >= in CFTree<R, C, D, A>::top1_mass
+src/tree.rs:445:29: replace > with >= in CFTree<R, C, D, A>::nearest_entry_beam
+src/tree.rs:446:52: replace - with / in CFTree<R, C, D, A>::nearest_entry_beam
+src/tree.rs:460:22: replace < with <= in CFTree<R, C, D, A>::nearest_entry_beam
+src/tree.rs:701:31: replace || with && in CFTree<R, C, D, A>::rebuild
+src/tree.rs:713:96: replace > with >= in CFTree<R, C, D, A>::rebuild
+src/tree.rs:727:43: replace > with >= in CFTree<R, C, D, A>::rebuild
+src/tree.rs:732:19: replace > with >= in CFTree<R, C, D, A>::rebuild
+src/tree.rs:738:22: replace > with >= in CFTree<R, C, D, A>::rebuild
 
 # ── src/stream.rs (9) ──
 # Re-measured 2026-09-14, WHOLE FILE, after `d59793a` added the checked entry points and `7f3f33e`
@@ -909,6 +936,11 @@ src/clustering/hdbscan.rs:307:35: replace != with == in mst_over_graph
 # targeted re-run over `cov_dense|completion|reduce` at `0b4ba6f` independently reported the two
 # `completion` entries below as still surviving.
 #
+# **Re-measured 2026-09-27, whole file**, in the three-file run recorded under `src/tree.rs`, after
+# the fuzz fix that ranks `reduce`'s eigenvalues without `partial_cmp().unwrap()`: 512 mutants, 470
+# caught, 3 missed, 39 unviable, 0 timeouts. The three held; the fix added two lines above the third,
+# which moved from 718:41 to 720:41 with its code unchanged.
+#
 # Believed equivalent, with the argument:
 #   666:29, 666:46  the guard `lost <= 0.0 || w <= 0.0 || dim == 0`, with either `||` as `&&`.
 #          `lost` is a monotone sum of discarded squared singular values, so `lost <= 0` is exactly
@@ -918,7 +950,7 @@ src/clustering/hdbscan.rs:307:35: replace != with == in mst_over_graph
 #          `reduce`, which implies a push, which implies `w > 0` and `dim >= 1`, so the two clauses
 #          the mutants weaken are unreachable whenever `lost > 0`. No state tells either mutant
 #          apart from the original.
-#   718:41 `dst[d] = dst[d] + coef * self.sketch[j][d]` -> `-`. `dst` starts at zero and this loop
+#   720:41 `dst[d] = dst[d] + coef * self.sketch[j][d]` -> `-`. `dst` starts at zero and this loop
 #          is its only writer, so the mutant yields exactly `-dst`: the rotated sketch comes out
 #          negated row for row. A Frequent-Directions sketch is a square root, and every consumer
 #          reads it as `BᵀB` -- `kept` and `ssd` square it, `cov_dense` forms
@@ -928,7 +960,7 @@ src/clustering/hdbscan.rs:307:35: replace != with == in mst_over_graph
 #          sign is gauge, not information.
 src/feature.rs:666:29: replace || with && in FdSketch<R>::completion
 src/feature.rs:666:46: replace || with && in FdSketch<R>::completion
-src/feature.rs:718:41: replace + with - in FdSketch<R>::reduce
+src/feature.rs:720:41: replace + with - in FdSketch<R>::reduce
 
 # ── src/clustering/nmf.rs (12) ──
 # Re-measured 2026-08-24, whole file, together with the new `src/clustering/pca.rs` beside it:
@@ -1186,6 +1218,10 @@ src/linalg.rs:242:17: replace > with >= in orthonormalize_rows
 #     cargo mutants -f src/sparse.rs -j4 --test-tool nextest
 #   273 mutants in 3h | caught 215 | missed 12 | unviable 46 | timeout 0
 # Both carried entries were still survivors -- `427:64` at the same line, `110:18` moved to `239:18`.
+#
+# **Re-measured 2026-09-27, whole file**, in the three-file run recorded under `src/tree.rs`, after
+# the fuzz fix to `summarize_sparse`'s argmin when every leader sits at `+inf`: 273 mutants, 224
+# caught, 3 missed, 46 unviable, 0 timeouts. The three argued entries below held, at the same lines.
 #
 # **Nine of the twelve are closed**, each checked against its own recorded mutant diff. Every one
 # of them sat under a test that already existed and named the very thing the mutant broke; what
