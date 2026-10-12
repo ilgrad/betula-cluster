@@ -488,6 +488,19 @@ hardness results below are about specific objectives and do not move to a neighb
 of the sources are 2026 preprints from OpenAI's `openai/math` release, listed at the end of the
 section; they are not peer-reviewed, and each statement taken from them is the preprint's claim.
 
+Some of those claims are also machine-checked: the release formalises selected theorems in Lean and
+states the scope of each formal statement (`lean/docs/` in the `openai/math` repository). A formal
+check covers the stated theorem, not the paper around it, and it was not re-run here.
+
+| Cited result | Machine-checked in its source? |
+|---|---|
+| Propeller bound $9/(8\pi)$ (propeller preprint, Theorem 1.1) | yes — every dimension, every number of cells |
+| Metric k-median threshold $1 + 2/e$ (k-median preprint, Theorem 1.1, Corollary 1.2) | yes — with candidate facilities, the infimum under P ≠ NP |
+| The Unique Games theorem | yes — the gap reduction from 3SAT |
+| Uniform sparsest cut, constant-factor hardness (sparsest-cut preprint, Theorem 1.1) | no — only a companion paper's Goemans–Linial integrality gaps are formalised |
+| Kernel clustering below $(8\pi/9)(1 - 1/k)$ (propeller preprint, Theorem 6.1) | no — the propeller formalisation leaves the kernel-clustering consequences out |
+| Three-state threshold (three-state preprint, Corollary 1.2) | no — only reconstruction above the Kesten–Stigum bound on trees is formalised; non-reconstruction at or below it, and the block-model consequences, are not |
+
 **`kmeans` — a closed-form target, not a guarantee.** For $N(0, I_d)$ the population k-means cost
 per point has a closed form at $k = 2$ and $k = 3$. A planar sector of half-angle $\alpha$ has the
 unnormalised Gaussian first moment $z = \tfrac{\sin\alpha}{\sqrt{2\pi}}\,(1, 0)$ (the propeller
@@ -552,8 +565,13 @@ $$
 
 At or below the line every estimator's expected overlap tends to chance, and above it an
 $O(n \log n)$ algorithm exists (the three-state preprint, Corollary 1.2, through the Mossel–Sly–Sohn
-tree-to-graph transfer and Abbe–Sandon). The modularity core ($\gamma = 1$) measured at mean degree
-6, ARI medians of graph seeds 0/1/2, communities in contiguous id blocks:
+tree-to-graph transfer and Abbe–Sandon). The impossibility half is the preprint's claim and is not
+in its formal scope; in the peer-reviewed literature the Kesten–Stigum bound is known to be tight
+for three states only on regular trees of large degree (Sly, *Ann. Probab.* 39 (2011) 1365–1406).
+The core is a deterministic Leiden variant, with greedy refinement and no well-connectedness
+checks, so it carries no $\gamma$-connectivity guarantee beyond what its tests check. The
+modularity core ($\gamma = 1$) measured at mean degree 6, ARI medians of graph seeds 0/1/2,
+communities in contiguous id blocks:
 
 | $s$ | 0.6 | 1 | 2 | 3 | 4 | 5 | 6 |
 |---|---|---|---|---|---|---|---|

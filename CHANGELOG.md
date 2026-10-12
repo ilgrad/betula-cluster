@@ -82,7 +82,10 @@ All notable changes to this project are documented here. The format follows
   subject to. The kernel clustering hardness below `(8π/9)(1 − 1/k)` is about an objective no head
   optimises. Maximum modularity cannot be approximated within any positive factor unless P = NP,
   and the Leiden core detects from about four times the three-community threshold. The OpenAI
-  sources are cited by title, date and URL as 2026 preprints.
+  sources are cited by title, date and URL as 2026 preprints, and each cited result says whether
+  its source machine-checks it in Lean: the propeller bound, the k-median threshold and the Unique
+  Games theorem are checked; the sparsest-cut and kernel-clustering hardness and the three-state
+  impossibility direction are not.
 
 ### Changed
 
