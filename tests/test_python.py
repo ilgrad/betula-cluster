@@ -952,6 +952,40 @@ def test_leiden_tangent_aware_recovers_blobs(blobs):
     assert ari(labels, y) > 0.85
 
 
+@pytest.mark.parametrize("method", ["leiden", "leiden-cpm"])
+def test_leiden_passes_default_to_the_single_pass_and_survive_a_round_trip(blobs, method):
+    # One pass is the default and the labels of every earlier release: naming it changes nothing,
+    # in the estimator or the free function. More passes start each from the previous partition.
+    import pickle
+
+    x, y = blobs
+    kw = dict(method=method, threshold=0.3, max_leaves=400, seed=1)
+    if method == "leiden-cpm":
+        kw["resolution"] = 0.03
+    one = betula_cluster.fit_predict(x, 99, **kw)
+    np.testing.assert_array_equal(betula_cluster.fit_predict(x, 99, n_iterations=1, **kw), one)
+    np.testing.assert_array_equal(betula_cluster.Betula(n_clusters=99, **kw).fit_predict(x), one)
+    for n_iterations in (2, -1):
+        est = betula_cluster.Betula(n_clusters=99, n_iterations=n_iterations, **kw)
+        labels = est.fit_predict(x)
+        assert est.get_params()["n_iterations"] == n_iterations
+        assert ari(labels, y) > 0.95  # well-separated blobs: further passes keep them
+        np.testing.assert_array_equal(
+            betula_cluster.fit_predict(x, 99, n_iterations=n_iterations, **kw), labels
+        )
+        restored = pickle.loads(pickle.dumps(est))
+        assert restored.get_params()["n_iterations"] == n_iterations
+        np.testing.assert_array_equal(restored.predict(x), est.predict(x))
+
+
+def test_zero_leiden_passes_are_refused_at_both_entry_points(blobs):
+    x, _ = blobs
+    with pytest.raises(ValueError, match="n_iterations must be a positive pass count"):
+        betula_cluster.fit_predict(x, method="leiden", n_iterations=0)
+    with pytest.raises(ValueError, match="n_iterations must be a positive pass count"):
+        betula_cluster.Betula(method="leiden", n_iterations=0).fit(x)
+
+
 @pytest.mark.parametrize("dtype", [np.float64, np.float32])
 def test_a_column_major_array_is_read_as_rows_and_not_as_its_transpose(blobs, dtype):
     """A column-major array is *contiguous*, so the zero-copy ingest could borrow its buffer and
@@ -3782,6 +3816,7 @@ _HEAD_KEYWORDS = [
     ("covariance_weight", 0.5, "leiden", "kmeans"),
     ("tangent_weight", 0.5, "leiden", "kmeans"),
     ("tangent_rank", 3, "leiden", "kmeans"),
+    ("n_iterations", 2, "leiden", "kmeans"),
     ("rank", 1, "mppca", "ward"),
     ("fuzzifier", 1.5, "fuzzy-cmeans", "kmeans"),
 ]

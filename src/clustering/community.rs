@@ -83,6 +83,8 @@ fn to_f64_tensors<R: Real>(t: Vec<Vec<Vec<R>>>) -> Vec<Vec<Vec<f64>>> {
 /// Grassmann **tangent-subspace** term (rank `tangent_rank`) to the microcluster affinity, so
 /// communities agree in centroid, shape, and manifold orientation (GeoBETULA; best with
 /// `feature="full"`). Both `0` reproduce the plain centroid affinity.
+///
+/// One Leiden pass. [`leiden_iterated`] repeats it, and its `max_passes = 1` is this function.
 #[allow(clippy::too_many_arguments)]
 pub fn leiden<R: Real, C: ClusterFeature<R>>(
     features: &[C],
@@ -93,10 +95,57 @@ pub fn leiden<R: Real, C: ClusterFeature<R>>(
     tangent_weight: f64,
     tangent_rank: usize,
 ) -> Community {
+    leiden_iterated(
+        features,
+        resolution,
+        objective,
+        seed,
+        cov_weight,
+        tangent_weight,
+        tangent_rank,
+        1,
+    )
+}
+
+/// [`leiden`] repeated: every pass after the first starts its first local move from the previous
+/// pass's partition instead of from singletons, as igraph's `n_iterations` does. It stops after
+/// `max_passes` passes, or earlier at the first pass that returns the partition it was given;
+/// `0` is read as `1`. Pass `p` runs on its own seed, derived from `seed` and `p`, and the first
+/// pass uses `seed` itself, so `max_passes = 1` returns exactly what [`leiden`] returns.
+///
+/// One pass stops at a local optimum of its last aggregate graph; Leiden's guarantees (Traag,
+/// Waltman & van Eck 2019) are about the iterated algorithm. On the three-community stochastic
+/// block model at four times the detection threshold, a second pass lifts the ARI from about 0.6
+/// to about 0.9 (see `docs/MATH.md`). The work is linear in the passes run.
+#[allow(clippy::too_many_arguments)]
+pub fn leiden_iterated<R: Real, C: ClusterFeature<R>>(
+    features: &[C],
+    resolution: f64,
+    objective: Objective,
+    seed: u64,
+    cov_weight: f64,
+    tangent_weight: f64,
+    tangent_rank: usize,
+    max_passes: usize,
+) -> Community {
     let n = features.len();
     if n <= 1 {
         return Community { labels: vec![0; n] };
     }
+    let base = affinity(features, cov_weight, tangent_weight, tangent_rank);
+    Community {
+        labels: detect_passes(&base, resolution, objective, seed, max_passes).0,
+    }
+}
+
+/// The self-tuning kNN affinity graph over the leaf means, with the geometry terms whose weights
+/// are positive.
+fn affinity<R: Real, C: ClusterFeature<R>>(
+    features: &[C],
+    cov_weight: f64,
+    tangent_weight: f64,
+    tangent_rank: usize,
+) -> Vec<Vec<(usize, f64)>> {
     let centers: Vec<Vec<f64>> = features
         .iter()
         .map(|f| f.mean().iter().map(|&x| x.to_f64().unwrap()).collect())
@@ -104,7 +153,7 @@ pub fn leiden<R: Real, C: ClusterFeature<R>>(
     let log_covs = (cov_weight > 0.0).then(|| to_f64_tensors(log_covariances(features)));
     let tangents =
         (tangent_weight > 0.0).then(|| to_f64_tensors(tangent_bases(features, tangent_rank)));
-    let base = if log_covs.is_some() || tangents.is_some() {
+    if log_covs.is_some() || tangents.is_some() {
         knn_affinity_geo::<f64>(
             &centers,
             log_covs.as_deref().map(|lc| (lc, cov_weight)),
@@ -112,9 +161,6 @@ pub fn leiden<R: Real, C: ClusterFeature<R>>(
         )
     } else {
         knn_affinity::<f64>(&centers)
-    };
-    Community {
-        labels: detect(&base, resolution, objective, seed),
     }
 }
 
@@ -148,13 +194,56 @@ fn shuffled(n: usize, seed: u64) -> Vec<usize> {
     order
 }
 
+/// Seed of pass `pass` (counted from 0). The first pass keeps the caller's seed, which is what
+/// makes one pass bit-identical to [`detect`]; the odd Weyl increment keeps the later passes off the
+/// `seed + level` seeds a pass already spends on its levels.
+fn pass_seed(seed: u64, pass: usize) -> u64 {
+    seed.wrapping_add((pass as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15))
+}
+
+/// Up to `max_passes` Leiden passes (at least one), each but the first started from the previous
+/// partition; stops early at the first pass that returns its input. Returns the partition and the
+/// number of passes run.
+fn detect_passes(
+    base: &[Vec<(usize, f64)>],
+    gamma: f64,
+    obj: Objective,
+    seed: u64,
+    max_passes: usize,
+) -> (Vec<usize>, usize) {
+    let mut labels = detect(base, gamma, obj, seed);
+    let mut passes = 1;
+    while passes < max_passes {
+        let next = detect_from(base, gamma, obj, pass_seed(seed, passes), &labels);
+        passes += 1;
+        // Both sides are in first-seen order, so equal vectors are equal partitions.
+        if next == labels {
+            break;
+        }
+        labels = next;
+    }
+    (labels, passes)
+}
+
 /// Multi-level Leiden: local-move → refine → aggregate (seeded from the local-move partition),
 /// until aggregation no longer coarsens the graph.
 fn detect(base: &[Vec<(usize, f64)>], gamma: f64, obj: Objective, seed: u64) -> Vec<usize> {
+    let singletons: Vec<usize> = (0..base.len()).collect();
+    detect_from(base, gamma, obj, seed, &singletons)
+}
+
+/// [`detect`] with the first local move started from `start` instead of from singletons.
+fn detect_from(
+    base: &[Vec<(usize, f64)>],
+    gamma: f64,
+    obj: Objective,
+    seed: u64,
+    start: &[usize],
+) -> Vec<usize> {
     let n = base.len();
     let mut membership: Vec<usize> = (0..n).collect(); // original node → current super-node
     let mut g = Graph::from_adj(base.to_vec());
-    let mut init: Vec<usize> = (0..n).collect(); // seed partition for the current local-move
+    let mut init: Vec<usize> = start.to_vec(); // seed partition for the current local-move
     let mut level = 0u64;
     loop {
         let part = one_level(&g, obj, gamma, seed.wrapping_add(level), &init);
@@ -1199,6 +1288,185 @@ mod tests {
                 above > 0.75,
                 "s = 5, seed {seed}: ARI {above:.4}, the planted blocks were not recovered"
             );
+        }
+    }
+
+    /// FNV-1a over the labels, so a test can pin a partition in one number.
+    fn fnv1a(labels: &[usize]) -> u64 {
+        labels.iter().fold(0xcbf2_9ce4_8422_2325_u64, |h, &l| {
+            (l as u64).to_le_bytes().iter().fold(h, |h, &b| {
+                (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3)
+            })
+        })
+    }
+
+    /// One pass is the 1.0 algorithm, bit for bit. The digests were taken from `detect` before the
+    /// pass loop existed, on unit-weight SBM graphs, so they hold on every platform: the graph
+    /// carries no floating-point input that a SIMD kernel could round differently.
+    #[test]
+    fn one_pass_keeps_the_released_labels() {
+        let pinned: [(f64, u64, Objective, f64, u64); 6] = [
+            (0.6, 0, Objective::Modularity, 1.0, 0xacd4_88c3_27b4_c126),
+            (4.0, 0, Objective::Modularity, 1.0, 0xf830_2a6c_8052_92ee),
+            (4.0, 1, Objective::Modularity, 1.0, 0x9b7f_ec32_5986_ec27),
+            (4.0, 2, Objective::Modularity, 1.0, 0xdba1_5c79_663d_c2a1),
+            (5.0, 1, Objective::Modularity, 1.0, 0x2f52_25be_bce7_128c),
+            (4.0, 0, Objective::Cpm, 0.002, 0xd77d_3088_b623_8840),
+        ];
+        for (s, seed, obj, gamma, want) in pinned {
+            let (a, b) = sbm_rates(6.0, s);
+            let (base, _) = sbm3(3000, a, b, seed);
+            let (one, passes) = detect_passes(&base, gamma, obj, seed, 1);
+            assert_eq!(fnv1a(&one), want, "s = {s}, seed = {seed}: one pass moved");
+            assert_eq!(passes, 1);
+            assert_eq!(
+                detect_passes(&base, gamma, obj, seed, 0),
+                (one, 1),
+                "0 is read as 1"
+            );
+        }
+    }
+
+    /// Passes after the first, on the 3-community SBM at mean degree 6 and n = 3000. One pass reads
+    /// ARI 0.587 / 0.697 / 0.657 at `s = 4` (graph seeds 0/1/2); two read 0.897 / 0.893 / 0.931, and
+    /// until stable 0.908 / 0.933 / 0.933 after 12 / 11 / 7 passes. Modularity never falls from one
+    /// pass to the next, and the last pass returns its own input. Below the threshold (`s = 0.6`)
+    /// iterating raises modularity by fitting noise, 0.385 to 0.423, and recovers nothing: ARI stays
+    /// at the 0.002 floor through the 19--21 passes it takes to settle. The negative control runs
+    /// to the end on one graph only, to keep the debug-build suite fast.
+    #[test]
+    fn later_passes_recover_what_one_pass_misses_and_never_lower_the_modularity() {
+        const N: usize = 3000;
+        let cases = [
+            (4.0, 0u64, true),
+            (4.0, 1, true),
+            (4.0, 2, true),
+            (0.6, 0, true),
+            (0.6, 1, false),
+            (0.6, 2, false),
+        ];
+        for (s, seed, to_the_end) in cases {
+            let (a, b) = sbm_rates(6.0, s);
+            let (base, truth) = sbm3(N, a, b, seed);
+            let ctx = format!("s = {s}, seed = {seed}");
+            let signal = s > 1.0;
+            let mut labels = detect(&base, 1.0, Objective::Modularity, seed);
+            let mut q = modularity(&base, &labels, 1.0);
+            let mut passes = 1;
+            loop {
+                let next = detect_from(
+                    &base,
+                    1.0,
+                    Objective::Modularity,
+                    pass_seed(seed, passes),
+                    &labels,
+                );
+                passes += 1;
+                let q_next = modularity(&base, &next, 1.0);
+                assert!(
+                    q_next >= q - 1e-12,
+                    "{ctx}: pass {passes} lowered Q {q} -> {q_next}"
+                );
+                q = q_next;
+                let stable = next == labels;
+                labels = next;
+                if passes == 2 {
+                    let two = ari(&labels, &truth);
+                    assert!(
+                        if signal { two >= 0.85 } else { two < 0.005 },
+                        "{ctx}: two passes read ARI {two:.4}"
+                    );
+                    if !to_the_end {
+                        break;
+                    }
+                }
+                if stable {
+                    break;
+                }
+                assert!(passes < 60, "{ctx}: not stable after {passes} passes");
+            }
+            if !to_the_end {
+                continue;
+            }
+            let last = ari(&labels, &truth);
+            assert!(
+                if signal { last >= 0.88 } else { last < 0.005 },
+                "{ctx}: until stable reads ARI {last:.4}"
+            );
+            if seed == 0 {
+                assert_eq!(
+                    detect_passes(&base, 1.0, Objective::Modularity, seed, 1000),
+                    (labels, passes),
+                    "{ctx}: the pass loop disagrees with the reference loop"
+                );
+            }
+        }
+    }
+
+    /// ARI, modularity and community count after one pass, two passes and until stable, per graph
+    /// seed, on the 3-community SBM at mean degree 6. Also reports whether modularity ever fell
+    /// from one pass to the next.
+    ///
+    /// `cargo test --release --lib clustering::community::tests::measure_sbm_passes -- --ignored --nocapture`
+    #[test]
+    #[ignore = "measurement harness, not a check"]
+    fn measure_sbm_passes() {
+        let ns: Vec<usize> = std::env::var("SBM_NS")
+            .map(|v| v.split(',').map(|x| x.parse().unwrap()).collect())
+            .unwrap_or_else(|_| vec![3000, 30000]);
+        for n in ns {
+            for s in [0.6, 3.0, 4.0, 5.0] {
+                let (a, b) = sbm_rates(6.0, s);
+                for seed in 0u64..3 {
+                    let (base, truth) = sbm3(n, a, b, seed);
+                    let mut labels = detect(&base, 1.0, Objective::Modularity, seed);
+                    let mut row = format!("n={n} s={s:.1} seed={seed}");
+                    let mut q_prev = modularity(&base, &labels, 1.0);
+                    let mut fell = 0usize;
+                    row += &format!(
+                        " | p1 ARI {:+.4} Q {:.4} k {}",
+                        ari(&labels, &truth),
+                        q_prev,
+                        n_distinct(&labels)
+                    );
+                    let mut passes = 1;
+                    while passes < 200 {
+                        let next = detect_from(
+                            &base,
+                            1.0,
+                            Objective::Modularity,
+                            pass_seed(seed, passes),
+                            &labels,
+                        );
+                        passes += 1;
+                        let q = modularity(&base, &next, 1.0);
+                        if q < q_prev - 1e-12 {
+                            fell += 1;
+                        }
+                        q_prev = q;
+                        let stable = next == labels;
+                        labels = next;
+                        if passes == 2 {
+                            row += &format!(
+                                " | p2 ARI {:+.4} Q {:.4} k {}",
+                                ari(&labels, &truth),
+                                q,
+                                n_distinct(&labels)
+                            );
+                        }
+                        if stable {
+                            break;
+                        }
+                    }
+                    row += &format!(
+                        " | stable@{passes} ARI {:+.4} Q {:.4} k {} | Q fell {fell}x",
+                        ari(&labels, &truth),
+                        q_prev,
+                        n_distinct(&labels)
+                    );
+                    println!("{row}");
+                }
+            }
         }
     }
 

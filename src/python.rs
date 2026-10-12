@@ -357,6 +357,13 @@ const DEFAULT_TANGENT_WEIGHT: f64 = 0.0;
 const DEFAULT_TANGENT_RANK: usize = 2;
 const DEFAULT_RANK: usize = 2;
 const DEFAULT_FUZZIFIER: f64 = 2.0;
+const DEFAULT_N_ITERATIONS: i64 = 1;
+
+/// The pass cap behind `n_iterations < 0`, "until stable". Each pass runs on its own seed, so nothing
+/// guarantees that a pass ever returns its input; the cap bounds the work. On the three-community
+/// SBM at mean degree 6 the partition stopped changing within 40 passes at n = 3000 and within 32
+/// at n = 30 000 for `s >= 4`; at `s = 3`, n = 30 000, it took 143 to more than 200, and the cap binds.
+const UNTIL_STABLE_PASSES: usize = 100;
 
 /// Which heads read each head-specific keyword. Everything not listed against a keyword ignores it
 /// outright: `rank=8` on `method="ward"` configured nothing and said nothing.
@@ -368,6 +375,7 @@ const HEAD_KEYWORDS: &[(&str, &[&str])] = &[
     ("covariance_weight", &["leiden", "leiden-cpm"]),
     ("tangent_weight", &["leiden", "leiden-cpm"]),
     ("tangent_rank", &["leiden", "leiden-cpm"]),
+    ("n_iterations", &["leiden", "leiden-cpm"]),
     ("rank", &["mppca", "mfa"]),
     ("fuzzifier", &["fuzzy-cmeans"]),
 ];
@@ -519,6 +527,23 @@ fn parse_method(
     }
 }
 
+/// The Leiden pass cap `n_iterations` asks for: `k > 0` is up to `k` passes, a negative value is
+/// "until stable" under [`UNTIL_STABLE_PASSES`]. `0` would run no pass at all, which is not a
+/// partition, so it is refused rather than read as `1`.
+fn parse_n_iterations(method: &str, n_iterations: i64) -> PyResult<usize> {
+    require_head_reads_its_keywords(
+        method,
+        &[("n_iterations", n_iterations != DEFAULT_N_ITERATIONS)],
+    )?;
+    if n_iterations == 0 {
+        return Err(PyValueError::new_err(
+            "n_iterations must be a positive pass count, or negative to iterate until the \
+             partition stops changing; 0 runs no pass",
+        ));
+    }
+    Ok(usize::try_from(n_iterations).unwrap_or(UNTIL_STABLE_PASSES))
+}
+
 /// Label leaf features with the configured head and, for the GMM heads, also return the per-leaf
 /// soft responsibility matrix flattened `(resp, k)` (`None` otherwise) so `predict_proba` can read a
 /// true posterior without recomputing the E-step. HDBSCAN keeps `-1` for noise; parametric labels are
@@ -587,6 +612,7 @@ fn resolve_min_samples<R: Real, C: ClusterFeature<R>>(min_samples: usize, feats:
 }
 
 #[allow(clippy::type_complexity)]
+#[allow(clippy::too_many_arguments)]
 fn dispatch_kind<R: Real, C: ClusterFeature<R>>(
     feats: &[C],
     kind: Kind,
@@ -595,10 +621,20 @@ fn dispatch_kind<R: Real, C: ClusterFeature<R>>(
     n_init: usize,
     seed: u64,
     auto_k_max: usize,
+    leiden_passes: usize,
 ) -> Dispatch {
     match kind {
         Kind::Parametric(method) => {
-            let fit = fit_head(feats, k, method, max_iter, n_init, seed, auto_k_max);
+            let fit = fit_head(
+                feats,
+                k,
+                method,
+                max_iter,
+                n_init,
+                seed,
+                auto_k_max,
+                leiden_passes,
+            );
             let proba = fit.resp.map(|r| {
                 let kk = r.first().map_or(0, |row| row.len());
                 let flat = r
@@ -731,6 +767,7 @@ fn label_features_proba<R: Real, C: ClusterFeature<R>>(
     n_init: usize,
     seed: u64,
     auto_k_max: usize,
+    leiden_passes: usize,
     nmf_dim: Option<ProjectionSpec>,
 ) -> Labelling {
     match nmf_dim {
@@ -739,7 +776,16 @@ fn label_features_proba<R: Real, C: ClusterFeature<R>>(
             // The head clustered *codes*, so its density lives in code space. A linear projection can
             // carry a raw row there and keep the head's own point rule; an NMF cannot, and falls back
             // to the microcluster route.
-            let d = dispatch_kind(&p.coded, kind, k, max_iter, n_init, seed, auto_k_max);
+            let d = dispatch_kind(
+                &p.coded,
+                kind,
+                k,
+                max_iter,
+                n_init,
+                seed,
+                auto_k_max,
+                leiden_passes,
+            );
             let (labels, proba) = (d.labels, d.proba);
             let rule = projected_rule(&p, &labels, kind, d.mixture, d.rule);
             let parts = p
@@ -760,7 +806,16 @@ fn label_features_proba<R: Real, C: ClusterFeature<R>>(
             }
         }
         None => {
-            let d = dispatch_kind(feats, kind, k, max_iter, n_init, seed, auto_k_max);
+            let d = dispatch_kind(
+                feats,
+                kind,
+                k,
+                max_iter,
+                n_init,
+                seed,
+                auto_k_max,
+                leiden_passes,
+            );
             Labelling {
                 labels: d.labels,
                 proba: d.proba,
@@ -1765,6 +1820,7 @@ fn cluster<R: Real, C: ClusterFeature<R>>(
     auto_balance: bool,
     leaf_refit: usize,
     order: Option<&[u32]>,
+    leiden_passes: usize,
 ) -> (Vec<i64>, usize) {
     let mut tree = build_tree::<R, C>(
         dim,
@@ -1799,6 +1855,7 @@ fn cluster<R: Real, C: ClusterFeature<R>>(
                     n_init,
                     seed,
                     auto_k_max,
+                    leiden_passes,
                     nmf_dim,
                 );
                 match out.rule {
@@ -1809,7 +1866,16 @@ fn cluster<R: Real, C: ClusterFeature<R>>(
                 }
             }
             None => {
-                let mut model = Model::fit(tree, k, method, max_iter, n_init, seed, auto_k_max);
+                let mut model = Model::fit_passes(
+                    tree,
+                    k,
+                    method,
+                    max_iter,
+                    n_init,
+                    seed,
+                    auto_k_max,
+                    leiden_passes,
+                );
                 model.refine(flat, n, dim, refine);
                 map_rows(n, |i| model.predict(&flat[i * dim..(i + 1) * dim]) as i64)
             }
@@ -1886,6 +1952,7 @@ fn run_oneshot<R: Real + Element>(
     auto_k_max: usize,
     leaf_refit: usize,
     canonical_order: bool,
+    leiden_passes: usize,
 ) -> PyResult<(Vec<i64>, usize)> {
     // Directional heads cluster points on the unit sphere and the hyperbolic head on the Lorentz
     // sheet, so they always operate on prepared rows regardless of the caller's `normalize` flag.
@@ -1935,6 +2002,7 @@ fn run_oneshot<R: Real + Element>(
                 auto_balance,
                 leaf_refit,
                 order,
+                leiden_passes,
             )),
             "diagonal" => Ok(cluster::<R, Diagonal<R>>(
                 flat,
@@ -1959,6 +2027,7 @@ fn run_oneshot<R: Real + Element>(
                 auto_balance,
                 leaf_refit,
                 order,
+                leiden_passes,
             )),
             "full" => Ok(cluster::<R, Full<R>>(
                 flat,
@@ -1983,6 +2052,7 @@ fn run_oneshot<R: Real + Element>(
                 auto_balance,
                 leaf_refit,
                 order,
+                leiden_passes,
             )),
             "fd" => Ok(cluster::<R, FdSketch<R>>(
                 flat,
@@ -2007,6 +2077,7 @@ fn run_oneshot<R: Real + Element>(
                 auto_balance,
                 leaf_refit,
                 order,
+                leiden_passes,
             )),
             _ => Err("feature must be 'spherical', 'diagonal', 'full' or 'fd'"),
         }
@@ -2049,7 +2120,7 @@ fn run_oneshot<R: Real + Element>(
     resolution = DEFAULT_RESOLUTION, covariance_weight = DEFAULT_COVARIANCE_WEIGHT, tangent_weight = DEFAULT_TANGENT_WEIGHT, tangent_rank = DEFAULT_TANGENT_RANK,
     projection = "none", projection_dim = 64, projection_max_iter = 100, refine = 0, rank = DEFAULT_RANK,
     graph_degree = 0, balance = None, auto_k_max = 0, fuzzifier = DEFAULT_FUZZIFIER, leaf_refit = 0,
-    canonical_order = false
+    canonical_order = false, n_iterations = DEFAULT_N_ITERATIONS
 ))]
 #[allow(clippy::too_many_arguments)]
 fn fit_predict<'py>(
@@ -2088,6 +2159,7 @@ fn fit_predict<'py>(
     fuzzifier: f64,
     leaf_refit: usize,
     canonical_order: bool,
+    n_iterations: i64,
 ) -> PyResult<Bound<'py, PyArray1<i64>>> {
     // Two mutually exclusive ways to set one count: reject the pair instead of picking a winner.
     // Quietly ignoring the argument is how the old `n_jobs` came to read as a thread count.
@@ -2115,6 +2187,7 @@ fn fit_predict<'py>(
         graph_degree,
         fuzzifier,
     )?;
+    let leiden_passes = parse_n_iterations(method, n_iterations)?;
     let nmf_dim = parse_projection(projection, projection_dim, projection_max_iter)?;
     let n_init = parse_n_init(n_init, kind, method)?;
     let max_iter = parse_max_iter(max_iter)?;
@@ -2148,6 +2221,7 @@ fn fit_predict<'py>(
             auto_k_max,
             leaf_refit,
             canonical_order,
+            leiden_passes,
         )?
     } else if let Ok(a) = data.extract::<PyReadonlyArray2<'py, f32>>() {
         run_oneshot::<f32>(
@@ -2176,6 +2250,7 @@ fn fit_predict<'py>(
             auto_k_max,
             leaf_refit,
             canonical_order,
+            leiden_passes,
         )?
     } else {
         return Err(PyValueError::new_err(
@@ -2378,6 +2453,7 @@ impl<R: Real> TreeState<R> {
         n_init: usize,
         seed: u64,
         auto_k_max: usize,
+        leiden_passes: usize,
         nmf_dim: Option<ProjectionSpec>,
     ) -> Labelling {
         match self {
@@ -2389,6 +2465,7 @@ impl<R: Real> TreeState<R> {
                 n_init,
                 seed,
                 auto_k_max,
+                leiden_passes,
                 nmf_dim,
             ),
             TreeState::Diagonal(t) => label_features_proba(
@@ -2399,6 +2476,7 @@ impl<R: Real> TreeState<R> {
                 n_init,
                 seed,
                 auto_k_max,
+                leiden_passes,
                 nmf_dim,
             ),
             TreeState::Full(t) => label_features_proba(
@@ -2409,6 +2487,7 @@ impl<R: Real> TreeState<R> {
                 n_init,
                 seed,
                 auto_k_max,
+                leiden_passes,
                 nmf_dim,
             ),
             TreeState::Fd(t) => label_features_proba(
@@ -2419,6 +2498,7 @@ impl<R: Real> TreeState<R> {
                 n_init,
                 seed,
                 auto_k_max,
+                leiden_passes,
                 nmf_dim,
             ),
         }
@@ -2930,6 +3010,10 @@ fn default_fuzzifier() -> f64 {
     DEFAULT_FUZZIFIER
 }
 
+fn default_n_iterations() -> i64 {
+    DEFAULT_N_ITERATIONS
+}
+
 #[pyclass(name = "Betula", module = "betula_cluster._core")]
 #[derive(serde::Serialize, serde::Deserialize)]
 struct Betula {
@@ -3044,6 +3128,10 @@ struct Betula {
     /// like `leaf_refit` a `partial_fit` stream cannot honour it.
     #[serde(default)]
     canonical_order: bool,
+    /// Leiden pass cap as the caller wrote it (`method="leiden"` / `"leiden-cpm"`); negative is
+    /// "until stable". A model persisted before this field existed ran one pass, and loads as `1`.
+    #[serde(default = "default_n_iterations")]
+    n_iterations: i64,
 }
 
 /// A 2-D array as flat row-major rows, casting from the other float dtype if needed (lossless
@@ -3454,12 +3542,13 @@ impl Betula {
             self.auto_k_max,
             self.projection_spec(),
         );
+        let passes = parse_n_iterations(&self.method, self.n_iterations)?;
         let result = if let Some(t) = &self.state64 {
-            Some(t.label_proba(kind, k, mi, ni, seed, akm, nmf))
+            Some(t.label_proba(kind, k, mi, ni, seed, akm, passes, nmf))
         } else {
             self.state32
                 .as_ref()
-                .map(|t| t.label_proba(kind, k, mi, ni, seed, akm, nmf))
+                .map(|t| t.label_proba(kind, k, mi, ni, seed, akm, passes, nmf))
         };
         match result {
             Some(out) => {
@@ -3687,7 +3776,7 @@ impl Betula {
         tangent_weight = DEFAULT_TANGENT_WEIGHT, tangent_rank = DEFAULT_TANGENT_RANK, projection = "none", projection_dim = 64,
         projection_max_iter = 100, refine = 0, rank = DEFAULT_RANK, graph_degree = 0, balance = None,
         auto_k_max = 0, fuzzifier = DEFAULT_FUZZIFIER, leaf_refit = 0, canonical_order = false,
-        route_beam = 1
+        route_beam = 1, n_iterations = DEFAULT_N_ITERATIONS
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -3726,6 +3815,7 @@ impl Betula {
         leaf_refit: usize,
         canonical_order: bool,
         route_beam: usize,
+        n_iterations: i64,
     ) -> PyResult<Self> {
         let min_samples = parse_min_samples(min_samples)?;
         let kind = parse_method(
@@ -3773,6 +3863,7 @@ impl Betula {
         }
         let (balance, balance_auto) = parse_balance(balance)?;
         parse_n_init(n_init, kind, method)?; // validated here, lowered to the sentinel at use
+        parse_n_iterations(method, n_iterations)?; // likewise, lowered to a pass cap at finalize
         parse_max_iter(max_iter)?;
         check_tree_shape(branching, leaf_cap)?;
         Ok(Self {
@@ -3823,6 +3914,7 @@ impl Betula {
             leaf_refit,
             canonical_order,
             balance_auto,
+            n_iterations,
         })
     }
 
@@ -4512,6 +4604,7 @@ impl Betula {
         d.set_item("leaf_refit", self.leaf_refit)?;
         d.set_item("canonical_order", self.canonical_order)?;
         d.set_item("route_beam", self.route_beam)?;
+        d.set_item("n_iterations", self.n_iterations)?;
         // The projection is stored decomposed — rank, solver flags, sweeps — because the wire format
         // predates the sum type, so reporting it means inverting `projection_spec`. Omitting it is
         // not harmless: `Betula.load` rebuilds the wrapper with `cls(**core.get_params())`, so a
@@ -6147,7 +6240,7 @@ fn fit_predict_sparse<'py>(
         let leaves = micros.len();
         let kind = Kind::Parametric(m);
         let out = label_features_proba(
-            &micros, kind, n_clusters, max_iter, n_init, seed, auto_k_max, spec,
+            &micros, kind, n_clusters, max_iter, n_init, seed, auto_k_max, 1, spec,
         );
         // A linear projection labels each row from its own code, touching only the non-zeros.
         let labels = match &out.rule {

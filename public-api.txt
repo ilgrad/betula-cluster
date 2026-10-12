@@ -289,6 +289,7 @@ impl core::marker::UnsafeUnpin for betula_cluster::clustering::community::Commun
 impl core::panic::unwind_safe::RefUnwindSafe for betula_cluster::clustering::community::Community
 impl core::panic::unwind_safe::UnwindSafe for betula_cluster::clustering::community::Community
 pub fn betula_cluster::clustering::community::leiden<R: betula_cluster::types::Real, C: betula_cluster::feature::ClusterFeature<R>>(&[C], f64, betula_cluster::clustering::community::Objective, u64, f64, f64, usize) -> betula_cluster::clustering::community::Community
+pub fn betula_cluster::clustering::community::leiden_iterated<R: betula_cluster::types::Real, C: betula_cluster::feature::ClusterFeature<R>>(&[C], f64, betula_cluster::clustering::community::Objective, u64, f64, f64, usize, usize) -> betula_cluster::clustering::community::Community
 pub mod betula_cluster::clustering::dcdist
 pub enum betula_cluster::clustering::dcdist::DcObjective
 pub betula_cluster::clustering::dcdist::DcObjective::Center
@@ -1251,6 +1252,7 @@ pub fn betula_cluster::clustering::kmeans_auto<R: betula_cluster::types::Real, C
 pub fn betula_cluster::clustering::kmedoids<R: betula_cluster::types::Real, C: betula_cluster::feature::ClusterFeature<R>>(&[C], usize, usize, u64) -> betula_cluster::clustering::medoid::Pam
 pub fn betula_cluster::clustering::kprototypes<R: betula_cluster::types::Real>(&[betula_cluster::clustering::kprototypes::MixedCf<R>], usize, betula_cluster::clustering::kprototypes::BlockWeights<R>, usize, usize, u64) -> alloc::vec::Vec<usize>
 pub fn betula_cluster::clustering::leiden<R: betula_cluster::types::Real, C: betula_cluster::feature::ClusterFeature<R>>(&[C], f64, betula_cluster::clustering::community::Objective, u64, f64, f64, usize) -> betula_cluster::clustering::community::Community
+pub fn betula_cluster::clustering::leiden_iterated<R: betula_cluster::types::Real, C: betula_cluster::feature::ClusterFeature<R>>(&[C], f64, betula_cluster::clustering::community::Objective, u64, f64, f64, usize, usize) -> betula_cluster::clustering::community::Community
 pub fn betula_cluster::clustering::merge_increase<R: betula_cluster::types::Real>(&[R], &[R]) -> R
 pub fn betula_cluster::clustering::mfa<R: betula_cluster::types::Real, C: betula_cluster::feature::ClusterFeature<R>>(&[C], usize, usize, usize, u64) -> betula_cluster::clustering::mfa::Mfa<R>
 pub fn betula_cluster::clustering::mfa_auto<R: betula_cluster::types::Real, C: betula_cluster::feature::ClusterFeature<R>>(&[C], usize, usize, usize, usize, u64) -> betula_cluster::clustering::mfa::Mfa<R>

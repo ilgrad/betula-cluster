@@ -570,6 +570,31 @@ $s = 0.6$ an ARI above 0.005 could only come from the node ids, and at $s = 5$ t
 back. The `leiden` head builds its own kNN affinity graph, so this tests the core, not the user
 path.
 
+The table is one Leiden pass, the default and the only behaviour before `n_iterations`. One pass
+stops at a local optimum of its last aggregate graph; the guarantees of Traag, Waltman & van Eck
+(2019) are about the iterated algorithm. `n_iterations` (Rust: `clustering::leiden_iterated`)
+starts every further pass from the previous partition, and on the same graphs (medians of seeds
+0/1/2) it closes most of the gap at $s \ge 4$:
+
+| | $s = 0.6$ | $s = 4$ | $s = 5$ |
+|---|---|---|---|
+| ARI, $n = 3\,000$: one pass / two / until stable | 0.0015 / 0.0026 / 0.0024 | 0.6565 / 0.8967 / 0.9325 | 0.8715 / 0.9776 / 0.9766 |
+| ARI, $n = 30\,000$: one pass / two / until stable | 0.0002 / 0.0002 / 0.0002 | 0.5626 / 0.8696 / 0.9014 | 0.7978 / 0.9779 / 0.9796 |
+| passes until stable, $n = 30\,000$ | 53 / 51 / 69 | 29 / 32 / 18 | 9 / 5 / 9 |
+
+As an outside reference, python-igraph 1.0
+(`community_leiden`, modularity, $\beta = 0.01$, `n_iterations=-1`) reads ARI 0.923 / 0.910 / 0.915
+on the same graphs at $n = 30\,000$, $s = 4$, against 0.901 / 0.904 / 0.901 here, and both settle
+at modularity 0.548. Modularity never fell from one pass to the next in any of these runs. Below the threshold the
+passes raise modularity by fitting noise (0.369 to 0.415 at $n = 30\,000$) and recover nothing,
+so the $s = 0.6$ control holds at every pass count. At $s = 3$, $n = 30\,000$, two passes move
+ARI only from 0.017 to 0.032, and the partition is still changing after 143 to more than 200
+passes, at 0.11–0.23; `n_iterations < 0` stops at 100 passes. On the benchmark's own leaf graphs
+the passes matter much less: with the `bench/comprehensive.py` call (800 leaves, 20 000-row draws,
+seeds 0/1/2) the median ARI over one pass / two / until stable reads 0.728 / 0.731 / 0.731 on
+digits, 0.281 / 0.283 / 0.311 on MNIST and 0.046 / 0.046 / 0.046 on covtype. The default stays at
+one pass, because a second one changes the labels of every 1.x release.
+
 Sources (2026 preprints, OpenAI):
 
 - *The Gaussian propeller bound in every dimension*, 24 September 2026 —

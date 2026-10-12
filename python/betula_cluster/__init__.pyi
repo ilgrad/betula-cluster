@@ -190,6 +190,7 @@ def fit_predict(
     fuzzifier: float = ...,
     leaf_refit: int = ...,
     canonical_order: bool = ...,
+    n_iterations: int = ...,
 ) -> NDArray[np.int64]:
     """Cluster ``data`` in one shot and return per-point integer labels (``-1`` = noise)."""
 
@@ -259,6 +260,7 @@ class Betula:
         graph_degree: int = ...,
         auto_k_max: int = ...,
         route_beam: int = ...,
+        n_iterations: int = ...,
         memory_budget_mb: float | None = ...,
     ) -> None: ...
     def get_params(self, deep: bool = ...) -> dict[str, Any]: ...

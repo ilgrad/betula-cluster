@@ -8,6 +8,23 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- **Leiden passes: `n_iterations` on `method="leiden"` / `"leiden-cpm"`, and
+  `clustering::leiden_iterated` in Rust.** Every pass after the first starts its first local move
+  from the previous partition, as igraph's `n_iterations` does, and runs on its own seed derived
+  from `seed`; the passes stop early once one returns its input, and a negative `n_iterations`
+  repeats until that happens, capped at 100. The default is `1`, which is the single pass of 1.0
+  and keeps its labels bit for bit: pinned digests of the core on the planted-partition graphs are
+  unchanged. One pass stops at a local optimum of its last aggregate graph, and that is most of
+  the detection gap reported below at `s = 4`, though not at `s = 3`. On the
+  three-community SBM at `s = 4` (medians of graph seeds 0/1/2) two passes move ARI from 0.657 to
+  0.897 at n = 3000 and from 0.563 to 0.870 at n = 30 000; until stable they reach 0.933 and
+  0.901, where python-igraph's `n_iterations=-1` reads 0.910–0.923 on the same graphs. Modularity
+  never falls from one pass to the next, and below the threshold the passes recover nothing. On the
+  benchmark's real leaf graphs the gain is small: median ARI over one pass / until stable reads
+  0.728 / 0.731 on digits, 0.281 / 0.311 on MNIST and 0.046 / 0.046 on covtype. A new
+  argument on `clustering::leiden` would have broken a module frozen under semver, and `Method` is
+  frozen too, so a Rust caller who wants passes calls `leiden_iterated`; the numbers are in
+  [`docs/MATH.md`](https://github.com/ilgrad/betula-cluster/blob/main/docs/MATH.md).
 - **`CFTree::refit_leaves_beam`** — [`refit_leaves`](https://github.com/ilgrad/betula-cluster/blob/main/src/tree.rs)
   with the pass's own route widened, so the leaves are fitted to the partition a `beam`-wide route
   reproduces. `refit_leaves` is unchanged and is its `beam = 1` case; a width argument on
