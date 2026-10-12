@@ -29,6 +29,18 @@ All notable changes to this project are documented here. The format follows
   [`fuzz/`](https://github.com/ilgrad/betula-cluster/tree/main/fuzz), a crate of its own that is in
   neither the crates.io package nor the sdist, and run with `cargo +nightly fuzz run -a <target>`.
   What the first runs found is under *Fixed*.
+- **A closed-form target for `kmeans`, end to end through the tree.** The population k-means cost
+  per point of `N(0, I_d)` is `d − 27/(8π)` at `k = 3` (three 120° sectors) and `d − 2/π` at
+  `k = 2` (two half-planes). Both partitions are Lloyd fixed points by symmetry; that the three
+  sectors are the global optimum is supported numerically, not proven. A Rust test in
+  [`tests/integration_api.rs`](https://github.com/ilgrad/betula-cluster/blob/main/tests/integration_api.rs)
+  and a numpy-only case in
+  [`tests/test_python.py`](https://github.com/ilgrad/betula-cluster/blob/main/tests/test_python.py)
+  hold `SSE/N` within 0.01 of it at `d = 2`, 2·10⁵ rows, `max_leaves` 100 and 500, seeds 0/1/2:
+  no labels and no reference implementation needed. The largest miss measured is 0.0035 (Rust) and
+  0.0037 (Python), against one standard error of 0.0024 / 0.0034 at `k = 3` / `2`. A head that
+  seeds `k − 1` centres (1.361 at `k = 3`) and one that never moves its centres (0.976) both fail
+  it.
 
 ### Changed
 

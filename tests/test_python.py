@@ -630,6 +630,26 @@ def test_kmeans_labels_are_the_nearest_centre(method):
     assert np.array_equal(labels, live[d.argmin(1)])
 
 
+@pytest.mark.parametrize("max_leaves", [100, 500])
+@pytest.mark.parametrize("k,target", [(3, 2 - 27 / (8 * math.pi)), (2, 2 - 2 / math.pi)])
+def test_kmeans_reaches_the_gaussian_population_optimum(max_leaves, k, target):
+    """The population k-means cost per point of N(0, I_2) has a closed form, so the tree plus the
+    head can be checked end to end with no labels and no reference implementation.
+
+    Three 120° sectors cost 2 − 27/(8π) = 0.92570 and two half-planes 2 − 2/π = 1.36338. Both are
+    Lloyd fixed points by symmetry; that the three sectors are the *global* optimum is supported
+    numerically, not proven. At 2·10⁵ rows one standard error of SSE/N is 0.0024 (k = 3) and 0.0034
+    (k = 2), from the per-point cost's variance (Maxima). The 0.01 window rejects a collinear
+    3-means fixed point (1.19017) and an answer collapsed to two clusters (1.36338).
+    """
+    x = np.random.default_rng(20261012).standard_normal((200_000, 2))
+    for seed in range(3):
+        est = betula_cluster.Betula(n_clusters=k, method="kmeans", max_leaves=max_leaves, seed=seed)
+        labels = np.asarray(est.fit_predict(x))
+        sse = sum(((x[labels == c] - x[labels == c].mean(0)) ** 2).sum() for c in np.unique(labels))
+        assert abs(sse / len(x) - target) <= 0.01, f"seed {seed}: SSE/N {sse / len(x):.5f}"
+
+
 def test_kmedoids_labels_by_its_medoids_and_not_by_the_cluster_means():
     """A medoid is one of the data's own micro-clusters, not the mean of the cluster around it.
 

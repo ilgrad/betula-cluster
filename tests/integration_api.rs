@@ -4,7 +4,7 @@
 //! the public surface — features, distances, the CF-tree, the clustering heads, and the end-to-end
 //! `Model` — exactly as an external crate would, with self-contained data (no test-only helpers).
 
-use betula_cluster::clustering::{gmm_diagonal, kmeans};
+use betula_cluster::clustering::{KMEANS_N_INIT, gmm_diagonal, kmeans};
 use betula_cluster::distance::{CFDistance, CentroidEuclidean};
 use betula_cluster::feature::{ClusterFeature, Diagonal, Full, Spherical};
 use betula_cluster::model::{Method, Model};
@@ -136,4 +136,83 @@ fn a_row_of_the_wrong_width_is_rejected_and_changes_nothing() {
     let model = Model::fit(tree, 4, Method::KMeans, 100, 0, 1, 0);
     assert!(model.try_predict(&[1.0]).is_err());
     assert!(model.try_predict(&pts[0]).is_ok());
+}
+
+/// Standard normals from SplitMix64 (Vigna's constants) through Box–Muller, so the sample is pinned
+/// without a dependency.
+struct Normal(u64);
+
+impl Normal {
+    fn uniform(&mut self) -> f64 {
+        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        ((z ^ (z >> 31)) >> 11) as f64 / (1u64 << 53) as f64
+    }
+
+    fn sample(&mut self) -> f64 {
+        let u1 = 1.0 - self.uniform(); // (0, 1], so the logarithm is finite
+        let u2 = self.uniform();
+        (-2.0 * u1.ln()).sqrt() * (std::f64::consts::TAU * u2).cos()
+    }
+}
+
+/// The population k-means cost per point of `N(0, I_2)` has a closed form, so the tree plus the head
+/// can be checked end to end with no labels and no reference implementation. Three 120° sectors
+/// cost `2 − 27/(8π)` (centres at radius `3^{3/2}/(2^{3/2}√π)`), two half-planes cost `2 − 2/π`.
+/// Both partitions are Lloyd fixed points by symmetry; that the three sectors are the *global*
+/// optimum is supported numerically, not proven.
+///
+/// The score is the k-means cost of the centres the head returns, over the raw rows: the rule a
+/// fitted `Model` labels a point by. The head's own `inertia` is the cost of its leaf-level
+/// partition and carries the summary's granularity on top: up to +0.012 at 100 leaves here.
+///
+/// The per-point cost has variance `(64π² + 2·3^{9/2} − 729)/(16π²) = 1.160` at k = 3 and
+/// `(4π² − 16)/π² = 2.379` at k = 2 (Maxima), so at 2·10⁵ rows one standard error is 0.0024 and
+/// 0.0034, against 0.0034 and 0.0049 at 10⁵ -- half the window. The 0.01 window rejects a
+/// collinear 3-means fixed point (1.19017: 1 + the 3-level Lloyd–Max MSE of `N(0, 1)`) and an
+/// answer collapsed to two clusters (1.36338).
+#[test]
+fn kmeans_through_the_tree_reaches_the_gaussian_population_optimum() {
+    const ROWS: usize = 200_000;
+    let pi = std::f64::consts::PI;
+    let mut normal = Normal(20_261_012);
+    let pts: Vec<[f64; 2]> = (0..ROWS)
+        .map(|_| [normal.sample(), normal.sample()])
+        .collect();
+    for max_leaves in [100, 500] {
+        let mut tree: CFTree<f64, Diagonal<f64>, _, _> = CFTree::new(
+            2,
+            32,
+            32,
+            0.0,
+            max_leaves,
+            CentroidEuclidean,
+            CentroidEuclidean,
+        );
+        for p in &pts {
+            tree.try_insert(p).unwrap();
+        }
+        for (k, target) in [(3, 2.0 - 27.0 / (8.0 * pi)), (2, 2.0 - 2.0 / pi)] {
+            for seed in 0..3 {
+                let centers = kmeans(tree.leaf_features(), k, 100, KMEANS_N_INIT, seed).centers;
+                let cost = pts
+                    .iter()
+                    .map(|p| {
+                        centers
+                            .iter()
+                            .map(|c| (p[0] - c[0]).powi(2) + (p[1] - c[1]).powi(2))
+                            .fold(f64::INFINITY, f64::min)
+                    })
+                    .sum::<f64>()
+                    / ROWS as f64;
+                assert!(
+                    (cost - target).abs() <= 0.01,
+                    "max_leaves={max_leaves} k={k} seed={seed}: SSE/N {cost:.5}, \
+                     population optimum {target:.5}"
+                );
+            }
+        }
+    }
 }
