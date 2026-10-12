@@ -1116,4 +1116,124 @@ mod tests {
             "the sweep hardly ever left the all-singleton partition: {moved_any}"
         );
     }
+
+    /// A symmetric 3-community sparse SBM: rate `a/n` inside a community, `b/n` between, labels in
+    /// contiguous node-id blocks. Each block pair gets exactly `round(pairs · rate)` distinct edges
+    /// drawn uniformly -- a G(n, m)-style SBM, whose edge count differs from the Bernoulli one by
+    /// O(√m) and in nothing detection depends on.
+    fn sbm3(n: usize, a: f64, b: f64, seed: u64) -> (Vec<Vec<(usize, f64)>>, Vec<usize>) {
+        let block = n / 3;
+        let n = 3 * block;
+        let mut rng = SplitMix64::new(seed);
+        let mut adj: Vec<Vec<(usize, f64)>> = vec![Vec::new(); n];
+        let mut seen: HashSet<(usize, usize)> = HashSet::new();
+        for p in 0..3 {
+            for q in p..3 {
+                let (pairs, rate) = if p == q {
+                    ((block * (block - 1) / 2) as f64, a)
+                } else {
+                    ((block * block) as f64, b)
+                };
+                let m = (pairs * rate / n as f64).round() as usize;
+                let mut drawn = 0;
+                while drawn < m {
+                    let u = p * block + (rng.next_u64() % block as u64) as usize;
+                    let v = q * block + (rng.next_u64() % block as u64) as usize;
+                    if u != v && seen.insert((u.min(v), u.max(v))) {
+                        adj[u].push((v, 1.0));
+                        adj[v].push((u, 1.0));
+                        drawn += 1;
+                    }
+                }
+            }
+        }
+        (adj, (0..n).map(|i| i / block).collect())
+    }
+
+    /// `(a, b)` at signal `s = (a − b)²/(3(a + 2b))` and mean degree `c = (a + 2b)/3`. Weak recovery
+    /// is possible iff `s > 1` (the Kesten–Stigum line, exact for three communities).
+    fn sbm_rates(c: f64, s: f64) -> (f64, f64) {
+        let t = (c * s).sqrt();
+        (c + 2.0 * t, c - t)
+    }
+
+    /// `detect` on the same graph with its node ids shuffled, labels mapped back: the leak-free
+    /// reference for a graph whose communities sit in contiguous id blocks.
+    fn detect_shuffled(base: &[Vec<(usize, f64)>], seed: u64) -> Vec<usize> {
+        let perm = shuffled(base.len(), seed ^ 0x5eed);
+        let mut moved: Vec<Vec<(usize, f64)>> = vec![Vec::new(); base.len()];
+        for (i, row) in base.iter().enumerate() {
+            moved[perm[i]] = row.iter().map(|&(j, w)| (perm[j], w)).collect();
+        }
+        let lab = detect(&moved, 1.0, Objective::Modularity, seed);
+        perm.iter().map(|&p| lab[p]).collect()
+    }
+
+    /// Planted-partition controls on the symmetric sparse 3-community SBM at mean degree 6, its
+    /// communities in contiguous node-id blocks. Below the Kesten–Stigum line `s = 1` every
+    /// estimator's expected overlap tends to chance (three-state reconstruction preprint, OpenAI,
+    /// 2026-09-25, Corollary 1.2), so at `s = 0.6` an ARI above the finite-n floor can only have come
+    /// from the node ids. Far above it the core has to find the blocks.
+    ///
+    /// Thresholds from `measure_sbm_detection` and these seeds at n = 3000: the floor at `s = 0.6`
+    /// reads 0.0015 / 0.0015 / 0.0021 (graph seeds 0..40: mean 0.0021, sd 0.0007, max 0.0037) and
+    /// scales like 5/n (median 0.0048 at n = 1500, which is why n is not smaller), with shuffled ids
+    /// reading the same; `s = 5` reads 0.8466 / 0.8715 / 0.8863. A local move started from id blocks
+    /// of 100 nodes reads 0.0070–0.0138 over those 40 graphs and fails here; blocks of 50
+    /// (0.0022–0.0061) overlap the floor, so a leak that weak is below what n = 3000 can resolve.
+    #[test]
+    fn leiden_on_a_planted_partition_neither_leaks_node_ids_nor_misses_a_strong_signal() {
+        const N: usize = 3000;
+        for seed in 0u64..3 {
+            let (a, b) = sbm_rates(6.0, 0.6);
+            let (base, truth) = sbm3(N, a, b, seed);
+            let below = ari(&detect(&base, 1.0, Objective::Modularity, seed), &truth);
+            assert!(
+                below < 0.005,
+                "s = 0.6, seed {seed}: ARI {below:.4} is above the no-information floor"
+            );
+            let (a, b) = sbm_rates(6.0, 5.0);
+            let (base, truth) = sbm3(N, a, b, seed);
+            let above = ari(&detect(&base, 1.0, Objective::Modularity, seed), &truth);
+            assert!(
+                above > 0.75,
+                "s = 5, seed {seed}: ARI {above:.4}, the planted blocks were not recovered"
+            );
+        }
+    }
+
+    /// Modularity-Leiden on the 3-community SBM along the signal `s` at mean degree 6: median over
+    /// graph seeds 0/1/2 (the `detect` seed is the graph seed) of the ARI with the node ids as drawn
+    /// (communities in contiguous blocks), the ARI with the ids shuffled, and the community count.
+    ///
+    /// `cargo test --release --lib clustering::community::tests::measure_sbm_detection -- --ignored --nocapture`
+    #[test]
+    #[ignore = "measurement harness, not a check"]
+    fn measure_sbm_detection() {
+        let median = |mut v: Vec<f64>| {
+            v.sort_by(|x, y| x.partial_cmp(y).unwrap());
+            v[v.len() / 2]
+        };
+        for n in [1500usize, 3000, 6000, 12000, 30000] {
+            println!("\nn = {n}, mean degree 6");
+            println!("    s       a       b   ARI(blocks)  ARI(shuffled)  communities");
+            for s in [0.6, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0] {
+                let (a, b) = sbm_rates(6.0, s);
+                let (mut blocks, mut shuf, mut comms) = (Vec::new(), Vec::new(), Vec::new());
+                for seed in 0u64..3 {
+                    let (base, truth) = sbm3(n, a, b, seed);
+                    let lab = detect(&base, 1.0, Objective::Modularity, seed);
+                    blocks.push(ari(&lab, &truth));
+                    comms.push(n_distinct(&lab) as f64);
+                    shuf.push(ari(&detect_shuffled(&base, seed), &truth));
+                }
+                println!(
+                    "{s:>5.1} {a:>7.3} {b:>7.3} {:>+12.4} {:>+14.4} {:>12}",
+                    median(blocks),
+                    median(shuf),
+                    median(comms)
+                );
+            }
+        }
+    }
 }

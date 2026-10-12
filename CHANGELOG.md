@@ -41,6 +41,20 @@ All notable changes to this project are documented here. The format follows
   0.0037 (Python), against one standard error of 0.0024 / 0.0034 at `k = 3` / `2`. A head that
   seeds `k − 1` centres (1.361 at `k = 3`) and one that never moves its centres (0.976) both fail
   it.
+- **A planted-partition check of the Leiden core.** On the symmetric sparse three-community
+  stochastic block model, weak recovery is possible exactly when
+  `s = (a − b)²/(3(a + 2b)) > 1` (OpenAI,
+  [*The exact reconstruction threshold for the three-state symmetric channel*](https://github.com/openai/math/blob/main/preprints/The-exact-reconstruction-threshold-for-the-three-state-symmetric-channel-September-25-2026/paper.pdf),
+  2026 preprint, Corollary 1.2). With the communities in contiguous node-id blocks, mean degree 6
+  and n = 3000, the in-module test of
+  [`community.rs`](https://github.com/ilgrad/betula-cluster/blob/main/src/clustering/community.rs)
+  holds two controls over seeds 0/1/2: at `s = 0.6` an ARI above 0.005 could only come from the
+  node ids (measured 0.0015–0.0021; at most 0.0037 over 40 graphs), and at `s = 5` the blocks must
+  come back above 0.75 (measured 0.847–0.886). A local move seeded from id blocks of 100 nodes
+  fails the first. Measured along `s` at n = 30 000 (medians of three graphs), the modularity core
+  reads ARI 0.017 at `s = 3`, 0.563 at `s = 4` and 0.798 at `s = 5`: it detects from about four
+  times the threshold signal, where the information-theoretic limit is `s = 1`. The test reaches
+  the core directly; the `leiden` head builds its own kNN graph, so Python cannot feed it an SBM.
 
 ### Changed
 
