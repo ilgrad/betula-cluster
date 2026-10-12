@@ -55,6 +55,17 @@ All notable changes to this project are documented here. The format follows
   reads ARI 0.017 at `s = 3`, 0.563 at `s = 4` and 0.798 at `s = 5`: it detects from about four
   times the threshold signal, where the information-theoretic limit is `s = 1`. The test reaches
   the core directly; the `leiden` head builds its own kNN graph, so Python cannot feed it an SBM.
+- **What the heads can and cannot guarantee**, a section of
+  [`docs/MATH.md`](https://github.com/ilgrad/betula-cluster/blob/main/docs/MATH.md) that names each
+  objective exactly. The 2-way RatioCut is `N` times uniform sparsest cut, which is NP-hard to
+  approximate within any constant, so the cut unnormalised spectral clustering relaxes has no
+  polynomial constant-factor algorithm unless P = NP (the `spectral` head relaxes NCut, which the
+  result does not cover). Metric k-median has the exact threshold `1 + 2/e`, which neither
+  `dc-median` (exact in its ultrametric) nor `kmedoids` (squared Euclidean, not a metric) is
+  subject to. The kernel clustering hardness below `(8π/9)(1 − 1/k)` is about an objective no head
+  optimises. Maximum modularity cannot be approximated within any positive factor unless P = NP,
+  and the Leiden core detects from about four times the three-community threshold. The OpenAI
+  sources are cited by title, date and URL as 2026 preprints.
 
 ### Changed
 

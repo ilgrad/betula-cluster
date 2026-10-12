@@ -478,6 +478,111 @@ fixture check confirms the comparison can tell two answers apart at all — blob
 that every head finds them in any frame would pass an invariance suite without exercising a single
 symmetry.
 
+## What the heads can and cannot guarantee
+
+Apart from `dc-center` and `dc-median`, which are exact on their own objective, no head here
+carries an approximation factor for the objective it is usually judged on, and for several of
+those objectives no polynomial algorithm can carry one unless P = NP. This section says which, so
+that a benchmark number is not read as a bound. Each entry names the exact objective, because the
+hardness results below are about specific objectives and do not move to a neighbouring one. Five
+of the sources are 2026 preprints from OpenAI's `openai/math` release, listed at the end of the
+section; they are not peer-reviewed, and each statement taken from them is the preprint's claim.
+
+**`kmeans` — a closed-form target, not a guarantee.** For $N(0, I_d)$ the population k-means cost
+per point has a closed form at $k = 2$ and $k = 3$. A planar sector of half-angle $\alpha$ has the
+unnormalised Gaussian first moment $z = \tfrac{\sin\alpha}{\sqrt{2\pi}}\,(1, 0)$ (the propeller
+preprint, §1.1). For $k$ cells of equal mass the between-cluster sum of squares per point is
+$k \sum_i \lVert z(A_i)\rVert^2$, so
+
+$$
+\text{three } 120^\circ \text{ sectors:}\quad d - \frac{27}{8\pi} \approx d - 1.0743,
+\qquad\qquad \text{two half-planes:}\quad d - \frac{2}{\pi} \approx d - 0.6366,
+$$
+
+with centres at radius $3^{3/2}/(2^{3/2}\sqrt{\pi}) \approx 1.0365$ and $\sqrt{2/\pi}$. Both
+partitions are Lloyd fixed points by symmetry. That the three sectors are the *global* optimum is
+supported numerically, not proven: the propeller bound caps $\sum_i \lVert z(A_i)\rVert^2$ at
+$9/(8\pi)$ over every partition, but the k-means objective divides each term by the cell's mass.
+The tests hold the tree plus the head within 0.01 of both values at $d = 2$ and $2\cdot 10^5$
+rows (`tests/integration_api.rs`, `tests/test_python.py`), which needs no labels and no reference
+implementation.
+
+**`spectral` — the cut it relaxes is hard to approximate.** Uniform sparsest cut,
+$\Phi(G) = \min_S \operatorname{cut}(S) / \bigl(|S|\,(N - |S|)\bigr)$ on a graph with nonnegative
+rational capacities, is NP-hard to approximate within any fixed factor $C > 1$ (the sparsest-cut
+preprint, Theorem 1.1). The two-way RatioCut is $N$ times the same ratio,
+
+$$
+\frac{\operatorname{cut}(S)}{|S|} + \frac{\operatorname{cut}(S)}{N - |S|}
+= \frac{N\,\operatorname{cut}(S)}{|S|\,(N - |S|)},
+$$
+
+so the objective that *unnormalised* spectral clustering relaxes has no constant-factor polynomial
+algorithm unless P = NP. The `spectral` head is Ng–Jordan–Weiss: it relaxes the *normalised* cut,
+and the theorem is not about NCut. What carries over is the general point — the cut objectives
+spectral methods relax are hard to approximate, so the eigenvector embedding is a heuristic for
+them, not an approximation algorithm.
+
+**`kmedoids` and `dc-median` — metric k-median.** For metric k-median with candidate facilities,
+a $(1 + 2/e + \varepsilon)$-approximation exists for every fixed $\varepsilon > 0$, and under
+P ≠ NP the infimum factor is exactly $1 + 2/e \approx 1.736$ (the k-median preprint, Theorem 1.1
+and Corollary 1.2).
+Neither head needs it. `dc-median` is exact: in the density-connectivity ultrametric the k-median
+is a dendrogram knapsack (`src/clustering/dcdist.rs`). `kmedoids` minimises *squared* Euclidean
+deviation, which violates the triangle inequality, so no metric bound applies to it, and FasterPAM
+is a local search with no stated factor.
+
+**Kernel clustering — cited only to stop a conflation.** Identity-target kernel clustering
+maximises $\sum_{p,q} a_{pq}\, \mathbf{1}\{\sigma(p) = \sigma(q)\}$ over $\sigma : [N] \to [k]$ for a
+centred positive-semidefinite $A$. For each fixed $k \ge 3$ it is NP-hard to approximate within any
+loss factor below $(8\pi/9)(1 - 1/k)$: 1.862 at $k = 3$, tending to 2.793 (the propeller preprint,
+Theorem 6.1, which also rests on the companion *The Unique Games theorem*). With $A$ a centred Gram
+matrix this looks like k-means, but it is a different objective: k-means divides each cluster's sum
+by the cluster's size, and this one does not. No head here optimises it.
+
+**`leiden` — no factor, and a measured detection gap.** Approximating maximum modularity within
+any positive multiplicative factor is NP-hard (Dinh, Li & Thai,
+[arXiv:1602.01016](https://arxiv.org/abs/1602.01016)). Detection has an exact limit on the symmetric
+sparse three-community stochastic block model, with rates $a/n$ inside a community, $b/n$ between,
+and mean degree $(a + 2b)/3 > 1$. Weak recovery is possible exactly when
+
+$$
+s = \frac{(a - b)^2}{3\,(a + 2b)} > 1 .
+$$
+
+At or below the line every estimator's expected overlap tends to chance, and above it an
+$O(n \log n)$ algorithm exists (the three-state preprint, Corollary 1.2, through the Mossel–Sly–Sohn
+tree-to-graph transfer and Abbe–Sandon). The modularity core ($\gamma = 1$) measured at mean degree
+6, ARI medians of graph seeds 0/1/2, communities in contiguous id blocks:
+
+| $s$ | 0.6 | 1 | 2 | 3 | 4 | 5 | 6 |
+|---|---|---|---|---|---|---|---|
+| ARI, $n = 3\,000$ | 0.0015 | 0.0029 | 0.0196 | 0.1537 | 0.6565 | 0.8715 | 0.9965 |
+| ARI, $n = 30\,000$ | 0.0002 | 0.0003 | 0.0014 | 0.0167 | 0.5626 | 0.7978 | 0.9963 |
+| communities, $n = 30\,000$ | 114 | 122 | 119 | 112 | 100 | 108 | 77 |
+
+The core needs $s \approx 4$, four times the threshold signal. At $s = 3$ it reads 0.0167 at
+$n = 30\,000$, against 0.07–0.31 at the smaller $n$ measured (1 500 to 12 000). With the node ids
+shuffled, both rows move by at most 0.062, in both directions, and most where the curve is
+steepest. Most of the returned communities are isolated vertices: about $e^{-6} n \approx 74$ at
+$n = 30\,000$. The in-module test of `src/clustering/community.rs` uses both ends as controls: at
+$s = 0.6$ an ARI above 0.005 could only come from the node ids, and at $s = 5$ the blocks must come
+back. The `leiden` head builds its own kNN affinity graph, so this tests the core, not the user
+path.
+
+Sources (2026 preprints, OpenAI):
+
+- *The Gaussian propeller bound in every dimension*, 24 September 2026 —
+  [paper](https://github.com/openai/math/blob/main/preprints/The-Gaussian-Propeller-Bound-in-Every-Dimension-September-24-2026/main.pdf).
+- *Constant-factor hardness of uniform sparsest cut*, 24 September 2026 —
+  [paper](https://github.com/openai/math/blob/main/preprints/Constant-factor-hardness-of-uniform-sparsest-cut-September-24-2026/Constant-factor-hardness-of-uniform-sparsest-cut-September-24-2026.pdf).
+- *The approximation threshold for metric k-median*, 24 September 2026 —
+  [paper](https://github.com/openai/math/blob/main/preprints/The-Approximation-Threshold-for-Metric-k-Median-September-24-2026/main.pdf).
+- *The exact reconstruction threshold for the three-state symmetric channel*, 25 September 2026 —
+  [paper](https://github.com/openai/math/blob/main/preprints/The-exact-reconstruction-threshold-for-the-three-state-symmetric-channel-September-25-2026/paper.pdf).
+- *The Unique Games theorem*, 23 September 2026 —
+  [paper](https://github.com/openai/math/blob/main/preprints/The-Unique-Games-Theorem-September-23-2026/paper.pdf).
+
 ## Relation to BIRCH and BETULA
 
 This library is a from-scratch Rust implementation of the **BETULA** cluster feature — the
