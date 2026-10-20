@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.1.0] — 2026-10-20
+
 ### Added
 
 - **CPython 3.15 and free-threaded 3.15t.** The abi3 wheel already loaded on 3.15; it is now tested
@@ -3837,7 +3839,8 @@ First public release.
   far below `max_leaves`), and rebuilds reinsert in reverse-DFS leaf order. The CF-tree build is now
   byte-for-byte the reference (`betulars`) tree shape and at speed parity with matched build flags.
 
-[Unreleased]: https://github.com/ilgrad/betula-cluster/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/ilgrad/betula-cluster/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/ilgrad/betula-cluster/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/ilgrad/betula-cluster/compare/v0.8.0...v1.0.0
 [0.8.0]: https://github.com/ilgrad/betula-cluster/compare/v0.6.0...v0.8.0
 [0.6.0]: https://github.com/ilgrad/betula-cluster/compare/v0.5.0...v0.6.0
