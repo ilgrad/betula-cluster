@@ -99,21 +99,23 @@ jobs:
           tool: cargo-mutants,cargo-nextest
       - name: cargo mutants (whole crate, scope in .cargo/mutants.toml)
         # Exit 2 is "some mutants survived", which is the expected state, not a failure: this shard
-        # is one 192nd of a crate whose `mutants-baseline.txt` records 309 accepted survivors, so
+        # is one 192nd of a crate whose `mutants-baseline.txt` records ~900 accepted survivors, so
         # most shards contain at least one. Measured on run 33385956775 -- 77 of 96 shards red, and
         # the 19 green ones were exactly those whose `missed.txt` was empty (shards 5 and 9 at 0
         # missed, shards 0 and 1 at 21 and 27). The verdict on survivors belongs to
         # `mutants-summary`, which compares against the baseline; a shard that reports it here only
         # makes the whole workflow permanently red and hides that verdict.
         #
-        # Every other code still fails the job. Measured on cargo-mutants 27.1.0: 0 all caught,
-        # 2 mutants missed, 4 build or check failure -- and a runner shutdown or an exhausted
-        # timeout is none of those.
+        # Exit 3 is "some mutants timed out", and it is scored the same way: `timeout.txt` reaches the
+        # summary like `missed.txt` does. Treating it as a failure made 30 of 192 shards red on run
+        # 39237087351 for an outcome the summary already counts. Every other code still fails the
+        # job (cargo-mutants 27.1.0: 0 all caught, 2 missed, 3 timeouts, 4 build or check failure),
+        # and a runner shutdown or an exhausted job timeout is none of those.
         run: |
           cargo mutants --shard "${{ matrix.shard }}/$SHARDS" -j4 --test-tool nextest || {
             rc=$?
-            [ "$rc" -eq 2 ] || exit "$rc"
-            echo "exit 2: this shard has surviving mutants; the summary job scores them"
+            [ "$rc" -eq 2 ] || [ "$rc" -eq 3 ] || exit "$rc"
+            echo "exit $rc: this shard has surviving or timed-out mutants; the summary job scores them"
           }
       - uses: actions/upload-artifact@v7
         if: always()
@@ -162,16 +164,25 @@ jobs:
       - name: Collate
         run: |
           # A shard whose artifact never arrived is invisible in a `cat shards/*/...`: the totals
-          # simply come out smaller and read as good news. Measured on run 32347677860 -- shard 39
-          # ran 88 minutes against a ~20-minute median, ended in failure, and uploaded nothing
-          # despite `if: always()`, so 95 of 96 shards collated into a number that looked complete.
+          # simply come out smaller and read as good news. So the lost shards are named, in the
+          # summary and as warnings. They used to stop this step outright, and that hid more than
+          # it protected: hosted runners are shut down under long shards (runs 34108190109 to
+          # 39237087351 each lost 1-3 shards that way, with `##[error]The runner has received a
+          # shutdown signal`, and the upload step skipped), so from 2026-08-31 the comparison below
+          # never ran and 644 survivors went unseen for eight weeks. A lost shard can only *hide* a
+          # survivor, never invent one, so the comparison over the shards that did arrive is still
+          # sound for what it reports. Its "now caught" list is not -- a baseline entry in a lost
+          # shard shows up there -- so read that list against the unmeasured shards named above it.
           got=$(ls -d shards/mutants-out-* 2>/dev/null | wc -l)
           echo "shards collated: $got / $SHARDS" >> "$GITHUB_STEP_SUMMARY"
           if [ "$got" -ne "$SHARDS" ]; then
+            echo '## Unmeasured shards (no artifact)' >> "$GITHUB_STEP_SUMMARY"
             for k in $(seq 0 $((SHARDS - 1))); do
-              [ -d "shards/mutants-out-$k" ] || echo "::error::shard $k produced no artifact -- its mutants are unmeasured"
+              [ -d "shards/mutants-out-$k" ] || {
+                echo "::warning::shard $k produced no artifact -- its mutants are unmeasured this week"
+                echo "- shard $k" >> "$GITHUB_STEP_SUMMARY"
+              }
             done
-            exit 1
           fi
           cat shards/*/missed.txt  2>/dev/null | sort -u > missed.txt  || true
           cat shards/*/timeout.txt 2>/dev/null | sort -u > timeout.txt || true

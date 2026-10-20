@@ -13,6 +13,11 @@
 # that shard are unmeasured and absent from this list; the summary job now fails on a missing shard
 # rather than collating 95 of 96 into a total that looks complete.
 #
+# 2026-10-20: CI run 39237087351 at b0c5f69 (189 of 192 shards) is the first whole-crate comparison
+# since 2026-08-31 -- every run in between lost a shard to a runner shutdown, and the summary stopped
+# on that before comparing. It found 644 survivors outside this list. They are registered, without
+# arguments, in the UNREVIEWED DEBT block at the end of the file; community.rs is re-keyed in place.
+#
 # Since re-measured locally, and those sections replaced: `src/tree.rs` (2026-08-20 after the
 # rebuild-cost fix, and again 2026-08-21 whole-file), `src/clustering/gmm.rs` and
 # `src/clustering/nmf.rs` (2026-08-21, entry by entry), `src/clustering/kprototypes.rs` (2026-08-22,
@@ -700,7 +705,7 @@ src/clustering/xmeans.rs:200:16: replace > with >= in xmeans
 # sweeps, so `kmeans` and `gmm` auto-`k` fit every `k` up to the leaf count. That is the quadratic
 # blow-up the function's own doc comment quantifies, and the suite detects it by hanging.
 
-# ── src/clustering/gmm_toeplitz.rs (23) ──
+# ── src/clustering/gmm_toeplitz.rs (22) ──
 # Debt. Also the largest timeout pool (17), so some of these are unmeasured rather
 # than surviving.
 src/clustering/gmm_toeplitz.rs:102:23: replace - with / in levinson_full
@@ -712,7 +717,6 @@ src/clustering/gmm_toeplitz.rs:296:41: replace + with - in fit_component_gs
 src/clustering/gmm_toeplitz.rs:301:26: replace > with >= in fit_component_gs
 src/clustering/gmm_toeplitz.rs:336:24: replace > with >= in fit_component
 src/clustering/gmm_toeplitz.rs:338:23: replace * with + in fit_component
-src/clustering/gmm_toeplitz.rs:348:62: replace - with + in fit_component
 src/clustering/gmm_toeplitz.rs:352:16: replace < with <= in fit_component
 src/clustering/gmm_toeplitz.rs:363:17: replace > with >= in argmax
 src/clustering/gmm_toeplitz.rs:395:48: replace + with * in gmm_toeplitz_once
@@ -1182,15 +1186,20 @@ src/wasserstein.rs:293:31: replace < with <= in transport
 src/wasserstein.rs:398:17: replace < with <= in tree_path
 src/wasserstein.rs:440:20: replace + with * in tree_path
 
-# ── src/clustering/community.rs (7) ──
-# Debt: remainder after the 2026-08-19 reference tests.
-src/clustering/community.rs:104:32: replace > with >= in leiden
-src/clustering/community.rs:106:25: replace > with >= in leiden
-src/clustering/community.rs:172:15: replace += with *= in detect
-src/clustering/community.rs:258:29: replace -= with += in refine
-src/clustering/community.rs:258:29: replace -= with /= in refine
-src/clustering/community.rs:259:30: replace -= with += in refine
-src/clustering/community.rs:259:30: replace -= with /= in refine
+# ── src/clustering/community.rs (8) ──
+# Debt: remainder after the 2026-08-19 reference tests. Re-keyed 2026-10-20 from CI run 39237087351
+# (b0c5f69) after `6847c12` (Leiden passes) moved the file: the two `leiden` guards are now the same
+# two in `affinity`, the four `refine` entries moved 258/259 -> 347/348, and `detect`'s `+=` no longer
+# exists. The two `pass_seed` constants are new with `6847c12`: no test pins that consecutive passes
+# draw different seeds.
+src/clustering/community.rs:153:32: replace > with >= in affinity
+src/clustering/community.rs:155:25: replace > with >= in affinity
+src/clustering/community.rs:201:5: replace pass_seed -> u64 with 0
+src/clustering/community.rs:201:5: replace pass_seed -> u64 with 1
+src/clustering/community.rs:347:29: replace -= with += in refine
+src/clustering/community.rs:347:29: replace -= with /= in refine
+src/clustering/community.rs:348:30: replace -= with += in refine
+src/clustering/community.rs:348:30: replace -= with /= in refine
 
 # ── src/linalg.rs (2) ──
 # Re-measured 2026-09-26, WHOLE FILE, in the same run as `src/clustering/graph.rs`, 6 of its 22
@@ -1450,3 +1459,700 @@ src/order.rs:285:21: replace / with % in projections
 src/order.rs:285:21: replace / with * in projections
 src/order.rs:289:57: replace * with / in projections
 src/order.rs:313:26: replace > with >= in quantise
+
+# ==================================================================================================
+# UNREVIEWED DEBT, registered 2026-10-20 from CI run 39237087351 at b0c5f69 (189 of 192 shards;
+# 44, 60 and 81 lost to runner shutdowns, so parts of src/tree.rs, src/topology.rs, src/adwin.rs and
+# src/assign.rs are unmeasured in that run). From 2026-08-31 the summary job stopped on any lost
+# shard before comparing, so none of these was ever reported. Most sit in modules that postdate the
+# 2026-08-20 sweep and were never measured at all; some are older entries whose line moved.
+#
+# Nothing below carries an argument. Each entry is a hole until a test kills it or a written
+# argument moves it into a file section above -- triage file by file, whole-file re-measure first.
+# Registering them keeps the weekly job a ratchet: red again means *this week* added a survivor.
+# 636 entries in 24 files.
+# ==================================================================================================
+
+# ── src/clustering/watson.rs (118, unreviewed) ──
+src/clustering/watson.rs:100:16: replace / with % in ln_gamma
+src/clustering/watson.rs:102:40: replace + with * in ln_gamma
+src/clustering/watson.rs:102:40: replace + with - in ln_gamma
+src/clustering/watson.rs:102:45: replace + with * in ln_gamma
+src/clustering/watson.rs:102:45: replace + with - in ln_gamma
+src/clustering/watson.rs:102:52: replace * with + in ln_gamma
+src/clustering/watson.rs:102:52: replace * with / in ln_gamma
+src/clustering/watson.rs:102:61: replace - with + in ln_gamma
+src/clustering/watson.rs:102:61: replace - with / in ln_gamma
+src/clustering/watson.rs:102:65: replace + with * in ln_gamma
+src/clustering/watson.rs:102:65: replace + with - in ln_gamma
+src/clustering/watson.rs:102:9: replace * with + in ln_gamma
+src/clustering/watson.rs:102:9: replace * with / in ln_gamma
+src/clustering/watson.rs:128:16: replace > with >= in log_kummer_m
+src/clustering/watson.rs:134:14: replace > with >= in log_kummer_m
+src/clustering/watson.rs:134:23: replace < with <= in log_kummer_m
+src/clustering/watson.rs:134:31: replace * with / in log_kummer_m
+src/clustering/watson.rs:155:35: replace - with + in solve_kappa
+src/clustering/watson.rs:155:35: replace - with / in solve_kappa
+src/clustering/watson.rs:156:24: replace < with <= in solve_kappa
+src/clustering/watson.rs:159:33: replace > with >= in solve_kappa
+src/clustering/watson.rs:164:10: replace > with < in solve_kappa
+src/clustering/watson.rs:164:10: replace > with == in solve_kappa
+src/clustering/watson.rs:164:10: replace > with >= in solve_kappa
+src/clustering/watson.rs:167:10: replace < with <= in solve_kappa
+src/clustering/watson.rs:167:10: replace < with == in solve_kappa
+src/clustering/watson.rs:167:10: replace < with > in solve_kappa
+src/clustering/watson.rs:174:53: replace - with + in solve_kappa
+src/clustering/watson.rs:174:53: replace - with / in solve_kappa
+src/clustering/watson.rs:174:80: replace - with + in solve_kappa
+src/clustering/watson.rs:174:80: replace - with / in solve_kappa
+src/clustering/watson.rs:176:19: replace > with >= in solve_kappa
+src/clustering/watson.rs:177:25: replace - with + in solve_kappa
+src/clustering/watson.rs:177:25: replace - with / in solve_kappa
+src/clustering/watson.rs:177:31: replace * with + in solve_kappa
+src/clustering/watson.rs:177:31: replace * with / in solve_kappa
+src/clustering/watson.rs:177:37: replace - with + in solve_kappa
+src/clustering/watson.rs:177:37: replace - with / in solve_kappa
+src/clustering/watson.rs:177:43: replace / with % in solve_kappa
+src/clustering/watson.rs:177:43: replace / with * in solve_kappa
+src/clustering/watson.rs:177:50: replace - with + in solve_kappa
+src/clustering/watson.rs:177:50: replace - with / in solve_kappa
+src/clustering/watson.rs:178:27: replace % with + in solve_kappa
+src/clustering/watson.rs:178:27: replace % with / in solve_kappa
+src/clustering/watson.rs:178:31: replace == with != in solve_kappa
+src/clustering/watson.rs:178:36: replace || with && in solve_kappa
+src/clustering/watson.rs:178:39: delete ! in solve_kappa
+src/clustering/watson.rs:178:59: replace || with && in solve_kappa
+src/clustering/watson.rs:178:69: replace <= with > in solve_kappa
+src/clustering/watson.rs:178:75: replace || with && in solve_kappa
+src/clustering/watson.rs:178:85: replace >= with < in solve_kappa
+src/clustering/watson.rs:179:17: replace * with + in solve_kappa
+src/clustering/watson.rs:184:17: replace < with <= in solve_kappa
+src/clustering/watson.rs:186:17: replace *= with += in solve_kappa
+src/clustering/watson.rs:186:17: replace *= with /= in solve_kappa
+src/clustering/watson.rs:189:17: replace *= with += in solve_kappa
+src/clustering/watson.rs:189:17: replace *= with /= in solve_kappa
+src/clustering/watson.rs:191:14: replace += with *= in solve_kappa
+src/clustering/watson.rs:198:5: replace log_watson_norm -> f64 with -1.0
+src/clustering/watson.rs:198:5: replace log_watson_norm -> f64 with 0.0
+src/clustering/watson.rs:198:5: replace log_watson_norm -> f64 with 1.0
+src/clustering/watson.rs:199:16: replace / with * in log_watson_norm
+src/clustering/watson.rs:200:9: replace - with + in log_watson_norm
+src/clustering/watson.rs:200:9: replace - with / in log_watson_norm
+src/clustering/watson.rs:201:14: replace / with % in log_watson_norm
+src/clustering/watson.rs:201:14: replace / with * in log_watson_norm
+src/clustering/watson.rs:201:21: replace * with + in log_watson_norm
+src/clustering/watson.rs:201:21: replace * with / in log_watson_norm
+src/clustering/watson.rs:201:9: replace - with + in log_watson_norm
+src/clustering/watson.rs:201:9: replace - with / in log_watson_norm
+src/clustering/watson.rs:202:9: replace - with / in log_watson_norm
+src/clustering/watson.rs:234:10: replace > with >= in unit
+src/clustering/watson.rs:238:12: delete ! in unit
+src/clustering/watson.rs:248:15: replace > with >= in argmax
+src/clustering/watson.rs:274:44: replace * with / in axial_pp
+src/clustering/watson.rs:279:26: replace - with + in axial_pp
+src/clustering/watson.rs:279:26: replace - with / in axial_pp
+src/clustering/watson.rs:308:24: replace match guard r.loglik <= b.loglik with false in watson
+src/clustering/watson.rs:308:24: replace match guard r.loglik <= b.loglik with true in watson
+src/clustering/watson.rs:367:26: replace + with - in watson_once
+src/clustering/watson.rs:368:36: replace * with + in watson_once
+src/clustering/watson.rs:395:67: replace + with * in watson_once
+src/clustering/watson.rs:395:67: replace + with - in watson_once
+src/clustering/watson.rs:397:34: replace > with < in watson_once
+src/clustering/watson.rs:397:34: replace > with == in watson_once
+src/clustering/watson.rs:397:34: replace > with >= in watson_once
+src/clustering/watson.rs:398:23: replace / with % in watson_once
+src/clustering/watson.rs:398:23: replace / with * in watson_once
+src/clustering/watson.rs:400:26: replace / with % in watson_once
+src/clustering/watson.rs:400:26: replace / with * in watson_once
+src/clustering/watson.rs:416:15: replace > with == in watson_once
+src/clustering/watson.rs:416:15: replace > with >= in watson_once
+src/clustering/watson.rs:416:19: replace && with || in watson_once
+src/clustering/watson.rs:416:30: replace - with + in watson_once
+src/clustering/watson.rs:416:30: replace - with / in watson_once
+src/clustering/watson.rs:416:46: replace <= with > in watson_once
+src/clustering/watson.rs:416:53: replace * with + in watson_once
+src/clustering/watson.rs:416:53: replace * with / in watson_once
+src/clustering/watson.rs:478:45: replace - with + in power_iterate
+src/clustering/watson.rs:478:45: replace - with / in power_iterate
+src/clustering/watson.rs:499:18: replace - with + in power_iterate
+src/clustering/watson.rs:499:41: replace * with / in power_iterate
+src/clustering/watson.rs:520:54: replace / with * in better_pole
+src/clustering/watson.rs:526:13: replace > with >= in better_pole
+src/clustering/watson.rs:553:32: replace + with * in watson_auto
+src/clustering/watson.rs:553:37: replace - with + in watson_auto
+src/clustering/watson.rs:553:37: replace - with / in watson_auto
+src/clustering/watson.rs:84:5: replace ln_gamma -> f64 with -1.0
+src/clustering/watson.rs:84:5: replace ln_gamma -> f64 with 0.0
+src/clustering/watson.rs:84:5: replace ln_gamma -> f64 with 1.0
+src/clustering/watson.rs:87:9: delete - in ln_gamma
+src/clustering/watson.rs:89:9: delete - in ln_gamma
+src/clustering/watson.rs:91:9: delete - in ln_gamma
+src/clustering/watson.rs:96:15: replace - with + in ln_gamma
+src/clustering/watson.rs:96:15: replace - with / in ln_gamma
+src/clustering/watson.rs:97:15: replace + with * in ln_gamma
+src/clustering/watson.rs:97:19: replace + with * in ln_gamma
+src/clustering/watson.rs:97:19: replace + with - in ln_gamma
+
+# ── src/clustering/mppca.rs (81, unreviewed) ──
+src/clustering/mppca.rs:147:62: replace + with * in mppca_once
+src/clustering/mppca.rs:147:62: replace + with - in mppca_once
+src/clustering/mppca.rs:150:17: replace > with < in mppca_once
+src/clustering/mppca.rs:150:17: replace > with == in mppca_once
+src/clustering/mppca.rs:150:17: replace > with >= in mppca_once
+src/clustering/mppca.rs:153:31: replace + with * in mppca_once
+src/clustering/mppca.rs:153:31: replace + with - in mppca_once
+src/clustering/mppca.rs:153:36: replace * with + in mppca_once
+src/clustering/mppca.rs:153:36: replace * with / in mppca_once
+src/clustering/mppca.rs:165:36: replace - with + in mppca_once
+src/clustering/mppca.rs:165:36: replace - with / in mppca_once
+src/clustering/mppca.rs:165:41: replace * with + in mppca_once
+src/clustering/mppca.rs:165:41: replace * with / in mppca_once
+src/clustering/mppca.rs:165:46: replace - with + in mppca_once
+src/clustering/mppca.rs:165:46: replace - with / in mppca_once
+src/clustering/mppca.rs:166:43: replace + with * in mppca_once
+src/clustering/mppca.rs:166:43: replace + with - in mppca_once
+src/clustering/mppca.rs:167:27: replace + with * in mppca_once
+src/clustering/mppca.rs:167:27: replace + with - in mppca_once
+src/clustering/mppca.rs:167:34: replace * with + in mppca_once
+src/clustering/mppca.rs:167:34: replace * with / in mppca_once
+src/clustering/mppca.rs:167:47: replace + with * in mppca_once
+src/clustering/mppca.rs:167:47: replace + with - in mppca_once
+src/clustering/mppca.rs:169:17: replace > with < in mppca_once
+src/clustering/mppca.rs:169:17: replace > with == in mppca_once
+src/clustering/mppca.rs:169:17: replace > with >= in mppca_once
+src/clustering/mppca.rs:170:20: replace / with % in mppca_once
+src/clustering/mppca.rs:170:28: replace * with + in mppca_once
+src/clustering/mppca.rs:170:28: replace * with / in mppca_once
+src/clustering/mppca.rs:175:50: replace * with / in mppca_once
+src/clustering/mppca.rs:179:49: replace * with + in mppca_once
+src/clustering/mppca.rs:179:49: replace * with / in mppca_once
+src/clustering/mppca.rs:186:44: replace ^ with & in mppca_once
+src/clustering/mppca.rs:186:44: replace ^ with | in mppca_once
+src/clustering/mppca.rs:206:40: replace - with + in mppca_once
+src/clustering/mppca.rs:206:50: replace - with + in mppca_once
+src/clustering/mppca.rs:208:29: replace + with * in mppca_once
+src/clustering/mppca.rs:208:29: replace + with - in mppca_once
+src/clustering/mppca.rs:208:49: replace + with * in mppca_once
+src/clustering/mppca.rs:214:33: replace * with + in mppca_once
+src/clustering/mppca.rs:214:33: replace * with / in mppca_once
+src/clustering/mppca.rs:230:25: replace < with > in mppca_once
+src/clustering/mppca.rs:238:29: replace - with + in mppca_once
+src/clustering/mppca.rs:238:29: replace - with / in mppca_once
+src/clustering/mppca.rs:239:32: replace > with < in mppca_once
+src/clustering/mppca.rs:239:32: replace > with == in mppca_once
+src/clustering/mppca.rs:239:32: replace > with >= in mppca_once
+src/clustering/mppca.rs:240:32: replace / with % in mppca_once
+src/clustering/mppca.rs:240:32: replace / with * in mppca_once
+src/clustering/mppca.rs:245:33: replace - with + in mppca_once
+src/clustering/mppca.rs:245:33: replace - with / in mppca_once
+src/clustering/mppca.rs:247:29: replace * with + in mppca_once
+src/clustering/mppca.rs:310:52: replace * with + in mppca_once
+src/clustering/mppca.rs:310:52: replace * with / in mppca_once
+src/clustering/mppca.rs:318:26: replace + with - in mppca_once
+src/clustering/mppca.rs:340:22: replace > with >= in mppca_once
+src/clustering/mppca.rs:341:36: replace / with * in mppca_once
+src/clustering/mppca.rs:388:18: replace > with >= in mppca_once
+src/clustering/mppca.rs:446:15: replace > with < in mppca_once
+src/clustering/mppca.rs:446:30: replace - with + in mppca_once
+src/clustering/mppca.rs:446:30: replace - with / in mppca_once
+src/clustering/mppca.rs:446:53: replace * with / in mppca_once
+src/clustering/mppca.rs:470:14: replace > with >= in argmax
+src/clustering/mppca.rs:514:19: replace * with + in mppca_auto
+src/clustering/mppca.rs:514:19: replace * with / in mppca_auto
+src/clustering/mppca.rs:514:24: replace + with * in mppca_auto
+src/clustering/mppca.rs:514:24: replace + with - in mppca_auto
+src/clustering/mppca.rs:514:28: replace + with * in mppca_auto
+src/clustering/mppca.rs:514:32: replace * with + in mppca_auto
+src/clustering/mppca.rs:514:32: replace * with / in mppca_auto
+src/clustering/mppca.rs:514:36: replace - with + in mppca_auto
+src/clustering/mppca.rs:514:36: replace - with / in mppca_auto
+src/clustering/mppca.rs:514:40: replace * with + in mppca_auto
+src/clustering/mppca.rs:514:62: replace / with % in mppca_auto
+src/clustering/mppca.rs:514:62: replace / with * in mppca_auto
+src/clustering/mppca.rs:514:67: replace + with - in mppca_auto
+src/clustering/mppca.rs:514:72: replace - with + in mppca_auto
+src/clustering/mppca.rs:514:72: replace - with / in mppca_auto
+src/clustering/mppca.rs:516:18: replace < with <= in mppca_auto
+src/clustering/mppca.rs:91:14: replace != with == in accumulate_scatter_rows
+src/clustering/mppca.rs:93:27: replace + with - in accumulate_scatter_rows
+
+# ── src/clustering/mfa.rs (73, unreviewed) ──
+src/clustering/mfa.rs:127:19: replace * with / in accumulate_scatter_rows
+src/clustering/mfa.rs:128:14: replace != with == in accumulate_scatter_rows
+src/clustering/mfa.rs:130:27: replace + with - in accumulate_scatter_rows
+src/clustering/mfa.rs:130:31: replace * with + in accumulate_scatter_rows
+src/clustering/mfa.rs:169:61: replace + with * in mfa_once
+src/clustering/mfa.rs:169:61: replace + with - in mfa_once
+src/clustering/mfa.rs:177:62: replace + with * in mfa_once
+src/clustering/mfa.rs:177:62: replace + with - in mfa_once
+src/clustering/mfa.rs:180:17: replace > with < in mfa_once
+src/clustering/mfa.rs:180:17: replace > with == in mfa_once
+src/clustering/mfa.rs:180:17: replace > with >= in mfa_once
+src/clustering/mfa.rs:183:31: replace + with * in mfa_once
+src/clustering/mfa.rs:183:31: replace + with - in mfa_once
+src/clustering/mfa.rs:183:36: replace * with + in mfa_once
+src/clustering/mfa.rs:183:36: replace * with / in mfa_once
+src/clustering/mfa.rs:187:27: replace / with % in mfa_once
+src/clustering/mfa.rs:195:36: replace - with + in mfa_once
+src/clustering/mfa.rs:195:41: replace * with + in mfa_once
+src/clustering/mfa.rs:195:41: replace * with / in mfa_once
+src/clustering/mfa.rs:195:46: replace - with + in mfa_once
+src/clustering/mfa.rs:196:43: replace + with * in mfa_once
+src/clustering/mfa.rs:197:34: replace * with + in mfa_once
+src/clustering/mfa.rs:197:47: replace + with * in mfa_once
+src/clustering/mfa.rs:199:17: replace > with < in mfa_once
+src/clustering/mfa.rs:199:17: replace > with == in mfa_once
+src/clustering/mfa.rs:199:17: replace > with >= in mfa_once
+src/clustering/mfa.rs:200:20: replace / with % in mfa_once
+src/clustering/mfa.rs:200:28: replace * with + in mfa_once
+src/clustering/mfa.rs:200:28: replace * with / in mfa_once
+src/clustering/mfa.rs:209:49: replace * with / in mfa_once
+src/clustering/mfa.rs:216:44: replace ^ with & in mfa_once
+src/clustering/mfa.rs:216:44: replace ^ with | in mfa_once
+src/clustering/mfa.rs:244:33: replace * with + in mfa_once
+src/clustering/mfa.rs:244:33: replace * with / in mfa_once
+src/clustering/mfa.rs:286:25: replace < with <= in mfa_once
+src/clustering/mfa.rs:286:25: replace < with > in mfa_once
+src/clustering/mfa.rs:303:47: replace + with * in mfa_once
+src/clustering/mfa.rs:303:47: replace + with - in mfa_once
+src/clustering/mfa.rs:304:39: replace - with + in mfa_once
+src/clustering/mfa.rs:374:47: replace + with * in mfa_once
+src/clustering/mfa.rs:374:47: replace + with - in mfa_once
+src/clustering/mfa.rs:378:58: replace * with + in mfa_once
+src/clustering/mfa.rs:383:52: replace * with + in mfa_once
+src/clustering/mfa.rs:383:52: replace * with / in mfa_once
+src/clustering/mfa.rs:383:65: replace + with * in mfa_once
+src/clustering/mfa.rs:383:85: replace - with + in mfa_once
+src/clustering/mfa.rs:383:92: replace * with + in mfa_once
+src/clustering/mfa.rs:391:26: replace + with - in mfa_once
+src/clustering/mfa.rs:415:22: replace > with >= in mfa_once
+src/clustering/mfa.rs:416:36: replace / with * in mfa_once
+src/clustering/mfa.rs:430:22: replace <= with > in mfa_once
+src/clustering/mfa.rs:466:18: replace > with >= in mfa_once
+src/clustering/mfa.rs:474:54: replace + with * in mfa_once
+src/clustering/mfa.rs:526:15: replace > with < in mfa_once
+src/clustering/mfa.rs:526:30: replace - with + in mfa_once
+src/clustering/mfa.rs:526:30: replace - with / in mfa_once
+src/clustering/mfa.rs:526:53: replace * with / in mfa_once
+src/clustering/mfa.rs:550:14: replace > with >= in argmax
+src/clustering/mfa.rs:595:19: replace * with + in mfa_auto
+src/clustering/mfa.rs:595:19: replace * with / in mfa_auto
+src/clustering/mfa.rs:595:24: replace + with * in mfa_auto
+src/clustering/mfa.rs:595:24: replace + with - in mfa_auto
+src/clustering/mfa.rs:595:32: replace * with + in mfa_auto
+src/clustering/mfa.rs:595:32: replace * with / in mfa_auto
+src/clustering/mfa.rs:595:36: replace - with + in mfa_auto
+src/clustering/mfa.rs:595:36: replace - with / in mfa_auto
+src/clustering/mfa.rs:595:40: replace * with + in mfa_auto
+src/clustering/mfa.rs:595:62: replace / with % in mfa_auto
+src/clustering/mfa.rs:595:62: replace / with * in mfa_auto
+src/clustering/mfa.rs:595:67: replace + with - in mfa_auto
+src/clustering/mfa.rs:595:72: replace - with + in mfa_auto
+src/clustering/mfa.rs:595:72: replace - with / in mfa_auto
+src/clustering/mfa.rs:597:18: replace < with <= in mfa_auto
+
+# ── src/adwin.rs (62, unreviewed) ──
+src/adwin.rs:120:23: replace > with >= in Adwin::variance
+src/adwin.rs:163:36: replace > with == in Adwin::push_bucket
+src/adwin.rs:163:36: replace > with >= in Adwin::push_bucket
+src/adwin.rs:163:56: replace + with * in Adwin::push_bucket
+src/adwin.rs:163:56: replace + with - in Adwin::push_bucket
+src/adwin.rs:195:17: replace > with < in Adwin::drop_oldest
+src/adwin.rs:195:17: replace > with == in Adwin::drop_oldest
+src/adwin.rs:195:17: replace > with >= in Adwin::drop_oldest
+src/adwin.rs:197:34: replace / with % in Adwin::drop_oldest
+src/adwin.rs:197:34: replace / with * in Adwin::drop_oldest
+src/adwin.rs:197:46: replace - with / in Adwin::drop_oldest
+src/adwin.rs:197:59: replace / with % in Adwin::drop_oldest
+src/adwin.rs:197:59: replace / with * in Adwin::drop_oldest
+src/adwin.rs:198:27: replace -= with += in Adwin::drop_oldest
+src/adwin.rs:198:27: replace -= with /= in Adwin::drop_oldest
+src/adwin.rs:198:44: replace + with * in Adwin::drop_oldest
+src/adwin.rs:198:44: replace + with - in Adwin::drop_oldest
+src/adwin.rs:198:56: replace * with + in Adwin::drop_oldest
+src/adwin.rs:198:56: replace * with / in Adwin::drop_oldest
+src/adwin.rs:198:63: replace / with % in Adwin::drop_oldest
+src/adwin.rs:198:63: replace / with * in Adwin::drop_oldest
+src/adwin.rs:198:76: replace + with * in Adwin::drop_oldest
+src/adwin.rs:198:76: replace + with - in Adwin::drop_oldest
+src/adwin.rs:198:84: replace * with + in Adwin::drop_oldest
+src/adwin.rs:198:84: replace * with / in Adwin::drop_oldest
+src/adwin.rs:198:90: replace * with + in Adwin::drop_oldest
+src/adwin.rs:198:90: replace * with / in Adwin::drop_oldest
+src/adwin.rs:212:27: replace < with <= in Adwin::shrink
+src/adwin.rs:212:27: replace < with == in Adwin::shrink
+src/adwin.rs:212:33: replace * with + in Adwin::shrink
+src/adwin.rs:212:33: replace * with / in Adwin::shrink
+src/adwin.rs:237:19: replace < with <= in Adwin::has_split_that_fails
+src/adwin.rs:237:19: replace < with == in Adwin::has_split_that_fails
+src/adwin.rs:237:30: replace || with && in Adwin::has_split_that_fails
+src/adwin.rs:237:36: replace < with <= in Adwin::has_split_that_fails
+src/adwin.rs:237:36: replace < with == in Adwin::has_split_that_fails
+src/adwin.rs:240:35: replace - with / in Adwin::has_split_that_fails
+src/adwin.rs:240:46: replace + with * in Adwin::has_split_that_fails
+src/adwin.rs:240:46: replace + with - in Adwin::has_split_that_fails
+src/adwin.rs:240:76: replace + with * in Adwin::has_split_that_fails
+src/adwin.rs:240:76: replace + with - in Adwin::has_split_that_fails
+src/adwin.rs:241:61: replace / with % in Adwin::has_split_that_fails
+src/adwin.rs:241:67: replace * with + in Adwin::has_split_that_fails
+src/adwin.rs:242:57: replace > with >= in Adwin::has_split_that_fails
+src/adwin.rs:59:30: replace / with % in Bucket::merged
+src/adwin.rs:59:30: replace / with * in Bucket::merged
+src/adwin.rs:59:42: replace - with + in Bucket::merged
+src/adwin.rs:59:42: replace - with / in Bucket::merged
+src/adwin.rs:59:56: replace / with % in Bucket::merged
+src/adwin.rs:59:56: replace / with * in Bucket::merged
+src/adwin.rs:63:37: replace + with * in Bucket::merged
+src/adwin.rs:63:37: replace + with - in Bucket::merged
+src/adwin.rs:63:54: replace + with * in Bucket::merged
+src/adwin.rs:63:54: replace + with - in Bucket::merged
+src/adwin.rs:63:66: replace * with + in Bucket::merged
+src/adwin.rs:63:66: replace * with / in Bucket::merged
+src/adwin.rs:63:79: replace / with % in Bucket::merged
+src/adwin.rs:63:79: replace / with * in Bucket::merged
+src/adwin.rs:63:86: replace * with + in Bucket::merged
+src/adwin.rs:63:86: replace * with / in Bucket::merged
+src/adwin.rs:63:92: replace * with + in Bucket::merged
+src/adwin.rs:63:92: replace * with / in Bucket::merged
+
+# ── src/bregman.rs (49, unreviewed) ──
+src/bregman.rs:103:11: replace * with + in <impl BregmanDivergence<R> for SquaredEuclidean>::phi
+src/bregman.rs:103:11: replace * with / in <impl BregmanDivergence<R> for SquaredEuclidean>::phi
+src/bregman.rs:121:16: replace + with * in <impl BregmanDivergence<R> for KullbackLeibler>::grad
+src/bregman.rs:121:16: replace + with - in <impl BregmanDivergence<R> for KullbackLeibler>::grad
+src/bregman.rs:125:23: replace && with || in <impl BregmanDivergence<R> for KullbackLeibler>::is_valid
+src/bregman.rs:125:28: replace > with >= in <impl BregmanDivergence<R> for KullbackLeibler>::is_valid
+src/bregman.rs:125:9: replace <impl BregmanDivergence<R> for KullbackLeibler>::is_valid -> bool with true
+src/bregman.rs:129:11: replace * with + in <impl BregmanDivergence<R> for KullbackLeibler>::phi
+src/bregman.rs:129:11: replace * with / in <impl BregmanDivergence<R> for KullbackLeibler>::phi
+src/bregman.rs:146:19: replace / with % in <impl BregmanDivergence<R> for ItakuraSaito>::grad
+src/bregman.rs:146:19: replace / with * in <impl BregmanDivergence<R> for ItakuraSaito>::grad
+src/bregman.rs:146:9: delete - in <impl BregmanDivergence<R> for ItakuraSaito>::grad
+src/bregman.rs:150:23: replace && with || in <impl BregmanDivergence<R> for ItakuraSaito>::is_valid
+src/bregman.rs:150:28: replace > with >= in <impl BregmanDivergence<R> for ItakuraSaito>::is_valid
+src/bregman.rs:150:9: replace <impl BregmanDivergence<R> for ItakuraSaito>::is_valid -> bool with true
+src/bregman.rs:154:9: delete - in <impl BregmanDivergence<R> for ItakuraSaito>::phi
+src/bregman.rs:174:12: replace / with % in <impl BregmanDivergence<R> for Logistic>::grad
+src/bregman.rs:174:12: replace / with * in <impl BregmanDivergence<R> for Logistic>::grad
+src/bregman.rs:174:24: replace - with + in <impl BregmanDivergence<R> for Logistic>::grad
+src/bregman.rs:174:24: replace - with / in <impl BregmanDivergence<R> for Logistic>::grad
+src/bregman.rs:178:23: replace && with || in <impl BregmanDivergence<R> for Logistic>::is_valid
+src/bregman.rs:178:28: replace > with >= in <impl BregmanDivergence<R> for Logistic>::is_valid
+src/bregman.rs:178:40: replace && with || in <impl BregmanDivergence<R> for Logistic>::is_valid
+src/bregman.rs:178:45: replace < with <= in <impl BregmanDivergence<R> for Logistic>::is_valid
+src/bregman.rs:178:9: replace <impl BregmanDivergence<R> for Logistic>::is_valid -> bool with true
+src/bregman.rs:183:11: replace * with + in <impl BregmanDivergence<R> for Logistic>::phi
+src/bregman.rs:183:11: replace * with / in <impl BregmanDivergence<R> for Logistic>::phi
+src/bregman.rs:183:20: replace + with * in <impl BregmanDivergence<R> for Logistic>::phi
+src/bregman.rs:183:20: replace + with - in <impl BregmanDivergence<R> for Logistic>::phi
+src/bregman.rs:183:27: replace - with + in <impl BregmanDivergence<R> for Logistic>::phi
+src/bregman.rs:183:27: replace - with / in <impl BregmanDivergence<R> for Logistic>::phi
+src/bregman.rs:183:32: replace * with + in <impl BregmanDivergence<R> for Logistic>::phi
+src/bregman.rs:183:32: replace * with / in <impl BregmanDivergence<R> for Logistic>::phi
+src/bregman.rs:183:39: replace - with + in <impl BregmanDivergence<R> for Logistic>::phi
+src/bregman.rs:183:39: replace - with / in <impl BregmanDivergence<R> for Logistic>::phi
+src/bregman.rs:203:19: replace <= with > in BregmanCf<R, B>::mean_information
+src/bregman.rs:206:23: replace / with % in BregmanCf<R, B>::mean_information
+src/bregman.rs:206:23: replace / with * in BregmanCf<R, B>::mean_information
+src/bregman.rs:246:19: replace <= with > in <impl ClusterFeature<R> for BregmanCf<R, B>>::variance
+src/bregman.rs:249:23: replace / with % in <impl ClusterFeature<R> for BregmanCf<R, B>>::variance
+src/bregman.rs:249:23: replace / with * in <impl ClusterFeature<R> for BregmanCf<R, B>>::variance
+src/bregman.rs:249:32: replace / with % in <impl ClusterFeature<R> for BregmanCf<R, B>>::variance
+src/bregman.rs:249:32: replace / with * in <impl ClusterFeature<R> for BregmanCf<R, B>>::variance
+src/bregman.rs:390:28: replace || with && in <impl CFDistance<R, BregmanCf<R, B>> for BregmanIncrease<B>>::between
+src/bregman.rs:95:19: replace + with * in <impl BregmanDivergence<R> for SquaredEuclidean>::grad
+src/bregman.rs:95:19: replace + with - in <impl BregmanDivergence<R> for SquaredEuclidean>::grad
+src/bregman.rs:95:31: replace * with + in <impl BregmanDivergence<R> for SquaredEuclidean>::grad
+src/bregman.rs:95:31: replace * with / in <impl BregmanDivergence<R> for SquaredEuclidean>::grad
+src/bregman.rs:99:9: replace <impl BregmanDivergence<R> for SquaredEuclidean>::is_valid -> bool with true
+
+# ── src/clustering/bregman.rs (36, unreviewed) ──
+src/clustering/bregman.rs:105:18: replace < with <= in plus_plus
+src/clustering/bregman.rs:105:18: replace < with == in plus_plus
+src/clustering/bregman.rs:105:18: replace < with > in plus_plus
+src/clustering/bregman.rs:135:22: replace < with <= in lloyd
+src/clustering/bregman.rs:153:31: replace + with * in lloyd
+src/clustering/bregman.rs:153:31: replace + with - in lloyd
+src/clustering/bregman.rs:155:38: replace * with + in lloyd
+src/clustering/bregman.rs:159:24: replace > with < in lloyd
+src/clustering/bregman.rs:159:24: replace > with == in lloyd
+src/clustering/bregman.rs:159:24: replace > with >= in lloyd
+src/clustering/bregman.rs:165:12: delete ! in lloyd
+src/clustering/bregman.rs:190:35: replace || with && in Node<R>::ward
+src/clustering/bregman.rs:240:22: replace > with >= in dendrogram
+src/clustering/bregman.rs:357:27: replace + with - in bregman_em
+src/clustering/bregman.rs:357:37: replace * with + in bregman_em
+src/clustering/bregman.rs:357:37: replace * with / in bregman_em
+src/clustering/bregman.rs:372:30: replace > with >= in bregman_em
+src/clustering/bregman.rs:377:22: replace > with >= in bregman_em
+src/clustering/bregman.rs:384:30: replace - with + in bregman_em
+src/clustering/bregman.rs:386:58: replace * with / in bregman_em
+src/clustering/bregman.rs:397:26: replace > with >= in bregman_em
+src/clustering/bregman.rs:48:40: replace ^ with & in bregman_kmeans
+src/clustering/bregman.rs:48:40: replace ^ with | in bregman_kmeans
+src/clustering/bregman.rs:54:24: replace match guard res.inertia >= b.inertia with false in bregman_kmeans
+src/clustering/bregman.rs:54:24: replace match guard res.inertia >= b.inertia with true in bregman_kmeans
+src/clustering/bregman.rs:54:36: replace >= with < in bregman_kmeans
+src/clustering/bregman.rs:83:31: replace + with * in plus_plus
+src/clustering/bregman.rs:83:31: replace + with - in plus_plus
+src/clustering/bregman.rs:83:44: replace * with + in plus_plus
+src/clustering/bregman.rs:86:29: replace > with < in plus_plus
+src/clustering/bregman.rs:86:29: replace > with == in plus_plus
+src/clustering/bregman.rs:86:29: replace > with >= in plus_plus
+src/clustering/bregman.rs:89:32: replace - with + in plus_plus
+src/clustering/bregman.rs:89:32: replace - with / in plus_plus
+src/clustering/bregman.rs:99:39: replace % with + in plus_plus
+src/clustering/bregman.rs:99:39: replace % with / in plus_plus
+
+# ── src/clustering/hyperbolic.rs (27, unreviewed) ──
+src/clustering/hyperbolic.rs:230:58: replace ^ with & in hyperbolic_kmeans
+src/clustering/hyperbolic.rs:230:58: replace ^ with | in hyperbolic_kmeans
+src/clustering/hyperbolic.rs:242:26: replace > with >= in hyperbolic_kmeans
+src/clustering/hyperbolic.rs:247:30: replace != with == in hyperbolic_kmeans
+src/clustering/hyperbolic.rs:255:16: delete ! in hyperbolic_kmeans
+src/clustering/hyperbolic.rs:259:54: replace < with <= in hyperbolic_kmeans
+src/clustering/hyperbolic.rs:259:54: replace < with == in hyperbolic_kmeans
+src/clustering/hyperbolic.rs:288:17: replace - with + in acosh_clamped
+src/clustering/hyperbolic.rs:288:17: replace - with / in acosh_clamped
+src/clustering/hyperbolic.rs:303:31: replace * with + in seed_centers
+src/clustering/hyperbolic.rs:303:31: replace * with / in seed_centers
+src/clustering/hyperbolic.rs:304:39: replace + with * in seed_centers
+src/clustering/hyperbolic.rs:304:39: replace + with - in seed_centers
+src/clustering/hyperbolic.rs:305:29: replace > with < in seed_centers
+src/clustering/hyperbolic.rs:305:29: replace > with == in seed_centers
+src/clustering/hyperbolic.rs:305:29: replace > with >= in seed_centers
+src/clustering/hyperbolic.rs:306:78: replace * with + in seed_centers
+src/clustering/hyperbolic.rs:306:78: replace * with / in seed_centers
+src/clustering/hyperbolic.rs:308:32: replace - with + in seed_centers
+src/clustering/hyperbolic.rs:308:32: replace - with / in seed_centers
+src/clustering/hyperbolic.rs:310:27: replace + with * in seed_centers
+src/clustering/hyperbolic.rs:310:27: replace + with - in seed_centers
+src/clustering/hyperbolic.rs:310:31: replace * with + in seed_centers
+src/clustering/hyperbolic.rs:310:31: replace * with / in seed_centers
+src/clustering/hyperbolic.rs:311:24: replace >= with < in seed_centers
+src/clustering/hyperbolic.rs:318:29: replace % with + in seed_centers
+src/clustering/hyperbolic.rs:318:29: replace % with / in seed_centers
+
+# ── src/validity.rs (27, unreviewed) ──
+src/validity.rs:108:33: replace < with <= in calinski_harabasz
+src/validity.rs:144:28: replace || with && in davies_bouldin
+src/validity.rs:144:33: replace < with <= in davies_bouldin
+src/validity.rs:144:33: replace < with == in davies_bouldin
+src/validity.rs:152:18: replace > with >= in davies_bouldin
+src/validity.rs:153:50: replace / with % in davies_bouldin
+src/validity.rs:153:50: replace / with * in davies_bouldin
+src/validity.rs:159:59: replace > with >= in davies_bouldin
+src/validity.rs:160:19: replace < with <= in davies_bouldin
+src/validity.rs:160:19: replace < with == in davies_bouldin
+src/validity.rs:179:41: replace + with * in davies_bouldin
+src/validity.rs:179:41: replace + with - in davies_bouldin
+src/validity.rs:183:9: replace / with % in davies_bouldin
+src/validity.rs:183:9: replace / with * in davies_bouldin
+src/validity.rs:212:28: replace || with && in medoid_silhouette
+src/validity.rs:212:33: replace < with <= in medoid_silhouette
+src/validity.rs:212:33: replace < with == in medoid_silhouette
+src/validity.rs:220:14: replace < with <= in medoid_silhouette
+src/validity.rs:226:19: replace < with <= in medoid_silhouette
+src/validity.rs:226:19: replace < with == in medoid_silhouette
+src/validity.rs:251:26: replace > with >= in medoid_silhouette
+src/validity.rs:255:13: replace > with >= in medoid_silhouette
+src/validity.rs:288:59: replace > with >= in simplified_silhouette
+src/validity.rs:314:26: replace > with >= in simplified_silhouette
+src/validity.rs:318:13: replace > with >= in simplified_silhouette
+src/validity.rs:64:15: replace > with >= in centroids
+src/validity.rs:70:14: replace > with >= in centroids
+
+# ── src/clustering/fuzzy.rs (23, unreviewed) ──
+src/clustering/fuzzy.rs:137:18: replace += with *= in fcm_from
+src/clustering/fuzzy.rs:137:18: replace += with -= in fcm_from
+src/clustering/fuzzy.rs:137:29: replace * with + in fcm_from
+src/clustering/fuzzy.rs:137:29: replace * with / in fcm_from
+src/clustering/fuzzy.rs:153:23: replace > with >= in fcm_from
+src/clustering/fuzzy.rs:159:26: replace - with + in fcm_from
+src/clustering/fuzzy.rs:159:26: replace - with / in fcm_from
+src/clustering/fuzzy.rs:159:40: replace <= with > in fcm_from
+src/clustering/fuzzy.rs:159:49: replace * with + in fcm_from
+src/clustering/fuzzy.rs:159:49: replace * with / in fcm_from
+src/clustering/fuzzy.rs:183:22: replace > with >= in compact
+src/clustering/fuzzy.rs:245:32: replace == with != in fuzzy_cmeans
+src/clustering/fuzzy.rs:247:70: replace * with + in fuzzy_cmeans
+src/clustering/fuzzy.rs:253:47: replace < with <= in fuzzy_cmeans
+src/clustering/fuzzy.rs:253:47: replace < with == in fuzzy_cmeans
+src/clustering/fuzzy.rs:253:47: replace < with > in fuzzy_cmeans
+src/clustering/fuzzy.rs:282:31: replace > with >= in xie_beni
+src/clustering/fuzzy.rs:282:46: replace > with >= in xie_beni
+src/clustering/fuzzy.rs:305:11: replace < with <= in fuzzy_cmeans_auto
+src/clustering/fuzzy.rs:305:11: replace < with == in fuzzy_cmeans_auto
+src/clustering/fuzzy.rs:321:52: replace < with <= in fuzzy_cmeans_auto
+src/clustering/fuzzy.rs:326:27: replace match guard s.is_finite() with true in fuzzy_cmeans_auto
+src/clustering/fuzzy.rs:77:33: replace > with >= in Leaves::of
+
+# ── src/window.rs (20, unreviewed) ──
+src/window.rs:102:19: replace += with *= in TimeSpan::push
+src/window.rs:102:28: replace * with / in TimeSpan::push
+src/window.rs:102:32: replace / with % in TimeSpan::push
+src/window.rs:103:45: replace * with + in TimeSpan::push
+src/window.rs:103:45: replace * with / in TimeSpan::push
+src/window.rs:129:21: replace > with >= in TimeSpan::overlaps
+src/window.rs:212:16: replace < with <= in Moments<R>::checked_subtract
+src/window.rs:215:39: replace / with % in Moments<R>::checked_subtract
+src/window.rs:215:39: replace / with * in Moments<R>::checked_subtract
+src/window.rs:216:36: replace > with >= in Moments<R>::checked_subtract
+src/window.rs:217:23: replace / with * in Moments<R>::checked_subtract
+src/window.rs:224:19: replace < with <= in Moments<R>::checked_subtract
+src/window.rs:279:33: replace > with == in WindowIndex<R, C>::push_frame
+src/window.rs:279:33: replace > with >= in WindowIndex<R, C>::push_frame
+src/window.rs:328:35: replace < with <= in WindowIndex<R, C>::cluster_window
+src/window.rs:419:9: replace WindowStream<R, C>::try_insert -> Result<(), ShapeError> with Ok(())
+src/window.rs:466:9: replace WindowStream<R, C>::dim -> usize with 0
+src/window.rs:466:9: replace WindowStream<R, C>::dim -> usize with 1
+src/window.rs:471:9: replace WindowStream<R, C>::window -> Vec<C> with vec![]
+src/window.rs:481:9: replace WindowStream<R, C>::open_span -> TimeSpan with Default::default()
+
+# ── src/assign.rs (19, unreviewed) ──
+src/assign.rs:338:58: replace < with <= in AssignPlan<R>::nearest_permuted
+src/assign.rs:357:37: replace * with / in AssignPlan<R>::staged_distance
+src/assign.rs:403:19: replace += with *= in AssignPlan<R>::assign_many
+src/assign.rs:418:68: replace && with || in variance_order
+src/assign.rs:418:74: replace >= with < in variance_order
+src/assign.rs:419:56: replace + with * in variance_order
+src/assign.rs:419:56: replace + with - in variance_order
+src/assign.rs:419:61: replace > with < in variance_order
+src/assign.rs:419:61: replace > with == in variance_order
+src/assign.rs:419:61: replace > with >= in variance_order
+src/assign.rs:421:55: replace + with * in variance_order
+src/assign.rs:421:55: replace + with - in variance_order
+src/assign.rs:425:25: replace / with % in variance_order
+src/assign.rs:425:25: replace / with * in variance_order
+src/assign.rs:431:52: replace + with * in variance_order
+src/assign.rs:433:37: replace - with / in variance_order
+src/assign.rs:434:27: replace * with + in variance_order
+src/assign.rs:434:27: replace * with / in variance_order
+src/assign.rs:434:31: replace * with / in variance_order
+
+# ── src/coreset.rs (18, unreviewed) ──
+src/coreset.rs:108:31: replace && with || in Coreset<R>::summary_epsilon
+src/coreset.rs:108:39: replace > with >= in Coreset<R>::summary_epsilon
+src/coreset.rs:111:25: replace * with + in Coreset<R>::summary_epsilon
+src/coreset.rs:111:25: replace * with / in Coreset<R>::summary_epsilon
+src/coreset.rs:111:63: replace / with % in Coreset<R>::summary_epsilon
+src/coreset.rs:111:63: replace / with * in Coreset<R>::summary_epsilon
+src/coreset.rs:112:13: replace * with + in Coreset<R>::summary_epsilon
+src/coreset.rs:112:35: replace + with - in Coreset<R>::summary_epsilon
+src/coreset.rs:112:41: replace * with + in Coreset<R>::summary_epsilon
+src/coreset.rs:122:22: replace < with <= in Coreset<R>::cost
+src/coreset.rs:143:18: replace < with <= in summary_cost
+src/coreset.rs:194:19: replace * with + in sensitivity_coreset
+src/coreset.rs:207:30: replace > with >= in sensitivity_coreset
+src/coreset.rs:220:41: replace && with || in sensitivity_coreset
+src/coreset.rs:220:50: replace > with >= in sensitivity_coreset
+src/coreset.rs:231:40: replace ^ with & in sensitivity_coreset
+src/coreset.rs:234:63: replace - with + in sensitivity_coreset
+src/coreset.rs:234:63: replace - with / in sensitivity_coreset
+
+# ── src/clustering/agglomerative.rs (14, unreviewed) ──
+src/clustering/agglomerative.rs:107:26: replace > with >= in Linkage::value
+src/clustering/agglomerative.rs:127:30: replace > with >= in Node<R>::leaf
+src/clustering/agglomerative.rs:207:22: replace < with <= in anderberg
+src/clustering/agglomerative.rs:260:22: replace < with <= in anderberg
+src/clustering/agglomerative.rs:260:22: replace < with == in anderberg
+src/clustering/agglomerative.rs:365:42: replace < with <= in dendrogram_below
+src/clustering/agglomerative.rs:375:21: replace + with * in dendrogram_below
+src/clustering/agglomerative.rs:448:22: replace < with <= in dendrogram_below
+src/clustering/agglomerative.rs:448:22: replace < with == in dendrogram_below
+src/clustering/agglomerative.rs:489:14: replace < with <= in refresh
+src/clustering/agglomerative.rs:581:44: replace - with + in agglomerative_auto
+src/clustering/agglomerative.rs:581:44: replace - with / in agglomerative_auto
+src/clustering/agglomerative.rs:586:18: replace > with >= in agglomerative_auto
+src/clustering/agglomerative.rs:90:26: replace > with >= in Linkage::beta
+
+# ── src/clustering/dcdist.rs (13, unreviewed) ──
+src/clustering/dcdist.rs:178:20: replace > with < in k_center
+src/clustering/dcdist.rs:178:20: replace > with == in k_center
+src/clustering/dcdist.rs:178:20: replace > with >= in k_center
+src/clustering/dcdist.rs:214:15: replace * with + in dendrogram
+src/clustering/dcdist.rs:214:19: replace - with + in dendrogram
+src/clustering/dcdist.rs:214:19: replace - with / in dendrogram
+src/clustering/dcdist.rs:314:22: replace < with <= in k_median
+src/clustering/dcdist.rs:321:22: replace < with <= in k_median
+src/clustering/dcdist.rs:321:22: replace < with == in k_median
+src/clustering/dcdist.rs:329:26: replace < with <= in k_median
+src/clustering/dcdist.rs:401:31: replace == with != in assign
+src/clustering/dcdist.rs:402:49: replace < with <= in assign
+src/clustering/dcdist.rs:402:49: replace < with == in assign
+
+# ── src/clustering/medoid.rs (13, unreviewed) ──
+src/clustering/medoid.rs:372:22: replace < with <= in two_nearest
+src/clustering/medoid.rs:375:29: replace < with <= in two_nearest
+src/clustering/medoid.rs:375:29: replace < with == in two_nearest
+src/clustering/medoid.rs:375:29: replace < with > in two_nearest
+src/clustering/medoid.rs:417:18: replace < with <= in eager_pam_sweep
+src/clustering/medoid.rs:417:18: replace < with == in eager_pam_sweep
+src/clustering/medoid.rs:434:18: replace < with <= in eager_pam_sweep
+src/clustering/medoid.rs:434:20: delete - in eager_pam_sweep
+src/clustering/medoid.rs:434:27: replace * with / in eager_pam_sweep
+src/clustering/medoid.rs:438:19: replace += with *= in eager_pam_sweep
+src/clustering/medoid.rs:492:32: replace == with != in kmedoids
+src/clustering/medoid.rs:503:51: replace + with * in kmedoids
+src/clustering/medoid.rs:506:75: replace == with != in kmedoids
+
+# ── src/clustering/ward.rs (11, unreviewed) ──
+src/clustering/ward.rs:217:44: replace - with + in ward_hac_auto
+src/clustering/ward.rs:217:44: replace - with / in ward_hac_auto
+src/clustering/ward.rs:23:12: replace < with <= in nearer
+src/clustering/ward.rs:23:26: replace == with != in nearer
+src/clustering/ward.rs:23:33: replace && with || in nearer
+src/clustering/ward.rs:23:40: replace < with <= in nearer
+src/clustering/ward.rs:23:40: replace < with == in nearer
+src/clustering/ward.rs:23:40: replace < with > in nearer
+src/clustering/ward.rs:38:32: replace << with >>
+src/clustering/ward.rs:57:49: replace >= with < in nearest_active
+src/clustering/ward.rs:60:29: replace != with == in nearest_active
+
+# ── src/clustering/knn.rs (8, unreviewed) ──
+src/clustering/knn.rs:117:34: replace > with >= in search
+src/clustering/knn.rs:120:20: replace += with *= in search
+src/clustering/knn.rs:121:23: replace > with == in search
+src/clustering/knn.rs:121:23: replace > with >= in search
+src/clustering/knn.rs:133:27: replace < with <= in search
+src/clustering/knn.rs:133:38: replace < with <= in search
+src/clustering/knn.rs:152:49: replace < with <= in offer
+src/clustering/knn.rs:209:27: replace * with + in build
+
+# ── src/model.rs (8, unreviewed) ──
+src/model.rs:209:5: replace numbered -> Vec<(usize, Vec<R>)> with vec![(0, vec![])]
+src/model.rs:209:5: replace numbered -> Vec<(usize, Vec<R>)> with vec![(1, vec![])]
+src/model.rs:209:5: replace numbered -> Vec<(usize, Vec<R>)> with vec![]
+src/model.rs:219:14: replace < with <= in medoid_centers
+src/model.rs:418:14: replace > with >= in nearest_lorentz_center
+src/model.rs:677:46: replace match guard k == 0 with false in fit_head
+src/model.rs:677:46: replace match guard k == 0 with true in fit_head
+src/model.rs:677:48: replace == with != in fit_head
+
+# ── src/clustering/optics.rs (6, unreviewed) ──
+src/clustering/optics.rs:128:23: replace < with <= in prim_order
+src/clustering/optics.rs:131:21: replace < with <= in prim_order
+src/clustering/optics.rs:131:21: replace < with == in prim_order
+src/clustering/optics.rs:131:21: replace < with > in prim_order
+src/clustering/optics.rs:132:19: replace += with *= in prim_order
+src/clustering/optics.rs:132:19: replace += with -= in prim_order
+
+# ── src/distance.rs (3, unreviewed) ──
+src/distance.rs:287:72: replace + with - in SubspaceChi2<R>::subspace_sq
+src/distance.rs:295:28: replace || with && in SubspaceChi2<R>::subspace_sq
+src/distance.rs:309:43: replace + with - in SubspaceChi2<R>::subspace_sq
+
+# ── src/topology.rs (3, unreviewed) ──
+src/topology.rs:481:15: replace > with >= in mapper
+src/topology.rs:494:29: replace + with * in mapper
+src/topology.rs:519:26: replace > with >= in mapper
+
+# ── src/clustering/gmm_toeplitz.rs (2, unreviewed) ──
+src/clustering/gmm_toeplitz.rs:464:53: replace * with / in gmm_toeplitz_once
+src/clustering/gmm_toeplitz.rs:501:9: delete match arm CovKind::GsMle in gmm_toeplitz_kind
+
+# ── src/stream.rs (1, unreviewed) ──
+src/stream.rs:713:44: replace < with <= in DbStream<R, C>::nearest
+
+# ── src/types.rs (1, unreviewed) ──
+src/types.rs:46:9: replace <impl std::fmt::Display for ShapeError>::fmt -> std::fmt::Result with Ok(Default::default())
