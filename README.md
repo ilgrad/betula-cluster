@@ -25,8 +25,8 @@ pip install betula-cluster
 ```
 
 **Verified:** a **577-case** Python suite at **100% wrapper coverage** + **878** Rust tests,
-`clippy -D warnings` + `fmt` clean across all feature sets, CI on CPython 3.11–3.14 (one abi3 wheel)
-plus free-threaded 3.14t.
+`clippy -D warnings` + `fmt` clean across all feature sets, CI on CPython 3.11–3.15 (one abi3 wheel)
+plus free-threaded 3.14t and 3.15t.
 
 ## At a glance — honest benchmarks
 
@@ -147,7 +147,7 @@ Three cases, each measured rather than assumed:
 ## Installation
 
 ```bash
-pip install betula-cluster            # prebuilt wheels, CPython 3.11–3.14 and free-threaded 3.14t
+pip install betula-cluster            # prebuilt wheels, CPython 3.11–3.15 and free-threaded 3.14t / 3.15t
 pip install 'betula-cluster[tune]'    # + Optuna backend for memory-aware tuning
 ```
 
@@ -156,8 +156,8 @@ NumPy is the only runtime dependency — no SciPy, LAPACK, or BLAS. Prebuilt whe
 supported Python. Building from source needs a Rust toolchain — `maturin develop --release` (or
 `pip install .`) in a clone.
 
-**Free-threaded CPython** (3.14t) gets its own wheel on Linux, macOS arm64 and Windows: abi3 cannot
-express a `Py_GIL_DISABLED` build, so the wheel above matches nothing there. Importing does *not*
+**Free-threaded CPython** (3.14t, 3.15t) gets a wheel per version on Linux, macOS arm64 and Windows:
+abi3 cannot express a `Py_GIL_DISABLED` build, so the wheel above matches nothing there. Importing does *not*
 re-enable the GIL — CI asserts that on every push, because a module that quietly turns free threading
 back off for the whole process would be worse than no wheel at all.
 
@@ -382,7 +382,8 @@ And six **end-to-end use cases** (each scored against ground truth):
 
 Verified: **878** Rust tests (library, equivariance, integration and CLI) + a **577-case**
 Python suite at **100%** wrapper coverage (Rust ≥95%, CI-enforced), `clippy -D warnings` + `fmt`
-clean across all feature sets, on Python 3.11–3.14 (single abi3 wheel) and free-threaded 3.14t.
+clean across all feature sets, on Python 3.11–3.15 (single abi3 wheel) and free-threaded
+3.14t and 3.15t.
 
 ## Known limitations
 

@@ -8,6 +8,12 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- **CPython 3.15 and free-threaded 3.15t.** The abi3 wheel already loaded on 3.15; it is now tested
+  there in CI. 3.15t gets its own wheel per platform, as 3.14t does, and CI asserts that importing it
+  leaves the GIL disabled. A single PEP 803 `abi3t` wheel would serve 3.15t and every later
+  free-threaded minor, and 3.15 accepts it, but rust-numpy reads arrays under `abi3t` only from 0.30,
+  which needs PyO3 0.30. Built against PyO3 0.29, such a wheel imports and then refuses every array,
+  so it is not shipped until that migration.
 - **Leiden passes: `n_iterations` on `method="leiden"` / `"leiden-cpm"`, and
   `clustering::leiden_iterated` in Rust.** Every pass after the first starts its first local move
   from the previous partition, as igraph's `n_iterations` does, and runs on its own seed derived

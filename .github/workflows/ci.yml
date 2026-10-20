@@ -150,7 +150,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12", "3.13", "3.14"]
+        python-version: ["3.11", "3.12", "3.13", "3.14", "3.15"]
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v10.1.0
@@ -186,8 +186,12 @@ jobs:
     #
     # NumPy and pytest only, as in `python-test`: SciPy and scikit-learn wheels lag on a new
     # free-threaded interpreter, and the tests that need them skip cleanly.
-    name: python (pytest · 3.14t free-threaded)
+    name: python (pytest · ${{ matrix.python-version }} free-threaded)
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.14t", "3.15t"]
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -195,10 +199,10 @@ jobs:
       - uses: astral-sh/setup-uv@v10.1.0
       - name: build (maturin develop) + GIL check + pytest
         run: |
-          uv venv --python 3.14t
+          uv venv --python ${{ matrix.python-version }}
           uv pip install maturin numpy pytest
           # --no-sync: the repo pins .python-version=3.14, so a plain `uv run` rejects this
-          # deliberately-3.14t venv, recreates it, and discards the tools installed above.
+          # deliberately free-threaded venv, recreates it, and discards the tools installed above.
           uv run --no-sync maturin develop --release
           uv run --no-sync python -c "
           import sys, betula_cluster
