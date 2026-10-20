@@ -1542,7 +1542,7 @@ class Betula:
         nearest = np.argpartition(d2, take - 1, axis=1)[:, :take]
         pairs = {
             (int(ids[a]), int(ids[b])) if ids[a] < ids[b] else (int(ids[b]), int(ids[a]))
-            for a, row in enumerate(nearest)
+            for a, row in enumerate(nearest.tolist())
             for b in row
         }
         return sorted(pairs)
