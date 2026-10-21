@@ -6,6 +6,16 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Performance
+- **The Python heads no longer depend on a build flag for their speed.** The runtime dispatch over
+  the routing and absorption distance was a function call on the per-point insert path, inlined only
+  under `.cargo/config.toml`'s `--inline-threshold=1000`. Cargo drops that flag whenever `RUSTFLAGS`
+  or a `[target]` rustflags entry is set, so such a build (a packager's, or a developer's with a
+  linker override) ran the 1 M-point `kmeans` / `gmm` / `gmm-full` / `ward` fits 18–28 % slower than
+  the published wheels. Forcing the two dispatch impls inline closes it: without the flag, the same
+  fits now run at the flagged build's speed (ratios 1.000–1.010, 30 alternated reps, labels
+  byte-identical). The published wheels always carried the flag and do not change.
+
 ### Notes
 - **The FAISS / `fast_hdbscan` contest is re-measured on the 1.1.0 tree** (`bench/results_external.csv`,
   2026-10-20). The verdicts are unchanged and the scoreboard holds all 140 cells. The time and RSS

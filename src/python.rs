@@ -1635,7 +1635,12 @@ enum AbsorbKind<R> {
     Subspace(SubspaceChi2<R>),
 }
 
+// `inline(always)` on both dispatch impls: each `match` folds every arm's body into one function too
+// large for LLVM's default threshold, and the call left on the per-point insert path cost 18–28 %
+// on the 1 M-point heads. `.cargo/config.toml`'s `--inline-threshold` hid that, but it does not
+// reach a build with `RUSTFLAGS` or target rustflags set, nor any crates.io dependent.
 impl<R: Real, C: ClusterFeature<R>> CFDistance<R, C> for AbsorbKind<R> {
+    #[inline(always)]
     fn point(&self, cf: &C, x: &[R]) -> R {
         match self {
             AbsorbKind::Euclidean => CentroidEuclidean.point(cf, x),
@@ -1648,6 +1653,7 @@ impl<R: Real, C: ClusterFeature<R>> CFDistance<R, C> for AbsorbKind<R> {
             AbsorbKind::Subspace(m) => m.point(cf, x),
         }
     }
+    #[inline(always)]
     fn between(&self, a: &C, b: &C) -> R {
         match self {
             AbsorbKind::Euclidean => CentroidEuclidean.between(a, b),
@@ -1672,6 +1678,7 @@ enum RouteKind {
 }
 
 impl<R: Real, C: ClusterFeature<R>> CFDistance<R, C> for RouteKind {
+    #[inline(always)]
     fn point(&self, cf: &C, x: &[R]) -> R {
         match self {
             RouteKind::Euclidean => CentroidEuclidean.point(cf, x),
@@ -1680,6 +1687,7 @@ impl<R: Real, C: ClusterFeature<R>> CFDistance<R, C> for RouteKind {
             RouteKind::Average => AverageIntercluster.point(cf, x),
         }
     }
+    #[inline(always)]
     fn between(&self, a: &C, b: &C) -> R {
         match self {
             RouteKind::Euclidean => CentroidEuclidean.between(a, b),
