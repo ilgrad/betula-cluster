@@ -305,15 +305,18 @@ impl<R: Real> AssignPlan<R> {
         // rest: a full-length `sq_euclidean` sums in a different order and can land an ulp below
         // the staged sum, which would make the hint prune *itself* and, when it was the true
         // nearest, leave the point with no label at all.
-        if let Some(h) = hint.filter(|&h| h < self.k) {
+        let hint = hint.filter(|&h| h < self.k);
+        if let Some(h) = hint {
             best_dist = self.staged_distance(p, h);
             best = h;
             reads += self.dim as u64;
         }
 
         for j in 0..self.k {
-            if j == best {
-                continue; // already evaluated as the hint
+            // The hint, not the incumbent: once a candidate has beaten the hint, `best` no longer
+            // names it, and the hint would be read a second time.
+            if Some(j) == hint {
+                continue;
             }
             let row = &self.centroids[j * self.dim..(j + 1) * self.dim];
             let mut acc = R::zero();
@@ -767,5 +770,140 @@ mod tests {
         assert_eq!(plan.nearest(&[2.9f32, 0.0, 1.0], None).0, 1);
         assert_eq!(plan.dim(), 3);
         assert_eq!(plan.k(), 2);
+    }
+
+    #[test]
+    fn the_block_scales_with_dimension_below_128_and_is_64_above() {
+        for (dim, want) in [
+            (1, 1),
+            (7, 1),
+            (8, 1),
+            (16, 2),
+            (64, 8),
+            (127, 15),
+            (128, 64),
+            (1000, 64),
+        ] {
+            assert_eq!(default_block(dim), want, "dim {dim}");
+        }
+    }
+
+    #[test]
+    fn stages_rise_strictly_to_the_dimension() {
+        for dim in [1usize, 8, 16, 24, 128, 192, 200] {
+            let plan = AssignPlan::identity_order(&[vec![0.0; dim]]).unwrap();
+            let block = default_block(dim);
+            let want: Vec<usize> = (1..=dim.div_ceil(block))
+                .map(|s| (s * block).min(dim))
+                .collect();
+            assert_eq!(plan.stages, want, "dim {dim}");
+        }
+    }
+
+    /// A query at the origin, `c0` on it and `c1` ten away in every one of 16 dimensions: `c0` is
+    /// read in full (16), and `c1` is pruned after its first stage of 2.
+    fn far_pair() -> AssignPlan<f64> {
+        AssignPlan::identity_order(&[vec![0.0; 16], vec![10.0; 16]]).unwrap()
+    }
+
+    #[test]
+    fn the_read_count_is_exact() {
+        let plan = far_pair();
+        let mut out = vec![9u32; 2];
+        let stats = plan.assign_many(&[0.0; 32], 2, None, &mut out);
+        assert_eq!(out, [0, 0]);
+        assert_eq!(stats.dims_read, 2 * (16 + 2));
+        assert_eq!(stats.dims_total, 2 * 2 * 16);
+        // The hint is read in full first and becomes the threshold, so `c1` prunes as before.
+        let stats = plan.assign_many(&[0.0; 32], 2, Some(&[0, 0]), &mut out);
+        assert_eq!(stats.dims_read, 2 * (16 + 2));
+        // A hint on the far centroid costs its full read and then `c0` in full.
+        let stats = plan.assign_many(&[0.0; 32], 2, Some(&[1, 1]), &mut out);
+        assert_eq!(
+            (out.as_slice(), stats.dims_read),
+            (&[0, 0][..], 2 * (16 + 16))
+        );
+    }
+
+    #[test]
+    fn a_hint_past_the_last_centroid_is_ignored() {
+        let plan = far_pair();
+        assert_eq!(plan.nearest(&[0.0; 16], Some(2)), (0, 0.0));
+    }
+
+    #[test]
+    fn the_hint_is_measured_against_its_own_centroid() {
+        // The hint is the true nearest and the other centroid is far: reading the wrong row for the
+        // hint would set the threshold at the far distance and hand the label to index 0.
+        let plan = far_pair();
+        assert_eq!(plan.nearest(&[10.0; 16], Some(1)), (1, 0.0));
+    }
+
+    #[test]
+    fn a_duplicate_centroid_ahead_of_the_hint_wins_the_tie() {
+        let plan = AssignPlan::identity_order(&[vec![1.0; 16], vec![1.0; 16]]).unwrap();
+        assert_eq!(plan.nearest(&[0.0; 16], Some(1)).0, 0);
+    }
+
+    /// Descending mass-weighted variance, ties by index, computed in two passes over normalised
+    /// weights -- the definition, written independently of `variance_order`.
+    fn reference_order(centroids: &[Vec<f64>], weights: &[f64]) -> Vec<u32> {
+        let total: f64 = weights.iter().sum();
+        let dim = centroids[0].len();
+        let var: Vec<f64> = (0..dim)
+            .map(|d| {
+                let mean: f64 = centroids
+                    .iter()
+                    .zip(weights)
+                    .map(|(c, w)| w / total * c[d])
+                    .sum();
+                centroids
+                    .iter()
+                    .zip(weights)
+                    .map(|(c, w)| w / total * (c[d] - mean).powi(2))
+                    .sum()
+            })
+            .collect();
+        let mut order: Vec<u32> = (0..dim as u32).collect();
+        order.sort_by(|&a, &b| var[b as usize].total_cmp(&var[a as usize]).then(a.cmp(&b)));
+        order
+    }
+
+    #[test]
+    fn the_order_is_the_weighted_variance_order() {
+        let mut rng = SplitMix64::new(41);
+        for _ in 0..20 {
+            // Per-dimension offsets far larger than the spread, so an order taken from the raw
+            // second moment or from an unnormalised mean differs from the variance order.
+            let offsets: Vec<f64> = (0..6).map(|_| (rng.next_f64() - 0.5) * 200.0).collect();
+            let centroids: Vec<Vec<f64>> = (0..5)
+                .map(|_| {
+                    offsets
+                        .iter()
+                        .map(|o| o + (rng.next_f64() - 0.5) * 10.0)
+                        .collect()
+                })
+                .collect();
+            let weights: Vec<f64> = (0..5).map(|_| 0.1 + rng.next_f64() * 10.0).collect();
+            assert_eq!(
+                variance_order(&centroids, Some(&weights), 6),
+                reference_order(&centroids, &weights)
+            );
+            assert_eq!(
+                variance_order(&centroids, None, 6),
+                reference_order(&centroids, &[1.0; 5])
+            );
+        }
+    }
+
+    #[test]
+    fn a_negative_weight_falls_back_to_equal_weighting_even_with_a_positive_sum() {
+        // Accepted as weights (sum 1.5), these would put dimension 1 first.
+        let centroids = vec![vec![0.0, 0.0], vec![10.0, 0.0], vec![0.0, 1.0]];
+        assert_eq!(
+            variance_order(&centroids, Some(&[1.0, -0.5, 1.0]), 2),
+            [0, 1]
+        );
+        assert_eq!(reference_order(&centroids, &[1.0, -0.5, 1.0]), [1, 0]);
     }
 }
