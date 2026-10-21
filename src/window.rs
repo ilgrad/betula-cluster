@@ -873,4 +873,138 @@ mod tests {
         assert!(a.overlaps(5.0, 11.0) && !a.overlaps(20.0, 30.0));
         assert!(!TimeSpan::new().overlaps(0.0, 1.0));
     }
+
+    #[test]
+    fn a_weighted_time_span_matches_the_two_pass_moments() {
+        let pts = [(1.0, 2.0), (4.0, 0.5), (10.0, 3.0), (2.5, 1.5)];
+        let mut s = TimeSpan::new();
+        for &(t, w) in &pts {
+            s.push(t, w);
+        }
+        let weight: f64 = pts.iter().map(|p| p.1).sum();
+        let mean = pts.iter().map(|p| p.0 * p.1).sum::<f64>() / weight;
+        let ssd: f64 = pts.iter().map(|p| p.1 * (p.0 - mean).powi(2)).sum();
+        assert!((s.weight - weight).abs() < 1e-12);
+        assert!((s.mean - mean).abs() < 1e-12, "{} vs {mean}", s.mean);
+        assert!((s.ssd - ssd).abs() < 1e-9, "{} vs {ssd}", s.ssd);
+    }
+
+    #[test]
+    fn a_massless_span_reaches_nowhere_whatever_its_bounds_say() {
+        let s = TimeSpan {
+            weight: 0.0,
+            mean: 0.5,
+            ssd: 0.0,
+            min: 0.0,
+            max: 1.0,
+        };
+        assert!(!s.overlaps(0.0, 1.0));
+    }
+
+    fn moments(weight: f64, mean: f64, ssd: f64) -> Moments<f64> {
+        Moments {
+            weight,
+            mean: vec![mean],
+            ssd,
+        }
+    }
+
+    /// The condition a forced failure reports, for a remainder computed in exact arithmetic.
+    fn condition_of(whole: &Moments<f64>, part: &Moments<f64>) -> (f64, f64) {
+        match whole.checked_subtract(part, f64::INFINITY) {
+            Err(SubtractError::IllConditioned { condition, digits }) => (condition, digits),
+            other => panic!("expected IllConditioned, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_condition_is_the_larger_of_the_mass_and_scatter_ratios_exactly() {
+        // Mass-dominated: B (w 3, S 3) shares A's mean, so S_AB/S_B = 1 and n_AB/n_B = 4/3.
+        let (a, b) = (moments(1.0, 0.0, 0.0), moments(3.0, 0.0, 3.0));
+        let mut ab = a.clone();
+        ab.merge(&b);
+        assert_eq!(condition_of(&ab, &a).0, 4.0 / 3.0);
+        // Scatter-dominated: A sits 4 away, so S_AB = 2 + 16/2 = 10 against S_B = 2, mass ratio 2.
+        let (a, b) = (moments(1.0, 4.0, 0.0), moments(1.0, 0.0, 2.0));
+        let mut ab = a.clone();
+        ab.merge(&b);
+        assert_eq!(condition_of(&ab, &a).0, 5.0);
+    }
+
+    #[test]
+    fn a_remainder_holding_exactly_the_requested_digits_is_returned() {
+        let (a, b) = (moments(1.0, 4.0, 0.0), moments(1.0, 0.0, 2.0));
+        let mut ab = a.clone();
+        ab.merge(&b);
+        let (_, digits) = condition_of(&ab, &a);
+        let got = ab
+            .checked_subtract(&a, digits)
+            .expect("digits == min_digits passes");
+        assert_eq!((got.weight, got.ssd), (1.0, 2.0));
+    }
+
+    #[test]
+    fn a_remainder_with_zero_scatter_is_ill_conditioned_not_negative() {
+        // B is a single point 2 away from A: the remainder's scatter is exactly 0, which no relative
+        // precision can be claimed for -- but it is not the negative scatter of an impossible part.
+        let (a, b) = (moments(1.0, 0.0, 0.0), moments(1.0, 2.0, 0.0));
+        let mut ab = a.clone();
+        ab.merge(&b);
+        assert!(matches!(
+            ab.checked_subtract(&a, 0.0),
+            Err(SubtractError::IllConditioned { condition, .. }) if condition.is_infinite()
+        ));
+        // And when the whole has no scatter either, 0/0 must not slip through as a finite ratio.
+        let p = moments(1.0, 0.0, 0.0);
+        let mut pp = p.clone();
+        pp.merge(&p);
+        assert!(matches!(
+            pp.checked_subtract(&p, 0.0),
+            Err(SubtractError::IllConditioned { condition, .. }) if condition.is_infinite()
+        ));
+    }
+
+    #[test]
+    fn the_index_keeps_exactly_capacity_frames() {
+        let mut idx: WindowIndex<f64, Spherical<f64>> = WindowIndex::new(3, 32, 0);
+        for t in 0..6 {
+            let mut span = TimeSpan::new();
+            span.push(t as f64, 1.0);
+            idx.push_frame(span, vec![cf::<f64>(&[[t as f64, 0.0]])]);
+            assert_eq!(idx.frames().len(), (t + 1).min(3), "after frame {t}");
+        }
+    }
+
+    #[test]
+    fn a_window_holding_exactly_k_micro_clusters_is_clustered() {
+        let mut idx: WindowIndex<f64, Spherical<f64>> = WindowIndex::new(16, 32, 0);
+        let mut span = TimeSpan::new();
+        span.push(0.0, 2.0);
+        idx.push_frame(
+            span,
+            vec![cf::<f64>(&[[0.0, 0.0]]), cf::<f64>(&[[5.0, 0.0]])],
+        );
+        assert!(idx.cluster_window(0.0, 1.0, 2, 10).is_some());
+    }
+
+    #[test]
+    fn the_stream_reports_its_shape_its_open_span_and_its_closed_frames() {
+        let mut s: WindowStream<f64, Spherical<f64>> =
+            WindowStream::new(3, 32, 32, 0.0, 200, 10.0, 8, 64, 5);
+        assert_eq!(s.dim(), 3);
+        assert!(
+            s.try_insert(&[0.0, 0.0], 0.0).is_err(),
+            "a short row was accepted"
+        );
+        s.try_insert(&[0.0, 0.0, 0.0], 1.0).unwrap();
+        s.try_insert(&[1.0, 0.0, 0.0], 3.0).unwrap();
+        let open = s.open_span();
+        assert_eq!((open.weight, open.min, open.max), (2.0, 1.0, 3.0));
+        s.close_frame();
+        assert_eq!(
+            s.window(0.0, 5.0).len(),
+            2,
+            "threshold 0 keeps the two points apart"
+        );
+    }
 }
