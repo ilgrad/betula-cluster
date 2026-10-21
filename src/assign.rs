@@ -897,6 +897,14 @@ mod tests {
     }
 
     #[test]
+    fn all_zero_weights_fall_back_to_equal_weighting() {
+        // Equal weighting reads dimension 1 first; zero weights normalised by their zero sum would
+        // make every variance NaN and leave the identity order.
+        let centroids = vec![vec![0.0, 0.0], vec![0.0, 10.0]];
+        assert_eq!(variance_order(&centroids, Some(&[0.0, 0.0]), 2), [1, 0]);
+    }
+
+    #[test]
     fn a_negative_weight_falls_back_to_equal_weighting_even_with_a_positive_sum() {
         // Accepted as weights (sum 1.5), these would put dimension 1 first.
         let centroids = vec![vec![0.0, 0.0], vec![10.0, 0.0], vec![0.0, 1.0]];

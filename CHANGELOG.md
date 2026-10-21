@@ -27,6 +27,13 @@ All notable changes to this project are documented here. The format follows
   fits now run at the flagged build's speed (ratios 1.000–1.010, 30 alternated reps, labels
   byte-identical). The published wheels always carried the flag and do not change.
 
+### Fixed
+- **`AssignPlan` no longer reads a beaten hint twice.** The pruned assignment skipped the incumbent
+  to avoid re-scanning the hint, but once another centroid beat the hint the incumbent no longer
+  named it, and the hint was read again up to its first pruning stage. Labels never changed;
+  `AssignStats::dims_read` over-counted by up to one stage per such point. Found by an exact
+  read-count test written to kill the module's mutation survivors.
+
 ### Notes
 - **The FAISS / `fast_hdbscan` contest is re-measured on the 1.1.0 tree** (`bench/results_external.csv`,
   2026-10-20). The verdicts are unchanged and the scoreboard holds all 140 cells. The time and RSS
