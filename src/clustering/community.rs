@@ -605,6 +605,22 @@ mod tests {
     }
 
     #[test]
+    fn pass_seed_keeps_the_callers_seed_first_and_then_avoids_the_level_seeds() {
+        for seed in [0u64, 7, u64::MAX - 3] {
+            assert_eq!(pass_seed(seed, 0), seed, "pass 0 must reuse seed {seed}");
+            let later: Vec<u64> = (1..8).map(|p| pass_seed(seed, p)).collect();
+            for (i, &s) in later.iter().enumerate() {
+                assert!(
+                    (0..64).all(|level| s != seed.wrapping_add(level)),
+                    "pass {} of seed {seed} reuses a level seed",
+                    i + 1
+                );
+                assert!(!later[..i].contains(&s), "pass {} repeats a seed", i + 1);
+            }
+        }
+    }
+
+    #[test]
     fn relabel_compacts_ids_in_first_seen_order() {
         assert_eq!(relabel(&[7, 7, 3, 7, 3, 9]), vec![0, 0, 1, 0, 1, 2]);
         assert_eq!(relabel(&[]), Vec::<usize>::new());

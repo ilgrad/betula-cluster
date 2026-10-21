@@ -1186,16 +1186,14 @@ src/wasserstein.rs:293:31: replace < with <= in transport
 src/wasserstein.rs:398:17: replace < with <= in tree_path
 src/wasserstein.rs:440:20: replace + with * in tree_path
 
-# ── src/clustering/community.rs (8) ──
+# ── src/clustering/community.rs (6) ──
 # Debt: remainder after the 2026-08-19 reference tests. Re-keyed 2026-10-20 from CI run 39237087351
 # (b0c5f69) after `6847c12` (Leiden passes) moved the file: the two `leiden` guards are now the same
 # two in `affinity`, the four `refine` entries moved 258/259 -> 347/348, and `detect`'s `+=` no longer
-# exists. The two `pass_seed` constants are new with `6847c12`: no test pins that consecutive passes
-# draw different seeds.
+# exists. The two `pass_seed` constants that `6847c12` added are caught since 2026-10-21 by
+# `pass_seed_keeps_the_callers_seed_first_and_then_avoids_the_level_seeds`.
 src/clustering/community.rs:153:32: replace > with >= in affinity
 src/clustering/community.rs:155:25: replace > with >= in affinity
-src/clustering/community.rs:201:5: replace pass_seed -> u64 with 0
-src/clustering/community.rs:201:5: replace pass_seed -> u64 with 1
 src/clustering/community.rs:347:29: replace -= with += in refine
 src/clustering/community.rs:347:29: replace -= with /= in refine
 src/clustering/community.rs:348:30: replace -= with += in refine
