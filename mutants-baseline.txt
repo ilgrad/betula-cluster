@@ -1469,6 +1469,9 @@ src/order.rs:313:26: replace > with >= in quantise
 # argument moves it into a file section above -- triage file by file, whole-file re-measure first.
 # Registering them keeps the weekly job a ratchet: red again means *this week* added a survivor.
 # 636 entries in 24 files.
+#
+# Cleared since: src/window.rs (20) on 2026-10-21 -- whole-file re-measure reproduced exactly these
+# 20, the new tests kill all of them (180 mutants: 150 caught, 29 unviable, 1 timeout).
 # ==================================================================================================
 
 # ── src/clustering/watson.rs (118, unreviewed) ──
@@ -1984,28 +1987,6 @@ src/clustering/fuzzy.rs:305:11: replace < with == in fuzzy_cmeans_auto
 src/clustering/fuzzy.rs:321:52: replace < with <= in fuzzy_cmeans_auto
 src/clustering/fuzzy.rs:326:27: replace match guard s.is_finite() with true in fuzzy_cmeans_auto
 src/clustering/fuzzy.rs:77:33: replace > with >= in Leaves::of
-
-# ── src/window.rs (20, unreviewed) ──
-src/window.rs:102:19: replace += with *= in TimeSpan::push
-src/window.rs:102:28: replace * with / in TimeSpan::push
-src/window.rs:102:32: replace / with % in TimeSpan::push
-src/window.rs:103:45: replace * with + in TimeSpan::push
-src/window.rs:103:45: replace * with / in TimeSpan::push
-src/window.rs:129:21: replace > with >= in TimeSpan::overlaps
-src/window.rs:212:16: replace < with <= in Moments<R>::checked_subtract
-src/window.rs:215:39: replace / with % in Moments<R>::checked_subtract
-src/window.rs:215:39: replace / with * in Moments<R>::checked_subtract
-src/window.rs:216:36: replace > with >= in Moments<R>::checked_subtract
-src/window.rs:217:23: replace / with * in Moments<R>::checked_subtract
-src/window.rs:224:19: replace < with <= in Moments<R>::checked_subtract
-src/window.rs:279:33: replace > with == in WindowIndex<R, C>::push_frame
-src/window.rs:279:33: replace > with >= in WindowIndex<R, C>::push_frame
-src/window.rs:328:35: replace < with <= in WindowIndex<R, C>::cluster_window
-src/window.rs:419:9: replace WindowStream<R, C>::try_insert -> Result<(), ShapeError> with Ok(())
-src/window.rs:466:9: replace WindowStream<R, C>::dim -> usize with 0
-src/window.rs:466:9: replace WindowStream<R, C>::dim -> usize with 1
-src/window.rs:471:9: replace WindowStream<R, C>::window -> Vec<C> with vec![]
-src/window.rs:481:9: replace WindowStream<R, C>::open_span -> TimeSpan with Default::default()
 
 # ── src/assign.rs (19, unreviewed) ──
 src/assign.rs:338:58: replace < with <= in AssignPlan<R>::nearest_permuted
