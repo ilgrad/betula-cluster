@@ -49,9 +49,11 @@ see *How many restarts a k-means head needs* below), `min_samples`
 (`None`/`"auto"` by default — the mass of ten average leaves, see *`min_samples` on a summary*
 below; an integer is a point count. For `method="hdbscan"` it is the core-distance neighbourhood
 **counting the point itself** —
-the convention of Campello's Def. 3.1, `sklearn.cluster.HDBSCAN` and ELKI, so `min_samples=1`
-leaves every core distance at 0 and HDBSCAN\* degenerates to single linkage;
-`scikit-learn-contrib/hdbscan` excludes it, where the same number means one neighbour more),
+the convention of the published DBSCAN line (Ester et al.'s ε-neighbourhood contains the point,
+Campello's Def. 3.1 counts it), which `sklearn.cluster.HDBSCAN` and ELKI follow: a core distance is a
+density estimate, and a point is part of its own density. So `min_samples=1` leaves every core
+distance at 0 and HDBSCAN\* degenerates to single linkage; `scikit-learn-contrib/hdbscan` is the
+implementation that excludes the point, where the same number means one neighbour more),
 `min_cluster_size`, `graph_degree` (for `method="hdbscan"`, the out-degree of the proximity graph the
 density head runs on; `0` = the exact complete graph, a positive value is a **floor** the head raises
 to whatever `min_samples` needs — see *Graph-indexing the density head* below), `resolution` (Leiden γ — granularity for `method="leiden"` / `"leiden-cpm"`, higher

@@ -147,10 +147,12 @@ fn new_cluster(
 /// **counting the object itself** — so `min_samples = 1` is 0 everywhere and mutual reachability
 /// degenerates to `dist`.
 ///
-/// The self-inclusion convention is a genuine split in the field and is therefore chosen here rather
-/// than assumed: Campello, Moulavi & Sander's Def. 3.1, ELKI (whose parameter says "including this
-/// point") and `sklearn.cluster.HDBSCAN` all include the object; `scikit-learn-contrib/hdbscan`
-/// excludes it, so the same argument there means one neighbour more.
+/// Self-inclusion is the convention of the published DBSCAN line, not a choice made here: Ester et
+/// al.'s ε-neighbourhood `N_ε(p)` contains `p`, Campello, Moulavi & Sander's Def. 3.1 counts the
+/// object, and ELKI (whose parameter says "including this point") and `sklearn.cluster.HDBSCAN`
+/// follow it. A core distance is a density estimate at the object, and the object is part of that
+/// density. `scikit-learn-contrib/hdbscan` is the implementation that excludes it, so the same
+/// argument there means one neighbour more.
 ///
 /// On unit `mass` this is exactly the `min_samples`-th smallest distance. Weighted, it is the
 /// smallest radius whose enclosed weight reaches `min_samples`, which is the same density estimate
