@@ -156,8 +156,10 @@ NumPy is the only runtime dependency — no SciPy, LAPACK, or BLAS. Prebuilt whe
 supported Python. Building from source needs a Rust toolchain — `maturin develop --release` (or
 `pip install .`) in a clone.
 
-**Free-threaded CPython** (3.14t, 3.15t) gets a wheel per version on Linux, macOS arm64 and Windows:
-abi3 cannot express a `Py_GIL_DISABLED` build, so the wheel above matches nothing there. Importing does *not*
+**Free-threaded CPython** gets its own wheels on Linux, macOS arm64 and Windows: abi3 cannot express a
+`Py_GIL_DISABLED` build, so the wheel above matches nothing there. 3.14t has a version-specific wheel; from
+3.15 one `abi3t` wheel ([PEP 803](https://peps.python.org/pep-0803/)) serves 3.15t and every later
+free-threaded minor, and pip picks it on a GIL 3.15+ too. Importing does *not*
 re-enable the GIL — CI asserts that on every push, because a module that quietly turns free threading
 back off for the whole process would be worse than no wheel at all.
 

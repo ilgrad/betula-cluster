@@ -51,10 +51,11 @@ jobs:
     # nothing on 3.14t and `pip install betula-cluster` there falls back to building from source --
     # which needs a Rust toolchain the user did not ask for. maturin drops abi3 on its own for these
     # ("abi3 does not yet support CPython 3.14t ... artifacts will be version-specific"), so the only
-    # thing missing was the build arm. One wheel per minor version, hence the `python` axis below.
-    # From 3.15 a single `abi3t` wheel could serve every later minor (PEP 803), but rust-numpy reads
-    # arrays under abi3t only from 0.30, which needs pyo3 0.30; until that migration, one entry per
-    # free-threaded minor.
+    # thing missing was the build arm. 3.14t gets a version-specific wheel; from 3.15 one `abi3t`
+    # wheel (PEP 803) serves 3.15t and every later free-threaded minor, and the GIL builds of 3.15+
+    # too. abi3t is enabled for that arm alone: with `abi3t-py315` in Cargo.toml, any build that
+    # finds a 3.15 interpreter -- the `wheels` arm above on a `3.x` that has moved to 3.15 -- would
+    # emit only the abi3t wheel and drop `cp311-abi3`, the one that serves 3.11-3.14.
     #
     # Measured locally on cpython-3.14.7+freethreaded before adding this: the module imports without
     # re-enabling the GIL (`sys._is_gil_enabled()` stays False, and pyo3 0.29 emits no
@@ -68,6 +69,9 @@ jobs:
       fail-fast: false
       matrix:
         python: ["3.14t", "3.15t"]
+        include:
+          - { python: "3.14t", features: "python" }
+          - { python: "3.15t", features: "python,pyo3/abi3t-py315" }
         platform:
           - { runner: ubuntu-latest, target: x86_64 }
           - { runner: ubuntu-latest, target: aarch64 }
@@ -89,7 +93,8 @@ jobs:
           # the executable name, and on Linux the build runs inside a manylinux container where the
           # setup-python above is not visible at all -- the name has to resolve to the container's
           # own /opt/python/cp314-cp314t/bin/python3.14t.
-          args: --release --out dist --interpreter python${{ matrix.python }}
+          # `--features` replaces pyproject's `features = ["python"]`, so `python` is listed again.
+          args: --release --out dist --interpreter python${{ matrix.python }} --features ${{ matrix.features }}
           manylinux: auto
           sccache: "true"
       - uses: actions/upload-artifact@v7

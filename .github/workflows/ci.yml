@@ -186,12 +186,20 @@ jobs:
     #
     # NumPy and pytest only, as in `python-test`: SciPy and scikit-learn wheels lag on a new
     # free-threaded interpreter, and the tests that need them skip cleanly.
-    name: python (pytest · ${{ matrix.python-version }} free-threaded)
+    #
+    # From 3.15 the build is the one `abi3t` module release.yml ships (PEP 803), and pip on a GIL
+    # 3.15 ranks that `cp315-abi3.abi3t` wheel above `cp311-abi3`, so it is tested on both builds of
+    # the interpreter. `so` pins which module the build produced: pyo3 silently falls back to a
+    # version-specific one when it cannot target the stable ABI.
+    name: python (pytest · ${{ matrix.python-version }} · ${{ matrix.so }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.14t", "3.15t"]
+        include:
+          - { python-version: "3.14t", features: "python", so: "cpython-314t", gil: "False" }
+          - { python-version: "3.15t", features: "python,pyo3/abi3t-py315", so: "abi3t", gil: "False" }
+          - { python-version: "3.15", features: "python,pyo3/abi3t-py315", so: "abi3t", gil: "True" }
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -203,11 +211,14 @@ jobs:
           uv pip install maturin numpy pytest
           # --no-sync: the repo pins .python-version=3.14, so a plain `uv run` rejects this
           # deliberately free-threaded venv, recreates it, and discards the tools installed above.
-          uv run --no-sync maturin develop --release
+          # `--features` replaces pyproject's `features = ["python"]`, so `python` is listed again.
+          uv run --no-sync maturin develop --release --features ${{ matrix.features }}
           uv run --no-sync python -c "
           import sys, betula_cluster
-          assert not sys._is_gil_enabled(), 'importing betula_cluster re-enabled the GIL'
-          print('GIL stays disabled on import; betula_cluster', betula_cluster.__version__)
+          so = betula_cluster._core.__file__
+          assert '.${{ matrix.so }}' in so, f'built {so}, expected a ${{ matrix.so }} module'
+          assert sys._is_gil_enabled() is ${{ matrix.gil }}, 'importing betula_cluster changed the GIL'
+          print(so, 'GIL', sys._is_gil_enabled(), betula_cluster.__version__)
           "
           uv run --no-sync pytest tests/test_python.py -q
 

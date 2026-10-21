@@ -6,6 +6,17 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+- **One `abi3t` wheel for CPython 3.15 and later, free-threaded or not** (PEP 803), in place of the
+  per-version `cp315-cp315t` wheel 1.1.0 shipped. pyo3 0.29 → 0.30 and rust-numpy 0.29 → 0.30 — the
+  first rust-numpy that reads arrays under abi3t; no source change was needed. The abi3t build is
+  enabled only for the free-threaded 3.15 release arm: with the feature in `Cargo.toml`, any build
+  that found a 3.15 interpreter would emit only the abi3t wheel and drop `cp311-abi3`, which serves
+  3.11–3.14. 3.14t keeps its version-specific wheel. pip ranks `cp315-abi3.abi3t` above `cp311-abi3`
+  on a GIL 3.15, so CI now runs the suite on that build under both 3.15 and 3.15t and asserts which
+  module was built. The price there, against the `cp311-abi3` wheel on the same GIL 3.15: +1.2 % on
+  the 1 M-point k-means fit (15 of 15 alternated reps), +0.6 % on `gmm-full`, nothing on streaming.
+
 ### Performance
 - **The Python heads no longer depend on a build flag for their speed.** The runtime dispatch over
   the routing and absorption distance was a function call on the per-point insert path, inlined only
