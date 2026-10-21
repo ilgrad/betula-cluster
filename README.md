@@ -46,7 +46,7 @@ with peak RSS sampled from `/proc/self/statm`. Full methodology, every metric, a
   needs **~5.0 GB** (**94× less**, and the gap grows without bound). Two rows are not ours, and both
   are in the tables: on sparse 20-newsgroups scikit-learn is **3.1× faster** on raw TF-IDF
   (0.54 s vs 1.67 s) at a better ARI (0.056 vs 0.038), and `fast-hdbscan` recovers the 100 k-point
-  blobs at **ARI 0.910 against our 0.478** — where we are 9× faster on half the memory. A specialist
+  blobs at **ARI 0.910 against our 0.480** — where we are 10× faster on half the memory. A specialist
   at its own contest is a different claim from a general-purpose library at every size.
 - 🎯 **Parity on the centroid heads, ahead on the structured ones.** betula's k-means ties
   scikit-learn (blobs 0.793 vs 0.794, `digits` 0.467 vs 0.468); full-covariance GMM **beats** it on
@@ -134,7 +134,7 @@ Three cases, each measured rather than assumed:
   (0.467 against scikit-learn's 0.468) rather than a win — you pay for a summary that summarises
   nothing. Cluster the points directly.
 - **HDBSCAN where the densities overlap** — `fast-hdbscan` recovers the 100 k-point blob fixture at
-  **ARI 0.910 against our 0.478**, and that is the fixture density methods are judged on. We are 9×
+  **ARI 0.910 against our 0.480**, and that is the fixture density methods are judged on. We are 10×
   faster on half the memory, which is the trade, not a rebuttal. If the density structure *is* the
   answer, run the exact algorithm on the points.
 - **A mixture whose likelihood has to be a raw-point likelihood** — the E-step ties responsibilities

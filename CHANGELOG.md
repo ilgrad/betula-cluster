@@ -6,6 +6,14 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Notes
+- **The FAISS / `fast_hdbscan` contest is re-measured on the 1.1.0 tree** (`bench/results_external.csv`,
+  2026-10-20). The verdicts are unchanged and the scoreboard holds all 140 cells. The time and RSS
+  columns of the `betula-hdbscan` rows are now the post-rebuild tree's, which the previous edition
+  noted it had not re-taken: 0.12 s / 164 MB against `fast_hdbscan`'s 1.22 s / 309 MB at 100 000,
+  ARI 0.480 against 0.910. FAISS at its defaults now reads 3.1×–6.1× faster than betula (was
+  2.7×–8.8×), and FAISS matched to betula's quality 9×–14× slower (was 6.3×–7.7×).
+
 ## [1.1.0] — 2026-10-20
 
 ### Added

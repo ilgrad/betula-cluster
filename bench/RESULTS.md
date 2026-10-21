@@ -993,46 +993,50 @@ Single-threaded, seed 0, `max_leaves = 2000`, one subprocess per row so peak RSS
 
 | contest | n | method | time | peak RSS | clusters found | ARI |
 |---|---:|---|---:|---:|---:|---:|
-| k-means, `highdim`, k=8 | 200 000 | **betula-kmeans** | 0.19 s | 219 MB | 8 | **1.000** |
-| | 200 000 | faiss-kmeans, defaults | **0.07 s** | 208 MB | 8 | 0.630 |
-| | 200 000 | faiss-kmeans, matched | 1.19 s | 208 MB | 8 | **1.000** |
-| | 200 000 | sklearn-kmeans | 1.40 s | 266 MB | 8 | **1.000** |
-| | 1 000 000 | **betula-kmeans** | **0.70 s** | 538 MB | 8 | **1.000** |
-| | 1 000 000 | faiss-kmeans, defaults | **0.08 s** | 538 MB | 8 | 0.624 |
-| | 1 000 000 | faiss-kmeans, matched | 5.38 s | 538 MB | 8 | 0.835 |
-| | 1 000 000 | sklearn-kmeans | 5.00 s | 655 MB | 8 | **1.000** |
-| HDBSCAN, `blobs`, k=6 | 100 000 | **betula-hdbscan** | **0.18 s** | **162 MB** | 3 | 0.478 |
-| | 100 000 | fast-hdbscan | 1.65 s | 315 MB | 6 | **0.910** |
-| | 500 000 | **betula-hdbscan** | **0.32 s** | **175 MB** | 3 | 0.478 |
-| | 500 000 | fast-hdbscan | 3.02 s | 411 MB | 6 | **0.892** |
+| k-means, `highdim`, k=8 | 200 000 | **betula-kmeans** | 0.11 s | 195 MB | 8 | **1.000** |
+| | 200 000 | faiss-kmeans, defaults | **0.04 s** | 207 MB | 8 | 0.630 |
+| | 200 000 | faiss-kmeans, matched | 0.97 s | 207 MB | 8 | **1.000** |
+| | 200 000 | sklearn-kmeans | 1.13 s | 266 MB | 8 | **1.000** |
+| | 1 000 000 | **betula-kmeans** | 0.42 s | 538 MB | 8 | **1.000** |
+| | 1 000 000 | faiss-kmeans, defaults | **0.07 s** | 538 MB | 8 | 0.624 |
+| | 1 000 000 | faiss-kmeans, matched | 6.04 s | 538 MB | 8 | 0.835 |
+| | 1 000 000 | sklearn-kmeans | 4.15 s | 654 MB | 8 | **1.000** |
+| HDBSCAN, `blobs`, k=6 | 100 000 | **betula-hdbscan** | **0.12 s** | **164 MB** | 24 | 0.480 |
+| | 100 000 | fast-hdbscan | 1.22 s | 309 MB | 6 | **0.910** |
+| | 500 000 | **betula-hdbscan** | **0.21 s** | **177 MB** | 88 | 0.490 |
+| | 500 000 | fast-hdbscan | 2.49 s | 404 MB | 6 | **0.892** |
 
 One contest is a win once both sides answer the same question; the other is a loss on quality and a
 win on cost. Both are recorded as such rather than dropped.
 
-The two `betula-hdbscan` rows are the 2026-08-25 run, on the tree before 1.0.0's cost-ranked
-rebuild. On 1.0.0 the same call reads **ARI 0.480 with 24 clusters** at 100 000 and **0.490 with 88**
-at 500 000 (`local/scratch/hdbscan_ab.py`, which reproduces the rows above exactly on the rebuild
-commit's parent). `min_samples = 10` is below the leaf mass at both sizes, so the head is single
-linkage over leaf centroids on either tree — the old one chained the overlap into three clusters, the
-new one fragments it — and the verdict is the same loss. The time and RSS columns were not re-taken
-with them.
+The table is the 2026-10-20 run on the 1.1.0 tree (faiss-cpu 1.15.1, fast-hdbscan 0.3.2 on numba
+0.67.0, scikit-learn 1.9.1, numpy 2.5.2), one run per row, governor `performance`. The previous edition
+was the 2026-08-25 run on the tree before 1.0.0's cost-ranked rebuild, where `betula-hdbscan` read
+ARI 0.478 with three clusters at both sizes; on the rebuild it fragments the overlap instead of
+chaining it (24 and 88 clusters). `min_samples = 10` is below the leaf mass at both sizes, so the head
+is single linkage over leaf centroids on either tree, and the verdict is the same loss. Every rival's
+ARI reproduced to four decimals; the rival times moved by −26 % to +12 % between the two runs (FAISS's
+default row 0.07 → 0.04 s, a timing of a few tens of milliseconds), which is the size of a single-run
+timing on this machine. A second run on a build carrying the crate's
+`--inline-threshold` hint (which the run above lacked) read 0.12 / 0.43 s for `betula-kmeans` and
+0.13 / 0.20 s for `betula-hdbscan`: these rows do not depend on it.
 
 ### The FAISS row is two rows, because FAISS's defaults are not a like-for-like fit
 
-**At its own defaults FAISS is 2.7×–8.8× faster and does not recover the partition** (0.62–0.63
+**At its own defaults FAISS is 3.1×–6.1× faster and does not recover the partition** (0.62–0.63
 against betula's 1.000). Task #73 asked whether that is a throughput gap worth closing. It is not,
 and the reason is that two of the three things making the default row fast are quality-costing
 shortcuts rather than engineering:
 
 - **`faiss.Kmeans` defaults to `max_points_per_centroid = 256`.** At `k = 8` it trains on **2 048 of
-  the 200 000 rows** and then assigns the rest. The 0.07 s is a fit on 1% of the data.
+  the 200 000 rows** and then assigns the rest. The 0.04 s is a fit on 1% of the data.
 - **It seeds from a random subset, never k-means++**, and runs `nredo = 1` — a single random init.
 - Only the third — a fixed 25 Lloyd iterations over float32 with hand-written SIMD kernels — is
   throughput.
 
 The `matched` row hands FAISS every row and ten restarts, the cheapest setting whose *median* ARI
-reaches betula's on this fixture. It costs **1.19 s at 200 000 (6.3× betula) and 5.38 s at 1 000 000
-(7.7× betula), and at 1 M it still lands at 0.835.** So there is no budget at which FAISS answers
+reaches betula's on this fixture. It costs **0.97 s at 200 000 (9.0× betula) and 6.04 s at 1 000 000
+(14× betula), and at 1 M it still lands at 0.835.** So there is no budget at which FAISS answers
 betula's question faster than betula does.
 
 The ceiling is initialisation, and sklearn is the control that proves it. Same fixture, same `k`,
@@ -3385,8 +3389,8 @@ rather than left out of the table.
   point-level algorithm with no compression — at small `N` the two-phase overhead removes betula's
   speed edge, and raw HDBSCAN is stronger on overlapping density.
 - **Use FAISS** if k-means throughput is the only criterion and an approximate partition is
-  acceptable — at its defaults it fits 256·k sampled rows from one random init, which is 2.7×–8.8×
-  faster than betula and lands at ARI 0.62. Configured to recover the same partition it is 6.3×–7.7×
+  acceptable — at its defaults it fits 256·k sampled rows from one random init, which is 3.1×–6.1×
+  faster than betula and lands at ARI 0.62. Configured to recover the same partition it is 9×–14×
   *slower* than betula and still misses at 1 M, so it is not the choice when the partition matters.
   Use **`fast_hdbscan`** for density clustering in low dimension when the data fits in memory and the
   densities overlap: it beats betula outright on that axis, where betula needs `min_samples` above the
