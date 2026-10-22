@@ -1041,7 +1041,7 @@ mod tests {
     /// in `mutants-baseline.txt` rather than paid for here.
     #[test]
     fn below_the_dense_graph_cap_the_head_uses_the_exact_builder() {
-        let mut rng = SplitMix64::new(5);
+        let mut rng = SplitMix64::new(6);
         let (pts, _) = circles(&mut rng, 120, 0.08);
         let n = pts.len();
         assert!(

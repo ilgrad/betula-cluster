@@ -17,6 +17,13 @@ All notable changes to this project are documented here. The format follows
   module was built. The price there, against the `cp311-abi3` wheel on the same GIL 3.15: +1.2 % on
   the 1 M-point k-means fit (15 of 15 alternated reps), +0.6 % on `gmm-full`, nothing on streaming.
 
+- **The approximate k-NN graph is built at twice its degree and cut back at the end** (Thordsen &
+  Schubert's advice to build a larger graph and prune it). Recall of the true 10 nearest neighbours
+  on BETULA leaves at degree 10 rises from 0.53–0.87 to 0.68–0.97 (aloi, covtype, mnist; median of
+  three seeds) for 1.6–1.8× the build's distance evaluations, more than the same budget buys spent on
+  a wider beam. Label-changing for `method="hdbscan"` with `graph_degree > 0` and for the spectral
+  head above 2 048 leaves, the two users of the graph.
+
 ### Performance
 - **The Python heads no longer depend on a build flag for their speed.** The runtime dispatch over
   the routing and absorption distance was a function call on the per-point insert path, inlined only

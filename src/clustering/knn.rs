@@ -44,6 +44,26 @@ impl PartialOrd for Key {
 /// correlation at 1.0000 in `local/scratch/graph_single_linkage.py`.
 const BEAM_FACTOR: usize = 2;
 
+/// Width of the graph during the build, as a multiple of the final degree.
+///
+/// Measured on BETULA leaf means at degree 10, median of seeds 0/1/2
+/// (`local/scratch/a2/knn_probe.py`, 2026-10-22), recall of the true 10 nearest neighbours and
+/// distance evaluations per vertex:
+///
+/// ```text
+///                    held at degree    beam 2x wider    built 2x wide
+///   aloi    d=27        0.82  191         0.87  297        0.94  340
+///   aloi    d=64        0.78  198         0.83  307        0.92  349
+///   covtype d=54        0.72  200         0.81  298        0.88  327
+///   mnist   d=784       0.53  188         0.62  290        0.68  325
+///   mnist   PCA-8       0.87  213         0.90  333        0.97  385
+/// ```
+///
+/// Building wide costs 1.6–1.8× the evaluations and buys more recall than spending the same on the
+/// beam. Four times wide adds 0.03–0.10 more for another 1.4×, and its searches run into
+/// [`MAX_EXPANSIONS`] on 97 % of insertions.
+const BUILD_WIDTH: usize = 2;
+
 /// Hard cap on how many vertices one search may expand.
 ///
 /// This is the *capped* in "capped beam search". An uncapped beam search backtracks until its
@@ -197,6 +217,13 @@ fn symmetrise(out: &[Vec<(usize, f64)>]) -> Vec<Vec<(usize, f64)>> {
 /// They are also held outside the degree cap, so a random draw can never evict a true neighbour:
 /// their purpose is to be the edge no local search would ever return.
 ///
+/// **Built wide, kept narrow.** The search, the offers and every list during the build run at
+/// [`BUILD_WIDTH`] × `degree`; each list is cut back to its `degree` nearest only at the end. This
+/// is Thordsen & Schubert's advice to build a larger k-NN graph and prune it afterwards: most true
+/// neighbours of a vertex are found through other vertices' wider lists, which a list held at
+/// `degree` throughout has already evicted. Widening the beam alone, at the same cost, recovers
+/// less — see [`BUILD_WIDTH`].
+///
 /// The build is `O(m · MAX_EXPANSIONS · degree)` distance evaluations, with no data-dependent tail,
 /// against the `O(m²)` of the complete graph it replaces.
 pub fn build(
@@ -206,7 +233,8 @@ pub fn build(
     dist: impl Fn(usize, usize) -> f64,
 ) -> Vec<Vec<(usize, f64)>> {
     let degree = degree.clamp(1, m.saturating_sub(1).max(1));
-    let ef = (BEAM_FACTOR * degree).min(m);
+    let wide = (BUILD_WIDTH * degree).min(m.saturating_sub(1).max(1));
+    let ef = (BEAM_FACTOR * wide).min(m);
     let mut g = Graph {
         adj: vec![Vec::new(); m],
         long: vec![Vec::new(); m],
@@ -224,10 +252,10 @@ pub fn build(
         let entries = [0usize, extra];
         let found = search(i, ef, &entries, &g, &dist, &mut scratch);
         scratch.reset();
-        for &(j, d) in found.iter().take(degree) {
+        for &(j, d) in found.iter().take(wide) {
             debug_assert_ne!(j, i, "a vertex was reachable before it was inserted");
-            offer(&mut g.adj[i], j, d, degree);
-            offer(&mut g.adj[j], i, d, degree);
+            offer(&mut g.adj[i], j, d, wide);
+            offer(&mut g.adj[j], i, d, wide);
         }
         // Shortcuts are published at both endpoints, and only *after* the search. Publishing the
         // reverse direction first puts `i` into `long[j]` while `i` is still the query, so the
@@ -241,6 +269,9 @@ pub fn build(
         }
     }
 
+    for list in &mut g.adj {
+        list.truncate(degree);
+    }
     for (i, shortcuts) in g.long.iter().enumerate() {
         for &j in shortcuts {
             let d = dist(i, j);
