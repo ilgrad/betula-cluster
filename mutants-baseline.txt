@@ -866,8 +866,8 @@ src/clustering/gmm.rs:674:18: replace < with <= in gmm_full_auto
 # the same vector: `core_distances` maps a pure `row` closure, and `prim_complete`'s relaxation
 # writes only `v`'s own two slots off a pure `weight`, which is why the comment above it says the
 # pass is exact however the range is divided.
-src/clustering/hdbscan.rs:184:10: replace >= with < in core_distances
-src/clustering/hdbscan.rs:613:14: replace >= with < in prim_complete
+src/clustering/hdbscan.rs:186:10: replace >= with < in core_distances
+src/clustering/hdbscan.rs:622:14: replace >= with < in prim_complete
 # Believed equivalent -- union by rank. `rank[ra] += 1` -> `*= 1` pins every rank at 0, so `cmp` is
 # always `Equal` and `union` always attaches `rb` under `ra`. Rank bounds the tree height and
 # nothing else; with path compression on top, no rank assignment changes which elements are
@@ -877,11 +877,11 @@ src/clustering/hdbscan.rs:104:31: replace += with *= in UnionFind::union
 # `>= 0.0` reaches `1.0 / 0.0`, which is `f64::INFINITY`, exactly what the `else` supplies.
 # `node_dist` is a `sqrt` of a sum of squares, so the `-0.0` whose reciprocal would be `-INFINITY`
 # is unreachable. This is the one entry the `condense` extraction moved (683:26 -> 692:26).
-src/clustering/hdbscan.rs:692:26: replace > with >= in condense
+src/clustering/hdbscan.rs:701:26: replace > with >= in condense
 # Believed equivalent -- a mean that cannot be zero. `graph_degree_for` reads `if mean > 0.0`, where
 # `mean` is the average leaf mass; a leaf exists because a point landed in it, so every entry is at
 # least 1. The guard is there for the division, not for a reachable case.
-src/clustering/hdbscan.rs:228:24: replace > with >= in graph_degree_for
+src/clustering/hdbscan.rs:230:24: replace > with >= in graph_degree_for
 # Believed equivalent -- the adjacency's own invariants. `mst_over_graph` deduplicates the symmetric
 # adjacency with `if i < j`. `knn::build` ends in `symmetrise`, so `i > j` selects the *same*
 # undirected edge set with the endpoints written the other way round, and `mreach` and the
@@ -889,8 +889,8 @@ src/clustering/hdbscan.rs:228:24: replace > with >= in graph_degree_for
 # forbids -- the comment there about publishing shortcuts only *after* the search is in place
 # because a self-loop was a real defect once. Both mutants change the tie-break order among exactly
 # equal weights and nothing else.
-src/clustering/hdbscan.rs:284:18: replace < with > in mst_over_graph
-src/clustering/hdbscan.rs:284:18: replace < with <= in mst_over_graph
+src/clustering/hdbscan.rs:286:18: replace < with > in mst_over_graph
+src/clustering/hdbscan.rs:286:18: replace < with <= in mst_over_graph
 # Believed equivalent -- Prim's two tie-breaks. `best[v] < bu` and `w < *b` widened to `<=` take the
 # last vertex attaining the minimum instead of the first. On a complete graph every vertex is
 # reachable, so the widened argmin never selects an unreached `f64::INFINITY` slot; what is left is
@@ -898,13 +898,13 @@ src/clustering/hdbscan.rs:284:18: replace < with <= in mst_over_graph
 # equal. Single-linkage partitions at a threshold are the connected components of the `<= t` graph,
 # which no choice among equal-weight edges can change. The condensed tree's merge *order* among tied
 # edges is not covered by that argument, so this is evidence rather than a proof.
-src/clustering/hdbscan.rs:589:39: replace < with <= in prim_complete
-src/clustering/hdbscan.rs:606:22: replace < with <= in prim_complete
+src/clustering/hdbscan.rs:598:39: replace < with <= in prim_complete
+src/clustering/hdbscan.rs:615:22: replace < with <= in prim_complete
 # Believed equivalent -- a zero-length contribution. `persistence_trace` guards its difference array
 # with `if birth < s_max[nd]`; widened to `<=`, the one extra segment it admits has
 # `p = s_max - birth = 0`, so both `diff` writes add nothing. The same widening on the *cuts* loop
 # at 487:33 is a different mutant and is killed -- that one publishes a candidate size.
-src/clustering/hdbscan.rs:502:18: replace < with <= in persistence_trace
+src/clustering/hdbscan.rs:511:18: replace < with <= in persistence_trace
 # Believed equivalent -- the component-linking loop is unreachable. `mst_over_graph`'s doc comment
 # states why: every vertex `i >= 1` takes at least one random shortcut into `0..i` during the build,
 # so induction gives a path to vertex 0 and the graph is connected. The loop therefore breaks on its
@@ -912,11 +912,11 @@ src/clustering/hdbscan.rs:502:18: replace < with <= in persistence_trace
 # would otherwise be loud -- `anchor == usize::MAX` -> `!=` indexes `uf.find(usize::MAX)` -- which is
 # a measure of how firmly the break holds. The loop is not dead code: it exists so that a future
 # change to the index degrades into a coarse hierarchy rather than a silently truncated one.
-src/clustering/hdbscan.rs:302:26: replace >= with < in mst_over_graph
-src/clustering/hdbscan.rs:302:22: replace + with - in mst_over_graph
-src/clustering/hdbscan.rs:302:22: replace + with * in mst_over_graph
-src/clustering/hdbscan.rs:305:19: replace == with != in mst_over_graph
-src/clustering/hdbscan.rs:307:35: replace != with == in mst_over_graph
+src/clustering/hdbscan.rs:304:26: replace >= with < in mst_over_graph
+src/clustering/hdbscan.rs:304:22: replace + with - in mst_over_graph
+src/clustering/hdbscan.rs:304:22: replace + with * in mst_over_graph
+src/clustering/hdbscan.rs:307:19: replace == with != in mst_over_graph
+src/clustering/hdbscan.rs:309:35: replace != with == in mst_over_graph
 
 # ── src/feature.rs (3) ──
 # Re-measured **2026-09-11 whole-file** at `f521df0`, locally at -j4 under a 10 GB cap: 512 mutants
@@ -1465,6 +1465,102 @@ src/order.rs:313:26: replace > with >= in quantise
 # other incumbent was an earlier `j` -- so `j <= best` and `j < best` agree on every input.
 src/assign.rs:341:58: replace < with <= in AssignPlan<R>::nearest_permuted
 
+# ── src/clustering/agglomerative.rs (27) ──
+# Whole-file re-measure 2026-10-22, after Anderberg's cache gave way to the heap of searchers: 344
+# mutants over this file and knn.rs together, against the lib tests of every module that calls
+# them, each test binary capped at 4 GiB; the new functions' survivors were re-checked after the
+# tests written against them (grid ties, empty Ward leaves). Those tests also kill the old
+# `Linkage::value` and `Linkage::beta` entries.
+#
+# Believed equivalent.
+# `Entry::eq` is never called: `BinaryHeap` orders through `Ord::cmp` alone, and the impl exists
+# only because `Ord` requires `Eq`.
+src/clustering/agglomerative.rs:197:9: replace <impl PartialEq for Entry<R>>::eq -> bool with false
+src/clustering/agglomerative.rs:197:9: replace <impl PartialEq for Entry<R>>::eq -> bool with true
+src/clustering/agglomerative.rs:197:25: replace == with != in <impl PartialEq for Entry<R>>::eq
+# The stage boundaries. A candidate is pruned only once `s·acc + t` already exceeds the incumbent,
+# and `s, t ≥ 0`, so any partition into stages -- one stage included -- returns the full-scan
+# minimum. The partition moves how many coordinates are read, and the summation order of `acc`
+# in the last bit, which the module docs already allow for at exact ties.
+src/clustering/agglomerative.rs:249:10: replace < with <= in dendrogram
+src/clustering/agglomerative.rs:249:10: replace < with == in dendrogram
+src/clustering/agglomerative.rs:263:20: replace * with + in dendrogram
+src/clustering/agglomerative.rs:263:20: replace * with / in dendrogram
+src/clustering/agglomerative.rs:264:30: replace < with <= in dendrogram
+src/clustering/agglomerative.rs:264:30: replace < with == in dendrogram
+src/clustering/agglomerative.rs:264:30: replace < with > in dendrogram
+# The hint skip. Reading the hint again, or in index order rather than first, offers an equal
+# value at an equal index, which the strict tie-break rejects: the same result for one more read.
+src/clustering/agglomerative.rs:279:29: replace > with < in dendrogram
+src/clustering/agglomerative.rs:279:29: replace > with == in dendrogram
+# Pruning on `s·acc − t` is a weaker lower bound: fewer prunes, the same minimum.
+src/clustering/agglomerative.rs:291:28: replace + with - in dendrogram
+# `j` never equals `best` at this comparison -- the hint is skipped by index, and every other
+# incumbent was an earlier `j` -- so `j <= best` and `j < best` agree on every input.
+src/clustering/agglomerative.rs:300:56: replace < with <= in dendrogram
+# One more pass of the loop after the last merge finds only superseded entries (the survivor does
+# not search once it is the last live cluster), pops them, and stops on the empty heap.
+src/clustering/agglomerative.rs:320:24: replace + with * in dendrogram
+src/clustering/agglomerative.rs:320:28: replace < with <= in dendrogram
+# An empty leaf's spread is `0 / 0`, and `max(0)` returns the non-NaN operand, so `>=` stores the
+# same zero the guard does.
+src/clustering/agglomerative.rs:151:30: replace > with >= in Node<R>::leaf
+#
+# Debt. Older code, re-anchored but not reviewed in this pass.
+src/clustering/agglomerative.rs:454:22: replace < with <= in anderberg
+src/clustering/agglomerative.rs:454:22: replace < with == in anderberg
+src/clustering/agglomerative.rs:559:42: replace < with <= in dendrogram_below
+src/clustering/agglomerative.rs:569:21: replace + with * in dendrogram_below
+src/clustering/agglomerative.rs:642:22: replace < with <= in dendrogram_below
+src/clustering/agglomerative.rs:642:22: replace < with == in dendrogram_below
+src/clustering/agglomerative.rs:683:14: replace < with <= in refresh
+src/clustering/agglomerative.rs:775:44: replace - with + in agglomerative_auto
+src/clustering/agglomerative.rs:775:44: replace - with / in agglomerative_auto
+src/clustering/agglomerative.rs:780:18: replace > with >= in agglomerative_auto
+
+# ── src/clustering/knn.rs (24) ──
+# Same run as agglomerative.rs above; the mass extension's survivors were re-checked after the test
+# that every extended list reaches `need` at exactly its core radius.
+#
+# Debt, measured. The beam at `BEAM_FACTOR + wide` instead of `BEAM_FACTOR * wide`: 10-NN recall
+# 0.911 → 0.909 on the clustered fixture of `the_wide_build_holds_its_recall_on_clustered_points`,
+# inside seed noise, because the search reaches `MAX_EXPANSIONS` before the beam binds.
+src/clustering/knn.rs:238:27: replace * with + in build
+# Cost only on an exact search. Skipping fewer vertices (`mass[i] - prefix`): a vertex whose
+# nearest prefix already weighs `need` searches and gets that prefix back.
+src/clustering/knn.rs:326:20: replace + with - in extend_to_mass
+# The beam's starting width and its growth. Every start reaches the same stopping rule, and the
+# prefix returned by a search exact at the width it stops at is the same; these move how many
+# searches run. `per >= 0.0` sends `per = 0` through an infinite guess that saturates to the full
+# width, which is what the other branch returns. Where the search is approximate a different
+# width can find a nearer vertex, which no fixture with an exact answer separates.
+src/clustering/knn.rs:331:26: replace / with % in extend_to_mass
+src/clustering/knn.rs:331:26: replace / with * in extend_to_mass
+src/clustering/knn.rs:332:28: replace > with < in extend_to_mass
+src/clustering/knn.rs:332:28: replace > with == in extend_to_mass
+src/clustering/knn.rs:332:28: replace > with >= in extend_to_mass
+src/clustering/knn.rs:333:20: replace - with + in extend_to_mass
+src/clustering/knn.rs:333:20: replace - with / in extend_to_mass
+src/clustering/knn.rs:333:31: replace / with % in extend_to_mass
+src/clustering/knn.rs:333:31: replace / with * in extend_to_mass
+src/clustering/knn.rs:333:37: replace * with + in extend_to_mass
+src/clustering/knn.rs:333:37: replace * with / in extend_to_mass
+src/clustering/knn.rs:337:34: replace * with + in extend_to_mass
+src/clustering/knn.rs:337:34: replace * with / in extend_to_mass
+src/clustering/knn.rs:367:16: replace *= with += in extend_to_mass
+# `&&` keeps doubling past the first sufficient width up to `m`, then returns the same prefix of
+# an exact search.
+src/clustering/knn.rs:360:33: replace || with && in extend_to_mass
+#
+# Debt. Older code, re-anchored but not reviewed in this pass.
+src/clustering/knn.rs:138:34: replace > with >= in search
+src/clustering/knn.rs:141:20: replace += with *= in search
+src/clustering/knn.rs:142:23: replace > with == in search
+src/clustering/knn.rs:142:23: replace > with >= in search
+src/clustering/knn.rs:154:27: replace < with <= in search
+src/clustering/knn.rs:154:38: replace < with <= in search
+src/clustering/knn.rs:173:49: replace < with <= in offer
+
 # ==================================================================================================
 # UNREVIEWED DEBT, registered 2026-10-20 from CI run 39237087351 at b0c5f69 (189 of 192 shards;
 # 44, 60 and 81 lost to runner shutdowns, so parts of src/tree.rs, src/topology.rs, src/adwin.rs and
@@ -1482,6 +1578,9 @@ src/assign.rs:341:58: replace < with <= in AssignPlan<R>::nearest_permuted
 # src/assign.rs (19) on 2026-10-21 -- whole-file re-measure found 27 (8 more in the shard CI lost);
 # tests kill 26, the remaining one is argued above, and the read-count test found a beaten hint
 # being read twice (fixed).
+# src/clustering/agglomerative.rs (14) and src/clustering/knn.rs (8) on 2026-10-22 -- whole-file
+# re-measure after the heap of searchers and the mass extension; sections above. The tests written
+# against the extension found its search capped at the build's 64 expansions (fixed).
 # ==================================================================================================
 
 # ── src/clustering/watson.rs (118, unreviewed) ──
@@ -2018,22 +2117,6 @@ src/coreset.rs:231:40: replace ^ with & in sensitivity_coreset
 src/coreset.rs:234:63: replace - with + in sensitivity_coreset
 src/coreset.rs:234:63: replace - with / in sensitivity_coreset
 
-# ── src/clustering/agglomerative.rs (14, unreviewed) ──
-src/clustering/agglomerative.rs:107:26: replace > with >= in Linkage::value
-src/clustering/agglomerative.rs:127:30: replace > with >= in Node<R>::leaf
-src/clustering/agglomerative.rs:207:22: replace < with <= in anderberg
-src/clustering/agglomerative.rs:260:22: replace < with <= in anderberg
-src/clustering/agglomerative.rs:260:22: replace < with == in anderberg
-src/clustering/agglomerative.rs:365:42: replace < with <= in dendrogram_below
-src/clustering/agglomerative.rs:375:21: replace + with * in dendrogram_below
-src/clustering/agglomerative.rs:448:22: replace < with <= in dendrogram_below
-src/clustering/agglomerative.rs:448:22: replace < with == in dendrogram_below
-src/clustering/agglomerative.rs:489:14: replace < with <= in refresh
-src/clustering/agglomerative.rs:581:44: replace - with + in agglomerative_auto
-src/clustering/agglomerative.rs:581:44: replace - with / in agglomerative_auto
-src/clustering/agglomerative.rs:586:18: replace > with >= in agglomerative_auto
-src/clustering/agglomerative.rs:90:26: replace > with >= in Linkage::beta
-
 # ── src/clustering/dcdist.rs (13, unreviewed) ──
 src/clustering/dcdist.rs:178:20: replace > with < in k_center
 src/clustering/dcdist.rs:178:20: replace > with == in k_center
@@ -2076,16 +2159,6 @@ src/clustering/ward.rs:23:40: replace < with > in nearer
 src/clustering/ward.rs:38:32: replace << with >>
 src/clustering/ward.rs:57:49: replace >= with < in nearest_active
 src/clustering/ward.rs:60:29: replace != with == in nearest_active
-
-# ── src/clustering/knn.rs (8, unreviewed) ──
-src/clustering/knn.rs:117:34: replace > with >= in search
-src/clustering/knn.rs:120:20: replace += with *= in search
-src/clustering/knn.rs:121:23: replace > with == in search
-src/clustering/knn.rs:121:23: replace > with >= in search
-src/clustering/knn.rs:133:27: replace < with <= in search
-src/clustering/knn.rs:133:38: replace < with <= in search
-src/clustering/knn.rs:152:49: replace < with <= in offer
-src/clustering/knn.rs:209:27: replace * with + in build
 
 # ── src/model.rs (8, unreviewed) ──
 src/model.rs:209:5: replace numbered -> Vec<(usize, Vec<R>)> with vec![(0, vec![])]
