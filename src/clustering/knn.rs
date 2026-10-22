@@ -111,11 +111,12 @@ impl Scratch {
     }
 }
 
-/// Beam search for the `ef` nearest already-inserted vertices to `q`, expanding at most
-/// [`MAX_EXPANSIONS`] of them. Returns the candidate list sorted by ascending distance.
+/// Beam search for the `ef` nearest already-inserted vertices to `q`, expanding at most `cap` of
+/// them. Returns the candidate list sorted by ascending distance.
 fn search(
     q: usize,
     ef: usize,
+    cap: usize,
     entries: &[usize],
     g: &Graph,
     dist: &impl Fn(usize, usize) -> f64,
@@ -138,7 +139,7 @@ fn search(
             break;
         }
         expansions += 1;
-        if expansions > MAX_EXPANSIONS {
+        if expansions > cap {
             break;
         }
         let neighbours = g.adj[u]
@@ -250,7 +251,7 @@ pub fn build(
         // is what stops a long insertion chain from anchoring the whole graph on one region.
         let extra = (rng.next_u64() % i as u64) as usize;
         let entries = [0usize, extra];
-        let found = search(i, ef, &entries, &g, &dist, &mut scratch);
+        let found = search(i, ef, MAX_EXPANSIONS, &entries, &g, &dist, &mut scratch);
         scratch.reset();
         for &(j, d) in found.iter().take(wide) {
             debug_assert_ne!(j, i, "a vertex was reachable before it was inserted");
@@ -293,9 +294,12 @@ pub fn build(
 /// the exact neighbourhoods added (`local/scratch/a2/core_edges.py`), the graph's MST goes from
 /// 1.5–2.7× the exact weight to the exact tree on aloi, covtype and mnist.
 ///
-/// The search is the build's own capped beam search, widened by doubling until the mass is reached
-/// or the beam covers every vertex. It runs on a snapshot, so the result does not depend on the
-/// order the vertices are extended in.
+/// The search is the build's beam search, widened by doubling until the mass is reached or the beam
+/// covers every vertex. Its expansion cap widens with the beam: under the build's fixed
+/// [`MAX_EXPANSIONS`] a vertex that needs more neighbours than that cap can reach never gets them,
+/// however wide the beam, and its core distance comes out too large. At full width the search
+/// walks the whole connected graph and is exact. It runs on a snapshot, so the result does not
+/// depend on the order the vertices are extended in.
 pub fn extend_to_mass(
     adj: Vec<Vec<(usize, f64)>>,
     degree: usize,
@@ -332,7 +336,15 @@ pub fn extend_to_mass(
         };
         let mut ef = guess.max(2 * degree).max(2);
         loop {
-            let found = search(i, ef.min(m), &[i], &g, &dist, scratch);
+            let found = search(
+                i,
+                ef.min(m),
+                ef.max(MAX_EXPANSIONS),
+                &[i],
+                &g,
+                &dist,
+                scratch,
+            );
             scratch.reset();
             let mut enclosed = mass[i];
             let mut take = 0;
@@ -515,6 +527,55 @@ mod tests {
         }
     }
 
+    /// The extension adds only neighbours a vertex needs: every edge it adds lies inside the core
+    /// radius of one of its endpoints -- the distance at which that endpoint's nearest vertices,
+    /// with itself, first weigh `need`. Three heavy vertices in a row make their light neighbours'
+    /// first beam too narrow, so those searches have to widen before they stop.
+    #[test]
+    fn the_extension_adds_no_edge_beyond_a_core_radius() {
+        let m = 200;
+        let mass: Vec<f64> = (0..m)
+            .map(|i| if (100..103).contains(&i) { 20.0 } else { 1.0 })
+            .collect();
+        let need = 100.0;
+        let d = line();
+        let radius: Vec<f64> = (0..m)
+            .map(|i| {
+                let mut by: Vec<usize> = (0..m).filter(|&j| j != i).collect();
+                by.sort_by(|&a, &b| d(i, a).total_cmp(&d(i, b)));
+                let mut enclosed = mass[i];
+                for j in by {
+                    enclosed += mass[j];
+                    if enclosed >= need {
+                        return d(i, j);
+                    }
+                }
+                f64::INFINITY
+            })
+            .collect();
+        let adj = build(m, 3, 5, line());
+        let before: Vec<Vec<usize>> = adj
+            .iter()
+            .map(|l| l.iter().map(|&(j, _)| j).collect())
+            .collect();
+        let adj = extend_to_mass(adj, 3, &mass, need, line());
+        for (i, list) in adj.iter().enumerate() {
+            let enclosed = mass[i] + list.iter().map(|&(j, _)| mass[j]).sum::<f64>();
+            assert!(enclosed >= need, "vertex {i} encloses {enclosed}");
+            for &(j, e) in list {
+                if before[i].contains(&j) {
+                    continue;
+                }
+                assert!(
+                    e <= radius[i].max(radius[j]),
+                    "added edge {i}-{j} at {e}, radii {} and {}",
+                    radius[i],
+                    radius[j]
+                );
+            }
+        }
+    }
+
     #[test]
     fn the_same_seed_builds_the_same_graph_and_a_different_one_does_not() {
         let a = build(150, 5, 42, grid(13));
@@ -546,5 +607,51 @@ mod tests {
         }
         let recall = hits as f64 / (m * degree) as f64;
         assert!(recall > 0.85, "recall = {recall}");
+    }
+
+    /// Recall of the true `k` nearest neighbours over the whole graph.
+    fn recall(adj: &[Vec<(usize, f64)>], k: usize, d: impl Fn(usize, usize) -> f64) -> f64 {
+        let m = adj.len();
+        let mut hits = 0usize;
+        for (i, list) in adj.iter().enumerate() {
+            let mut all: Vec<(usize, f64)> =
+                (0..m).filter(|&j| j != i).map(|j| (j, d(i, j))).collect();
+            all.sort_by(|a, b| a.1.total_cmp(&b.1).then(a.0.cmp(&b.0)));
+            hits += all
+                .iter()
+                .take(k)
+                .filter(|&&(j, _)| list.iter().any(|&(u, _)| u == j))
+                .count();
+        }
+        hits as f64 / (m * k) as f64
+    }
+
+    /// Eight overlapping clusters in 24 dimensions, where the build width shows: the 10-NN recall is
+    /// 0.91 built at twice the degree, 0.84 at `degree + 2` and 0.80 built narrow.
+    #[test]
+    fn the_wide_build_holds_its_recall_on_clustered_points() {
+        let (m, dim, degree) = (800usize, 24usize, 10usize);
+        let mut rng = SplitMix64::new(4);
+        let pts: Vec<Vec<f64>> = (0..m)
+            .map(|i| {
+                let centre = (i % 8) as f64 * 1.5;
+                (0..dim)
+                    .map(|k| centre * ((k + i % 8) % 3) as f64 + rng.gauss())
+                    .collect()
+            })
+            .collect();
+        let d = |i: usize, j: usize| -> f64 {
+            pts[i]
+                .iter()
+                .zip(&pts[j])
+                .map(|(a, b)| (a - b) * (a - b))
+                .sum::<f64>()
+                .sqrt()
+        };
+        let mut got = Vec::new();
+        for seed in 0..3 {
+            got.push(recall(&build(m, degree, seed, d), degree, d));
+        }
+        assert!(got.iter().all(|&r| r > 0.88), "recall = {got:?}");
     }
 }
