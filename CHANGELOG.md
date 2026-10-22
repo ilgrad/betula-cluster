@@ -43,7 +43,10 @@ All notable changes to this project are documented here. The format follows
   other was alive, which is the whole exactness argument; a test checks it merge for merge against
   Anderberg at `d = 150` with exact ties. Head time over the k-means control at 4 000 MNIST leaves:
   centroid ~36 s → ~6 s, average / median / weighted 3.3–5×; ALOI-64 3–5× on heads under a
-  second; covtype (`d = 54`) unchanged. Every label digest matched the 1.1.0 build's.
+  second; covtype (`d = 54`) unchanged. Every label digest matched the 1.1.0 build's. Exact up to
+  the rounding of the linkage value, which the two drivers sum in different orders: where two
+  merges tie to the last bit (duplicated or grid-valued leaves) they can come out in the other
+  order, and under centroid or median linkage that can move later merges.
 
 ### Fixed
 - **`AssignPlan` no longer reads a beaten hint twice.** The pruned assignment skipped the incumbent

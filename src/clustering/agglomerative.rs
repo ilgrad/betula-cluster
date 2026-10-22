@@ -232,6 +232,11 @@ impl<R: Real> Ord for Entry<R> {
 /// merged. The heap therefore pops the true minimum without the `O(m)` update row that
 /// [`anderberg`] pays on every merge to keep its cache fresh — 2.5× fewer reads on MNIST leaves.
 ///
+/// Exact up to the rounding of the linkage value, which the two drivers sum in different orders.
+/// Where two merges tie to the last bit, they may come out in the other order than in Anderberg's
+/// scan, and under centroid or median linkage an inversion then moves what follows. Both orders
+/// are minimal at every step.
+///
 /// Each search prunes on a prefix of the squared distance, the bound of [`crate::assign`], over
 /// dimensions in descending variance order. The distance is accumulated stage by stage everywhere,
 /// so a pruned candidate's full value provably exceeds the incumbent's, and ties go to the lower
@@ -913,6 +918,54 @@ mod tests {
     /// Two empty leaves have no Ward weight between them; the pair falls back to the plain squared
     /// distance, as [`Linkage::value`] does, rather than to `0 / 0`. They coincide, so that pair
     /// ties at zero with every pairing of an empty leaf and a full one and wins on index.
+    /// Small integer grids are all ties: equal distances, equal linkage values, re-searches whose
+    /// hint ties with a lower index. Weighted and Ward compute every value to the same bits in both
+    /// drivers, so there the two must agree exactly, merge for merge and height for height. (The
+    /// average linkage sums its terms in another order and differs by an ulp; centroid and median
+    /// can order bit-equal merges differently, and their inversions then move what follows.)
+    #[test]
+    fn on_integer_grids_weighted_and_ward_match_the_full_scan_bit_for_bit() {
+        for seed in 0..2000u64 {
+            let mut rng = SplitMix64::new(seed);
+            let m = 6 + (seed % 7) as usize;
+            let feats: Vec<Spherical<f64>> = (0..m)
+                .map(|_| {
+                    let x = (rng.next_u64() % 5) as f64;
+                    let y = (rng.next_u64() % 5) as f64;
+                    leaf(&[[x, y]])
+                })
+                .collect();
+            for linkage in [Linkage::Weighted, Linkage::Ward] {
+                let mine = dendrogram(&feats, linkage);
+                let mut node: Vec<Node<f64>> = feats.iter().map(Node::leaf).collect();
+                let theirs = anderberg(
+                    &mut node,
+                    |a, b| linkage.value(a, b),
+                    |nodes, a, b| {
+                        let absorbed = Node {
+                            mass: nodes[b].mass,
+                            mean: nodes[b].mean.clone(),
+                            spread: nodes[b].spread,
+                        };
+                        nodes[a].absorb(&absorbed, linkage);
+                    },
+                );
+                assert_eq!(
+                    canonical(&mine, m),
+                    canonical(&theirs, m),
+                    "seed {seed} {linkage:?}"
+                );
+                for (a, b) in mine.iter().zip(&theirs) {
+                    assert_eq!(
+                        a.height.to_bits(),
+                        b.height.to_bits(),
+                        "seed {seed} {linkage:?}"
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn empty_leaves_merge_under_ward_as_in_the_full_scan() {
         let feats = vec![
