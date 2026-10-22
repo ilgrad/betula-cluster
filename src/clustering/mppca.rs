@@ -117,6 +117,39 @@ fn dot<R: Real>(a: &[R], b: &[R]) -> R {
         .fold(R::zero(), |p, q| p + q)
 }
 
+/// Mean per-dimension variance of the whole summary, `Σ_i n_i (tr Σ_i + ‖μ_i − μ̄‖²) / (N·d)`,
+/// without a `d×d` matrix: the scale every floor in this head is expressed against. `1` for a
+/// summary with no mass, floored at `1e-12` otherwise.
+fn mean_variance<R: Real>(mu: &[Vec<R>], n: &[R], tr_sig: &[R], dim: usize) -> R {
+    let dimr = R::from_usize(dim).unwrap();
+    let ntot: R = n.iter().copied().fold(R::zero(), |a, b| a + b);
+    let mut centre = vec![R::zero(); dim];
+    if ntot > R::zero() {
+        for (mi, &ni) in mu.iter().zip(n) {
+            for (cv, &v) in centre.iter_mut().zip(mi) {
+                *cv = *cv + ni * v;
+            }
+        }
+        for cv in &mut centre {
+            *cv = *cv / ntot;
+        }
+    }
+    let mut total = R::zero();
+    for ((mi, &ni), &ti) in mu.iter().zip(n).zip(tr_sig) {
+        let spread = mi
+            .iter()
+            .zip(&centre)
+            .map(|(&a, &b)| (a - b) * (a - b))
+            .fold(R::zero(), |p, s| p + s);
+        total = total + ni * (ti + spread);
+    }
+    if ntot > R::zero() {
+        (total / (ntot * dimr)).max(R::from_f64(1e-12).unwrap())
+    } else {
+        R::one()
+    }
+}
+
 /// Fit a `k`-component MPPCA with subspace rank `q`, warm-started from k-means and a per-cluster
 /// subspace iteration.
 #[allow(clippy::needless_range_loop)] // component/rank/dimension indices read clearest explicitly
@@ -143,35 +176,7 @@ fn mppca_once<R: Real, C: ClusterFeature<R>>(
     let log_two_pi = R::from_f64(std::f64::consts::TAU).unwrap().ln();
     let dimr = R::from_usize(dim).unwrap();
 
-    // Mean global variance, matrix-free: the scale every floor in this head is expressed against.
-    let ntot: R = n.iter().copied().fold(R::zero(), |a, b| a + b);
-    let scale = {
-        let mut centre = vec![R::zero(); dim];
-        if ntot > R::zero() {
-            for (mi, &ni) in mu.iter().zip(&n) {
-                for (cv, &v) in centre.iter_mut().zip(mi) {
-                    *cv = *cv + ni * v;
-                }
-            }
-            for cv in &mut centre {
-                *cv = *cv / ntot;
-            }
-        }
-        let mut total = R::zero();
-        for i in 0..m {
-            let spread = mu[i]
-                .iter()
-                .zip(&centre)
-                .map(|(&a, &b)| (a - b) * (a - b))
-                .fold(R::zero(), |p, s| p + s);
-            total = total + n[i] * (tr_sig[i] + spread);
-        }
-        if ntot > R::zero() {
-            (total / (ntot * dimr)).max(R::from_f64(1e-12).unwrap())
-        } else {
-            R::one()
-        }
-    };
+    let scale = mean_variance(&mu, &n, &tr_sig, dim);
     let noise_floor = R::from_f64(1e-6).unwrap() * scale;
     // Without a floor on the loading scale, a cluster whose leading eigenvalue does not exceed σ²
     // gets `W_c = 0` — and `W = 0` is a fixed point of the M-step (`SW = 0 ⇒ W_new = 0`), so the
@@ -491,9 +496,14 @@ pub fn mppca<R: Real, C: ClusterFeature<R>>(
     )
 }
 
-/// MPPCA with automatic component count (BIC over `k ∈ [k_min, k_max]`). A component costs
-/// `d` mean parameters, one noise variance and `d·q − q(q−1)/2` free loadings — the Stiefel
-/// rotation of `W_c` is unidentifiable, so the `q(q−1)/2` of it are not counted.
+/// Free parameters of a `k`-component MPPCA of rank `q` in `d` dimensions. A component costs `d`
+/// mean parameters, one noise variance and `d·q − q(q−1)/2` free loadings — the Stiefel rotation
+/// of `W_c` is unidentifiable, so the `q(q−1)/2` of it are not counted — and `k − 1` weights.
+fn free_parameters(k: usize, d: usize, q: usize) -> usize {
+    k * (d + 1 + d * q - q * q.saturating_sub(1) / 2) + (k - 1)
+}
+
+/// MPPCA with automatic component count (BIC over `k ∈ [k_min, k_max]`).
 pub fn mppca_auto<R: Real, C: ClusterFeature<R>>(
     features: &[C],
     k_min: usize,
@@ -511,7 +521,7 @@ pub fn mppca_auto<R: Real, C: ClusterFeature<R>>(
     let mut best: Option<Mppca<R>> = None;
     for k in k_lo..=k_hi {
         let g = mppca_once(features, k, rank, max_iter, seed);
-        let p = k * (d + 1 + d * q - q * q.saturating_sub(1) / 2) + (k - 1);
+        let p = free_parameters(k, d, q);
         let score = bic(g.loglik, p, ntot);
         if score < best_score {
             best_score = score;
@@ -581,6 +591,158 @@ mod tests {
                 f
             })
             .collect()
+    }
+
+    /// Two clusters at `±c`, each with per-point scatter `diag(12, 1/3, 1/3)` about its centre: the `e0` ends
+    /// as single-point leaves (between-leaf spread), the `e1` and `e2` pairs as two-point leaves
+    /// (within-leaf scatter), so both halves of the scatter the init reads are exercised.
+    fn two_known_clusters(c: f64) -> Vec<Full<f64>> {
+        let mut out = Vec::new();
+        for sign in [1.0, -1.0] {
+            let centre = [sign * c, 0.0, 0.0];
+            let at = |d: [f64; 3]| [centre[0] + d[0], centre[1] + d[1], centre[2] + d[2]];
+            for d in [[6.0, 0.0, 0.0], [-6.0, 0.0, 0.0]] {
+                let mut f = Full::new(3);
+                f.push(&at(d), 1.0);
+                out.push(f);
+            }
+            for axis in 1..3 {
+                let mut f = Full::new(3);
+                let mut d = [0.0; 3];
+                d[axis] = 1.0;
+                f.push(&at(d), 1.0);
+                d[axis] = -1.0;
+                f.push(&at(d), 1.0);
+                out.push(f);
+            }
+        }
+        out
+    }
+
+    fn scale_of(features: &[Full<f64>]) -> f64 {
+        let mu: Vec<Vec<f64>> = features.iter().map(|f| f.mean().to_vec()).collect();
+        let n: Vec<f64> = features.iter().map(|f| f.weight()).collect();
+        let tr: Vec<f64> = features.iter().map(|f| f.second_moment().trace()).collect();
+        mean_variance(&mu, &n, &tr, features[0].dim())
+    }
+
+    #[test]
+    fn the_scale_is_the_mean_per_dimension_variance_of_every_point() {
+        // Two clusters of known scatter: per point, `diag(12, 1/3, 1/3)` about `±10 e0`, so the
+        // pooled variance is `(100 + 12 + 2/3) / 3` per dimension, however the points sit in leaves.
+        let f = two_known_clusters(10.0);
+        assert!((scale_of(&f) - (100.0 + 12.0 + 2.0 / 3.0) / 3.0).abs() < 1e-12);
+        assert_eq!(
+            mean_variance::<f64>(&[vec![1.0, 2.0]], &[0.0], &[0.0], 2),
+            1.0
+        );
+        assert_eq!(
+            mean_variance::<f64>(&[vec![1.0, 2.0]], &[3.0], &[0.0], 2),
+            1e-12
+        );
+    }
+
+    #[test]
+    fn the_initial_subspace_noise_and_loadings_are_the_cluster_scatters() {
+        // `max_iter = 0` returns the warm start untouched. Each cluster's scatter has spectrum
+        // {12, 1/3, 1/3}: the rank-one init must find `e0` with `λ = 12`, put the other two
+        // eigenvalues' mean in `σ²`, and scale the loading to `λ − σ² = 35/3`.
+        let g = mppca_once::<f64, _>(&two_known_clusters(10.0), 2, 1, 0, 3);
+        for c in 0..2 {
+            assert!((g.noise[c] - 1.0 / 3.0).abs() < 1e-3, "{:?}", g.noise);
+            let w = &g.loads[c][0];
+            assert!((dot(w, w) - 35.0 / 3.0).abs() < 1e-3, "{w:?}");
+            assert!(w[0].abs() > 0.999 * dot(w, w).sqrt(), "{w:?}");
+        }
+    }
+
+    #[test]
+    fn a_cluster_with_no_principal_direction_gets_the_floor_loading() {
+        // ±e0, ±e1, ±e2: scatter `I/3` exactly, so the leading eigenvalue equals the noise and the
+        // loading would be zero — the fixed point the floor is there to keep EM out of.
+        let mut f = Vec::new();
+        for axis in 0..3 {
+            for sign in [1.0, -1.0] {
+                let mut cf = Full::new(3);
+                let mut p = [0.0; 3];
+                p[axis] = sign;
+                cf.push(&p, 1.0);
+                f.push(cf);
+            }
+        }
+        let g = mppca_once::<f64, _>(&f, 1, 1, 0, 0);
+        let w = &g.loads[0][0];
+        let floor = 1e-6 * scale_of(&f);
+        assert!(
+            (dot(w, w) - floor).abs() < 1e-6 * floor,
+            "{} vs {floor}",
+            dot(w, w)
+        );
+    }
+
+    #[test]
+    fn noise_on_an_exact_subspace_stops_at_its_floor() {
+        // Points on a line in the plane: with `q = 1` the residual is zero, and `σ²` must stop at
+        // `1e-6` of the global scale, not at zero and not at some other multiple.
+        let f: Vec<Full<f64>> = (0..40)
+            .map(|i| {
+                let t = (i as f64 - 19.5) / 4.0;
+                let mut cf = Full::new(2);
+                cf.push(&[3.0 * t, -t], 1.0);
+                cf
+            })
+            .collect();
+        let g = mppca::<f64, _>(&f, 1, 1, 50, 0);
+        assert_eq!(g.noise[0], 1e-6 * scale_of(&f));
+    }
+
+    #[test]
+    fn the_within_leaf_scatter_enters_the_likelihood_exactly() {
+        // One component: the MLE depends on the pooled scatter alone, so 240 points read as 60
+        // four-point leaves or as 240 one-point leaves reach the same fit, and the expected
+        // log-likelihood of a leaf is the summed log-density of its points. Measured agreement on
+        // the unmutated code is 1e-15 relative; anything that mis-weights `tr(Σ_c⁻¹ Σ_i)` moves it.
+        let a = [[2.0, 0.3, 0.0], [0.3, 1.0, 0.2], [0.0, 0.2, 0.5]];
+        let leaves = mppca_once::<f64, _>(&correlated_leaves(4, &a, 60, 4), 1, 1, 200, 0).loglik;
+        let points = mppca_once::<f64, _>(&correlated_leaves(4, &a, 240, 1), 1, 1, 200, 0).loglik;
+        assert!(
+            (leaves - points).abs() < 1e-9 * points.abs(),
+            "{leaves} vs {points}"
+        );
+    }
+
+    #[test]
+    fn em_runs_until_the_likelihood_stops_moving() {
+        // Measured on this fixture: -1059.02123 after one step, -1059.01654 after two, converged
+        // -1059.01632 by the fifth. A convergence test that fired early would stop at the first two.
+        let a = [[2.0, 0.3, 0.0], [0.3, 1.0, 0.2], [0.0, 0.2, 0.5]];
+        let leaves = correlated_leaves(4, &a, 60, 4);
+        let two = mppca_once::<f64, _>(&leaves, 1, 1, 2, 0).loglik;
+        let done = mppca_once::<f64, _>(&leaves, 1, 1, 200, 0).loglik;
+        assert!(done > two + 1e-4, "{done} converged, {two} after two steps");
+    }
+
+    #[test]
+    fn weights_and_responsibilities_are_distributions() {
+        let g = mppca::<f64, _>(&two_known_clusters(10.0), 2, 1, 100, 0);
+        assert!(
+            (g.weights.iter().sum::<f64>() - 1.0).abs() < 1e-12,
+            "{:?}",
+            g.weights
+        );
+        for r in &g.resp {
+            assert!((r.iter().sum::<f64>() - 1.0).abs() < 1e-9, "{r:?}");
+        }
+        assert_eq!(argmax(&[0.2_f64, 0.4, 0.4]), 1);
+    }
+
+    #[test]
+    fn the_bic_counts_means_noise_identifiable_loadings_and_free_weights() {
+        // d = 3, q = 1: 3 + 1 + 3 per component. d = 5, q = 2: 5 + 1 + (10 − 1).
+        assert_eq!(free_parameters(1, 3, 1), 7);
+        assert_eq!(free_parameters(2, 3, 1), 15);
+        assert_eq!(free_parameters(3, 5, 2), 3 * 15 + 2);
+        assert_eq!(free_parameters(2, 4, 0), 2 * 5 + 1);
     }
 
     /// With `q = d − 1` the PPCA maximum-likelihood solution is exact: `σ²` is the smallest
