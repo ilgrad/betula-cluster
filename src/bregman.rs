@@ -833,4 +833,74 @@ mod tests {
         cf.push(&[4.0, 6.0], 1.0);
         assert!(cf.ssd().is_finite() && cf.ssd() > 0.0);
     }
+
+    #[test]
+    fn the_closed_form_is_the_definition_at_well_separated_arguments() {
+        // `phi` and `grad` are the oracle the closed forms are checked against, so they are checked
+        // here against the closed forms: `d_φ(x, y) = φ(x) − φ(y) − φ′(y)(x − y)`, wherever `x` and
+        // `y` are far enough apart for the definition not to cancel.
+        let mut rng = Lcg(8);
+        macro_rules! check {
+            ($b:ty, $lo:expr, $hi:expr) => {{
+                let div = <$b>::default();
+                for _ in 0..2_000 {
+                    let (x, y) = (rng.span($lo, $hi), rng.span($lo, $hi));
+                    let d = BregmanDivergence::<f64>::divergence(&div, x, y);
+                    let (px, py) = (div.phi(x), div.phi(y));
+                    let g = BregmanDivergence::<f64>::grad(&div, y);
+                    let def = px - py - g * (x - y);
+                    let tol = 1e-12 * (1.0 + px.abs() + py.abs() + (g * (x - y)).abs());
+                    assert!((d - def).abs() < tol, "{}: {d} vs {def}", stringify!($b));
+                }
+            }};
+        }
+        check!(SquaredEuclidean, -4.0, 4.0);
+        check!(KullbackLeibler, 0.1, 8.0);
+        check!(ItakuraSaito, 0.1, 8.0);
+        check!(Logistic, 0.05, 0.95);
+    }
+
+    #[test]
+    fn each_divergence_admits_exactly_its_domain() {
+        let valid =
+            |b: &dyn Fn(f64) -> bool, ts: &[f64]| ts.iter().map(|&t| b(t)).collect::<Vec<_>>();
+        let probes = [-1.0, 0.0, 0.5, 1.0, 2.0, f64::INFINITY, f64::NAN];
+        let euclid = |t| BregmanDivergence::<f64>::is_valid(&SquaredEuclidean, t);
+        let kl = |t| BregmanDivergence::<f64>::is_valid(&KullbackLeibler, t);
+        let is = |t| BregmanDivergence::<f64>::is_valid(&ItakuraSaito, t);
+        let logistic = |t| BregmanDivergence::<f64>::is_valid(&Logistic, t);
+        let (t, f) = (true, false);
+        assert_eq!(valid(&euclid, &probes), [t, t, t, t, t, f, f]);
+        assert_eq!(valid(&kl, &probes), [f, f, t, t, t, f, f]);
+        assert_eq!(valid(&is, &probes), [f, f, t, t, t, f, f]);
+        assert_eq!(valid(&logistic, &probes), [f, f, t, f, f, f, f]);
+    }
+
+    #[test]
+    fn the_mean_information_and_the_variance_proxy_divide_by_mass_and_dimension() {
+        let mut rng = Lcg(9);
+        let pts = points(&mut rng, 30, 3, 0.5, 4.0);
+        let w: Vec<f64> = (0..30).map(|i| 0.5 + (i % 4) as f64).collect();
+        let cf = build::<KullbackLeibler>(&pts, &w);
+        let (n, s) = (cf.weight(), cf.ssd());
+        assert!(s > 0.0);
+        assert_eq!(cf.mean_information(), s / n);
+        assert_eq!(cf.variance(3), s / n / 3.0);
+        let empty = BregmanCf::<f64, KullbackLeibler>::new(3);
+        assert_eq!(empty.mean_information(), 0.0);
+        assert_eq!(empty.variance(3), 0.0);
+    }
+
+    #[test]
+    fn merging_with_an_empty_feature_destroys_no_information() {
+        // An empty feature's zero mean is outside dom φ for KL, so the increase must not evaluate a
+        // divergence against it at all — a zero weight does not clean up `0 · NaN`.
+        let mut rng = Lcg(10);
+        let pts = points(&mut rng, 10, 2, 0.5, 4.0);
+        let cf = build::<KullbackLeibler>(&pts, &[1.0; 10]);
+        let empty = BregmanCf::<f64, KullbackLeibler>::new(2);
+        let inc = BregmanIncrease::<KullbackLeibler>::new();
+        assert_eq!(inc.between(&empty, &cf), 0.0);
+        assert_eq!(inc.between(&cf, &empty), 0.0);
+    }
 }

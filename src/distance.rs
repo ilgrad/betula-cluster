@@ -638,6 +638,37 @@ mod tests {
     }
 
     #[test]
+    fn subspace_chi2_matches_the_dense_inverse_where_the_sketch_kept_only_an_isotropic_floor() {
+        // One row for rank-2 data, then the mean itself: the shrink retains no direction and the
+        // whole scatter comes back as `iso`, which joins the prior's own isotropic term.
+        let (s0, kappa) = (0.5, 4.0);
+        let mut fd: FdSketch<f64> = FdSketch::with_ell(3, 1);
+        for p in [
+            [-2.0, 1.0, 0.5],
+            [2.0, -1.0, -0.5],
+            [1.0, 3.0, -2.0],
+            [-1.0, -3.0, 2.0],
+        ] {
+            fd.push(&p, 1.0);
+        }
+        let mean = fd.mean().to_vec();
+        fd.push(&mean, 1.0);
+        let SecondMoment::LowRank { iso, .. } = fd.second_moment() else {
+            unreachable!("an FD sketch is low-rank")
+        };
+        assert!(iso > 0.0);
+        let gate = SubspaceChi2::new(s0, kappa);
+        for probe in [[0.0, 0.0, 0.0], [3.0, -1.0, 2.0], [-2.5, 0.5, 4.0]] {
+            let want = dense_maha_sq(&fd, &probe, s0, kappa);
+            let got = gate.point(&fd, &probe);
+            assert!(
+                (got - want).abs() < 1e-9,
+                "probe {probe:?}: {got} vs {want}"
+            );
+        }
+    }
+
+    #[test]
     fn subspace_chi2_falls_back_to_the_diagonal_gate() {
         // A feature with a `Dense` second moment carries no basis, so the two gates must agree
         // exactly — `absorb="subspace"` is only a different gate for `feature="fd"`.

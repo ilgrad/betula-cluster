@@ -359,4 +359,36 @@ mod tests {
             assert!(score > 0.999, "k={k}: NN-chain vs brute ARI = {score}");
         }
     }
+
+    #[test]
+    fn the_nearer_candidate_is_the_lower_height_then_the_lower_index_either_way_round() {
+        for (a, b, want) in [
+            ((2.0, 0), (1.0, 5), (1.0, 5)),
+            ((1.0, 2), (1.0, 3), (1.0, 2)),
+            ((1.0, 3), (1.0, 2), (1.0, 2)),
+        ] {
+            assert_eq!(nearer(a, b), want, "{a:?} {b:?}");
+            assert_eq!(nearer(b, a), want, "{b:?} {a:?}");
+        }
+    }
+
+    #[test]
+    fn a_scan_long_enough_to_fork_matches_brute_force_ward() {
+        // 200 leaves of 200 dimensions: the first scans read 40 000 scalars, past `PAR_MIN_READS`,
+        // so the parallel arm decides the early merges whenever the feature is built in.
+        use crate::feature::Spherical;
+        let mut rng = SplitMix64::new(9);
+        let feats: Vec<Spherical<f64>> = (0..200)
+            .map(|i| {
+                let p: Vec<f64> = (0..200)
+                    .map(|j| f64::from(u8::from(j == i % 4)) * 6.0 + rng.gauss())
+                    .collect();
+                let mut f = <Spherical<f64> as ClusterFeature<f64>>::new(200);
+                f.push(&p, 1.0);
+                f
+            })
+            .collect();
+        let score = ari(&ward_hac(&feats, 4).labels, &brute_ward(&feats, 4));
+        assert!(score > 0.999, "NN-chain vs brute ARI = {score}");
+    }
 }

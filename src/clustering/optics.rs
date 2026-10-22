@@ -413,4 +413,14 @@ mod tests {
         assert!(plot.reachability[1..].iter().all(|&w| w == 0.0));
         assert_eq!(plot.mass.len(), 5);
     }
+
+    #[test]
+    fn a_disconnected_forest_yields_every_component_in_index_order() {
+        let (order, reach) = prim_order(5, &[(1.0, 0, 3), (2.0, 2, 4)]);
+        assert_eq!(order, [0, 3, 1, 2, 4]);
+        assert_eq!(
+            reach,
+            [f64::INFINITY, 1.0, f64::INFINITY, f64::INFINITY, 2.0]
+        );
+    }
 }

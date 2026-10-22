@@ -510,7 +510,8 @@ mod tests {
     }
 
     /// The simplified silhouette from the raw points, written from the definition: mean squared
-    /// distance to the own centroid over the same to the nearest foreign centroid.
+    /// distance to the own centroid over the same to the nearest foreign centroid, or `0` where
+    /// that denominator vanishes.
     fn reference_simplified(points: &[Vec<f64>], labels: &[usize], k: usize) -> f64 {
         let d = points[0].len();
         let mut cent = vec![vec![0.0; d]; k];
@@ -535,7 +536,7 @@ mod tests {
                 .filter(|&l| l != j)
                 .map(|l| sq(p, &cent[l]))
                 .fold(f64::INFINITY, f64::min);
-            acc += 1.0 - own / other;
+            acc += if other > 0.0 { 1.0 - own / other } else { 0.0 };
         }
         acc / points.len() as f64
     }
@@ -611,5 +612,205 @@ mod tests {
             simplified_silhouette::<f64, Spherical<f64>>(&[], &[], 3),
             0.0
         );
+    }
+
+    fn sq(a: &[f64], b: &[f64]) -> f64 {
+        a.iter().zip(b).map(|(x, y)| (x - y) * (x - y)).sum()
+    }
+
+    fn point_centroids(points: &[Vec<f64>], labels: &[usize], k: usize) -> Vec<Option<Vec<f64>>> {
+        (0..k)
+            .map(|c| {
+                let own: Vec<&Vec<f64>> = points
+                    .iter()
+                    .zip(labels)
+                    .filter(|(_, l)| **l == c)
+                    .map(|(p, _)| p)
+                    .collect();
+                (!own.is_empty()).then(|| {
+                    (0..points[0].len())
+                        .map(|j| own.iter().map(|p| p[j]).sum::<f64>() / own.len() as f64)
+                        .collect()
+                })
+            })
+            .collect()
+    }
+
+    /// Davies–Bouldin, RMS form, from the raw points and sharing no code with [`davies_bouldin`].
+    fn reference_db(points: &[Vec<f64>], labels: &[usize], k: usize) -> f64 {
+        let cent = point_centroids(points, labels, k);
+        let live: Vec<usize> = (0..k).filter(|&c| cent[c].is_some()).collect();
+        let sigma = |c: usize| {
+            let cc = cent[c].as_ref().unwrap();
+            let own: Vec<f64> = points
+                .iter()
+                .zip(labels)
+                .filter(|(_, l)| **l == c)
+                .map(|(p, _)| sq(p, cc))
+                .collect();
+            (own.iter().sum::<f64>() / own.len() as f64).sqrt()
+        };
+        let total: f64 = live
+            .iter()
+            .map(|&j| {
+                live.iter()
+                    .filter(|&&l| l != j)
+                    .map(|&l| {
+                        let sep = sq(cent[j].as_ref().unwrap(), cent[l].as_ref().unwrap()).sqrt();
+                        (sigma(j) + sigma(l)) / sep
+                    })
+                    .fold(0.0, f64::max)
+            })
+            .sum();
+        total / live.len() as f64
+    }
+
+    /// Three blobs of unequal spread, the first on the origin, sorted by label so that consecutive
+    /// points can be packed into label-pure leaves.
+    fn uneven_blobs() -> (Vec<Vec<f64>>, Vec<usize>) {
+        let mut rng = SplitMix64::new(41);
+        let mut pts = Vec::new();
+        let mut truth = Vec::new();
+        for (c, (centre, sd)) in [([0.0, 0.0], 0.5), ([6.0, 1.0], 1.5), ([1.0, 7.0], 0.9)]
+            .iter()
+            .enumerate()
+        {
+            for _ in 0..60 {
+                pts.push(vec![
+                    centre[0] + sd * rng.gauss(),
+                    centre[1] + sd * rng.gauss(),
+                ]);
+                truth.push(c);
+            }
+        }
+        (pts, truth)
+    }
+
+    fn packed(points: &[Vec<f64>], per: usize) -> Vec<Spherical<f64>> {
+        points
+            .chunks(per)
+            .map(|c| {
+                let mut f = Spherical::new(2);
+                c.iter().for_each(|p| f.push(p, 1.0));
+                f
+            })
+            .collect()
+    }
+
+    #[test]
+    fn davies_bouldin_matches_the_point_level_definition_on_packed_leaves() {
+        let (pts, truth) = uneven_blobs();
+        let feats = packed(&pts, 4);
+        let labels: Vec<usize> = truth.chunks(4).map(|c| c[0]).collect();
+        let two: Vec<usize> = truth.iter().map(|&c| c.min(1)).collect();
+        let two_leaves: Vec<usize> = labels.iter().map(|&c| c.min(1)).collect();
+        for (got, want) in [
+            (
+                davies_bouldin(&feats, &labels, 3),
+                reference_db(&pts, &truth, 3),
+            ),
+            (
+                davies_bouldin(&feats, &two_leaves, 2),
+                reference_db(&pts, &two, 2),
+            ),
+            // An unused label is not a cluster.
+            (
+                davies_bouldin(&feats, &labels, 5),
+                reference_db(&pts, &truth, 3),
+            ),
+        ] {
+            assert!((got - want).abs() < 1e-12 * want, "{got} vs {want}");
+        }
+        assert_eq!(davies_bouldin::<f64, Spherical<f64>>(&[], &[], 3), 0.0);
+    }
+
+    #[test]
+    fn calinski_harabasz_counts_an_unused_label_in_k_and_nowhere_else() {
+        let (pts, truth) = uneven_blobs();
+        let feats = leaf_per_point(&pts);
+        let two: Vec<usize> = truth.iter().map(|&c| c.min(1)).collect();
+        for (labels, k) in [(&truth, 3), (&truth, 4), (&two, 2)] {
+            let got = calinski_harabasz(&feats, labels, k);
+            let want = reference_ch(&pts, labels, k);
+            assert!((got - want).abs() < 1e-9 * want, "k = {k}: {got} vs {want}");
+        }
+    }
+
+    /// Medoid silhouette from the raw points: each cluster's medoid is its point nearest the
+    /// centroid, and a point scores `1 − ‖x − m_own‖² / min_other ‖x − m‖²`, or `0` where the
+    /// denominator vanishes.
+    fn reference_medoid(points: &[Vec<f64>], labels: &[usize], k: usize) -> f64 {
+        let cent = point_centroids(points, labels, k);
+        let medoid: Vec<Option<&Vec<f64>>> = (0..k)
+            .map(|c| {
+                let cc = cent[c].as_ref()?;
+                points
+                    .iter()
+                    .zip(labels)
+                    .filter(|(_, l)| **l == c)
+                    .map(|(p, _)| p)
+                    .min_by(|a, b| sq(a, cc).total_cmp(&sq(b, cc)))
+            })
+            .collect();
+        let s: f64 = points
+            .iter()
+            .zip(labels)
+            .map(|(p, &c)| {
+                let own = sq(p, medoid[c].unwrap());
+                let other = (0..k)
+                    .filter(|&l| l != c)
+                    .filter_map(|l| medoid[l])
+                    .map(|m| sq(p, m))
+                    .fold(f64::INFINITY, f64::min);
+                if other > 0.0 { 1.0 - own / other } else { 0.0 }
+            })
+            .sum();
+        s / points.len() as f64
+    }
+
+    #[test]
+    fn medoid_silhouette_matches_the_point_level_definition_on_singleton_leaves() {
+        let (pts, truth) = uneven_blobs();
+        let feats = leaf_per_point(&pts);
+        let two: Vec<usize> = truth.iter().map(|&c| c.min(1)).collect();
+        for (labels, k) in [(&truth, 3), (&two, 2)] {
+            let got = medoid_silhouette(&feats, labels, k);
+            let want = reference_medoid(&pts, labels, k);
+            assert!((got - want).abs() < 1e-12, "k = {k}: {got} vs {want}");
+        }
+        assert_eq!(medoid_silhouette::<f64, Spherical<f64>>(&[], &[], 3), 0.0);
+    }
+
+    #[test]
+    fn a_point_on_a_foreign_representative_scores_zero_rather_than_minus_infinity() {
+        // Cluster 1 owns a point at the origin, which is both cluster 0's centroid and its medoid.
+        let pts: Vec<Vec<f64>> = [[-1.0], [0.0], [1.0], [0.0], [9.0], [10.0], [11.0]]
+            .iter()
+            .map(|p| p.to_vec())
+            .collect();
+        let labels = [0, 0, 0, 1, 1, 1, 1];
+        let feats = leaf_per_point(&pts);
+        let medoid = medoid_silhouette(&feats, &labels, 2);
+        assert!((medoid - reference_medoid(&pts, &labels, 2)).abs() < 1e-12);
+        let simplified = simplified_silhouette(&feats, &labels, 2);
+        assert!((simplified - reference_simplified(&pts, &labels, 2)).abs() < 1e-12);
+        assert!(medoid.is_finite() && simplified.is_finite());
+    }
+
+    #[test]
+    fn the_simplified_silhouette_ignores_an_unused_label() {
+        // The unused label's centroid would sit at the origin, inside the first blob, if it counted.
+        let (pts, truth) = uneven_blobs();
+        let feats = leaf_per_point(&pts);
+        assert_eq!(
+            simplified_silhouette(&feats, &truth, 4),
+            simplified_silhouette(&feats, &truth, 3)
+        );
+    }
+
+    #[test]
+    fn massless_leaves_score_zero_rather_than_nan() {
+        let feats = vec![Spherical::<f64>::new(2); 2];
+        assert_eq!(medoid_silhouette(&feats, &[0, 1], 2), 0.0);
     }
 }

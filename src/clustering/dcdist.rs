@@ -720,4 +720,61 @@ mod tests {
             assert!((exact.cost - dense.cost).abs() < 1e-12);
         }
     }
+
+    #[test]
+    fn a_k_center_cluster_is_named_by_its_heaviest_leaf() {
+        let pts = [
+            ([0.0, 0.0], 5.0),
+            ([0.3, 0.2], 11.0),
+            ([0.1, 0.4], 2.0),
+            ([4.0, 0.0], 2.0),
+            ([4.2, 0.3], 30.0),
+            ([4.1, -0.4], 6.0),
+        ];
+        let feats = weighted(&pts);
+        let got = dc_clustering(&feats, 2, DcObjective::Center, MS, 0, 0);
+        for (lab, &c) in got.centers.iter().enumerate() {
+            let heaviest = (0..pts.len())
+                .filter(|&i| got.labels[i] == lab)
+                .max_by(|&a, &b| pts[a].1.total_cmp(&pts[b].1))
+                .unwrap();
+            assert_eq!(c, heaviest);
+        }
+    }
+
+    #[test]
+    fn k_median_may_spend_every_centre_on_one_side_of_a_merge() {
+        // Two heavy groups and one light leaf far away: the optimum serves the light leaf from a
+        // distance and puts both centres in the heavy subtree. Listed first and last, so that the
+        // light side is the left child of the root once and the right child once.
+        let heavy = [
+            ([0.0, 0.0], 50.0),
+            ([0.2, 0.1], 50.0),
+            ([6.0, 0.0], 50.0),
+            ([6.2, 0.1], 50.0),
+        ];
+        let far = ([60.0, 60.0], 1.0);
+        for pts in [
+            [far, heavy[0], heavy[1], heavy[2], heavy[3]],
+            [heavy[0], heavy[1], heavy[2], heavy[3], far],
+        ] {
+            let feats = weighted(&pts);
+            let mass: Vec<f64> = pts.iter().map(|(_, w)| *w).collect();
+            let (m, mst) = mst_of(&feats, MS);
+            let want = brute(&dc_matrix(m, &mst), &mass, 2, DcObjective::Median);
+            let got = dc_clustering(&feats, 2, DcObjective::Median, MS, 0, 0);
+            assert!((got.cost - want).abs() < 1e-12, "{} vs {want}", got.cost);
+        }
+    }
+
+    #[test]
+    fn an_ultrametric_tie_goes_to_the_euclidean_nearer_centre_then_to_the_lower_index() {
+        // Leaf 2 joins the subtree holding both centres at height 2, so it is 2 from each.
+        let mst = [(1.0, 0, 1), (2.0, 1, 2)];
+        let tree = dendrogram(3, &[1.0; 3], &mst);
+        let nearer = [vec![0.0], vec![3.0], vec![2.5]];
+        assert_eq!(assign(&tree, &[0, 1], &nearer), [0, 1, 1]);
+        let midway = [vec![0.0], vec![3.0], vec![1.5]];
+        assert_eq!(assign(&tree, &[0, 1], &midway), [0, 1, 0]);
+    }
 }

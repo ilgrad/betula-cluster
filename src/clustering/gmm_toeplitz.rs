@@ -1149,4 +1149,35 @@ mod tests {
         );
         assert_eq!(got, want, "the order-selection boundary moved");
     }
+
+    #[test]
+    fn the_gs_head_keeps_the_best_of_its_own_restart_count() {
+        let specs: &[&[f64]] = &[&[0.8], &[1.1, -0.4], &[]];
+        let (feats, _) = ar_mixture(24, 12, specs, 5);
+        let restarts = |n| {
+            crate::clustering::gmm::best_of_restarts(
+                n,
+                5,
+                |g: &GmmToeplitz<f64>| g.loglik,
+                |s| gmm_toeplitz_once(&feats, 3, TOEPLITZ_W_MAX, CovKind::GsMle, 40, s),
+            )
+            .loglik
+        };
+        let (own, more) = (restarts(GS_N_INIT), restarts(TOEPLITZ_N_INIT));
+        assert!(
+            more > own,
+            "the fixture does not tell the restart counts apart"
+        );
+        assert_eq!(gmm_toeplitz_gs(&feats, 3, 40, 5).loglik, own);
+    }
+
+    #[test]
+    fn em_stops_where_the_likelihood_stops_moving() {
+        let specs: &[&[f64]] = &[&[0.8], &[1.1, -0.4], &[]];
+        let (feats, _) = ar_mixture(64, 20, specs, 4);
+        let a = gmm_toeplitz(&feats, 3, 300, 2);
+        let b = gmm_toeplitz(&feats, 3, 3000, 2);
+        assert_eq!(a.loglik, b.loglik);
+        assert_eq!(a.labels, b.labels);
+    }
 }

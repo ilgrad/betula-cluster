@@ -63,3 +63,20 @@ impl ShapeError {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_shape_error_names_both_lengths() {
+        let e = ShapeError {
+            expected: 3,
+            got: 2,
+        };
+        assert_eq!(
+            e.to_string(),
+            "point has 2 coordinates, this structure is 3-dimensional"
+        );
+    }
+}

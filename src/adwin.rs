@@ -481,4 +481,119 @@ mod tests {
         assert_eq!(one.mean(), 3.0);
         assert_eq!(one.variance(), 0.0);
     }
+
+    /// A window filled without a single drop: at `δ = f64::MIN_POSITIVE` the bound's `ln(2/δ')` is
+    /// ~90 times what it is at `0.002`, so nothing these fixtures hold can fail it.
+    fn filled(values: &[f64]) -> Adwin {
+        let mut adwin = Adwin::new(f64::MIN_POSITIVE);
+        for &v in values {
+            adwin.update(v);
+        }
+        assert_eq!(adwin.width(), values.len(), "the fill dropped a prefix");
+        adwin
+    }
+
+    fn mean_and_scatter(v: &[f64]) -> (f64, f64) {
+        let mean = v.iter().sum::<f64>() / v.len() as f64;
+        (mean, v.iter().map(|x| (x - mean) * (x - mean)).sum())
+    }
+
+    fn stream(seed: u64, n: usize) -> Vec<f64> {
+        let mut rng = SplitMix64::new(seed);
+        (0..n).map(|i| (i % 7) as f64 + gauss(&mut rng)).collect()
+    }
+
+    #[test]
+    fn a_size_class_holds_one_more_bucket_than_its_cap_before_it_merges() {
+        let lens = |n: usize| -> Vec<usize> {
+            filled(&vec![1.0; n]).levels.iter().map(Vec::len).collect()
+        };
+        assert_eq!(lens(BUCKETS_PER_LEVEL + 1), vec![BUCKETS_PER_LEVEL + 1]);
+        assert_eq!(lens(BUCKETS_PER_LEVEL + 2), vec![BUCKETS_PER_LEVEL, 1]);
+    }
+
+    #[test]
+    fn every_bucket_holds_the_count_sum_and_scatter_of_the_values_it_covers() {
+        let values = stream(1, 1000);
+        let adwin = filled(&values);
+        let mut start = 0;
+        for b in adwin.oldest_first() {
+            let covered = &values[start..start + b.size as usize];
+            let (mean, scatter) = mean_and_scatter(covered);
+            assert!((b.total - mean * b.size).abs() < 1e-9, "{b:?}");
+            assert!(
+                (b.variance - scatter).abs() < 1e-9 * scatter.max(1.0),
+                "{b:?}"
+            );
+            start += b.size as usize;
+        }
+        assert_eq!(start, values.len());
+    }
+
+    #[test]
+    fn dropping_the_oldest_bucket_leaves_the_statistics_of_what_remains() {
+        let values = stream(2, 300);
+        let mut adwin = filled(&values);
+        while adwin.width() > 0 {
+            adwin.drop_oldest();
+            let rest = &values[values.len() - adwin.width()..];
+            if rest.is_empty() {
+                break;
+            }
+            let (mean, scatter) = mean_and_scatter(rest);
+            assert!((adwin.mean() - mean).abs() < 1e-9, "{} left", rest.len());
+            assert!(
+                (adwin.variance - scatter).abs() < 1e-9 * scatter.max(1.0),
+                "{} left: {} vs {scatter}",
+                rest.len(),
+                adwin.variance
+            );
+        }
+        assert_eq!((adwin.mean(), adwin.variance), (0.0, 0.0));
+    }
+
+    #[test]
+    fn the_change_test_is_the_documented_bound_at_every_bucket_boundary() {
+        // Windows of a step whose height is swept across the bound, so that both answers occur and
+        // many sit close to the threshold. The reference is the module's formula evaluated on the
+        // raw values at the histogram's boundaries — the one approximation the detector makes.
+        let delta = 0.002;
+        let (mut fired, mut held) = (0, 0);
+        for seed in 0..60u64 {
+            let mut rng = SplitMix64::new(100 + seed);
+            let n = 40 + (seed as usize * 37) % 400;
+            let cut = n / 3 + (seed as usize * 13) % (n / 3);
+            let step = 0.1 * (seed % 15) as f64;
+            let values: Vec<f64> = (0..n)
+                .map(|i| gauss(&mut rng) + if i >= cut { step } else { 0.0 })
+                .collect();
+            let mut adwin = filled(&values);
+            adwin.delta = delta;
+
+            let w = n as f64;
+            let (mean, scatter) = mean_and_scatter(&values);
+            let dd = (2.0 * w.ln().max(1.0) / delta).ln();
+            let mut want = false;
+            let mut n0 = 0usize;
+            for b in adwin.oldest_first() {
+                n0 += b.size as usize;
+                let (a, z) = (n0 as f64, (n - n0) as f64);
+                if a < 5.0 || z < 5.0 {
+                    continue;
+                }
+                let m_inv = 1.0 / (a - 4.0) + 1.0 / (z - 4.0);
+                let eps = (2.0 * m_inv * scatter / w * dd).sqrt() + 2.0 / 3.0 * m_inv * dd;
+                let old = values[..n0].iter().sum::<f64>() / a;
+                let new = (mean * w - old * a) / z;
+                want |= (old - new).abs() > eps;
+            }
+            assert_eq!(adwin.has_split_that_fails(), want, "seed {seed}");
+            if want {
+                fired += 1;
+            } else {
+                held += 1;
+            }
+        }
+        assert!(fired >= 10 && held >= 10, "{fired} fired, {held} held");
+    }
 }

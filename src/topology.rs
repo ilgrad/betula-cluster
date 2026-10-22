@@ -930,6 +930,13 @@ mod tests {
     }
 
     #[test]
+    fn a_massless_node_keeps_a_finite_centroid() {
+        let g = mapper(&[Spherical::<f64>::new(2)], &MapperParams::default());
+        assert_eq!(g.nodes.len(), 1);
+        assert_eq!(g.nodes[0].centroid, [0.0, 0.0]);
+    }
+
+    #[test]
     fn mapper_degenerate_lens_single_bin() {
         // All centroids share an L2 norm ⇒ the lens is constant ⇒ one bin, still a valid graph.
         let micros = grid_micros(&[vec![1.0, 0.0], vec![-1.0, 0.0], vec![0.0, 1.0]], 0.5).0;

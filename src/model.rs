@@ -1568,4 +1568,39 @@ mod tests {
             assert_eq!(before, after, "{method:?} relabelled points");
         }
     }
+
+    #[test]
+    fn the_fuzzy_head_hands_over_its_own_centres_at_a_fixed_and_an_automatic_k() {
+        let mut rng = SplitMix64::new(12);
+        let centers = [[0.0, 0.0], [9.0, 0.0], [0.0, 9.0]];
+        let (pts, truth) = blobs(&mut rng, 300, &centers, 0.7);
+        for (k, want) in [(2, 2), (0, 3)] {
+            let mut tree: CFTree<f64, Diagonal<f64>, _, _> =
+                CFTree::new(2, 8, 8, 0.5, 64, CentroidEuclidean, CentroidEuclidean);
+            for p in &pts {
+                tree.insert(p);
+            }
+            let model = Model::fit(
+                tree,
+                k,
+                Method::FuzzyCMeans { fuzzifier: 2.0 },
+                100,
+                0,
+                3,
+                0,
+            );
+            let Assignment::Centers { centers, .. } = &model.assign else {
+                unreachable!("the fuzzy head is a centroid head")
+            };
+            assert_eq!(centers.len(), want, "k = {k}");
+            if want == 3 {
+                let labels: Vec<usize> = pts.iter().map(|p| model.predict(p)).collect();
+                assert!(
+                    ari(&labels, &truth) > 0.95,
+                    "ARI = {}",
+                    ari(&labels, &truth)
+                );
+            }
+        }
+    }
 }

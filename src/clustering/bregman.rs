@@ -697,4 +697,186 @@ mod tests {
         let one = bregman_kmeans(&cfs, 1, 10, 1, 0);
         assert!(one.labels.iter().all(|&l| l == 0));
     }
+
+    fn leaf<B: BregmanDivergence<f64>>(p: &[f64], w: f64) -> BregmanCf<f64, B> {
+        let mut cf = BregmanCf::<f64, B>::new(p.len());
+        cf.push(p, w);
+        cf
+    }
+
+    fn seeds(cfs: &[BregmanCf<f64, SquaredEuclidean>], k: usize, seed: u64) -> Vec<Vec<f64>> {
+        let means: Vec<Vec<f64>> = cfs.iter().map(|f| f.mean().to_vec()).collect();
+        let w: Vec<f64> = cfs.iter().map(ClusterFeature::weight).collect();
+        let info: Vec<f64> = cfs.iter().map(ClusterFeature::ssd).collect();
+        plus_plus::<f64, SquaredEuclidean>(&means, &w, &info, k, &mut SplitMix64::new(seed))
+    }
+
+    #[test]
+    fn every_seed_after_the_first_lands_where_the_potential_is() {
+        // 97 leaves on the origin and one each at ±3. Once a centre sits on a group, that group's
+        // potential is zero, so the remaining draws can only land on the groups not yet seeded.
+        let mut cfs: Vec<_> = (0..97).map(|_| leaf(&[0.0, 0.0], 1.0)).collect();
+        cfs.push(leaf(&[3.0, 0.0], 1.0));
+        for seed in 0..20 {
+            let mut two = seeds(&cfs, 2, seed);
+            two.sort_by(|a, b| a[0].total_cmp(&b[0]));
+            assert_eq!(two, [[0.0, 0.0], [3.0, 0.0]], "seed {seed}");
+        }
+        cfs.push(leaf(&[-3.0, 0.0], 1.0));
+        for seed in 0..20 {
+            let mut three = seeds(&cfs, 3, seed);
+            three.sort_by(|a, b| a[0].total_cmp(&b[0]));
+            assert_eq!(three, [[-3.0, 0.0], [0.0, 0.0], [3.0, 0.0]], "seed {seed}");
+        }
+    }
+
+    #[test]
+    fn identical_leaves_seed_a_duplicate_centre_and_keep_it_finite() {
+        // Zero potential everywhere sends the seeding to its uniform fallback; the duplicate centre
+        // then owns nothing, keeps its position, and its responsibilities tie with the first's.
+        let cfs: Vec<_> = (0..3)
+            .map(|_| leaf::<SquaredEuclidean>(&[2.0, 5.0], 1.0))
+            .collect();
+        for seed in 0..20 {
+            let km = bregman_kmeans(&cfs, 2, 10, 1, seed);
+            assert_eq!(km.centers, [[2.0, 5.0], [2.0, 5.0]]);
+            assert_eq!(km.labels, [0, 0, 0]);
+            let em = bregman_em(&cfs, 2, 1.0, 10, seed);
+            assert_eq!(em.labels, [0, 0, 0], "a tie goes to the lower index");
+        }
+    }
+
+    #[test]
+    fn lloyd_stops_at_a_fixed_point_of_assignment_and_weighted_mean() {
+        let mut rng = Lcg(30);
+        let cfs: Vec<BregmanCf<f64, KullbackLeibler>> = (0..120)
+            .map(|i| {
+                let p: Vec<f64> = (0..3).map(|_| rng.span(0.5, 9.0)).collect();
+                leaf(&p, 1.0 + (i % 3) as f64)
+            })
+            .collect();
+        let km = bregman_kmeans(&cfs, 4, 200, 1, 3);
+        let div = KullbackLeibler;
+        for (cf, &l) in cfs.iter().zip(&km.labels) {
+            let own = div.vector(cf.mean(), &km.centers[l]);
+            for c in &km.centers {
+                assert!(
+                    own <= div.vector(cf.mean(), c),
+                    "a leaf is not on its nearest centre"
+                );
+            }
+        }
+        for (c, centre) in km.centers.iter().enumerate() {
+            let (mut mass, mut sum) = (0.0, [0.0; 3]);
+            for (cf, _) in cfs.iter().zip(&km.labels).filter(|(_, l)| **l == c) {
+                mass += cf.weight();
+                for (acc, m) in sum.iter_mut().zip(cf.mean()) {
+                    *acc += cf.weight() * m;
+                }
+            }
+            assert!(mass > 0.0);
+            for j in 0..3 {
+                assert!((centre[j] - sum[j] / mass).abs() < 1e-12, "{centre:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn more_restarts_keep_the_best_inertia_seen() {
+        // Restart `j` draws the same seeding whatever `n_init` is, so `n_init = j` reports the best
+        // of the first `j` restarts: non-increasing in `j`, and strictly better somewhere here.
+        let mut rng = Lcg(31);
+        let cfs: Vec<BregmanCf<f64, SquaredEuclidean>> = (0..80)
+            .map(|_| leaf(&[rng.span(0.0, 1.0), rng.span(0.0, 1.0)], 1.0))
+            .collect();
+        let inertia: Vec<f64> = (1..=8)
+            .map(|n| bregman_kmeans(&cfs, 6, 100, n, 4).inertia)
+            .collect();
+        assert!(inertia.windows(2).all(|w| w[1] <= w[0]), "{inertia:?}");
+        assert!(inertia[7] < inertia[0], "{inertia:?}");
+    }
+
+    /// `Σ_x log Σ_c π_c exp(−β d_φ(x, μ_c))` over the points themselves.
+    fn point_log_likelihood<B: BregmanDivergence<f64>>(
+        pts: &[Vec<f64>],
+        fit: &BregmanMixture<f64>,
+        beta: f64,
+    ) -> f64 {
+        let div = B::default();
+        pts.iter()
+            .map(|p| {
+                fit.weights
+                    .iter()
+                    .zip(&fit.means)
+                    .map(|(&pi, mu)| pi * (-beta * div.vector(p, mu)).exp())
+                    .sum::<f64>()
+                    .ln()
+            })
+            .sum()
+    }
+
+    #[test]
+    fn the_bound_is_the_point_log_likelihood_on_point_leaves_and_below_it_otherwise() {
+        let mut rng = Lcg(32);
+        let pts: Vec<Vec<f64>> = (0..120)
+            .map(|i| {
+                let c = [1.0, 3.0, 6.0][i % 3];
+                (0..2).map(|_| c + rng.span(-0.8, 0.8)).collect()
+            })
+            .collect();
+        let points: Vec<_> = pts
+            .iter()
+            .map(|p| leaf::<SquaredEuclidean>(p, 1.0))
+            .collect();
+        let fit = bregman_em(&points, 3, 1.0, 500, 2);
+        let ll = point_log_likelihood::<SquaredEuclidean>(&pts, &fit, 1.0);
+        assert!(
+            (fit.elbo - ll).abs() < 1e-8 * ll.abs(),
+            "{} vs {ll}",
+            fit.elbo
+        );
+
+        let leaves: Vec<_> = pts
+            .chunks(4)
+            .map(|c| {
+                let mut cf = BregmanCf::<f64, SquaredEuclidean>::new(2);
+                c.iter().for_each(|p| cf.push(p, 1.0));
+                cf
+            })
+            .collect();
+        let fit = bregman_em(&leaves, 3, 1.0, 500, 2);
+        let ll = point_log_likelihood::<SquaredEuclidean>(&pts, &fit, 1.0);
+        assert!(fit.elbo < ll, "{} vs {ll}", fit.elbo);
+    }
+
+    #[test]
+    fn em_stops_where_its_bound_stops_moving() {
+        let mut rng = Lcg(33);
+        let (cfs, _) = clustered::<KullbackLeibler>(&mut rng, 3, 20, 2, 0.3);
+        let a = bregman_em(&cfs, 3, 1.0, 500, 1);
+        let b = bregman_em(&cfs, 3, 1.0, 5000, 1);
+        assert_eq!(a.elbo, b.elbo);
+        assert_eq!(a.means, b.means);
+    }
+
+    #[test]
+    fn a_summary_with_no_mass_fits_zero_weights_rather_than_nan() {
+        let cfs = vec![BregmanCf::<f64, SquaredEuclidean>::new(2); 3];
+        assert_eq!(bregman_em(&cfs, 2, 1.0, 5, 0).weights, [0.0, 0.0]);
+    }
+
+    #[test]
+    fn a_massless_node_costs_nothing_to_merge_even_off_the_domain() {
+        // A massless node's zero mean is outside dom φ for KL; the cost must not evaluate there.
+        let empty = Node {
+            mass: 0.0,
+            mean: vec![0.0, 0.0],
+        };
+        let full = Node {
+            mass: 2.0,
+            mean: vec![1.0, 3.0],
+        };
+        assert_eq!(empty.ward::<KullbackLeibler>(&full), 0.0);
+        assert_eq!(full.ward::<KullbackLeibler>(&empty), 0.0);
+    }
 }

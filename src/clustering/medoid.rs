@@ -1134,4 +1134,72 @@ mod tests {
             println!("{:6.0}  {el:8.2}   {note}   (k = {})", m, got.k);
         }
     }
+
+    #[test]
+    fn two_nearest_is_the_sorted_head_of_every_medoid_distance() {
+        let (micros, _, _) = fixture(10, 1.5);
+        let lv = Leaves::of(&micros);
+        let medoids = [3, 40, 17, 25, 8];
+        for (i, got) in two_nearest(&lv, &medoids).iter().enumerate() {
+            let mut all: Vec<(f64, usize)> = (0..medoids.len())
+                .map(|s| (lv.dist(i, medoids[s]), s))
+                .collect();
+            all.sort_by(|a, b| a.0.total_cmp(&b.0));
+            assert_eq!(got[0].0, all[0].0, "leaf {i}");
+            assert_eq!(got[1].0, all[1].0, "leaf {i}");
+        }
+    }
+
+    /// `Σ_i n_i · min_m d̄(i, m)`, priced from scratch.
+    fn brute_deviation(lv: &Leaves, medoids: &[usize]) -> f64 {
+        (0..lv.len())
+            .map(|i| {
+                lv.w[i]
+                    * medoids
+                        .iter()
+                        .map(|&m| lv.dist(i, m))
+                        .fold(f64::INFINITY, f64::min)
+            })
+            .sum()
+    }
+
+    #[test]
+    fn the_result_is_a_swap_local_optimum_and_reports_its_own_deviation() {
+        let (micros, _, _) = fixture(11, 2.5);
+        let lv = Leaves::of(&micros);
+        for max_iter in [0, 100] {
+            let fit = kmedoids::<f64, _>(&micros, 5, max_iter, 11);
+            let td = brute_deviation(&lv, &fit.medoids);
+            assert!((fit.loss - td).abs() < 1e-9 * td, "{} vs {td}", fit.loss);
+            for slot in 0..fit.medoids.len() {
+                for c in (0..lv.len()).filter(|c| !fit.medoids.contains(c)) {
+                    let mut swapped = fit.medoids.clone();
+                    swapped[slot] = c;
+                    assert!(
+                        brute_deviation(&lv, &swapped) >= td * (1.0 - 1e-12),
+                        "swapping slot {slot} for leaf {c} still improves"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_converged_sweep_makes_no_swap_even_where_a_duplicate_leaf_ties() {
+        // Every leaf appears twice, so each medoid has a twin whose swap changes nothing; trading
+        // places with it is not an improvement and must not count as one.
+        let (micros, _, _) = fixture(12, 1.0);
+        let twice: Vec<Spherical<f64>> =
+            micros.iter().flat_map(|f| [f.clone(), f.clone()]).collect();
+        let fit = kmedoids::<f64, _>(&twice, 4, 100, 12);
+        let lv = Leaves::of(&twice);
+        let mut medoids = fit.medoids.clone();
+        let mut near = two_nearest(&lv, &medoids);
+        let mut td = total_deviation(&lv, &near);
+        let order: Vec<usize> = (0..lv.len()).collect();
+        assert_eq!(
+            eager_pam_sweep(&lv, &mut medoids, &mut near, &mut td, &order),
+            0
+        );
+    }
 }
