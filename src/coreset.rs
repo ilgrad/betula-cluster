@@ -61,7 +61,7 @@
 //! the exact CF potential `S_i + n_i·D²_i`, so the guarantee is stated over the weighted instance
 //! the leaves define rather than over the points — which is the correct object here.
 
-use crate::clustering::kmeans;
+use crate::clustering::kmeans::{KMeans, kmeans};
 use crate::clustering::rng::SplitMix64;
 use crate::feature::ClusterFeature;
 use crate::kernels::sq_euclidean;
@@ -178,41 +178,7 @@ pub fn sensitivity_coreset<R: Real, C: ClusterFeature<R>>(
     let k = k.max(1).min(m);
 
     let reference = kmeans(features, k, 100, 3, seed);
-    // `c_i` is what leaf `i` contributes to the reference solution's cost, and it is deliberately
-    // the *centroid* term only: the `S_i` half of the leaf's cost is the same under every candidate
-    // solution, so charging it to a leaf's sensitivity would rank leaves by how internally spread
-    // they are rather than by how much any solution can disagree about them.
-    let mut ci = vec![0.0f64; m];
-    let mut cj = vec![0.0f64; k];
-    let mut wj = vec![0.0f64; k];
-    for (i, f) in features.iter().enumerate() {
-        let j = reference.labels[i];
-        let n = f.weight().to_f64().unwrap_or(0.0);
-        let d = sq_euclidean(f.mean(), &reference.centers[j])
-            .to_f64()
-            .unwrap_or(0.0);
-        ci[i] = n * d;
-        cj[j] += ci[i];
-        wj[j] += n;
-    }
-    let ctot: f64 = ci.iter().sum();
-
-    let mut sens = vec![0.0f64; m];
-    for (i, f) in features.iter().enumerate() {
-        let j = reference.labels[i];
-        let n = f.weight().to_f64().unwrap_or(0.0);
-        // A cluster with no mass contributes no membership term; without the guard an empty
-        // reference cluster turns the whole sensitivity vector into NaN and the sampler silently
-        // degenerates to "leaf 0, repeated".
-        let share = if wj[j] > 0.0 { n / wj[j] } else { 0.0 };
-        let cost_term = if ctot > 0.0 { ci[i] / ctot } else { 0.0 };
-        let group_term = if ctot > 0.0 {
-            share * cj[j] / ctot
-        } else {
-            0.0
-        };
-        sens[i] = 8.0 * cost_term + 2.0 * group_term + 4.0 * share;
-    }
+    let sens = sensitivities(features, &reference, k);
     let total: f64 = sens.iter().sum();
 
     // Degenerate summaries — one leaf, or every leaf a single point already at a centre — leave
@@ -258,6 +224,52 @@ pub fn sensitivity_coreset<R: Real, C: ClusterFeature<R>>(
         total_sensitivity: total,
         n_leaves: m,
     }
+}
+
+/// Each leaf's sensitivity bound against the reference solution: `8·c_i/c + 2·(n_i/W_j)·c_j/c +
+/// 4·n_i/W_j`, which sums to `10 + 4k'` over the `k'` clusters that hold mass.
+fn sensitivities<R: Real, C: ClusterFeature<R>>(
+    features: &[C],
+    reference: &KMeans<R>,
+    k: usize,
+) -> Vec<f64> {
+    let m = features.len();
+    // `c_i` is what leaf `i` contributes to the reference solution's cost, and it is deliberately
+    // the *centroid* term only: the `S_i` half of the leaf's cost is the same under every candidate
+    // solution, so charging it to a leaf's sensitivity would rank leaves by how internally spread
+    // they are rather than by how much any solution can disagree about them.
+    let mut ci = vec![0.0f64; m];
+    let mut cj = vec![0.0f64; k];
+    let mut wj = vec![0.0f64; k];
+    for (i, f) in features.iter().enumerate() {
+        let j = reference.labels[i];
+        let n = f.weight().to_f64().unwrap_or(0.0);
+        let d = sq_euclidean(f.mean(), &reference.centers[j])
+            .to_f64()
+            .unwrap_or(0.0);
+        ci[i] = n * d;
+        cj[j] += ci[i];
+        wj[j] += n;
+    }
+    let ctot: f64 = ci.iter().sum();
+
+    let mut sens = vec![0.0f64; m];
+    for (i, f) in features.iter().enumerate() {
+        let j = reference.labels[i];
+        let n = f.weight().to_f64().unwrap_or(0.0);
+        // A cluster with no mass contributes no membership term; without the guard an empty
+        // reference cluster turns the whole sensitivity vector into NaN and the sampler silently
+        // degenerates to "leaf 0, repeated".
+        let share = if wj[j] > 0.0 { n / wj[j] } else { 0.0 };
+        let cost_term = if ctot > 0.0 { ci[i] / ctot } else { 0.0 };
+        let group_term = if ctot > 0.0 {
+            share * cj[j] / ctot
+        } else {
+            0.0
+        };
+        sens[i] = 8.0 * cost_term + 2.0 * group_term + 4.0 * share;
+    }
+    sens
 }
 
 /// Every leaf, at its own weight: the summary itself, viewed as a coreset with no sampling error.
@@ -479,5 +491,43 @@ mod tests {
         assert!(!cs.indices.is_empty() && cs.indices.len() <= 3);
         assert!(cs.weights.iter().all(|w| w.is_finite() && *w > 0.0));
         assert!(cs.offset == 0.0 && cs.reference_cost == 0.0);
+    }
+
+    #[test]
+    fn each_sensitivity_is_the_derived_bound_on_a_hand_worked_summary() {
+        // Cluster 0 holds a leaf of mass 1 at 0 and one of mass 3 at 2, centre 1.5; cluster 1 a
+        // leaf of mass 2 on its centre at 10. Centroid costs 2.25, 0.75, 0 (total 3), masses 4 and
+        // 2 per cluster, so the three bounds are 6 + 0.5 + 1, 2 + 1.5 + 3 and 0 + 0 + 4.
+        let leaf_at = |x: f64, n: f64| {
+            let mut cf = Spherical::new(1);
+            cf.push(&[x], n);
+            cf
+        };
+        let feats = vec![leaf_at(0.0, 1.0), leaf_at(2.0, 3.0), leaf_at(10.0, 2.0)];
+        let reference = KMeans {
+            labels: vec![0, 0, 1],
+            centers: vec![vec![1.5], vec![10.0]],
+            inertia: 3.0,
+        };
+        assert_eq!(sensitivities(&feats, &reference, 2), [7.5, 6.5, 4.0]);
+    }
+
+    #[test]
+    fn summary_epsilon_is_four_root_rho_plus_four_rho() {
+        let at = |offset: f64, reference_cost: f64| Coreset::<f64> {
+            indices: Vec::new(),
+            points: Vec::new(),
+            weights: Vec::new(),
+            offset,
+            reference_cost,
+            total_sensitivity: 0.0,
+            n_leaves: 0,
+        };
+        // ρ = α·Δ/cost: 1/4 at α = 1 and 1/2 at α = 2.
+        assert_eq!(at(1.0, 4.0).summary_epsilon(1.0), 3.0);
+        let want = 4.0 * 0.5f64.sqrt() + 2.0;
+        assert!((at(1.0, 4.0).summary_epsilon(2.0) - want).abs() < 1e-15);
+        assert_eq!(at(1.0, 0.0).summary_epsilon(1.0), 0.0);
+        assert_eq!(at(1.0, f64::INFINITY).summary_epsilon(1.0), 0.0);
     }
 }
