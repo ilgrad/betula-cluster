@@ -727,6 +727,55 @@ mod tests {
         }
     }
 
+    #[test]
+    fn the_density_integrates_to_one_over_the_sphere() {
+        // `∫_{S^{d-1}} f(μᵀx) dS = |S^{d-2}| ∫_0^π f(cos θ) sin^{d-2}θ dθ`, with the sphere areas
+        // written out rather than computed from a Gamma function, so `ln_gamma` is checked against
+        // something it does not share code with. Even `d`: the θ integrand is smooth and periodic,
+        // and the trapezoid rule is spectrally accurate. Odd `d`: `t = cos θ` leaves a polynomial
+        // weight, and Simpson's rule on a smooth integrand.
+        use std::f64::consts::PI;
+        let area = |d: usize| match d {
+            2 => 2.0,
+            3 => 2.0 * PI,
+            4 => 4.0 * PI,
+            5 => 2.0 * PI * PI,
+            6 => 8.0 * PI * PI / 3.0,
+            8 => 16.0 * PI.powi(3) / 15.0,
+            _ => unreachable!(),
+        };
+        let n = 20_000usize;
+        for d in [2usize, 3, 4, 5, 6, 8] {
+            for kappa in [-50.0, -3.0, -0.4, 0.0, 0.7, 4.0, 50.0] {
+                let integral = if d % 2 == 0 {
+                    let h = PI / n as f64;
+                    (0..n)
+                        .map(|i| {
+                            let th = i as f64 * h;
+                            (kappa * th.cos().powi(2)).exp() * th.sin().powi(d as i32 - 2)
+                        })
+                        .sum::<f64>()
+                        * h
+                } else {
+                    let h = 2.0 / n as f64;
+                    let f = |t: f64| (kappa * t * t).exp() * (1.0 - t * t).powi((d as i32 - 3) / 2);
+                    let inner: f64 = (1..n)
+                        .map(|i| {
+                            let w = if i % 2 == 1 { 4.0 } else { 2.0 };
+                            w * f(-1.0 + i as f64 * h)
+                        })
+                        .sum();
+                    (f(-1.0) + inner + f(1.0)) * h / 3.0
+                };
+                let total = log_watson_norm(d, kappa) + (area(d) * integral).ln();
+                assert!(
+                    total.abs() < 1e-9,
+                    "d={d} kappa={kappa}: log ∫ c·f = {total}"
+                );
+            }
+        }
+    }
+
     fn axial_leaves(rng_seed: u64, per: usize, axes: &[[f64; 3]], spread: f64) -> Vec<Full<f64>> {
         let mut rng = SplitMix64::new(rng_seed);
         let mut out = Vec::new();
