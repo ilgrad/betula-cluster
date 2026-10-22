@@ -639,13 +639,14 @@ mod tests {
 
     #[test]
     fn the_seeding_draws_in_proportion_to_mass_times_squared_distance() {
-        // Seen from a centre at the origin, a light leaf at radius 1.2 (listed first) and a leaf of
-        // mass 9 at radius 1: the heavy one carries ~86 % of the potential.
+        // Seen from a centre at the origin, a leaf of mass 9 at radius 1 (listed first) and a light
+        // leaf at radius 1.2 (listed last): the heavy one carries ~86 % of the potential. Listed
+        // first, a walk that under-weights it runs on to the light one.
         let mut pts = vec![at(0.0, 0.0); 30];
-        pts.insert(0, at(1.2, 2.0));
-        pts.push(at(1.0, 0.0));
+        pts.insert(0, at(1.0, 0.0));
+        pts.push(at(1.2, 2.0));
         let mut w = vec![1.0; pts.len()];
-        *w.last_mut().unwrap() = 9.0;
+        w[0] = 9.0;
         let heavy = (0..200u64)
             .filter(|&seed| {
                 let c = seed_centers(&pts, &w, 2, seed);
@@ -668,6 +669,48 @@ mod tests {
                 [at(0.5, 1.0), at(0.5, 1.0)]
             );
         }
+        // The two centres tie for every point, and a tie goes to the first.
+        let (_, labels, _) = lloyd(&pts, &[1.0; 3], vec![at(0.5, 1.0); 2], 10, 3);
+        assert_eq!(labels, [0, 0, 0]);
+    }
+
+    #[test]
+    fn a_draw_with_no_potential_left_is_uniform_over_the_leaves() {
+        // Two leaves on each of two points: once both are seeded every potential is zero, and the
+        // third centre duplicates one of them, chosen uniformly rather than always the first leaf.
+        // `(5/4, 3/4, 0)` is on the sheet exactly, so its distance to itself is exactly zero.
+        let far_pt = vec![1.25, 0.75, 0.0];
+        let pts = [at(0.0, 0.0), at(0.0, 0.0), far_pt.clone(), far_pt.clone()];
+        let mut far = [0usize; 2];
+        for seed in 0..20 {
+            let c = seed_centers(&pts, &[1.0; 4], 3, seed);
+            far[c.iter().filter(|p| **p == far_pt).count() - 1] += 1;
+        }
+        assert!(far[0] > 0 && far[1] > 0, "{far:?}");
+    }
+
+    #[test]
+    fn a_tie_between_restarts_keeps_the_first() {
+        // Two groups of coincident points: every restart that splits them costs the same, and the
+        // restarts differ only in which group they number 0.
+        let mut pts = vec![at(0.3, 0.0); 3];
+        pts.extend(vec![at(2.0, 1.5); 3]);
+        let w = vec![1.0; pts.len()];
+        let runs: Vec<(f64, Vec<usize>)> = (0..HYPERBOLIC_N_INIT)
+            .map(|r| {
+                let centers = seed_centers(&pts, &w, 2, restart_seed(1, r));
+                let (cost, labels, _) = lloyd(&pts, &w, centers, 100, 3);
+                (cost, labels)
+            })
+            .collect();
+        let best = runs.iter().map(|r| r.0).fold(f64::INFINITY, f64::min);
+        let first = runs.iter().find(|r| r.0 == best).unwrap();
+        let last = runs.iter().rev().find(|r| r.0 == best).unwrap();
+        assert_ne!(
+            first.1, last.1,
+            "the fixture must tie with different numberings"
+        );
+        assert_eq!(hyperbolic_kmeans(&leaves(&pts), 2, 100, 1).labels, first.1);
     }
 
     #[test]

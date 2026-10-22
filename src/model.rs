@@ -1570,6 +1570,14 @@ mod tests {
     }
 
     #[test]
+    fn a_row_equidistant_from_two_lorentz_centres_takes_the_first_ones_label() {
+        let r2 = 2.0_f64.sqrt();
+        let centers = [(5, vec![r2, 1.0, 0.0]), (3, vec![r2, -1.0, 0.0])];
+        assert_eq!(nearest_lorentz_center(&centers, &[0.0, 0.0, 0.0]), 5);
+        assert_eq!(nearest_lorentz_center(&centers, &[0.0, -0.1, 0.0]), 3);
+    }
+
+    #[test]
     fn the_fuzzy_head_hands_over_its_own_centres_at_a_fixed_and_an_automatic_k() {
         let mut rng = SplitMix64::new(12);
         let centers = [[0.0, 0.0], [9.0, 0.0], [0.0, 9.0]];

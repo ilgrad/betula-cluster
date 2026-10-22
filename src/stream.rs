@@ -1474,6 +1474,24 @@ mod tests {
     /// `&&` it skips only when *both* are weak, and a thin bridge of noise between two dense regions
     /// merges them — which is exactly what shared density exists to prevent.
     #[test]
+    fn db_stream_nearest_keeps_the_first_of_two_equidistant_micro_clusters() {
+        let mut d: DbStream<f64, Spherical<f64>> = DbStream::new(1, 1.0, 0.5, 0.1, 4.0).unwrap();
+        for at in [-1.0, 1.0] {
+            let mut cf = Spherical::new(1);
+            cf.push(&[at], 1.0);
+            let id = d.next_id;
+            d.next_id += 1;
+            d.micros.push(DbMicro {
+                cf,
+                last_t: 0.0,
+                id,
+            });
+        }
+        assert_eq!(d.nearest(&[0.0]), Some(0));
+        assert_eq!(d.nearest(&[0.5]), Some(1));
+    }
+
+    #[test]
     fn a_weak_micro_cluster_does_not_bridge_two_strong_ones() {
         let mut d: DbStream<f64, Spherical<f64>> = DbStream::new(2, 1.0, 0.5, 0.1, 4.0).unwrap();
         for &(w, at) in &[(6.0, 0.0), (1.0, 2.0), (6.0, 4.0)] {

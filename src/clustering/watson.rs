@@ -885,6 +885,13 @@ mod tests {
             done > three + 1.0,
             "{done} after convergence, {three} after three steps"
         );
+        // And it stops where the likelihood settles to 1e-7: here on step 23, long before the
+        // iterates stop moving to the last bit, so a stop that fires late or never leaves 23 short
+        // of 3000.
+        let stop = watson_once::<f64, _>(&leaves, 3, 23, 5);
+        let long = watson_once::<f64, _>(&leaves, 3, 3000, 5);
+        assert_eq!((stop.loglik, &stop.axes), (long.loglik, &long.axes));
+        assert_ne!(watson_once::<f64, _>(&leaves, 3, 22, 5).loglik, long.loglik);
 
         // Restarts that end in different optima, with the best neither first nor last, so keeping
         // the first or the last restart instead of the best reads a different value.
@@ -946,6 +953,10 @@ mod tests {
                     assert_eq!(kappa < 0.0, want_bottom);
                 }
             }
+            // An isotropic scatter puts both ends at `1/d`: both concentrations are 0 and the
+            // scores tie, and the tie keeps the bipolar end.
+            let tied = better_pole::<f64>(d, (iso, vec![1.0]), (iso, vec![0.0]));
+            assert_eq!(tied, (vec![1.0], 0.0));
         }
     }
 

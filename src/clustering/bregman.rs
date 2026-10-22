@@ -747,6 +747,46 @@ mod tests {
     }
 
     #[test]
+    fn a_draw_with_no_potential_left_is_uniform_over_the_leaves() {
+        // Two leaves on each of two points: after both are seeded every potential is zero, so the
+        // third centre duplicates one of them, chosen uniformly rather than always the first leaf.
+        let cfs: Vec<_> = [[0.0, 0.0], [0.0, 0.0], [4.0, 0.0], [4.0, 0.0]]
+            .iter()
+            .map(|p| leaf::<SquaredEuclidean>(p, 1.0))
+            .collect();
+        let duplicated: Vec<f64> = (0..20)
+            .map(|seed| {
+                let three = seeds(&cfs, 3, seed);
+                let at_four = three.iter().filter(|c| c[0] == 4.0).count();
+                assert!(at_four == 1 || at_four == 2, "seed {seed}: {three:?}");
+                if at_four == 2 { 4.0 } else { 0.0 }
+            })
+            .collect();
+        assert!(duplicated.contains(&0.0) && duplicated.contains(&4.0));
+    }
+
+    #[test]
+    fn massless_leaves_merge_first_and_leave_the_partition_alone() {
+        // Two empty summaries cost nothing to merge with anything. Their merged node must keep a
+        // finite mean, or every later merge it joins carries NaN into the Ward costs.
+        let mut cfs = vec![BregmanCf::<f64, SquaredEuclidean>::new(2); 2];
+        for p in [
+            [0.0, 0.0],
+            [0.1, 0.0],
+            [0.0, 0.1],
+            [9.0, 9.0],
+            [9.1, 9.0],
+            [9.0, 9.1],
+        ] {
+            cfs.push(leaf(&p, 1.0));
+        }
+        let labels = bregman_agglomerative(&cfs, 2).labels;
+        assert_eq!(labels[2..5], [labels[2]; 3]);
+        assert_eq!(labels[5..], [labels[5]; 3]);
+        assert_ne!(labels[2], labels[5]);
+    }
+
+    #[test]
     fn lloyd_stops_at_a_fixed_point_of_assignment_and_weighted_mean() {
         let mut rng = Lcg(30);
         let cfs: Vec<BregmanCf<f64, KullbackLeibler>> = (0..120)
@@ -851,18 +891,29 @@ mod tests {
 
     #[test]
     fn em_stops_where_its_bound_stops_moving() {
+        // Here the bound settles to 1e-10 on the 35th iteration, and the iterates reach their fixed
+        // point to the last bit only ~145 iterations later: a stop that fires late, or never, would
+        // leave the 35-iteration fit short of the 5000-iteration one.
         let mut rng = Lcg(33);
         let (cfs, _) = clustered::<KullbackLeibler>(&mut rng, 3, 20, 2, 0.3);
-        let a = bregman_em(&cfs, 3, 1.0, 500, 1);
-        let b = bregman_em(&cfs, 3, 1.0, 5000, 1);
-        assert_eq!(a.elbo, b.elbo);
-        assert_eq!(a.means, b.means);
+        let short = bregman_em(&cfs, 3, 1.0, 34, 1);
+        let stop = bregman_em(&cfs, 3, 1.0, 35, 1);
+        let long = bregman_em(&cfs, 3, 1.0, 5000, 1);
+        assert_ne!(short.means, long.means);
+        assert_eq!(stop.elbo, long.elbo);
+        assert_eq!(stop.means, long.means);
     }
 
     #[test]
     fn a_summary_with_no_mass_fits_zero_weights_rather_than_nan() {
         let cfs = vec![BregmanCf::<f64, SquaredEuclidean>::new(2); 3];
-        assert_eq!(bregman_em(&cfs, 2, 1.0, 5, 0).weights, [0.0, 0.0]);
+        let fit = bregman_em(&cfs, 2, 1.0, 5, 0);
+        assert_eq!(fit.weights, [0.0, 0.0]);
+        assert!(
+            fit.means.iter().flatten().all(|x| x.is_finite()),
+            "{:?}",
+            fit.means
+        );
     }
 
     #[test]

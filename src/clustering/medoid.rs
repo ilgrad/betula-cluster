@@ -1148,6 +1148,18 @@ mod tests {
             assert_eq!(got[0].0, all[0].0, "leaf {i}");
             assert_eq!(got[1].0, all[1].0, "leaf {i}");
         }
+        // Three medoids equidistant from the leaf at the origin: ties keep the lower slot first,
+        // and that slot is the label the leaf ends up with.
+        let feats: Vec<Spherical<f64>> = [[0.0], [-1.0], [1.0], [-1.0]]
+            .iter()
+            .map(|p| {
+                let mut f = Spherical::new(1);
+                f.push(p, 1.0);
+                f
+            })
+            .collect();
+        let near = two_nearest(&Leaves::of(&feats), &[1, 2, 3]);
+        assert_eq!(near[0], [(1.0, 0), (1.0, 1)]);
     }
 
     /// `Σ_i n_i · min_m d̄(i, m)`, priced from scratch.
@@ -1182,6 +1194,32 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn the_swap_floor_scales_with_the_total_deviation() {
+        // Two unit leaves at 0 and 1 with the medoid on the lighter one, and a far pair whose
+        // spread puts the total deviation near 1e6. Moving the medoid to the heavier leaf gains
+        // exactly its excess weight: kept below `1e-12 · TD = 1e-6`, accepted above it.
+        let sweep = |excess: f64| {
+            let feats: Vec<Spherical<f64>> =
+                [(0.0, 1.0), (1.0, 1.0 + excess), (1e4, 1.0), (1.1e4, 1.0)]
+                    .iter()
+                    .map(|&(x, w)| {
+                        let mut f = Spherical::new(1);
+                        f.push(&[x], w);
+                        f
+                    })
+                    .collect();
+            let lv = Leaves::of(&feats);
+            let mut medoids = [0, 2];
+            let mut near = two_nearest(&lv, &medoids);
+            let mut td = total_deviation(&lv, &near);
+            assert!((td - 1e6 - 1.0 - excess).abs() < 1e-6, "{td}");
+            eager_pam_sweep(&lv, &mut medoids, &mut near, &mut td, &[1])
+        };
+        assert_eq!(sweep(1e-9), 0);
+        assert_eq!(sweep(1e-5), 1);
     }
 
     #[test]

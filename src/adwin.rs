@@ -596,4 +596,46 @@ mod tests {
         }
         assert!(fired >= 10 && held >= 10, "{fired} fired, {held} held");
     }
+
+    #[test]
+    fn no_cut_is_tested_until_both_sides_hold_min_side_values() {
+        // Width 8 has cuts at 2..8 but none with five values on each side. Off those cuts `m_inv`
+        // reaches zero (`1/(n0 − 4) + 1/(n1 − 4)` at `n0 + n1 = 8`), so `eps` would be zero and
+        // any gap at all would fire. `filled`'s `delta` would make `dd` infinite and `eps` NaN.
+        let mut adwin = filled(&[0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0]);
+        adwin.delta = 0.5;
+        assert!(!adwin.has_split_that_fails());
+    }
+
+    #[test]
+    fn a_cut_with_exactly_min_side_new_values_is_tested() {
+        // Zeros, then two values of −250 and five of +100. Any cut that puts both negatives on
+        // the new side sees a zero mean on each side, so only the cut five from the end can fire.
+        let mut values = vec![0.0; 1001 - 7];
+        values.extend([-250.0, -250.0, 100.0, 100.0, 100.0, 100.0, 100.0]);
+        let mut adwin = filled(&values);
+        adwin.delta = 0.002;
+        assert_eq!(
+            adwin.levels[0].len(),
+            5,
+            "a sixth single would add a cut at six"
+        );
+        assert!(adwin.has_split_that_fails());
+    }
+
+    #[test]
+    fn the_old_side_of_a_cut_is_weighed_by_its_own_count() {
+        // Width 14 holds four pairs then six singles, so a cut sits six values from the start.
+        // There `1/(n0 − MIN_SIDE + 1) = 1/2`, and a step of 100 clears `eps` by about 6; with
+        // `1/(n0 − MIN_SIDE)` instead the square-root term alone exceeds the gap at every cut.
+        let mut values = vec![100.0; 6];
+        values.extend([0.0; 8]);
+        let mut adwin = filled(&values);
+        adwin.delta = 0.5;
+        assert_eq!(
+            adwin.oldest_first().map(|b| b.size).collect::<Vec<_>>()[..5],
+            [2.0, 2.0, 2.0, 2.0, 1.0]
+        );
+        assert!(adwin.has_split_that_fails());
+    }
 }

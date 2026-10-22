@@ -782,6 +782,19 @@ mod tests {
     }
 
     #[test]
+    fn a_tie_for_the_medoid_goes_to_the_first_leaf() {
+        // Cluster 0's two leaves sit symmetrically about its centroid, so either could be its
+        // medoid; the other cluster is to one side, so the two choices score 0.947 and 0.973.
+        let pts: Vec<Vec<f64>> = [[-1.0], [1.0], [6.0]].iter().map(|p| p.to_vec()).collect();
+        let labels = [0, 0, 1];
+        let got = medoid_silhouette(&leaf_per_point(&pts), &labels, 2);
+        assert!(
+            (got - reference_medoid(&pts, &labels, 2)).abs() < 1e-12,
+            "{got}"
+        );
+    }
+
+    #[test]
     fn a_point_on_a_foreign_representative_scores_zero_rather_than_minus_infinity() {
         // Cluster 1 owns a point at the origin, which is both cluster 0's centroid and its medoid.
         let pts: Vec<Vec<f64>> = [[-1.0], [0.0], [1.0], [0.0], [9.0], [10.0], [11.0]]

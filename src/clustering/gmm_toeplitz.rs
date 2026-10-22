@@ -1175,9 +1175,14 @@ mod tests {
     fn em_stops_where_the_likelihood_stops_moving() {
         let specs: &[&[f64]] = &[&[0.8], &[1.1, -0.4], &[]];
         let (feats, _) = ar_mixture(64, 20, specs, 4);
-        let a = gmm_toeplitz(&feats, 3, 300, 2);
-        let b = gmm_toeplitz(&feats, 3, 3000, 2);
-        assert_eq!(a.loglik, b.loglik);
-        assert_eq!(a.labels, b.labels);
+        // The relative change drops under 1e-6 on the 15th iteration here, and the iterates stop
+        // moving to the last bit only at the 50th: a stop that fires late leaves 15 short of 3000.
+        let short = gmm_toeplitz(&feats, 3, 14, 2);
+        let stop = gmm_toeplitz(&feats, 3, 15, 2);
+        let long = gmm_toeplitz(&feats, 3, 3000, 2);
+        assert_ne!(short.loglik, long.loglik);
+        assert_eq!(stop.loglik, long.loglik);
+        assert_eq!(stop.labels, long.labels);
+        assert_eq!(stop.means, long.means);
     }
 }

@@ -768,6 +768,23 @@ mod tests {
     }
 
     #[test]
+    fn a_tie_in_mass_names_the_lower_leaf_as_the_k_center_centre() {
+        let got = k_center(3, 1, &[(1.0, 0, 1), (2.0, 1, 2)], &[2.0, 2.0, 1.0]);
+        assert_eq!(got.centers, [0]);
+    }
+
+    #[test]
+    fn a_k_median_tie_keeps_the_first_choice_the_recursion_tries() {
+        // Two unit leaves at height 1: a centre in either costs 1, and the left child is tried first.
+        let pair = dendrogram(2, &[1.0; 2], &[(1.0, 0, 1)]);
+        assert_eq!(k_median(&pair, 1), (vec![0], 1.0));
+        // Two coincident unit leaves, then a massless one at height 2: both centres on the pair and
+        // one on each side cost 0 alike, and the arm that keeps them together is tried first.
+        let massless = dendrogram(3, &[1.0, 1.0, 0.0], &[(0.0, 0, 1), (2.0, 1, 2)]);
+        assert_eq!(k_median(&massless, 2), (vec![0, 1], 0.0));
+    }
+
+    #[test]
     fn an_ultrametric_tie_goes_to_the_euclidean_nearer_centre_then_to_the_lower_index() {
         // Leaf 2 joins the subtree holding both centres at height 2, so it is 2 from each.
         let mst = [(1.0, 0, 1), (2.0, 1, 2)];

@@ -1088,6 +1088,20 @@ mod tests {
         let more = mfa_once::<f64, _>(&feats, 1, 1, 5000, 3).loglik;
         assert!(done > two + 1e-3, "{done} converged, {two} after two steps");
         assert_eq!(done, more, "EM did not stop where it converged");
+        // The relative change drops under the tolerance on step 33, and the iterates stop moving to
+        // the last bit only near step 91: a stop that fires late leaves 33 short of 5000.
+        assert_eq!(mfa_once::<f64, _>(&feats, 1, 1, 33, 3).loglik, more);
+        assert_ne!(mfa_once::<f64, _>(&feats, 1, 1, 32, 3).loglik, more);
+    }
+
+    #[test]
+    fn a_summary_with_no_mass_keeps_finite_means() {
+        let g = mfa_once::<f64, _>(&vec![Full::<f64>::new(2); 3], 2, 1, 5, 0);
+        assert!(
+            g.means.iter().flatten().all(|x| x.is_finite()),
+            "{:?}",
+            g.means
+        );
     }
 
     #[test]

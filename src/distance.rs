@@ -640,8 +640,10 @@ mod tests {
     #[test]
     fn subspace_chi2_matches_the_dense_inverse_where_the_sketch_kept_only_an_isotropic_floor() {
         // One row for rank-2 data, then the mean itself: the shrink retains no direction and the
-        // whole scatter comes back as `iso`, which joins the prior's own isotropic term.
-        let (s0, kappa) = (0.5, 4.0);
+        // whole scatter comes back as `iso`, which joins the prior's own isotropic term. The prior
+        // scale has to outweigh `n·iso`: otherwise a sign error in that sum sends `b` non-positive
+        // and onto the diagonal fallback, which with no retained direction gives the same number.
+        let (s0, kappa) = (10.0, 4.0);
         let mut fd: FdSketch<f64> = FdSketch::with_ell(3, 1);
         for p in [
             [-2.0, 1.0, 0.5],

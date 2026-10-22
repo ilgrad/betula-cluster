@@ -510,6 +510,28 @@ mod tests {
             inertia: 3.0,
         };
         assert_eq!(sensitivities(&feats, &reference, 2), [7.5, 6.5, 4.0]);
+        // A massless leaf alone in a third cluster: no membership share, not `0 / 0`.
+        let mut with_empty = feats.clone();
+        with_empty.push(Spherical::new(1));
+        let reference = KMeans {
+            labels: vec![0, 0, 1, 2],
+            centers: vec![vec![1.5], vec![10.0], vec![20.0]],
+            inertia: 3.0,
+        };
+        assert_eq!(
+            sensitivities(&with_empty, &reference, 3),
+            [7.5, 6.5, 4.0, 0.0]
+        );
+    }
+
+    #[test]
+    fn a_summary_with_no_sensitivity_is_kept_whole() {
+        // Massless leaves leave every sensitivity at zero: there is nothing to sample by, so the
+        // coreset is the whole summary rather than a draw piled onto one leaf.
+        let feats = vec![Spherical::<f64>::new(2); 4];
+        let c = sensitivity_coreset(&feats, 2, 2, 0);
+        assert_eq!(c.indices, [0, 1, 2, 3]);
+        assert_eq!(c.total_sensitivity, 0.0);
     }
 
     #[test]
@@ -524,9 +546,9 @@ mod tests {
             n_leaves: 0,
         };
         // ρ = α·Δ/cost: 1/4 at α = 1 and 1/2 at α = 2.
-        assert_eq!(at(1.0, 4.0).summary_epsilon(1.0), 3.0);
+        assert_eq!(at(2.0, 8.0).summary_epsilon(1.0), 3.0);
         let want = 4.0 * 0.5f64.sqrt() + 2.0;
-        assert!((at(1.0, 4.0).summary_epsilon(2.0) - want).abs() < 1e-15);
+        assert!((at(2.0, 8.0).summary_epsilon(2.0) - want).abs() < 1e-15);
         assert_eq!(at(1.0, 0.0).summary_epsilon(1.0), 0.0);
         assert_eq!(at(1.0, f64::INFINITY).summary_epsilon(1.0), 0.0);
     }

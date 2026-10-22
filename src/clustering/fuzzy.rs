@@ -561,6 +561,14 @@ mod tests {
                 assert!((cv - s / den).abs() < 1e-6, "centre {j}: {c:?}");
             }
         }
+        // It stops where the loss settles to 1e-12: from this start on sweep 19, while a stop that
+        // fires late or reads the wrong loss reaches the 5000-sweep fit only at 32 to 60.
+        let ssd: Vec<f64> = micros.iter().map(ClusterFeature::ssd).collect();
+        let start = kmeans_plus_plus(&lv.mu, &lv.w, &ssd, 4, &mut SplitMix64::new(8));
+        let long = fcm_from(&lv, start.clone(), 2.0, 5000);
+        let stop = fcm_from(&lv, start.clone(), 2.0, 19);
+        assert_eq!((&stop.1, stop.2), (&long.1, long.2));
+        assert_ne!(fcm_from(&lv, start, 2.0, 18).1, long.1);
     }
 
     #[test]
@@ -619,7 +627,7 @@ mod tests {
     fn a_tied_membership_goes_to_the_lower_cluster() {
         let (labels, centers, u) = compact(
             &[vec![0.5, 0.5, 0.0]],
-            vec![vec![0.0], vec![0.0], vec![5.0]],
+            vec![vec![0.0], vec![1.0], vec![5.0]],
         );
         assert_eq!(labels, [0]);
         assert_eq!(centers, [[0.0]]);

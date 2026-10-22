@@ -657,6 +657,57 @@ mod tests {
     }
 
     #[test]
+    fn the_scale_and_the_warm_start_do_not_move_with_the_origin() {
+        // Far from the origin the centre carries a rounding error `δ`. Squared deviations absorb it
+        // at second order (`N δ²`); the expansion `a² − b²` they equal in exact arithmetic takes it at
+        // first order (`2 N b δ`), which at `b ~ 3e8` is the size of the scatter itself.
+        let at = |origin: f64| -> Vec<Full<f64>> {
+            [0.0, 1.0, 3.0]
+                .iter()
+                .map(|x| {
+                    let mut cf = Full::new(1);
+                    cf.push(&[origin + x], 1.0);
+                    cf
+                })
+                .collect()
+        };
+        let far = 1e9 / 3.0;
+        assert!((scale_of(&at(far)) / scale_of(&at(0.0)) - 1.0).abs() < 1e-9);
+        // In one dimension the rank is 0, so the warm start's noise is the cluster's scatter.
+        let noise = |origin: f64| mppca_once::<f64, _>(&at(origin), 1, 0, 0, 0).noise[0];
+        assert!((noise(far) / noise(0.0) - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_component_k_means_left_empty_starts_at_the_floor_loading() {
+        // Four identical leaves: k-means puts them all in one cluster and leaves the other empty,
+        // which has no scatter to seed from and gets a unit direction scaled to the floor.
+        let f: Vec<Full<f64>> = (0..4)
+            .map(|_| {
+                let mut cf = Full::new(3);
+                cf.push(&[1.0, 2.0, 3.0], 1.0);
+                cf.push(&[1.0, 2.5, 3.0], 1.0);
+                cf
+            })
+            .collect();
+        let g = mppca_once::<f64, _>(&f, 2, 1, 0, 0);
+        let empty = 1 - kmeans::<f64, _>(&f, 2, 50, 1, 0).labels[0];
+        let scale = scale_of(&f);
+        let w = &g.loads[empty][0];
+        assert!((dot(w, w) - 1e-6 * scale).abs() < 1e-12 * scale, "{w:?}");
+    }
+
+    #[test]
+    fn a_summary_with_no_mass_keeps_finite_means() {
+        let g = mppca_once::<f64, _>(&vec![Full::<f64>::new(2); 3], 2, 1, 5, 0);
+        assert!(
+            g.means.iter().flatten().all(|x| x.is_finite()),
+            "{:?}",
+            g.means
+        );
+    }
+
+    #[test]
     fn a_cluster_with_no_principal_direction_gets_the_floor_loading() {
         // ±e0, ±e1, ±e2: scatter `I/3` exactly, so the leading eigenvalue equals the noise and the
         // loading would be zero — the fixed point the floor is there to keep EM out of.
@@ -720,6 +771,54 @@ mod tests {
         let two = mppca_once::<f64, _>(&leaves, 1, 1, 2, 0).loglik;
         let done = mppca_once::<f64, _>(&leaves, 1, 1, 200, 0).loglik;
         assert!(done > two + 1e-4, "{done} converged, {two} after two steps");
+        // ...and it stops there: the change drops under the tolerance on step 4, while the iterates
+        // reach their fixed point to the last bit only near step 92.
+        let long = mppca_once::<f64, _>(&leaves, 1, 1, 3000, 0);
+        let stop = mppca_once::<f64, _>(&leaves, 1, 1, 4, 0);
+        assert_eq!(
+            (stop.loglik, &stop.means, &stop.noise),
+            (long.loglik, &long.means, &long.noise)
+        );
+        assert_ne!(
+            mppca_once::<f64, _>(&leaves, 1, 1, 3, 0).loglik,
+            long.loglik
+        );
+    }
+
+    #[test]
+    fn the_log_likelihood_is_the_summed_density_of_every_point() {
+        // One component on one-point leaves: the log-likelihood is the summed log-density of the
+        // points under `W Wᵀ + σ² I`, constant term included.
+        let a = [[2.0, 0.3, 0.0], [0.3, 1.0, 0.2], [0.0, 0.2, 0.5]];
+        let f = correlated_leaves(5, &a, 300, 1);
+        let fit = mppca_once::<f64, _>(&f, 1, 1, 3000, 0);
+        let mut cov = vec![vec![0.0; 3]; 3];
+        for (i, row) in cov.iter_mut().enumerate() {
+            for (j, v) in row.iter_mut().enumerate() {
+                *v = fit.loads[0][0][i] * fit.loads[0][0][j]
+                    + if i == j { fit.noise[0] } else { 0.0 };
+            }
+        }
+        let l = crate::linalg::cholesky_lower(&cov).unwrap();
+        let logdet = crate::linalg::logdet_from_chol(&l);
+        let dense: f64 = f
+            .iter()
+            .map(|cf| {
+                let delta: Vec<f64> = cf
+                    .mean()
+                    .iter()
+                    .zip(&fit.means[0])
+                    .map(|(a, b)| a - b)
+                    .collect();
+                let quad = crate::linalg::mahalanobis_sq_from_chol(&l, &delta);
+                -0.5 * (3.0 * std::f64::consts::TAU.ln() + logdet + quad)
+            })
+            .sum();
+        assert!(
+            (fit.loglik - dense).abs() < 1e-6 * dense.abs(),
+            "{} vs {dense}",
+            fit.loglik
+        );
     }
 
     #[test]
