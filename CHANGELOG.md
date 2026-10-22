@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.2.0] — 2026-10-22
+
 ### Changed
 - **One `abi3t` wheel for CPython 3.15 and later, free-threaded or not** (PEP 803), in place of the
   per-version `cp315-cp315t` wheel 1.1.0 shipped. pyo3 0.29 → 0.30 and rust-numpy 0.29 → 0.30 — the
@@ -3906,7 +3908,8 @@ First public release.
   far below `max_leaves`), and rebuilds reinsert in reverse-DFS leaf order. The CF-tree build is now
   byte-for-byte the reference (`betulars`) tree shape and at speed parity with matched build flags.
 
-[Unreleased]: https://github.com/ilgrad/betula-cluster/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/ilgrad/betula-cluster/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/ilgrad/betula-cluster/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/ilgrad/betula-cluster/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/ilgrad/betula-cluster/compare/v0.8.0...v1.0.0
 [0.8.0]: https://github.com/ilgrad/betula-cluster/compare/v0.6.0...v0.8.0
