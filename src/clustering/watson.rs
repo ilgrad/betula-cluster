@@ -151,10 +151,16 @@ fn kummer_ratio(dim: usize, kappa: f64) -> f64 {
 /// and `r̄ < 1/d` is girdle. A *bracketed* solver rather than Newton because `g` is monotone but very
 /// flat far from the origin in high `d`, where a Newton step happily leaves the bracket.
 pub(crate) fn solve_kappa(dim: usize, rbar: f64) -> f64 {
+    solve_kappa_counted(dim, rbar).0
+}
+
+/// [`solve_kappa`], and how many times it evaluated `g` — the solve's whole cost, since every
+/// evaluation is a series of length `O(|κ|)`.
+fn solve_kappa_counted(dim: usize, rbar: f64) -> (f64, usize) {
     let iso = 1.0 / dim as f64;
     let r = rbar.clamp(1e-12, 1.0 - 1e-12);
     if (r - iso).abs() < 1e-12 {
-        return 0.0;
+        return (0.0, 0);
     }
     let (mut lo, mut hi) = if r > iso {
         (0.0, KAPPA_MAX)
@@ -162,10 +168,10 @@ pub(crate) fn solve_kappa(dim: usize, rbar: f64) -> f64 {
         (-KAPPA_MAX, 0.0)
     };
     if r > iso && kummer_ratio(dim, hi) <= r {
-        return hi;
+        return (hi, 1);
     }
     if r < iso && kummer_ratio(dim, lo) >= r {
-        return lo;
+        return (lo, 1);
     }
     // Illinois: regula falsi with the retained endpoint's residual halved, which is what stops the
     // stalling that plain false position suffers where `g` is flat. Every step stays inside the
@@ -190,7 +196,8 @@ pub(crate) fn solve_kappa(dim: usize, rbar: f64) -> f64 {
         }
         step += 1;
     }
-    0.5 * (lo + hi)
+    // One cap check, the two bracket ends, then one evaluation per step.
+    (0.5 * (lo + hi), 3 + step)
 }
 
 /// `log` of the Watson normalizing constant `Γ(d/2) / (2 π^(d/2) M(1/2, d/2, κ))`.
@@ -530,10 +537,13 @@ fn better_pole<R: Real>(dim: usize, top: (f64, Vec<R>), bottom: (f64, Vec<R>)) -
     }
 }
 
+/// Free parameters of a `k`-component Watson mixture in `d` dimensions: per component `d − 1` for
+/// the axis (a unit vector up to sign) plus 1 for `κ`, and `k − 1` mixing weights.
+fn free_parameters(k: usize, dim: f64) -> f64 {
+    k as f64 * dim + (k - 1) as f64
+}
+
 /// Fit a Watson mixture with automatic component count by BIC over `k ∈ [k_min, k_max]`.
-///
-/// Free parameters per component: `d − 1` for the axis (a unit vector up to sign) plus 1 for `κ`,
-/// and `k − 1` mixing weights.
 pub fn watson_auto<R: Real, C: ClusterFeature<R>>(
     features: &[C],
     k_min: usize,
@@ -550,7 +560,7 @@ pub fn watson_auto<R: Real, C: ClusterFeature<R>>(
     let mut best: Option<(f64, Watson<R>)> = None;
     for k in k_min..=hi {
         let fit = watson(features, k, max_iter, seed);
-        let p = k as f64 * dim + (k - 1) as f64;
+        let p = free_parameters(k, dim);
         let bic = p * ntot.max(1.0).ln() - 2.0 * fit.loglik.to_f64().unwrap_or(0.0);
         match &best {
             Some((b, _)) if *b <= bic => {}
@@ -774,6 +784,176 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn the_concentration_solve_costs_what_it_was_measured_to_cost() {
+        // Every Illinois mutation that keeps the bracket still converges -- the forced bisection
+        // every eighth step guarantees it -- so the inversion test above cannot see a broken secant
+        // step, a lost residual halving or a wrong bisection schedule. What they change is the cost:
+        // each evaluation of `g` is a series `O(|κ|)` long. The total over this grid was 1566 on
+        // the unmutated code (worst single solve 43); plain bisection to the same width takes 38
+        // per solve, 1824 here. The band is a few evaluations wide, for a libm that rounds `exp` or
+        // `ln` differently and so moves an iterate across a branch.
+        let mut total = 0;
+        let mut solves = 0;
+        for d in [2usize, 3, 5, 20, 64, 200] {
+            for kappa in [-800.0, -50.0, -2.0, -0.3, 0.3, 2.0, 50.0, 800.0] {
+                total += solve_kappa_counted(d, kummer_ratio(d, kappa)).1;
+                solves += 1;
+            }
+        }
+        assert_eq!(solves, 48);
+        assert!(
+            total.abs_diff(1566) <= 16,
+            "{total} evaluations of g over the grid, measured 1566"
+        );
+    }
+
+    #[test]
+    fn a_resultant_past_the_cap_returns_the_cap_itself_after_one_evaluation() {
+        for d in [2usize, 3, 64] {
+            assert_eq!(solve_kappa_counted(d, 1.0 - 1e-13), (KAPPA_MAX, 1));
+            assert_eq!(solve_kappa_counted(d, 1e-13), (-KAPPA_MAX, 1));
+        }
+    }
+
+    #[test]
+    fn unit_and_argmax_answer_on_their_edge_cases() {
+        // A zero vector has no direction; `unit` answers with the first axis rather than 0/0.
+        assert_eq!(unit(&[0.0_f64, 0.0, 0.0]), vec![1.0, 0.0, 0.0]);
+        assert_eq!(unit(&[0.0_f64, 3.0, 4.0]), vec![0.0, 0.6, 0.8]);
+        assert!(unit::<f64>(&[]).is_empty());
+        // Ties go to the first index.
+        assert_eq!(argmax(&[1.0_f64, 3.0, 3.0, 2.0]), 1);
+    }
+
+    #[test]
+    fn weights_and_responsibilities_are_distributions_that_follow_the_mass() {
+        let leaves = [
+            axial_leaves(3, 60, &[[1.0, 0.0, 0.0]], 0.1),
+            axial_leaves(4, 20, &[[0.0, 1.0, 0.0]], 0.1),
+        ]
+        .concat();
+        let fit = watson(&leaves, 2, 100, 0);
+        assert!((fit.weights.iter().sum::<f64>() - 1.0).abs() < 1e-12);
+        let mut w = fit.weights.clone();
+        w.sort_by(f64::total_cmp);
+        assert!(
+            (w[0] - 0.25).abs() < 0.02 && (w[1] - 0.75).abs() < 0.02,
+            "{w:?}"
+        );
+        for r in &fit.resp {
+            assert!((r.iter().sum::<f64>() - 1.0).abs() < 1e-9, "{r:?}");
+        }
+    }
+
+    #[test]
+    fn massless_leaves_get_uniform_weights() {
+        let empty = vec![Full::<f64>::new(3); 4];
+        assert_eq!(watson(&empty, 2, 20, 0).weights, vec![0.5, 0.5]);
+    }
+
+    #[test]
+    fn the_log_likelihood_is_mass_weighted() {
+        // Doubling every leaf's mass is exact in floating point and leaves every EM decision where
+        // it was (responsibilities, the normalised scatter, the mass-proportional seeding draw), so
+        // the log-likelihood must double exactly.
+        let axes = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.6, 0.0, 0.8]];
+        let leaves = axial_leaves(9, 40, &axes, 0.8);
+        let heavy: Vec<Full<f64>> = leaves
+            .iter()
+            .map(|f| {
+                let mut f = f.clone();
+                f.decay(2.0);
+                f
+            })
+            .collect();
+        let (a, b) = (watson(&leaves, 3, 100, 5), watson(&heavy, 3, 100, 5));
+        assert_eq!(b.loglik, 2.0 * a.loglik);
+    }
+
+    #[test]
+    fn em_runs_past_its_first_steps_and_the_best_restart_is_kept() {
+        // Measured on this fixture: one EM step reads -278.9, three -204.6, convergence -200.98.
+        // A convergence test that fired early would stop near the first two.
+        let axes = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.6, 0.0, 0.8]];
+        let leaves = axial_leaves(9, 40, &axes, 0.8);
+        let three = watson_once::<f64, _>(&leaves, 3, 3, 5).loglik;
+        let done = watson_once::<f64, _>(&leaves, 3, 100, 5).loglik;
+        assert!(
+            done > three + 1.0,
+            "{done} after convergence, {three} after three steps"
+        );
+
+        // Restarts that end in different optima, with the best neither first nor last, so keeping
+        // the first or the last restart instead of the best reads a different value.
+        let leaves = axial_leaves(9, 40, &axes, 1.2);
+        let runs: Vec<f64> = (0..WATSON_N_INIT)
+            .map(|s| watson_once::<f64, _>(&leaves, 3, 100, s.wrapping_mul(0x9E37_79B9)).loglik)
+            .collect();
+        let best = runs.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        assert!(best > runs[0] && best > runs[runs.len() - 1], "{runs:?}");
+        assert_eq!(watson(&leaves, 3, 100, 0).loglik, best);
+    }
+
+    #[test]
+    fn the_seeding_draws_in_proportion_to_mass() {
+        // Three leaves on three axes, the middle one 1000 times heavier. With the first seed on
+        // leaf 0 both others sit at axial distance 1, so a mass-weighted draw takes the heavy one
+        // ~999 times in 1000.
+        let u = vec![
+            vec![1.0_f64, 0.0, 0.0],
+            vec![0.0, 1.0, 0.0],
+            vec![0.0, 0.0, 1.0],
+        ];
+        let n = [1.0_f64, 1000.0, 1.0];
+        let (mut first_was_zero, mut heavy) = (0, 0);
+        for seed in 0..300u64 {
+            let axes = axial_pp(&u, &n, 2, &mut SplitMix64::new(seed));
+            if axes[0] == u[0] {
+                first_was_zero += 1;
+                heavy += usize::from(axes[1] == u[1]);
+            }
+        }
+        assert!(first_was_zero > 50);
+        assert!(heavy >= first_was_zero - 2, "{heavy} of {first_was_zero}");
+    }
+
+    #[test]
+    fn the_better_pole_is_the_one_with_the_higher_expected_log_likelihood() {
+        // Per unit mass the expected log-likelihood of a Watson fit with concentration `κ` at mean
+        // resultant `r̄` is `log c(κ) + κ r̄`, with `c` the normaliser the density-integrates-to-one
+        // test pins. The pole picked must be the one that scores higher on it.
+        for d in [3usize, 5, 20] {
+            let iso = 1.0 / d as f64;
+            for i in 1..12 {
+                for j in 1..12 {
+                    let top = iso + (1.0 - iso) * i as f64 / 12.0;
+                    let bottom = iso * j as f64 / 12.0;
+                    let ll = |r: f64| {
+                        let k = solve_kappa(d, r);
+                        log_watson_norm(d, k) + k * r
+                    };
+                    let (axis, kappa) =
+                        better_pole::<f64>(d, (top, vec![1.0]), (bottom, vec![0.0]));
+                    let want_bottom = ll(bottom) > ll(top);
+                    assert_eq!(
+                        axis[0] == 0.0,
+                        want_bottom,
+                        "d={d} top={top} bottom={bottom}"
+                    );
+                    assert_eq!(kappa < 0.0, want_bottom);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_bic_counts_an_axis_up_to_sign_one_concentration_and_the_free_weights() {
+        assert_eq!(free_parameters(1, 3.0), 3.0);
+        assert_eq!(free_parameters(2, 3.0), 7.0);
+        assert_eq!(free_parameters(4, 10.0), 43.0);
     }
 
     fn axial_leaves(rng_seed: u64, per: usize, axes: &[[f64; 3]], spread: f64) -> Vec<Full<f64>> {
