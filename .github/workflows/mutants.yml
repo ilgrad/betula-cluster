@@ -111,8 +111,23 @@ jobs:
         # 39237087351 for an outcome the summary already counts. Every other code still fails the
         # job (cargo-mutants 27.1.0: 0 all caught, 2 missed, 3 timeouts, 4 build or check failure),
         # and a runner shutdown or an exhausted job timeout is none of those.
+        #
+        # The memory cap is what keeps the runner alive. Shards 60 and 81 were lost on every run from
+        # 2026-10-05 to 2026-10-19 with "The runner has received a shutdown signal", and that was no
+        # random runner fault: shard 60 holds `default_block -> 0` in src/assign.rs, a block of zero
+        # dimensions never advances the scan, and every assign test it runs grows without bound --
+        # reproduced locally, where four workers reached a 10 GB cap in under three minutes. Uncapped,
+        # those tests take the VM's 16 GB and the runner agent with them, so the shard uploads
+        # nothing. Inside a scope with `OOMPolicy=continue` the kernel kills the largest process
+        # there -- the runaway test -- and the mutant is scored as caught, which it is. The scope's
+        # default policy, `stop`, would end cargo-mutants too and lose the shard all the same. `sudo`
+        # because a hosted runner has no user systemd instance; `--uid` drops back to the runner
+        # user, and `env PATH=` restores the toolchain path sudo's secure_path removes.
         run: |
-          cargo mutants --shard "${{ matrix.shard }}/$SHARDS" -j4 --test-tool nextest || {
+          sudo -E systemd-run --scope --quiet --uid="$(id -u)" --gid="$(id -g)" \
+            -p MemoryMax=12G -p MemorySwapMax=0 -p OOMPolicy=continue -- \
+            env PATH="$PATH" \
+            cargo mutants --shard "${{ matrix.shard }}/$SHARDS" -j4 --test-tool nextest || {
             rc=$?
             [ "$rc" -eq 2 ] || [ "$rc" -eq 3 ] || exit "$rc"
             echo "exit $rc: this shard has surviving or timed-out mutants; the summary job scores them"
