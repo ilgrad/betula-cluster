@@ -59,6 +59,7 @@
 
 use crate::clustering::gmm::{best_of_restarts, bic, chol_regularized, total_weight};
 use crate::clustering::kmeans::kmeans;
+use crate::clustering::mppca::mean_variance;
 use crate::clustering::rng::SplitMix64;
 use crate::feature::{ClusterFeature, SecondMoment};
 use crate::mixture::Mixture;
@@ -173,35 +174,7 @@ fn mfa_once<R: Real, C: ClusterFeature<R>>(
     let log_two_pi = R::from_f64(std::f64::consts::TAU).unwrap().ln();
     let dimr = R::from_usize(dim).unwrap();
 
-    // Mean global variance, matrix-free: the scale every floor here is expressed against.
-    let ntot: R = n.iter().copied().fold(R::zero(), |a, b| a + b);
-    let scale = {
-        let mut centre = vec![R::zero(); dim];
-        if ntot > R::zero() {
-            for (mi, &ni) in mu.iter().zip(&n) {
-                for (cv, &v) in centre.iter_mut().zip(mi) {
-                    *cv = *cv + ni * v;
-                }
-            }
-            for cv in &mut centre {
-                *cv = *cv / ntot;
-            }
-        }
-        let mut total = R::zero();
-        for i in 0..m {
-            let spread = mu[i]
-                .iter()
-                .zip(&centre)
-                .map(|(&a, &b)| (a - b) * (a - b))
-                .fold(R::zero(), |p, s| p + s);
-            total = total + n[i] * (tr_sig[i] + spread);
-        }
-        if ntot > R::zero() {
-            (total / (ntot * dimr)).max(R::from_f64(1e-12).unwrap())
-        } else {
-            R::one()
-        }
-    };
+    let scale = mean_variance(&mu, &n, &tr_sig, dim);
     let noise_floor = R::from_f64(1e-6).unwrap() * scale;
     // Without a floor on the loading scale a component whose leading eigenvalue does not clear its
     // noise gets `W_c = 0`, and `W = 0` is a fixed point of the M-step, so it would stay diagonal
@@ -571,10 +544,16 @@ pub fn mfa<R: Real, C: ClusterFeature<R>>(
     )
 }
 
-/// MFA with automatic component count (BIC over `k ∈ [k_min, k_max]`). A component costs `d` mean
+/// Free parameters of a `k`-component MFA of rank `q` in `d` dimensions. A component costs `d` mean
 /// parameters, `d` noise variances and `d·q − q(q−1)/2` free loadings — the Stiefel rotation of
-/// `W_c` is unidentifiable, so that part of it is not counted. The `d − 1` difference from `mppca`
-/// is exactly what BIC charges the head for its extra freedom.
+/// `W_c` is unidentifiable, so that part of it is not counted — and `k − 1` weights. The `d − 1`
+/// difference from `mppca` is exactly what BIC charges the head for its extra freedom.
+fn free_parameters(k: usize, d: usize, q: usize) -> usize {
+    k * (d + d + d * q - q * q.saturating_sub(1) / 2) + (k - 1)
+}
+
+/// MFA with automatic component count (BIC over `k ∈ [k_min, k_max]`, parameters counted by
+/// [`free_parameters`]).
 pub fn mfa_auto<R: Real, C: ClusterFeature<R>>(
     features: &[C],
     k_min: usize,
@@ -592,8 +571,7 @@ pub fn mfa_auto<R: Real, C: ClusterFeature<R>>(
     let mut best: Option<Mfa<R>> = None;
     for k in k_lo..=k_hi {
         let g = mfa_once(features, k, rank, max_iter, seed);
-        let p = k * (d + d + d * q - q * q.saturating_sub(1) / 2) + (k - 1);
-        let score = bic(g.loglik, p, ntot);
+        let score = bic(g.loglik, free_parameters(k, d, q), ntot);
         if score < best_score {
             best_score = score;
             best = Some(g);
@@ -925,5 +903,303 @@ mod tests {
             (w[2].abs() - 0.8).abs() < 0.2 && (w[3].abs() - 0.8).abs() < 0.2,
             "loadings are not the generator's 0.8: {w:?}"
         );
+    }
+
+    /// Two clusters at `(0, ±50)`, each four points in three leaves: `±(5, 5)` alone and the pair
+    /// `±(1, −1)`. Per cluster the scatter is `[[13, 12], [12, 13]]`, so the standardised one has
+    /// eigenvalues `25/13` along `(1, 1)` and `1/13` across it — a gap two subspace passes resolve
+    /// to well under `1e-6`. The single-point leaves carry the correlation through their offset
+    /// from the centre, the pair against it through its own scatter.
+    fn two_correlated_clusters() -> Vec<Full<f64>> {
+        let mut out = Vec::new();
+        for cy in [50.0, -50.0] {
+            for s in [5.0, -5.0] {
+                let mut f = Full::new(2);
+                f.push(&[s, cy + s], 1.0);
+                out.push(f);
+            }
+            let mut f = Full::new(2);
+            f.push(&[1.0, cy - 1.0], 1.0);
+            f.push(&[-1.0, cy + 1.0], 1.0);
+            out.push(f);
+        }
+        out
+    }
+
+    /// One factor in three dimensions, offset from the origin: `x = μ + l z + diag(sd) ε`.
+    fn one_factor(seed: u64, n: usize) -> Vec<Vec<f64>> {
+        let mut rng = SplitMix64::new(seed);
+        let (mu, l, sd) = ([1.0, -2.0, 3.0], [0.9, 0.8, 0.7], [0.5, 0.6, 0.7]);
+        (0..n)
+            .map(|_| {
+                let z = rng.gauss();
+                (0..3)
+                    .map(|j| mu[j] + l[j] * z + sd[j] * rng.gauss())
+                    .collect()
+            })
+            .collect()
+    }
+
+    fn scale_of(features: &[Full<f64>]) -> f64 {
+        let mu: Vec<Vec<f64>> = features.iter().map(|f| f.mean().to_vec()).collect();
+        let n: Vec<f64> = features.iter().map(|f| f.weight()).collect();
+        let tr: Vec<f64> = features.iter().map(|f| f.second_moment().trace()).collect();
+        mean_variance(&mu, &n, &tr, features[0].dim())
+    }
+
+    #[test]
+    fn the_initial_factor_is_the_leading_correlation_and_noise_takes_the_rest() {
+        // `max_iter = 0` returns the warm start. Correlation `12/13` gives `λ − 1 = 12/13` along
+        // `(1, 1)/√2`, so `w_j² = (12/13)·(1/2)·13 = 6` and `ψ_j = 13 − 6 = 7` on both axes. Two
+        // passes leave the direction up to 3e-3 rad off `(1, 1)`, which moves each entry to first
+        // order but `‖w‖²` and `Σ ψ_j` only to second.
+        let g = mfa_once::<f64, _>(&two_correlated_clusters(), 2, 1, 0, 3);
+        for c in 0..2 {
+            let w = &g.loads[c][0];
+            assert!((dot(w, w) - 12.0).abs() < 1e-3, "{:?}", g.loads);
+            assert!(
+                (g.noise[c].iter().sum::<f64>() - 14.0).abs() < 1e-3,
+                "{:?}",
+                g.noise
+            );
+            for (wj, psi) in w.iter().zip(&g.noise[c]) {
+                assert!((wj * wj - 6.0).abs() < 0.05, "{:?}", g.loads);
+                assert!((psi - 7.0).abs() < 0.05, "{:?}", g.noise);
+            }
+        }
+    }
+
+    #[test]
+    fn a_cluster_with_no_correlation_gets_the_floor_loading() {
+        // ±e0, ±e1, ±e2: scatter `I/3`, so the standardised scatter is `I` and no direction adds
+        // variance. The loading stops at the floor, which in standardised units is `1e-6 · scale`.
+        let mut f = Vec::new();
+        for axis in 0..3 {
+            for sign in [1.0, -1.0] {
+                let mut cf = Full::new(3);
+                let mut p = [0.0; 3];
+                p[axis] = sign;
+                cf.push(&p, 1.0);
+                f.push(cf);
+            }
+        }
+        let g = mfa_once::<f64, _>(&f, 1, 1, 0, 0);
+        let standardised: f64 = g.loads[0][0].iter().map(|w| 3.0 * w * w).sum();
+        let floor = 1e-6 * scale_of(&f);
+        assert!(
+            (standardised - floor).abs() < 1e-6 * floor,
+            "{standardised} vs {floor}"
+        );
+    }
+
+    #[test]
+    fn a_component_k_means_left_empty_starts_at_the_floor_loading_and_the_global_scale() {
+        // Four identical leaves: k-means puts all of them in one cluster and leaves the other empty.
+        // That component has no scatter to seed from, so it gets a unit direction at the floor.
+        let f: Vec<Full<f64>> = (0..4)
+            .map(|_| {
+                let mut cf = Full::new(3);
+                cf.push(&[1.0, 2.0, 3.0], 1.0);
+                cf.push(&[1.0, 2.5, 3.0], 1.0);
+                cf
+            })
+            .collect();
+        let g = mfa_once::<f64, _>(&f, 2, 1, 0, 0);
+        let empty = 1 - kmeans::<f64, _>(&f, 2, 50, 1, 0).labels[0];
+        let scale = scale_of(&f);
+        let w = &g.loads[empty][0];
+        assert!((dot(w, w) - 1e-6 * scale).abs() < 1e-12 * scale, "{w:?}");
+        assert_eq!(g.noise[empty], vec![scale; 3]);
+    }
+
+    #[test]
+    fn noise_on_an_exact_subspace_stops_at_its_floor() {
+        // Points on a line in the plane: with `q = 1` no residual is left on either axis, and each
+        // `ψ_j` must stop at `1e-6` of the global scale, not at zero and not at some other multiple.
+        let f: Vec<Full<f64>> = (0..40)
+            .map(|i| {
+                let t = (i as f64 - 19.5) / 4.0;
+                let mut cf = Full::new(2);
+                cf.push(&[3.0 * t, -t], 1.0);
+                cf
+            })
+            .collect();
+        let g = mfa::<f64, _>(&f, 1, 1, 200, 0);
+        assert_eq!(g.noise[0], vec![1e-6 * scale_of(&f); 2]);
+    }
+
+    #[test]
+    fn one_factor_in_three_dimensions_reproduces_the_scatter_exactly() {
+        // `d = 3, q = 1` has six free parameters against six distinct entries of the scatter, so the
+        // maximum-likelihood fit is `W Wᵀ + Ψ = S` whenever every `ψ_j` stays positive. That checks
+        // the whole M-step chain against a number computed without it.
+        let pts = one_factor(1, 400);
+        let fit = mfa_once::<f64, _>(&leaves(&pts, 4), 1, 1, 5000, 1);
+        let n = pts.len() as f64;
+        let mean: Vec<f64> = (0..3)
+            .map(|j| pts.iter().map(|p| p[j]).sum::<f64>() / n)
+            .collect();
+        let got = dense_cov(&fit.loads[0], &fit.noise[0]);
+        for i in 0..3 {
+            assert!((fit.means[0][i] - mean[i]).abs() < 1e-12);
+            for j in 0..3 {
+                let s = pts
+                    .iter()
+                    .map(|p| (p[i] - mean[i]) * (p[j] - mean[j]))
+                    .sum::<f64>()
+                    / n;
+                assert!(
+                    (got[i][j] - s).abs() < 1e-3,
+                    "({i},{j}): {} vs {s}",
+                    got[i][j]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_log_likelihood_is_the_summed_density_of_every_point() {
+        // One component, so a leaf's expected log-likelihood is exactly the summed log-density of
+        // its points. Evaluated densely at the returned parameters, the gap is the last EM step.
+        let pts = one_factor(2, 400);
+        let fit = mfa_once::<f64, _>(&leaves(&pts, 4), 1, 1, 5000, 2);
+        let l = crate::linalg::cholesky_lower(&dense_cov(&fit.loads[0], &fit.noise[0])).unwrap();
+        let logdet = crate::linalg::logdet_from_chol(&l);
+        let dense: f64 = pts
+            .iter()
+            .map(|p| {
+                let delta: Vec<f64> = p.iter().zip(&fit.means[0]).map(|(a, b)| a - b).collect();
+                let quad = crate::linalg::mahalanobis_sq_from_chol(&l, &delta);
+                -0.5 * (3.0 * std::f64::consts::TAU.ln() + logdet + quad)
+            })
+            .sum();
+        assert!(
+            (fit.loglik - dense).abs() < 1e-6 * dense.abs(),
+            "{} vs {dense}",
+            fit.loglik
+        );
+    }
+
+    #[test]
+    fn em_runs_until_the_likelihood_stops_moving_and_then_stops() {
+        let feats = leaves(&one_factor(3, 400), 4);
+        let two = mfa_once::<f64, _>(&feats, 1, 1, 2, 3).loglik;
+        let done = mfa_once::<f64, _>(&feats, 1, 1, 100, 3).loglik;
+        let more = mfa_once::<f64, _>(&feats, 1, 1, 5000, 3).loglik;
+        assert!(done > two + 1e-3, "{done} converged, {two} after two steps");
+        assert_eq!(done, more, "EM did not stop where it converged");
+    }
+
+    #[test]
+    fn weights_and_responsibilities_are_distributions() {
+        // Three components over one Gaussian overlap, so no row is a near-indicator that would
+        // sum to one however its log-sum-exp were taken.
+        let g = mfa::<f64, _>(&leaves(&one_factor(1, 400), 4), 3, 1, 100, 0);
+        assert!(
+            (g.weights.iter().sum::<f64>() - 1.0).abs() < 1e-12,
+            "{:?}",
+            g.weights
+        );
+        assert!(g.resp.iter().any(|r| r.iter().all(|&v| v < 0.99)));
+        for r in &g.resp {
+            assert!((r.iter().sum::<f64>() - 1.0).abs() < 1e-9, "{r:?}");
+        }
+        assert_eq!(argmax(&[0.2_f64, 0.4, 0.4]), 1);
+    }
+
+    #[test]
+    fn the_bic_counts_means_noise_identifiable_loadings_and_free_weights() {
+        // d = 3, q = 1: 3 + 3 + 3 per component. d = 5, q = 2: 5 + 5 + (10 − 1).
+        assert_eq!(free_parameters(1, 3, 1), 9);
+        assert_eq!(free_parameters(2, 3, 1), 19);
+        assert_eq!(free_parameters(3, 5, 2), 3 * 19 + 2);
+        assert_eq!(free_parameters(2, 4, 0), 2 * 8 + 1);
+    }
+
+    fn matmul(a: &[Vec<f64>], b: &[Vec<f64>]) -> Vec<Vec<f64>> {
+        let (n, k, m) = (a.len(), b.len(), b[0].len());
+        (0..n)
+            .map(|i| {
+                (0..m)
+                    .map(|j| (0..k).map(|t| a[i][t] * b[t][j]).sum())
+                    .collect()
+            })
+            .collect()
+    }
+
+    fn transpose(a: &[Vec<f64>]) -> Vec<Vec<f64>> {
+        (0..a[0].len())
+            .map(|j| a.iter().map(|row| row[j]).collect())
+            .collect()
+    }
+
+    fn spd_inverse(a: &[Vec<f64>]) -> Vec<Vec<f64>> {
+        crate::linalg::inv_from_chol(&crate::linalg::cholesky_lower(a).unwrap())
+    }
+
+    #[test]
+    fn one_em_step_is_ghahramani_and_hintons_m_step_on_the_dense_scatter() {
+        // One component, two factors in four dimensions. The head's step works through `q×q`
+        // matrices only; the reference is the published one on the `d×d` scatter, from the same
+        // start: `β = Wᵀ Σ⁻¹`, `W' = S βᵀ (I − βW + β S βᵀ)⁻¹`, `ψ' = diag(S − W' β S)`.
+        let mut rng = SplitMix64::new(6);
+        let l = [[0.9, 0.0], [0.7, 0.5], [0.0, 0.8], [0.4, -0.6]];
+        let pts: Vec<Vec<f64>> = (0..400)
+            .map(|_| {
+                let z = [rng.gauss(), rng.gauss()];
+                (0..4)
+                    .map(|j| l[j][0] * z[0] + l[j][1] * z[1] + 0.5 * rng.gauss())
+                    .collect()
+            })
+            .collect();
+        let feats = leaves(&pts, 4);
+        let start = mfa_once::<f64, _>(&feats, 1, 2, 0, 6);
+        let step = mfa_once::<f64, _>(&feats, 1, 2, 1, 6);
+
+        let n = pts.len() as f64;
+        let mean: Vec<f64> = (0..4)
+            .map(|j| pts.iter().map(|p| p[j]).sum::<f64>() / n)
+            .collect();
+        let s: Vec<Vec<f64>> = (0..4)
+            .map(|i| {
+                (0..4)
+                    .map(|j| {
+                        pts.iter()
+                            .map(|p| (p[i] - mean[i]) * (p[j] - mean[j]))
+                            .sum::<f64>()
+                            / n
+                    })
+                    .collect()
+            })
+            .collect();
+        let w = transpose(&start.loads[0]); // d×q
+        let beta = matmul(
+            &transpose(&w),
+            &spd_inverse(&dense_cov(&start.loads[0], &start.noise[0])),
+        );
+        let bw = matmul(&beta, &w);
+        let bsb = matmul(&matmul(&beta, &s), &transpose(&beta));
+        let inner: Vec<Vec<f64>> = (0..2)
+            .map(|a| {
+                (0..2)
+                    .map(|b| f64::from(u8::from(a == b)) - bw[a][b] + bsb[a][b])
+                    .collect()
+            })
+            .collect();
+        let w_new = matmul(&matmul(&s, &transpose(&beta)), &spd_inverse(&inner));
+        let wbs = matmul(&matmul(&w_new, &beta), &s);
+        for j in 0..4 {
+            assert!((step.means[0][j] - mean[j]).abs() < 1e-12);
+            assert!(
+                (step.noise[0][j] - (s[j][j] - wbs[j][j])).abs() < 1e-10,
+                "ψ[{j}]"
+            );
+            for (r, &expected) in w_new[j].iter().enumerate() {
+                assert!(
+                    (step.loads[0][r][j] - expected).abs() < 1e-10,
+                    "W[{j}][{r}]"
+                );
+            }
+        }
     }
 }

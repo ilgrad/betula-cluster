@@ -118,9 +118,9 @@ fn dot<R: Real>(a: &[R], b: &[R]) -> R {
 }
 
 /// Mean per-dimension variance of the whole summary, `Σ_i n_i (tr Σ_i + ‖μ_i − μ̄‖²) / (N·d)`,
-/// without a `d×d` matrix: the scale every floor in this head is expressed against. `1` for a
-/// summary with no mass, floored at `1e-12` otherwise.
-fn mean_variance<R: Real>(mu: &[Vec<R>], n: &[R], tr_sig: &[R], dim: usize) -> R {
+/// without a `d×d` matrix: the scale every floor in this head and in [`mfa`](super::mfa) is
+/// expressed against. `1` for a summary with no mass, floored at `1e-12` otherwise.
+pub(super) fn mean_variance<R: Real>(mu: &[Vec<R>], n: &[R], tr_sig: &[R], dim: usize) -> R {
     let dimr = R::from_usize(dim).unwrap();
     let ntot: R = n.iter().copied().fold(R::zero(), |a, b| a + b);
     let mut centre = vec![R::zero(); dim];
