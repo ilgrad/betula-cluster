@@ -25,7 +25,7 @@
 pip install betula-cluster
 ```
 
-**Verified:** a **577-case** Python suite at **100% wrapper coverage** + **922** Rust tests,
+**Verified:** a **577-case** Python suite at **100% wrapper coverage** + **985** Rust tests,
 `clippy -D warnings` + `fmt` clean across all feature sets, CI on CPython 3.11–3.15 (one abi3 wheel)
 plus free-threaded 3.14t and 3.15t.
 
@@ -282,9 +282,9 @@ snapshots / active-learning batches, the Rust API, and the CLI — all in the
 - **Fuzzy c-means** (`method="fuzzy-cmeans"`, Bezdek 1981) — the only soft head that fits no density:
   it publishes a partition of unity `u_j ∝ d_j^(−1/(m−1))` over the centres, exact on the summary by
   the same identity `kmedoids` uses, with Xie–Beni as its automatic `k`. Take it for the membership,
-  not for the labels — the hard partition is a **loss** against `kmeans` on every fixture measured
-  (`blobs` 0.847 vs 0.864, `aniso` 0.535 vs 0.545, `digits` 0.483 vs 0.467 at `m=1.3`), and the loss
-  grows with cluster overlap and with `m`, because no membership is ever zero and every centre is
+  not for better labels — at `m=1.3` the partition matches or beats `kmeans` (`blobs` 0.865 vs
+  0.864, `digits` 0.547 vs 0.467), while at the default `m=2.0` it collapses as clusters overlap
+  (ARI 0.404 vs 0.807 at `cluster_std=5`), because no membership is ever zero and every centre is
   pulled toward the grand mean —
   [`docs/USAGE.md`](https://github.com/ilgrad/betula-cluster/blob/main/docs/USAGE.md).
 - **Structured-covariance GMM** — a three-rung Toeplitz ladder: **`method="gmm-toeplitz"`** (banded AR),
@@ -383,7 +383,7 @@ And six **end-to-end use cases** (each scored against ground truth):
 - [**Benchmarks**](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md) — methodology, every metric, all tables, honest wins & losses.
 - [**Design**](https://github.com/ilgrad/betula-cluster/blob/main/DESIGN.md) — internal design, invariants, and testing strategy.
 
-Verified: **922** Rust tests (library, equivariance, integration and CLI) + a **577-case**
+Verified: **985** Rust tests (library, equivariance, integration and CLI) + a **577-case**
 Python suite at **100%** wrapper coverage (Rust ≥95%, CI-enforced), `clippy -D warnings` + `fmt`
 clean across all feature sets, on Python 3.11–3.15 (single abi3 wheel) and free-threaded
 3.14t and 3.15t.

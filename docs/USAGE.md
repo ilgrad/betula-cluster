@@ -194,7 +194,7 @@ answer.
 | compact/spherical groups, fastest | `kmeans` | yes (or `0` = BIC sweep, capped at 20) |
 | the same, but the count may exceed 20, or the sweep is too slow | `xmeans` | **no** — `n_clusters` is an upper bound; see *Where `xmeans` refuses to split* |
 | the same, but the centre must be a real observation (an exemplar you can show) | `kmedoids` | yes — `0` switches objective to the medoid silhouette |
-| a **graded membership** with no density behind it (each point partly in several clusters) | `fuzzy-cmeans` | yes (or `0` = Xie–Beni) — read *A soft head that fits no density* first: the hard partition is a **loss** against `kmeans` |
+| a **graded membership** with no density behind it (each point partly in several clusters) | `fuzzy-cmeans` | yes (or `0` = Xie–Beni) — read *A soft head that fits no density* first: at the default `m = 2.0` the hard partition is a **loss** against `kmeans` |
 | elliptical / correlated / anisotropic, soft assignment | `gmm` (diag) or `gmm-full` | yes (or `0` = BIC) |
 | clusters on **low-dimensional subspaces**, `d` too large for `gmm-full` | `mppca` + `feature="fd"`, `rank` = the intrinsic dimension — read *`rank`, and where `mppca` loses* first | yes (or `0` = BIC) |
 | the same, but the **columns are in different units** and cannot be standardised | `mfa` — per-axis noise instead of one `σ²` — read *Per-axis noise, and the narrow case for it* first: on a common scale `mppca` wins every table measured | yes (or `0` = BIC) |
@@ -414,45 +414,48 @@ themselves — a partition of unity over the centres, **not** a posterior, and n
 fits with different `m`. `n_clusters=0` selects by Xie–Beni, $J_m / (W \cdot \min_{i \ne j} \lVert c_i - c_j \rVert^2)$,
 which is this family's own validity index rather than a borrowed likelihood criterion.
 
-**Read this before choosing it: the hard partition is a loss.** ARI on the bench fixtures at
-`max_leaves=4000`, `feature="spherical"`, `threshold=0.0`, median of seeds 0/1/2:
+**Read this before choosing it: at the default `m = 2.0` the hard partition is a loss.** ARI on the
+bench fixtures at `max_leaves=4000`, `feature="spherical"`, `threshold=0.0`, median of seeds 0/1/2:
 
 | fixture | `kmeans` | `fuzzy-cmeans` `m=1.3` | `fuzzy-cmeans` `m=2.0` |
 |---|---|---|---|
-| `blobs` | **0.864** | 0.847 | 0.843 |
-| `aniso` | **0.545** | 0.535 | 0.531 |
-| `varied` | **0.540** | 0.531 | 0.537 |
+| `blobs` | 0.864 | 0.865 | 0.865 |
+| `aniso` | 0.545 | 0.544 | 0.544 |
+| `varied` | 0.541 | 0.536 | 0.542 |
 | `highdim` | 1.000 | 1.000 | 1.000 |
-| `digits` | 0.467 | **0.483** | 0.356 |
+| `digits` | 0.467 | **0.547** | 0.204 |
 
-The intuition that a soft head should win where clusters overlap is the wrong way round, and the
-overlap sweep says so directly — 6 000 points, 8 dimensions, 5 centres, `max_leaves=2000`, median of
-seeds 0/1/2. `AUC` is how well `assignment_confidence` separates correctly- from wrongly-labelled
-points, so it scores the *membership* rather than the partition:
+On the four synthetic fixtures the three agree within 0.006; only `digits` separates them. The
+intuition that a soft head should win where clusters overlap is the wrong way round, and the overlap
+sweep says so directly — 6 000 points, 8 dimensions, 5 centres, `max_leaves=2000`, median of seeds
+0/1/2. `AUC` is how well `assignment_confidence` separates correctly- from wrongly-labelled points,
+so it scores the *membership* rather than the partition:
 
 | `cluster_std` | `kmeans` ARI / AUC | `m=1.3` | `m=2.0` |
 |---|---|---|---|
-| 3.0 | 0.990 / **0.985** | 0.990 / 0.975 | 0.990 / 0.955 |
-| 4.0 | **0.922** / **0.931** | 0.913 / 0.916 | 0.889 / 0.830 |
-| 5.0 | **0.804** / **0.881** | 0.623 / 0.836 | 0.580 / 0.792 |
+| 3.0 | 0.990 / **0.985** | 0.990 / 0.975 | 0.990 / 0.958 |
+| 4.0 | 0.923 / **0.931** | 0.922 / 0.926 | 0.745 / 0.734 |
+| 5.0 | 0.807 / **0.880** | 0.808 / 0.851 | 0.404 / 0.629 |
 
-The gap widens with overlap, and it widens with `m`, because both push the same mechanism: no
-membership is ever zero, so **every** point contributes to **every** centre and each centre is pulled
-toward the grand mean. Measured on the `cluster_std=5.0` fixture (seed 0), the mean distance from a
-cluster centre to their common centroid runs 13.75 for `kmeans` and 13.19 / 12.98 / 11.88 for
-`m = 1.3 / 2.0 / 3.0`, against a true 13.67. `m` is a contraction knob as much as a softness knob.
+At `m = 1.3` the partition is `kmeans`'s, and on `digits` it is better; at `m = 2.0` it collapses as
+the clusters overlap. Both follow from one mechanism: no membership is ever zero, so **every** point
+contributes to **every** centre and each centre is pulled toward the grand mean, harder the larger
+`m`. Measured on the `cluster_std=5.0` fixture (seed 0), the mean distance from a cluster centre to
+their common centroid runs 13.81 for `kmeans` and 13.80 / 12.87 / 9.65 for `m = 1.3 / 2.0 / 3.0`,
+against a true 13.67. `m` is a contraction knob as much as a softness knob.
 
-So take this head for the membership, not for the labels: a per-point degree of belonging that comes
-out of the objective the fit minimised, where every other centre-based head can only offer the
-`softmax(−d²/2τ²)` proxy with a τ nobody chose. If you want the labels, `kmeans` is faster and
-better; if you want a calibrated posterior, `gmm` fits one.
+So take this head for the membership, not for better labels: a per-point degree of belonging that
+comes out of the objective the fit minimised, where every other centre-based head can only offer the
+`softmax(−d²/2τ²)` proxy with a τ nobody chose. That membership does not rank boundary points better
+than the proxy does — the AUC column is lower at every `m` — so it is a different quantity, not a
+sharper one. Pass `fuzzifier=1.3` to keep `kmeans`'s partition with a membership attached; if you
+want a calibrated posterior, `gmm` fits one.
 
 Xie–Beni on the same fixtures (median over seeds 0/1/2, showing all three): exact on `highdim`
-(8/8/8 for a true 8) and on the separated overlap fixtures (5/5/5 at `cluster_std ≤ 3.0`); it
-under-counts on `blobs` (2/4/4 for 6) and `aniso` (2/2/2 for 3), over-counts on `varied` (4/4/4 for
-3), and on `digits` runs into the sweep ceiling (18/20/19 for 10, which raises the saturation
-warning). Like every sweep selector here it costs a refit per candidate `k`, so `auto_k_max` bounds
-it at 20 by default.
+(8/8/8 for a true 8) and on the overlap fixtures up to `cluster_std = 3.0` (5/5/5); it under-counts
+on `blobs` (4/4/4 for 6), `aniso` (2/2/2 for 3), `digits` (2/4/6 for 10) and `cluster_std = 4.0`
+(2/2/2 for 5), and over-counts on `varied` (4/4/4 for 3). Like every sweep selector here it costs a
+refit per candidate `k`, so `auto_k_max` bounds it at 20 by default.
 
 `refine` is a no-op, for the same reason it is under `kmedoids`: a Lloyd sweep replaces each
 membership-weighted centre with the hard mean of its argmax cluster, which is a different objective

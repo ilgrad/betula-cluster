@@ -156,7 +156,9 @@ fn fcm_from(lv: &Leaves, mut centers: Vec<Vec<f64>>, m: f64, max_iter: usize) ->
                 }
             }
         }
-        let done = (loss - next).abs() <= 1e-12 * loss.abs().max(1.0);
+        // `loss` starts infinite, and `|∞ − x| ≤ 1e-12·∞` holds: without the finiteness test the
+        // first sweep always reads as converged.
+        let done = loss.is_finite() && (loss - next).abs() <= 1e-12 * loss.abs().max(1.0);
         loss = next;
         if done {
             break;
@@ -530,5 +532,127 @@ mod tests {
             assert!(fit.fuzzifier > 1.0, "{bad} left m at {}", fit.fuzzifier);
             assert_eq!(fit.memberships.len(), micros.len());
         }
+    }
+
+    #[test]
+    fn the_alternation_runs_until_the_centres_are_the_weighted_means_their_memberships_imply() {
+        // Overlapping blobs, so the k-means++ start is far from the fixed point and one sweep does
+        // not reach it: `c_j = Σ_i u_ij^m n_i μ_i / Σ_i u_ij^m n_i` must hold of the returned fit.
+        let (micros, _, _) = fixture(8, 3.0);
+        let lv = Leaves::of(&micros);
+        let one = fuzzy_cmeans::<f64, _>(&micros, 4, 2.0, 1, 8);
+        let fit = fuzzy_cmeans::<f64, _>(&micros, 4, 2.0, 500, 8);
+        assert!(
+            fit.loss < one.loss,
+            "{} after 500 sweeps, {} after one",
+            fit.loss,
+            one.loss
+        );
+        for (j, c) in fit.centers.iter().enumerate() {
+            let (mut num, mut den) = (vec![0.0; 2], 0.0);
+            for (i, row) in fit.memberships.iter().enumerate() {
+                let g = row[j].powf(2.0) * lv.w[i];
+                den += g;
+                num.iter_mut()
+                    .zip(&lv.mu[i])
+                    .for_each(|(s, &v)| *s += g * v);
+            }
+            for (cv, s) in c.iter().zip(&num) {
+                assert!((cv - s / den).abs() < 1e-6, "centre {j}: {c:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_zero_iteration_budget_means_the_default_and_a_converged_run_stops_by_itself() {
+        let (micros, _, _) = fixture(8, 3.0);
+        let default = fuzzy_cmeans::<f64, _>(&micros, 4, 2.0, 0, 8);
+        let hundred = fuzzy_cmeans::<f64, _>(&micros, 4, 2.0, 100, 8);
+        let long = fuzzy_cmeans::<f64, _>(&micros, 4, 2.0, 100_000, 8);
+        assert_eq!(default.loss, hundred.loss);
+        assert_eq!(
+            hundred.centers, long.centers,
+            "the run did not stop where it converged"
+        );
+    }
+
+    #[test]
+    fn the_head_keeps_the_cheapest_of_its_restarts() {
+        // Restart `r` is the `r`-th k-means++ draw from one stream, so the runs can be replayed.
+        let (micros, _, _) = fixture(9, 3.0);
+        let lv = Leaves::of(&micros);
+        let ssd: Vec<f64> = micros.iter().map(ClusterFeature::ssd).collect();
+        let mut rng = SplitMix64::new(4);
+        let losses: Vec<f64> = (0..N_INIT)
+            .map(|_| {
+                let start = kmeans_plus_plus(&lv.mu, &lv.w, &ssd, 6, &mut rng);
+                fcm_from(&lv, start, 2.0, 100).2
+            })
+            .collect();
+        let best = losses.iter().copied().fold(f64::INFINITY, f64::min);
+        assert!(
+            best < losses[0],
+            "restart 0 is already the best: {losses:?}"
+        );
+        assert_eq!(fuzzy_cmeans::<f64, _>(&micros, 6, 2.0, 100, 4).loss, best);
+    }
+
+    #[test]
+    fn a_centre_no_leaf_weighs_stays_where_it_was() {
+        // Every leaf sits on the first centre, so the singleton rule gives the second nothing.
+        let lv = Leaves {
+            mu: vec![vec![1.0, 1.0]; 3],
+            w: vec![1.0, 2.0, 3.0],
+            spread: vec![0.0; 3],
+        };
+        let (_, centers, _) = fcm_from(&lv, vec![vec![1.0, 1.0], vec![5.0, 5.0]], 2.0, 10);
+        assert_eq!(centers, [[1.0, 1.0], [5.0, 5.0]]);
+    }
+
+    #[test]
+    fn a_massless_leaf_has_no_spread_rather_than_nan() {
+        let lv = Leaves::of(&[Spherical::<f64>::new(2)]);
+        assert_eq!(lv.spread, [0.0]);
+    }
+
+    #[test]
+    fn a_tied_membership_goes_to_the_lower_cluster() {
+        let (labels, centers, u) = compact(
+            &[vec![0.5, 0.5, 0.0]],
+            vec![vec![0.0], vec![0.0], vec![5.0]],
+        );
+        assert_eq!(labels, [0]);
+        assert_eq!(centers, [[0.0]]);
+        assert_eq!(u, [[0.5]]);
+    }
+
+    #[test]
+    fn the_index_is_infinite_rather_than_nan_wherever_it_is_undefined() {
+        assert_eq!(xie_beni(0.0, 10.0, &[vec![0.0], vec![0.0]]), f64::INFINITY);
+        assert_eq!(xie_beni(0.0, 0.0, &[vec![0.0], vec![1.0]]), f64::INFINITY);
+    }
+
+    #[test]
+    fn auto_k_considers_two_clusters_and_falls_back_to_one_where_none_separate() {
+        let (feats, truth) = blob_leaves(2, 6, 40, 1);
+        let fit = fuzzy_cmeans_auto::<f64, _>(&feats, 2, 2.0, 100, 1);
+        assert_eq!(fit.centers.len(), 2);
+        assert!(ari(&fit.labels, &truth) > 0.99);
+        // Identical leaves: every `k ≥ 2` fit has coincident centres and an undefined index, so the
+        // answer is the honest single cluster with full membership, not a half-membership leftover.
+        let same: Vec<Spherical<f64>> = (0..5)
+            .map(|_| {
+                let mut f = Spherical::new(2);
+                f.push(&[3.0, 4.0], 1.0);
+                f
+            })
+            .collect();
+        let fit = fuzzy_cmeans_auto::<f64, _>(&same, 4, 2.0, 100, 0);
+        assert_eq!(fit.centers.len(), 1);
+        assert!(
+            fit.memberships.iter().all(|r| r == &[1.0]),
+            "{:?}",
+            fit.memberships
+        );
     }
 }

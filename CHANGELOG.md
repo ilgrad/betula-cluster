@@ -6,6 +6,17 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- **`fuzzy-cmeans` now iterates to convergence; since it shipped in 0.8.0 it stopped after one
+  sweep.** The loss starts at `∞`, and the relative stopping test `|∞ − J| ≤ 1e-12·∞` holds, so the
+  first sweep always read as converged and `max_iter` had no effect. Every other EM and Lloyd loop
+  in the crate guards its first step; this one did not. Labels and memberships change. The published
+  tables are re-measured: at `m = 1.3` the partition now matches or beats `kmeans` (`blobs` 0.865 vs
+  0.864, `digits` 0.547 vs 0.467, overlap `cluster_std=5` 0.808 vs 0.807); at the default `m = 2.0`
+  it loses harder than reported (0.404 vs 0.807 at `cluster_std=5`, `digits` 0.204), because a
+  converged fit contracts every centre further toward the grand mean. Xie–Beni's choice of `k` moves
+  with it. Found by a fixed-point test written to kill the module's mutation survivors.
+
 ## [1.2.0] — 2026-10-22
 
 ### Changed
