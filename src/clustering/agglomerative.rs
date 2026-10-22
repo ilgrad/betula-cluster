@@ -850,9 +850,41 @@ mod tests {
             .collect()
     }
 
-    /// The searcher driver against Anderberg's full scan, merge for merge, at `d = 150`: three
-    /// stages, so the prefix bound cuts candidates short. Two pairs of identical leaves put exact
-    /// ties in the run, where the drivers' tie rules would show.
+    /// The searcher driver against Anderberg's full scan, merge for merge: the same pairs in the
+    /// same order, heights to rounding.
+    fn assert_matches_anderberg(feats: &[Spherical<f64>], linkage: Linkage) {
+        let mine = dendrogram(feats, linkage);
+        let mut node: Vec<Node<f64>> = feats.iter().map(Node::leaf).collect();
+        let theirs = anderberg(
+            &mut node,
+            |a, b| linkage.value(a, b),
+            |nodes, a, b| {
+                let absorbed = Node {
+                    mass: nodes[b].mass,
+                    mean: nodes[b].mean.clone(),
+                    spread: nodes[b].spread,
+                };
+                nodes[a].absorb(&absorbed, linkage);
+            },
+        );
+        assert_eq!(
+            canonical(&mine, feats.len()),
+            canonical(&theirs, feats.len()),
+            "{linkage:?}"
+        );
+        for (i, (a, b)) in mine.iter().zip(&theirs).enumerate() {
+            assert!(
+                (a.height - b.height).abs() <= 1e-9 * b.height.abs().max(1.0),
+                "{linkage:?} height {i}: {} vs {}",
+                a.height,
+                b.height
+            );
+        }
+    }
+
+    /// At `d = 150` there are three stages, so the prefix bound cuts candidates short. Three copies
+    /// of one leaf and two of another put exact ties in the run: a search from a copy finds two
+    /// candidates at zero, and only the lower index matches the full scan.
     #[test]
     fn the_searchers_reproduce_anderberg_merge_for_merge() {
         let mut rng = SplitMix64::new(3);
@@ -871,36 +903,26 @@ mod tests {
             })
             .collect();
         feats[40] = feats[7].clone();
+        feats[41] = feats[7].clone();
         feats[90] = feats[11].clone();
         for linkage in ALL {
-            let mine = dendrogram(&feats, linkage);
-            let mut node: Vec<Node<f64>> = feats.iter().map(Node::leaf).collect();
-            let theirs = anderberg(
-                &mut node,
-                |a, b| linkage.value(a, b),
-                |nodes, a, b| {
-                    let absorbed = Node {
-                        mass: nodes[b].mass,
-                        mean: nodes[b].mean.clone(),
-                        spread: nodes[b].spread,
-                    };
-                    nodes[a].absorb(&absorbed, linkage);
-                },
-            );
-            assert_eq!(
-                canonical(&mine, feats.len()),
-                canonical(&theirs, feats.len()),
-                "{linkage:?}"
-            );
-            for (i, (a, b)) in mine.iter().zip(&theirs).enumerate() {
-                assert!(
-                    (a.height - b.height).abs() <= 1e-9 * b.height.abs().max(1.0),
-                    "{linkage:?} height {i}: {} vs {}",
-                    a.height,
-                    b.height
-                );
-            }
+            assert_matches_anderberg(&feats, linkage);
         }
+    }
+
+    /// Two empty leaves have no Ward weight between them; the pair falls back to the plain squared
+    /// distance, as [`Linkage::value`] does, rather than to `0 / 0`. They coincide, so that pair
+    /// ties at zero with every pairing of an empty leaf and a full one and wins on index.
+    #[test]
+    fn empty_leaves_merge_under_ward_as_in_the_full_scan() {
+        let feats = vec![
+            Spherical::new(2),
+            Spherical::new(2),
+            leaf(&[[5.0, 5.0]]),
+            leaf(&[[6.0, 5.0], [6.0, 6.0]]),
+        ];
+        assert_matches_anderberg(&feats, Linkage::Ward);
+        assert_eq!(canonical(&dendrogram(&feats, Linkage::Ward), 4)[0], (0, 1));
     }
 
     #[test]
