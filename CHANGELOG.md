@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.3.0] — 2026-10-22
+
 ### Fixed
 - **`fuzzy-cmeans` now iterates to convergence; since it shipped in 0.8.0 it stopped after one
   sweep.** The loss starts at `∞`, and the relative stopping test `|∞ − J| ≤ 1e-12·∞` holds, so the
@@ -3919,7 +3921,8 @@ First public release.
   far below `max_leaves`), and rebuilds reinsert in reverse-DFS leaf order. The CF-tree build is now
   byte-for-byte the reference (`betulars`) tree shape and at speed parity with matched build flags.
 
-[Unreleased]: https://github.com/ilgrad/betula-cluster/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/ilgrad/betula-cluster/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/ilgrad/betula-cluster/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/ilgrad/betula-cluster/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/ilgrad/betula-cluster/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/ilgrad/betula-cluster/compare/v0.8.0...v1.0.0
