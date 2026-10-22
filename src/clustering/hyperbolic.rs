@@ -227,35 +227,8 @@ pub fn hyperbolic_kmeans<R: Real, C: ClusterFeature<R>>(
     let k = k.min(m);
     let mut best: Option<(R, Vec<usize>, Vec<Vec<R>>)> = None;
     for restart in 0..HYPERBOLIC_N_INIT {
-        let mut centers = seed_centers(&pts, &w, k, seed ^ (restart as u64).wrapping_mul(0x9E37));
-        let mut labels = vec![0usize; m];
-        let mut cost = R::infinity();
-        for _ in 0..max_iter {
-            let mut moved = false;
-            for (i, s) in sums.iter().enumerate() {
-                // `argmin_c −2n_i − 2⟨R_i, c⟩_L` is `argmax_c ⟨R_i, c⟩_L`, and since
-                // `R_i = |R_i|_L x_i` with a positive norm that is the same argmax as on `x_i`.
-                let mut bestc = 0;
-                let mut bestv = R::neg_infinity();
-                for (c, ctr) in centers.iter().enumerate() {
-                    let v = lorentz_dot(s, ctr);
-                    if v > bestv {
-                        bestv = v;
-                        bestc = c;
-                    }
-                }
-                if labels[i] != bestc {
-                    moved = true;
-                }
-                labels[i] = bestc;
-            }
-            let (new_centers, new_cost) = update(&sums, &w, &labels, k, dim, &centers);
-            centers = new_centers;
-            cost = new_cost;
-            if !moved {
-                break;
-            }
-        }
+        let centers = seed_centers(&pts, &w, k, restart_seed(seed, restart));
+        let (cost, labels, centers) = lloyd(&sums, &w, centers, max_iter, dim);
         if best.as_ref().is_none_or(|(b, _, _)| cost < *b) {
             best = Some((cost, labels, centers));
         }
@@ -267,6 +240,51 @@ pub fn hyperbolic_kmeans<R: Real, C: ClusterFeature<R>>(
         cost,
         max_radius,
     }
+}
+
+fn restart_seed(seed: u64, restart: usize) -> u64 {
+    seed ^ (restart as u64).wrapping_mul(0x9E37)
+}
+
+/// One Lloyd run from `centers`: `(cost, labels, centres)` at the first sweep that moves no label,
+/// or after `max_iter` sweeps.
+fn lloyd<R: Real>(
+    sums: &[Vec<R>],
+    w: &[R],
+    mut centers: Vec<Vec<R>>,
+    max_iter: usize,
+    dim: usize,
+) -> (R, Vec<usize>, Vec<Vec<R>>) {
+    let k = centers.len();
+    let mut labels = vec![0usize; sums.len()];
+    let mut cost = R::infinity();
+    for _ in 0..max_iter {
+        let mut moved = false;
+        for (i, s) in sums.iter().enumerate() {
+            // `argmin_c −2n_i − 2⟨R_i, c⟩_L` is `argmax_c ⟨R_i, c⟩_L`, and since
+            // `R_i = |R_i|_L x_i` with a positive norm that is the same argmax as on `x_i`.
+            let mut bestc = 0;
+            let mut bestv = R::neg_infinity();
+            for (c, ctr) in centers.iter().enumerate() {
+                let v = lorentz_dot(s, ctr);
+                if v > bestv {
+                    bestv = v;
+                    bestc = c;
+                }
+            }
+            if labels[i] != bestc {
+                moved = true;
+            }
+            labels[i] = bestc;
+        }
+        let (new_centers, new_cost) = update(sums, w, &labels, k, dim, &centers);
+        centers = new_centers;
+        cost = new_cost;
+        if !moved {
+            break;
+        }
+    }
+    (cost, labels, centers)
 }
 
 /// The merge increase of the hyperbolic cost, `ΔS = 2(|R_a + R_b|_L − |R_a|_L − |R_b|_L) ≥ 0`.
@@ -589,5 +607,96 @@ mod tests {
             out.max_radius
         );
         assert!(f64_working_radius() > 18.0 && f64_working_radius() < 19.0);
+    }
+
+    /// The point of `H²` at hyperbolic radius `r` and angle `theta`.
+    fn at(r: f64, theta: f64) -> Vec<f64> {
+        vec![r.cosh(), r.sinh() * theta.cos(), r.sinh() * theta.sin()]
+    }
+
+    #[test]
+    fn the_radius_is_the_inverse_of_cosh() {
+        for t in [0.0_f64, 0.3, 1.0, 4.0, 10.0] {
+            let got = acosh_clamped(t.cosh());
+            assert!((got - t).abs() < 1e-9 * t.max(1.0), "{got} vs {t}");
+        }
+        assert_eq!(acosh_clamped(0.5), 0.0);
+    }
+
+    #[test]
+    fn every_seed_after_the_first_lands_where_the_mass_weighted_distance_is() {
+        // One leaf at radius 1 listed first, then 97 at the origin: once a centre sits on either
+        // group that group's potential is zero, so the second draw must take the other.
+        let mut pts = vec![at(1.0, 0.0)];
+        pts.extend((0..97).map(|_| at(0.0, 0.0)));
+        let w = vec![1.0; pts.len()];
+        for seed in 0..20 {
+            let mut two = seed_centers(&pts, &w, 2, seed);
+            two.sort_by(|a, b| a[0].total_cmp(&b[0]));
+            assert_eq!(two, [at(0.0, 0.0), at(1.0, 0.0)], "seed {seed}");
+        }
+    }
+
+    #[test]
+    fn the_seeding_draws_in_proportion_to_mass_times_squared_distance() {
+        // Seen from a centre at the origin, a light leaf at radius 1.2 (listed first) and a leaf of
+        // mass 9 at radius 1: the heavy one carries ~86 % of the potential.
+        let mut pts = vec![at(0.0, 0.0); 30];
+        pts.insert(0, at(1.2, 2.0));
+        pts.push(at(1.0, 0.0));
+        let mut w = vec![1.0; pts.len()];
+        *w.last_mut().unwrap() = 9.0;
+        let heavy = (0..200u64)
+            .filter(|&seed| {
+                let c = seed_centers(&pts, &w, 2, seed);
+                c[0] == at(0.0, 0.0) && c[1] == at(1.0, 0.0)
+            })
+            .count();
+        let origin_first = (0..200u64)
+            .filter(|&seed| seed_centers(&pts, &w, 2, seed)[0] == at(0.0, 0.0))
+            .count();
+        let share = heavy as f64 / origin_first as f64;
+        assert!((0.78..0.94).contains(&share), "{heavy} of {origin_first}");
+    }
+
+    #[test]
+    fn identical_points_seed_a_duplicate_centre_without_panicking() {
+        let pts = vec![at(0.5, 1.0); 3];
+        for seed in 0..20 {
+            assert_eq!(
+                seed_centers(&pts, &[1.0; 3], 2, seed),
+                [at(0.5, 1.0), at(0.5, 1.0)]
+            );
+        }
+    }
+
+    #[test]
+    fn lloyd_stops_at_a_fixed_point_of_assignment_and_centroid() {
+        let (pts, _) = hyperbolic_arms(71, 3, 60, 1.0, 3.0, 0.6);
+        let lv = leaves(&pts);
+        let out = hyperbolic_kmeans(&lv, 3, 200, 2);
+        for (p, &l) in pts.iter().zip(&out.labels) {
+            let own = lorentz_dot(p, &out.centers[l]);
+            assert!(out.centers.iter().all(|c| lorentz_dot(p, c) <= own));
+        }
+        let (again, cost) = update(&pts, &vec![1.0; pts.len()], &out.labels, 3, 3, &out.centers);
+        assert_eq!(again, out.centers);
+        assert_eq!(cost, out.cost);
+    }
+
+    #[test]
+    fn the_head_keeps_the_cheapest_of_its_restarts() {
+        let (pts, _) = hyperbolic_arms(81, 4, 25, 0.5, 2.5, 0.9);
+        let lv = leaves(&pts);
+        let w = vec![1.0; pts.len()];
+        let costs: Vec<f64> = (0..HYPERBOLIC_N_INIT)
+            .map(|r| {
+                let centers = seed_centers(&pts, &w, 4, restart_seed(5, r));
+                lloyd(&pts, &w, centers, 100, 3).0
+            })
+            .collect();
+        let best = costs.iter().copied().fold(f64::INFINITY, f64::min);
+        assert!(best < costs[0], "restart 0 is already the best: {costs:?}");
+        assert_eq!(hyperbolic_kmeans(&lv, 4, 100, 5).cost, best);
     }
 }
