@@ -9,6 +9,7 @@
 [![Rust core · PyO3](https://img.shields.io/badge/Rust%20core-PyO3-orange.svg)](https://github.com/ilgrad/betula-cluster)
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21427331.svg)](https://doi.org/10.5281/zenodo.21427331)
 [![Sponsor](https://img.shields.io/badge/sponsor-GitHub%20Sponsors-ea4aaa?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/ilgrad)
+[![XERJ Corpus Hub contributor](https://hub.xerj.org/contributors/ilgrad/badge.svg)](https://hub.xerj.org/contributors/ilgrad)
 
 [Documentation](https://ilgrad.github.io/betula-cluster/) · [API reference](https://ilgrad.github.io/betula-cluster/api/)
 
@@ -439,6 +440,13 @@ of the CF-tree for the whole 1.x line, and the tree is where the research happen
 version the format is stable, and a file written before the gzip framing existed still loads. Sizes,
 codec measurements and the rejected column-major layout are in
 [`docs/USAGE.md`](https://github.com/ilgrad/betula-cluster/blob/main/docs/USAGE.md#saving-and-loading-a-model).
+
+## Recognition
+
+The iterated Leiden implementation
+([`6847c12`](https://github.com/ilgrad/betula-cluster/commit/6847c12)) was selected for the
+[XERJ Corpus Hub](https://hub.xerj.org/contributors/ilgrad), an open index of reference
+implementations that coding agents consult before writing their own.
 
 ## Sponsoring
 
