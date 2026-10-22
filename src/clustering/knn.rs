@@ -527,51 +527,80 @@ mod tests {
         }
     }
 
-    /// The extension adds only neighbours a vertex needs: every edge it adds lies inside the core
-    /// radius of one of its endpoints -- the distance at which that endpoint's nearest vertices,
-    /// with itself, first weigh `need`. Three heavy vertices in a row make their light neighbours'
-    /// first beam too narrow, so those searches have to widen before they stop.
+    /// The extension adds what a vertex needs and nothing more: its sorted list reaches `need` at
+    /// exactly its core radius -- the distance at which its nearest vertices, with itself, first
+    /// weigh `need` -- and every edge it adds lies inside the core radius of one of its endpoints.
+    ///
+    /// Symmetrising hides most of a short list behind the edges the neighbours add, so the
+    /// fixtures are built so that it cannot. In the first, three heavy vertices in a row make
+    /// their light neighbours' first beam too narrow, and those searches have to widen before
+    /// they stop. In the second (found by simulating the extension on a line), heavy runs skip
+    /// their own extension, so a light vertex between them gets its heavy neighbours from its
+    /// own search or not at all.
     #[test]
-    fn the_extension_adds_no_edge_beyond_a_core_radius() {
-        let m = 200;
-        let mass: Vec<f64> = (0..m)
-            .map(|i| if (100..103).contains(&i) { 20.0 } else { 1.0 })
-            .collect();
-        let need = 100.0;
+    fn the_extension_reaches_each_core_radius_and_adds_nothing_beyond_it() {
+        let heavy_runs = [40..45, 56..61, 70..74, 81..83];
+        let fixtures = [
+            (
+                (0..200)
+                    .map(|i| if (100..103).contains(&i) { 20.0 } else { 1.0 })
+                    .collect::<Vec<f64>>(),
+                100.0,
+            ),
+            (
+                (0..120)
+                    .map(|i| {
+                        if heavy_runs.iter().any(|r| r.contains(&i)) {
+                            50.0
+                        } else {
+                            1.0
+                        }
+                    })
+                    .collect(),
+                150.0,
+            ),
+        ];
         let d = line();
-        let radius: Vec<f64> = (0..m)
-            .map(|i| {
-                let mut by: Vec<usize> = (0..m).filter(|&j| j != i).collect();
-                by.sort_by(|&a, &b| d(i, a).total_cmp(&d(i, b)));
-                let mut enclosed = mass[i];
-                for j in by {
-                    enclosed += mass[j];
-                    if enclosed >= need {
-                        return d(i, j);
+        for (mass, need) in fixtures {
+            let m = mass.len();
+            let radius: Vec<f64> = (0..m)
+                .map(|i| {
+                    let mut by: Vec<usize> = (0..m).filter(|&j| j != i).collect();
+                    by.sort_by(|&a, &b| d(i, a).total_cmp(&d(i, b)));
+                    let mut enclosed = mass[i];
+                    for j in by {
+                        enclosed += mass[j];
+                        if enclosed >= need {
+                            return d(i, j);
+                        }
                     }
+                    f64::INFINITY
+                })
+                .collect();
+            let adj = build(m, 3, 5, line());
+            let before: Vec<Vec<usize>> = adj
+                .iter()
+                .map(|l| l.iter().map(|&(j, _)| j).collect())
+                .collect();
+            let adj = extend_to_mass(adj, 3, &mass, need, line());
+            for (i, list) in adj.iter().enumerate() {
+                let mut enclosed = mass[i];
+                let core = list.iter().find_map(|&(j, e)| {
+                    enclosed += mass[j];
+                    (enclosed >= need).then_some(e)
+                });
+                assert_eq!(core, Some(radius[i]), "m = {m}, vertex {i}");
+                for &(j, e) in list {
+                    if before[i].contains(&j) {
+                        continue;
+                    }
+                    assert!(
+                        e <= radius[i].max(radius[j]),
+                        "m = {m}: added edge {i}-{j} at {e}, radii {} and {}",
+                        radius[i],
+                        radius[j]
+                    );
                 }
-                f64::INFINITY
-            })
-            .collect();
-        let adj = build(m, 3, 5, line());
-        let before: Vec<Vec<usize>> = adj
-            .iter()
-            .map(|l| l.iter().map(|&(j, _)| j).collect())
-            .collect();
-        let adj = extend_to_mass(adj, 3, &mass, need, line());
-        for (i, list) in adj.iter().enumerate() {
-            let enclosed = mass[i] + list.iter().map(|&(j, _)| mass[j]).sum::<f64>();
-            assert!(enclosed >= need, "vertex {i} encloses {enclosed}");
-            for &(j, e) in list {
-                if before[i].contains(&j) {
-                    continue;
-                }
-                assert!(
-                    e <= radius[i].max(radius[j]),
-                    "added edge {i}-{j} at {e}, radii {} and {}",
-                    radius[i],
-                    radius[j]
-                );
             }
         }
     }
