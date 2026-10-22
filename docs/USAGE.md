@@ -1685,7 +1685,8 @@ noisy redraw of something already held exactly.
 ## The other four linkages — `average` / `weighted` / `centroid` / `median`
 
 `method="ward"` is the nearest-neighbour chain, which is only valid for a *reducible* linkage.
-The other four run on Anderberg's algorithm and take the same `n_clusters` (and `n_clusters=0`
+The other four merge the global minimum at every step, found by a heap of nearest-neighbour
+searchers restarted from each merged cluster's mean, and take the same `n_clusters` (and `n_clusters=0`
 for a Calinski–Harabasz-scored cut) as every other partitional head. Names follow SciPy's
 `scipy.cluster.hierarchy.linkage(method=…)`:
 

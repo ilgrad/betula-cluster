@@ -50,7 +50,7 @@ A capability-by-capability reference. For runnable code see [`USAGE.md`](USAGE.m
   scores higher,
   **Ward agglomerative HAC** (exact, via nearest-neighbour chain; dendrogram-cut auto-k) and the
   four non-Ward linkages **`average`** (UPGMA), **`weighted`** (WPGMA), **`centroid`** (UPGMC) and
-  **`median`** (WPGMC) on an Anderberg driver — with a **height-bounded exact** variant
+  **`median`** (WPGMC) on an exact heap-of-searchers driver — with a **height-bounded exact** variant
   (`clustering::dendrogram_below`, Rust API) that computes every merge below a chosen $h_{\max}$ over
   a candidate radius graph and reports how far it is certified, so a cut it cannot serve exactly is
   *refused* rather than approximated; average and weighted get radius $r^2 = h$, Ward

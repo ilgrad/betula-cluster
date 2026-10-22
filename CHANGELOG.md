@@ -34,6 +34,17 @@ All notable changes to this project are documented here. The format follows
   `AssignStats::dims_read` over-counted by up to one stage per such point. Found by an exact
   read-count test written to kill the module's mutation survivors.
 
+- **`average` / `weighted` / `centroid` / `median` heads: 3–6× faster in high dimension, labels
+  byte-identical.** Anderberg's cache is replaced by a heap of nearest-neighbour searchers that
+  restart from the merged cluster's mean — Schubert's remark that geometric linkages need not carry a
+  searcher's state across a merge. All four linkages (and Ward) are `s·‖Δm‖² + t` with `s, t ≥ 0`,
+  so the search prunes on a prefix of the squared distance, and the heap needs no `O(m)` update row
+  per merge. The pair merged next is mutually nearest and the newer of the two searched while the
+  other was alive, which is the whole exactness argument; a test checks it merge for merge against
+  Anderberg at `d = 150` with exact ties. Head time over the k-means control at 4 000 MNIST leaves:
+  centroid ~36 s → ~6 s, average / median / weighted 3.3–5×; ALOI-64 3–5× on heads under a
+  second; covtype (`d = 54`) unchanged. Every label digest matched the 1.1.0 build's.
+
 ### Notes
 - **The FAISS / `fast_hdbscan` contest is re-measured on the 1.1.0 tree** (`bench/results_external.csv`,
   2026-10-20). The verdicts are unchanged and the scoreboard holds all 140 cells. The time and RSS

@@ -2,9 +2,12 @@
 //!
 //! [`ward`](super::ward) drives Ward alone with the nearest-neighbour chain, which is only correct
 //! for a *reducible* linkage. Centroid and median linkage are not reducible — they invert — so the
-//! chain cannot drive them, and this module uses Anderberg's algorithm instead: one global minimum
-//! per step over a nearest-neighbour cache repaired lazily. `O(m²·d)` expected, `O(m³·d)` on an
-//! adversarial input that invalidates every cached neighbour at every step, `O(m·d)` extra space.
+//! chain cannot drive them. This module merges the global minimum at every step instead, found by a
+//! heap of nearest-neighbour searchers that restart from the merged cluster's mean (Schubert's
+//! heap of searchers for geometric linkages) and prune on a prefix of the squared distance. `O(m²·d)`
+//! expected with the pruning cutting most of the `d`, `O(m³·d)` on an adversarial input that
+//! invalidates every cached neighbour at every step. [`anderberg`] keeps the cache-repair driver for
+//! linkages that are not a function of the cluster means, Bregman-Ward among them.
 //!
 //! ## One accumulator for five linkages
 //!
@@ -96,6 +99,27 @@ impl Linkage {
         }
     }
 
+    /// The linkage as `s·‖m_a − m_b‖² + t`: every linkage here is that shape with `s, t ≥ 0`, which
+    /// is what lets a nearest-neighbour search prune on a prefix of the squared distance.
+    fn scale_offset<R: Real>(self, a: &Node<R>, b: &Node<R>) -> (R, R) {
+        match self {
+            Linkage::Average | Linkage::Weighted => (R::one(), a.spread + b.spread),
+            Linkage::Centroid | Linkage::Median => (R::one(), R::zero()),
+            Linkage::Ward => {
+                let total = a.mass + b.mass;
+                if total > R::zero() {
+                    // The product first, so `s` is the same bits from either side.
+                    (
+                        R::from_f64(2.0).unwrap() * (a.mass * b.mass) / total,
+                        R::zero(),
+                    )
+                } else {
+                    (R::one(), R::zero())
+                }
+            }
+        }
+    }
+
     /// Linkage value between two live clusters.
     fn value<R: Real>(self, a: &Node<R>, b: &Node<R>) -> R {
         let d2 = sq_euclidean(&a.mean, &b.mean);
@@ -157,21 +181,186 @@ pub(crate) struct Merge<R> {
     pub(crate) height: R,
 }
 
-/// Full dendrogram by Anderberg's algorithm; merges come out in agglomeration order.
+/// A searcher's current answer: `owner`'s nearest live cluster was `target` at `value`, as of the
+/// two clusters' versions when the search ran. Ordered by `(value, owner)` so the heap pops the
+/// lowest-index cluster among equal minima, as Anderberg's scan does.
+struct Entry<R> {
+    value: R,
+    owner: usize,
+    owner_version: u32,
+    target: usize,
+    target_version: u32,
+}
+
+impl<R: Real> PartialEq for Entry<R> {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == std::cmp::Ordering::Equal
+    }
+}
+
+impl<R: Real> Eq for Entry<R> {}
+
+impl<R: Real> PartialOrd for Entry<R> {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl<R: Real> Ord for Entry<R> {
+    /// Reversed, so `BinaryHeap` is a min-heap. Values are finite by the time they get here.
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        other
+            .value
+            .partial_cmp(&self.value)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(other.owner.cmp(&self.owner))
+    }
+}
+
+/// Full dendrogram by a heap of nearest-neighbour searchers, each restarted from its cluster's
+/// mean; merges come out in agglomeration order.
+///
+/// Every linkage here is `s·‖m_a − m_b‖² + t` with `s, t ≥ 0` read off the two clusters, so a
+/// cluster's nearest neighbour is a search from its mean alone. That is the "geometric linkage"
+/// case of Schubert's heap of searchers (SISAP 2024): a merged cluster does not inherit its
+/// children's search state, it starts a fresh search from its new mean, and a cluster whose
+/// target has died or changed searches again when its stale entry reaches the top of the heap.
+///
+/// **Exact.** The pair merged next is mutually nearest. Whichever of the two was created later
+/// searched while the other was alive and unchanged, so its entry is at most their linkage value;
+/// an entry below the minimum names a dead or changed target and is re-searched rather than
+/// merged. The heap therefore pops the true minimum without the `O(m)` update row that
+/// [`anderberg`] pays on every merge to keep its cache fresh — 2.5× fewer reads on MNIST leaves.
+///
+/// Each search prunes on a prefix of the squared distance, the bound of [`crate::assign`], over
+/// dimensions in descending variance order. The distance is accumulated stage by stage everywhere,
+/// so a pruned candidate's full value provably exceeds the incumbent's, and ties go to the lower
+/// index exactly as in a full scan. Measured in coordinate reads against Anderberg on 1 921 MNIST
+/// leaves (`local/scratch/a5/restart_from_mean.py`): 10× fewer for centroid linkage, with every
+/// merge identical.
 fn dendrogram<R: Real, C: ClusterFeature<R>>(features: &[C], linkage: Linkage) -> Vec<Merge<R>> {
+    let m = features.len();
     let mut node: Vec<Node<R>> = features.iter().map(Node::leaf).collect();
-    anderberg(
-        &mut node,
-        |a, b| linkage.value(a, b),
-        |nodes, a, b| {
-            let absorbed = Node {
-                mass: nodes[b].mass,
-                mean: nodes[b].mean.clone(),
-                spread: nodes[b].spread,
-            };
-            nodes[a].absorb(&absorbed, linkage);
-        },
-    )
+    if m < 2 {
+        return Vec::new();
+    }
+    let dim = node[0].mean.len();
+    let order = {
+        let means: Vec<Vec<R>> = node.iter().map(|n| n.mean.clone()).collect();
+        let mass: Vec<R> = node.iter().map(|n| n.mass).collect();
+        crate::assign::variance_order(&means, Some(&mass), dim)
+    };
+    for n in &mut node {
+        n.mean = order.iter().map(|&j| n.mean[j as usize]).collect();
+    }
+    let block = crate::assign::default_block(dim);
+    let stages: Vec<usize> = (1..)
+        .map(|s| s * block)
+        .take_while(|&at| at < dim)
+        .chain(std::iter::once(dim))
+        .collect();
+
+    let mut alive = vec![true; m];
+    let mut live: Vec<usize> = (0..m).collect();
+    let mut version = vec![0u32; m];
+    let mut heap = std::collections::BinaryHeap::with_capacity(2 * m);
+
+    let search = |node: &[Node<R>], live: &[usize], x: usize, hint: Option<usize>| {
+        let me = &node[x];
+        let mut best = usize::MAX;
+        let mut best_value = R::infinity();
+        let candidates = hint.into_iter().chain(live.iter().copied());
+        for (i, j) in candidates.enumerate() {
+            if j == x || (i > 0 && Some(j) == hint) {
+                continue;
+            }
+            let (s, t) = linkage.scale_offset(me, &node[j]);
+            let mut acc = R::zero();
+            let mut lo = 0usize;
+            let mut pruned = false;
+            for &hi in &stages {
+                acc = acc + sq_euclidean(&me.mean[lo..hi], &node[j].mean[lo..hi]);
+                lo = hi;
+                // Strictly greater, so a candidate tied with the incumbent survives to the
+                // lexicographic tie-break below.
+                if s * acc + t > best_value {
+                    pruned = true;
+                    break;
+                }
+            }
+            if pruned {
+                continue;
+            }
+            let v = s * acc + t;
+            if v < best_value || (v == best_value && j < best) {
+                best_value = v;
+                best = j;
+            }
+        }
+        (best, best_value)
+    };
+
+    for x in 0..m {
+        let (j, v) = search(&node, &live, x, None);
+        heap.push(Entry {
+            value: v,
+            owner: x,
+            owner_version: 0,
+            target: j,
+            target_version: 0,
+        });
+    }
+
+    let mut merges: Vec<Merge<R>> = Vec::with_capacity(m - 1);
+    while merges.len() + 1 < m {
+        let Some(e) = heap.pop() else { break };
+        if !alive[e.owner] || version[e.owner] != e.owner_version {
+            // Superseded: the owner merged, and its successor carries its own entry.
+            continue;
+        }
+        let x = e.owner;
+        if !alive[e.target] || version[e.target] != e.target_version {
+            // The target died or changed shape: restart the search from `x`'s mean. A target that
+            // only grew is still alive and is the best first guess at the new answer.
+            let hint = alive[e.target].then_some(e.target);
+            let (j, v) = search(&node, &live, x, hint);
+            heap.push(Entry {
+                value: v,
+                owner: x,
+                owner_version: version[x],
+                target: j,
+                target_version: version[j],
+            });
+            continue;
+        }
+        // The survivor keeps the lower index. Which index it keeps moves no label.
+        let (a, b) = (x.min(e.target), x.max(e.target));
+        let absorbed = Node {
+            mass: node[b].mass,
+            mean: std::mem::take(&mut node[b].mean),
+            spread: node[b].spread,
+        };
+        node[a].absorb(&absorbed, linkage);
+        alive[b] = false;
+        live.retain(|&c| c != b);
+        version[a] += 1;
+        merges.push(Merge {
+            into: a,
+            from: b,
+            height: e.value,
+        });
+        if live.len() > 1 {
+            let (j, v) = search(&node, &live, a, None);
+            heap.push(Entry {
+                value: v,
+                owner: a,
+                owner_version: version[a],
+                target: j,
+                target_version: version[j],
+            });
+        }
+    }
+    merges
 }
 
 /// Anderberg's algorithm over an arbitrary cluster representation.
@@ -512,7 +701,7 @@ pub(crate) fn uf_find(parent: &mut [usize], x: usize) -> usize {
 }
 
 /// Apply the first `t` merges and return contiguous `0..(m − t)` labels. The prefix is a valid
-/// horizontal cut without sorting, because Anderberg agglomerates in globally-minimal order.
+/// horizontal cut without sorting, because both drivers agglomerate in globally-minimal order.
 pub(crate) fn labels_at<R: Real>(m: usize, merges: &[Merge<R>], t: usize) -> Vec<usize> {
     let mut parent: Vec<usize> = (0..m).collect();
     for mg in merges.iter().take(t) {
@@ -646,6 +835,74 @@ mod tests {
         out
     }
 
+    /// Each merge as the pair of its sides' smallest leaves, smaller first. Which index a driver
+    /// keeps the survivor at is a representation choice that moves no label, so two drivers are
+    /// compared on this rather than on `(into, from)`.
+    fn canonical<R: Real>(merges: &[Merge<R>], m: usize) -> Vec<(usize, usize)> {
+        let mut rep: Vec<usize> = (0..m).collect();
+        merges
+            .iter()
+            .map(|mg| {
+                let (a, b) = (rep[mg.into], rep[mg.from]);
+                rep[mg.into] = a.min(b);
+                (a.min(b), a.max(b))
+            })
+            .collect()
+    }
+
+    /// The searcher driver against Anderberg's full scan, merge for merge, at `d = 150`: three
+    /// stages, so the prefix bound cuts candidates short. Two pairs of identical leaves put exact
+    /// ties in the run, where the drivers' tie rules would show.
+    #[test]
+    fn the_searchers_reproduce_anderberg_merge_for_merge() {
+        let mut rng = SplitMix64::new(3);
+        let d = 150;
+        let mut feats: Vec<Spherical<f64>> = (0..120)
+            .map(|i| {
+                let mut cf = Spherical::new(d);
+                let centre = (i % 5) as f64 * 3.0;
+                for _ in 0..(1 + i % 3) {
+                    let p: Vec<f64> = (0..d)
+                        .map(|k| centre * (k % 7) as f64 / 7.0 + rng.gauss())
+                        .collect();
+                    cf.push(&p, 1.0);
+                }
+                cf
+            })
+            .collect();
+        feats[40] = feats[7].clone();
+        feats[90] = feats[11].clone();
+        for linkage in ALL {
+            let mine = dendrogram(&feats, linkage);
+            let mut node: Vec<Node<f64>> = feats.iter().map(Node::leaf).collect();
+            let theirs = anderberg(
+                &mut node,
+                |a, b| linkage.value(a, b),
+                |nodes, a, b| {
+                    let absorbed = Node {
+                        mass: nodes[b].mass,
+                        mean: nodes[b].mean.clone(),
+                        spread: nodes[b].spread,
+                    };
+                    nodes[a].absorb(&absorbed, linkage);
+                },
+            );
+            assert_eq!(
+                canonical(&mine, feats.len()),
+                canonical(&theirs, feats.len()),
+                "{linkage:?}"
+            );
+            for (i, (a, b)) in mine.iter().zip(&theirs).enumerate() {
+                assert!(
+                    (a.height - b.height).abs() <= 1e-9 * b.height.abs().max(1.0),
+                    "{linkage:?} height {i}: {} vs {}",
+                    a.height,
+                    b.height
+                );
+            }
+        }
+    }
+
     #[test]
     fn the_sparse_run_reproduces_the_dense_dendrogram_below_its_height() {
         for linkage in [Linkage::Average, Linkage::Weighted, Linkage::Ward] {
@@ -659,8 +916,12 @@ mod tests {
                 "{linkage:?}: fixture must not finish below h"
             );
             assert!(!got.merges.is_empty(), "{linkage:?}: nothing merged");
+            let (mine, theirs) = (
+                canonical(&got.merges, feats.len()),
+                canonical(&dense, feats.len()),
+            );
             for (i, (a, b)) in got.merges.iter().zip(&dense).enumerate() {
-                assert_eq!((a.into, a.from), (b.into, b.from), "{linkage:?} merge {i}");
+                assert_eq!(mine[i], theirs[i], "{linkage:?} merge {i}");
                 assert!(
                     (a.height - b.height).abs() < 1e-12,
                     "{linkage:?} height {i}"
@@ -695,8 +956,12 @@ mod tests {
             let got = dendrogram_below(&feats, linkage, h).expect("certified linkage");
             let want = dense.iter().take_while(|mg| mg.height <= h).count();
             assert_eq!(got.merges.len(), want, "{linkage:?}: lost a candidate edge");
-            for (i, (a, b)) in got.merges.iter().zip(&dense).enumerate() {
-                assert_eq!((a.into, a.from), (b.into, b.from), "{linkage:?} merge {i}");
+            let (mine, theirs) = (
+                canonical(&got.merges, feats.len()),
+                canonical(&dense, feats.len()),
+            );
+            for (i, pair) in mine.iter().enumerate() {
+                assert_eq!(*pair, theirs[i], "{linkage:?} merge {i}");
             }
         }
     }
@@ -710,9 +975,11 @@ mod tests {
             let got = dendrogram_below(&feats, linkage, top * 2.0).expect("certified linkage");
             assert!(got.complete, "{linkage:?}");
             assert_eq!(got.merges.len(), dense.len(), "{linkage:?}");
-            for (a, b) in got.merges.iter().zip(&dense) {
-                assert_eq!((a.into, a.from), (b.into, b.from), "{linkage:?}");
-            }
+            assert_eq!(
+                canonical(&got.merges, feats.len()),
+                canonical(&dense, feats.len()),
+                "{linkage:?}"
+            );
         }
     }
 
@@ -789,8 +1056,12 @@ mod tests {
             got.merges.len() > dense.len() / 2,
             "too few merges to be a test"
         );
-        for (i, (a, b)) in got.merges.iter().zip(&dense).enumerate() {
-            assert_eq!((a.into, a.from), (b.into, b.from), "merge {i}");
+        let (mine, theirs) = (
+            canonical(&got.merges, feats.len()),
+            canonical(&dense, feats.len()),
+        );
+        for (i, pair) in mine.iter().enumerate() {
+            assert_eq!(*pair, theirs[i], "merge {i}");
         }
     }
 

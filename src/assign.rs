@@ -95,7 +95,7 @@ use crate::types::Real;
 /// A check costs a comparison per surviving candidate, so blocks that are too small spend more on
 /// checking than they save; 64 matches the block the PDX layout is built around, and below
 /// `2 × 64` it scales down so that low-dimensional data gets more than one stage.
-fn default_block(dim: usize) -> usize {
+pub(crate) fn default_block(dim: usize) -> usize {
     if dim >= 128 { 64 } else { (dim / 8).max(1) }
 }
 
@@ -415,7 +415,11 @@ impl<R: Real> AssignPlan<R> {
 /// Dimensions by descending mass-weighted between-centroid variance.
 ///
 /// Any order gives an exact bound; this one maximises the expected prefix, so it prunes soonest.
-fn variance_order<R: Real>(centroids: &[Vec<R>], weights: Option<&[R]>, dim: usize) -> Vec<u32> {
+pub(crate) fn variance_order<R: Real>(
+    centroids: &[Vec<R>],
+    weights: Option<&[R]>,
+    dim: usize,
+) -> Vec<u32> {
     let k = centroids.len();
     let usable = weights
         .filter(|w| w.len() == k && w.iter().all(|x| x.is_finite() && *x >= R::zero()))
