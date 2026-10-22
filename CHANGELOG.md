@@ -34,13 +34,6 @@ All notable changes to this project are documented here. The format follows
   fits now run at the flagged build's speed (ratios 1.000–1.010, 30 alternated reps, labels
   byte-identical). The published wheels always carried the flag and do not change.
 
-### Fixed
-- **`AssignPlan` no longer reads a beaten hint twice.** The pruned assignment skipped the incumbent
-  to avoid re-scanning the hint, but once another centroid beat the hint the incumbent no longer
-  named it, and the hint was read again up to its first pruning stage. Labels never changed;
-  `AssignStats::dims_read` over-counted by up to one stage per such point. Found by an exact
-  read-count test written to kill the module's mutation survivors.
-
 - **`average` / `weighted` / `centroid` / `median` heads: 3–6× faster in high dimension, labels
   byte-identical.** Anderberg's cache is replaced by a heap of nearest-neighbour searchers that
   restart from the merged cluster's mean — Schubert's remark that geometric linkages need not carry a
@@ -51,6 +44,23 @@ All notable changes to this project are documented here. The format follows
   Anderberg at `d = 150` with exact ties. Head time over the k-means control at 4 000 MNIST leaves:
   centroid ~36 s → ~6 s, average / median / weighted 3.3–5×; ALOI-64 3–5× on heads under a
   second; covtype (`d = 54`) unchanged. Every label digest matched the 1.1.0 build's.
+
+### Fixed
+- **`AssignPlan` no longer reads a beaten hint twice.** The pruned assignment skipped the incumbent
+  to avoid re-scanning the hint, but once another centroid beat the hint the incumbent no longer
+  named it, and the hint was read again up to its first pruning stage. Labels never changed;
+  `AssignStats::dims_read` over-counted by up to one stage per such point. Found by an exact
+  read-count test written to kill the module's mutation survivors.
+
+- **`graph_degree > 0` HDBSCAN reads every leaf's whole `min_samples` neighbourhood.** The graph's
+  degree was sized by the *mean* leaf mass, and the median leaf is 4–7× lighter, so a light leaf's
+  list stopped short of `min_samples`: its core distance was read off whatever the list held,
+  including a far random shortcut, and its cheapest mutual-reachability edges — to a denser leaf
+  anywhere inside its core radius — were not candidates. Each leaf's list is now extended by a wider
+  search over the finished graph until its neighbours weigh `min_samples`. At the automatic
+  `min_samples` on MNIST-784 at 4 000 leaves the graph head found 104 clusters against the exact
+  head's 2 (agreement ARI −0.08); it now finds 2 (ARI 0.96). ALOI and covtype: 0.96–0.97 → 0.99.
+  Found by testing on MNIST without dimensionality reduction, as Schubert suggested.
 
 ### Notes
 - **The FAISS / `fast_hdbscan` contest is re-measured on the 1.1.0 tree** (`bench/results_external.csv`,

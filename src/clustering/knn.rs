@@ -281,12 +281,105 @@ pub fn build(
     symmetrise(&g.adj)
 }
 
+/// Add to every list the nearest neighbours that, with the vertex itself, weigh `need`: a wider
+/// search over the finished graph from the vertex, the new neighbours added at both endpoints.
+///
+/// This is Okkels et al.'s `Ω(minPts)` degree requirement enforced per vertex instead of on
+/// average. A density head over weighted vertices needs each vertex's whole `minPts` neighbourhood
+/// in the graph twice over: to read its core distance, and as the candidate edges of the
+/// mutual-reachability MST, whose cheapest edge out of a vertex is to a denser vertex *anywhere*
+/// inside its core radius. A uniform degree sized by the mean mass misses both on the light
+/// vertices, and on BETULA leaves the median vertex is 4–7× lighter than the mean. Measured with
+/// the exact neighbourhoods added (`local/scratch/a2/core_edges.py`), the graph's MST goes from
+/// 1.5–2.7× the exact weight to the exact tree on aloi, covtype and mnist.
+///
+/// The search is the build's own capped beam search, widened by doubling until the mass is reached
+/// or the beam covers every vertex. It runs on a snapshot, so the result does not depend on the
+/// order the vertices are extended in.
+pub fn extend_to_mass(
+    adj: Vec<Vec<(usize, f64)>>,
+    degree: usize,
+    mass: &[f64],
+    need: f64,
+    dist: impl Fn(usize, usize) -> f64 + Sync,
+) -> Vec<Vec<(usize, f64)>> {
+    let m = adj.len();
+    let g = Graph {
+        adj,
+        long: vec![Vec::new(); m],
+    };
+    let scratch = || Scratch {
+        visited: vec![false; m],
+        touched: Vec::new(),
+    };
+    // The nearest vertices that, with `i`, weigh `need`; empty for a vertex that weighs it alone.
+    let grow = |scratch: &mut Scratch, i: usize| -> Vec<(usize, f64)> {
+        // Only the `degree` nearest entries are trusted to weigh `need`, not the whole list: the
+        // list holds the random shortcuts too, and a far heavy shortcut makes a light vertex look
+        // full while its core distance is read off that shortcut -- 4-10x too large on the line
+        // fixture in the tests. A shortcut inside the nearest `degree` is a near neighbour anyway.
+        let prefix: f64 = g.adj[i].iter().take(degree).map(|&(j, _)| mass[j]).sum();
+        if mass[i] + prefix >= need {
+            return Vec::new();
+        }
+        // Start the beam at the count the prefix's mean mass says is needed, with half again as
+        // margin, so most vertices are served by one search rather than a run of doublings.
+        let per = prefix / degree.min(g.adj[i].len()).max(1) as f64;
+        let guess = if per > 0.0 {
+            ((need - mass[i]) / per * 1.5).ceil() as usize
+        } else {
+            m
+        };
+        let mut ef = guess.max(2 * degree).max(2);
+        loop {
+            let found = search(i, ef.min(m), &[i], &g, &dist, scratch);
+            scratch.reset();
+            let mut enclosed = mass[i];
+            let mut take = 0;
+            for &(j, _) in &found {
+                take += 1;
+                if j != i {
+                    enclosed += mass[j];
+                    if enclosed >= need {
+                        break;
+                    }
+                }
+            }
+            if enclosed >= need || ef >= m {
+                return found[..take]
+                    .iter()
+                    .copied()
+                    .filter(|&(j, _)| j != i)
+                    .collect();
+            }
+            ef *= 2;
+        }
+    };
+    // Each search reads only the snapshot, so the vertices are independent and the result is the
+    // same at any thread count.
+    #[cfg(feature = "parallel")]
+    let extra: Vec<Vec<(usize, f64)>> = {
+        use rayon::prelude::*;
+        (0..m).into_par_iter().map_init(scratch, grow).collect()
+    };
+    #[cfg(not(feature = "parallel"))]
+    let extra: Vec<Vec<(usize, f64)>> = {
+        let mut s = scratch();
+        (0..m).map(|i| grow(&mut s, i)).collect()
+    };
+    let mut out = g.adj;
+    for (list, more) in out.iter_mut().zip(extra) {
+        list.extend(more);
+    }
+    symmetrise(&out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     /// `m` points on a line, so nearest neighbours are known by construction.
-    fn line() -> impl Fn(usize, usize) -> f64 {
+    fn line() -> impl Fn(usize, usize) -> f64 + Sync {
         |i: usize, j: usize| ((i as f64) - (j as f64)).abs()
     }
 
@@ -375,6 +468,50 @@ mod tests {
                 before,
                 "duplicate neighbour in an adjacency list"
             );
+        }
+    }
+
+    #[test]
+    fn extension_brings_every_list_up_to_the_mass_asked_for() {
+        let m = 200;
+        let mass: Vec<f64> = (0..m)
+            .map(|i| if i % 10 == 0 { 50.0 } else { 1.0 })
+            .collect();
+        let need = 30.0;
+        let enclosed = |adj: &[Vec<(usize, f64)>], i: usize| {
+            mass[i] + adj[i].iter().map(|&(j, _)| mass[j]).sum::<f64>()
+        };
+        let adj = build(m, 3, 7, line());
+        assert!(
+            (0..m).any(|i| enclosed(&adj, i) < need),
+            "the fixture must leave some list short"
+        );
+        let before: Vec<Vec<usize>> = adj
+            .iter()
+            .map(|l| l.iter().map(|&(j, _)| j).collect())
+            .collect();
+        let adj = extend_to_mass(adj, 3, &mass, need, line());
+        for (i, list) in adj.iter().enumerate() {
+            assert!(
+                enclosed(&adj, i) >= need,
+                "vertex {i} encloses {}",
+                enclosed(&adj, i)
+            );
+            assert!(list.iter().all(|&(j, _)| j != i), "vertex {i} lists itself");
+            assert!(
+                list.windows(2)
+                    .all(|w| w[0].1 <= w[1].1 && w[0].0 != w[1].0)
+            );
+            assert!(
+                before[i].iter().all(|j| list.iter().any(|&(u, _)| u == *j)),
+                "vertex {i} lost an edge"
+            );
+            for &(j, d) in list {
+                assert!(
+                    adj[j].iter().any(|&(u, e)| u == i && e == d),
+                    "edge {i}->{j} has no reverse"
+                );
+            }
         }
     }
 

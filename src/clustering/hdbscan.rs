@@ -336,6 +336,13 @@ pub(crate) fn mutual_reachability(
     } else {
         let degree = graph_degree_for(graph_degree, min_samples, mass);
         let adj = crate::clustering::knn::build(m, degree, seed, dist);
+        let adj = crate::clustering::knn::extend_to_mass(
+            adj,
+            degree,
+            mass,
+            min_samples.max(1) as f64,
+            dist,
+        );
         let core = core_distances_from_graph(min_samples, mass, &adj);
         let mst = {
             let mreach = |i: usize, j: usize| -> f64 { core[i].max(core[j]).max(dist(i, j)) };
@@ -1484,6 +1491,42 @@ mod tests {
                 "min_samples = {min_samples}"
             );
         }
+    }
+
+    #[test]
+    fn light_leaves_get_their_whole_core_neighbourhood_from_the_graph() {
+        use crate::feature::ClusterFeature;
+        // One heavy leaf in six: the mean mass is ~4, so the degree sized from it is 4, and a light
+        // leaf needs up to 14 neighbours to enclose `min_samples`. Without the extension its core
+        // distance saturates at its farthest listed neighbour, and its cheapest mutual-reachability
+        // edge -- to a denser leaf anywhere inside that radius -- is not a candidate at all.
+        let m = 60;
+        let micros = irregular_line(m, 1.0);
+        let mu: Vec<Vec<f64>> = micros.iter().map(|f| f.mean().to_vec()).collect();
+        let mass: Vec<f64> = (0..m)
+            .map(|i| if i % 6 == 0 { 20.0 } else { 1.0 })
+            .collect();
+        let min_samples = 15;
+        let dist = |i: usize, j: usize| crate::kernels::sq_euclidean(&mu[i], &mu[j]).sqrt();
+        let degree = graph_degree_for(2, min_samples, &mass);
+        let exact = core_distances(m, min_samples, &mass, dist);
+        let built = crate::clustering::knn::build(m, degree, 3, dist);
+        assert_ne!(
+            core_distances_from_graph(min_samples, &mass, &built),
+            exact,
+            "the fixture must leave some list short"
+        );
+        let adj =
+            crate::clustering::knn::extend_to_mass(built, degree, &mass, min_samples as f64, dist);
+        assert_eq!(core_distances_from_graph(min_samples, &mass, &adj), exact);
+        let mreach = |i: usize, j: usize| exact[i].max(exact[j]).max(dist(i, j));
+        let weight = |t: &[(f64, usize, usize)]| t.iter().map(|e| e.0).sum::<f64>();
+        let over_graph = weight(&mst_over_graph(m, &adj, &mreach));
+        let complete = weight(&prim_complete(m, &mreach));
+        assert!(
+            (over_graph - complete).abs() <= 1e-12 * complete,
+            "{over_graph} vs {complete}"
+        );
     }
 
     #[test]

@@ -923,30 +923,42 @@ neighbour, so a degree below what `min_samples` needs *underestimates* every cor
 bound on the error. The head therefore raises the requested degree to `min_samples / mean leaf mass`
 whenever that is larger; `graph_degree=1` is a request for the cheapest legal graph, not a broken one.
 
+**Light leaves get their whole `min_samples` neighbourhood.** A degree sized by the *mean* mass is
+not enough for a leaf lighter than the mean, and on real trees the median leaf is 4–7× lighter. Such
+a leaf misses part of its core neighbourhood, and with it the cheapest mutual-reachability edges,
+which run to a denser leaf anywhere inside the core radius. So after the build every leaf's list is
+extended, by a wider search over the finished graph, until its neighbours weigh `min_samples`.
+The search is approximate; with the *exact* neighbourhoods added instead, the graph's MST is the
+exact one on every leaf set measured (ALOI, covtype, MNIST), against 1.5–2.7× its weight without
+them, so the remaining gap is the search's recall. At the automatic `min_samples`
+it moved the graph head's agreement with the exact head on MNIST-784 at 4 000 leaves from ARI −0.08
+(104 clusters against 2) to 0.96.
+
 Median of seeds 0/1/2, one BLAS thread, `min_cluster_size = N/100`, `min_samples = 4N/max_leaves`
 (the rule the section above argues for). "head" is the time after subtracting the identical tree
-build, which is what the parameter changes:
+build, which is what the parameter changes. Measured 2026-10-22 (`local/scratch/hdbscan_graph_ab.py`)
+on a machine running other jobs, so the times are good to their ratios, not to the millisecond:
 
 | dataset | `max_leaves` | exact head | ARI | `graph_degree=16` | ARI | `graph_degree=32` | ARI |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| blobs 100 k, 2-D | 2 000 | 0.11 s | 0.5645 | 0.02 s | 0.5596 | 0.04 s | 0.5634 |
-| | 8 000 | 2.04 s | 0.5668 | 0.11 s | 0.5530 | 0.21 s | 0.5640 |
-| | 32 000 | 36.6 s | 0.5674 | 0.52 s | 0.5454 | **0.98 s** | **0.5608** |
-| covtype 581 k, 54-D | 2 000 | 0.41 s | 0.0531 | 0.20 s | 0.0496 | 0.24 s | 0.0519 |
-| | 8 000 | 4.61 s | 0.0490 | 0.28 s | 0.0374 | 0.45 s | 0.0457 |
-| MNIST 70 k, 784-D | 2 000 | 3.00 s | 0.0298 | 0.13 s | **0.0298** | 0.28 s | **0.0298** |
-| | 8 000 | 52.0 s | 0.0523 | < 0.5 s | **0.0523** | **0.45 s** | **0.0523** |
+| blobs 100 k, 2-D | 2 000 | 0.11 s | 0.5636 | 0.05 s | 0.5634 | 0.08 s | 0.5643 |
+| | 8 000 | 0.87 s | 0.5670 | 0.23 s | 0.5627 | 0.37 s | 0.5634 |
+| | 32 000 | 10.3 s | 0.8032 | **1.27 s** | **0.8007** | 2.20 s | 0.8009 |
+| covtype 581 k, 54-D | 2 000 | 0.24 s | 0.0503 | 0.22 s | 0.0517 | 0.30 s | 0.0516 |
+| | 8 000 | 1.19 s | 0.0495 | 0.45 s | 0.0488 | 0.62 s | 0.0489 |
+| MNIST 70 k, 784-D | 2 000 | 0.23 s | 0.0083 | 0.18 s | 0.0079 | 0.34 s | 0.0083 |
+| | 8 000 | 8.40 s | 0.0476 | **0.93 s** | **0.0476** | 2.05 s | 0.0476 |
 
-At 32 000 leaves on blobs the head goes from 36.6 s to 1.0 s — **37×** — for 1.2% of the ARI. On
-MNIST at 8 000 leaves it goes from 52.0 s to 0.45 s — **116×** — for *no* ARI at all: the graph
-reproduces the exact partition to four decimals with the same ten clusters. The trade is monotone in
-the degree and it is the *degree*, not the graph, that costs the quality: doubling 16 to 32 recovers
-most of the loss at half the saving. Below ~2 000 leaves the exact path is already cheap and there is
-nothing to buy.
+At 32 000 leaves on blobs the head goes from 10.3 s to 1.3 s — **8×** — for 0.3 % of the ARI. On
+MNIST at 8 000 leaves it goes from 8.4 s to 0.9 s — **9×** — for *no* ARI at all: the graph
+reproduces the exact partition with the same four clusters. With every leaf's core neighbourhood in
+the graph, 16 and 32 agree to within 0.001 ARI on every row, so 32 costs ~1.7× and buys nothing
+measured here. Below ~2 000 leaves the exact path is already cheap and there is nothing to buy.
 
-**Degree 8 is not enough in high dimension**, whatever the leaf budget: on MNIST it gives ARI 0.0190
-with 4 clusters against the exact 0.0523 with 10, and swings across [0.0068, 0.0600] between seeds.
-16 is the smallest degree measured to be lossless at `d = 784`.
+**Degree 8 is enough on MNIST as well** (ARI 0.0080 at 2 000 leaves, 0.0476 with the same four
+clusters at 8 000, heads 0.10 s and 0.30 s). Before 1.2 it was not — ARI 0.0190 with 4 clusters
+against the exact path's 10, swinging across seeds — and the shortfall was the light leaves' missing
+core neighbourhoods, which a larger degree only covered up.
 
 **What it does not fix.** The approximation is in which edges the MST may choose from, never in the
 criterion; where the head is weak on the exact graph (covtype: ARI 0.05 at any budget) it stays
