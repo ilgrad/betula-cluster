@@ -357,6 +357,34 @@ where
     (phi_all[..=best_w].to_vec(), v_all[..=best_w].to_vec())
 }
 
+/// Responsibility-weighted scalar level of a component: the `wt`-weighted mean over every coordinate
+/// of every leaf mean. A component holding no mass sits at zero rather than at `0/0`, so one whose
+/// responsibility underflowed at every leaf stays finite (its weight is zero) instead of poisoning
+/// the next E-step with NaN.
+fn component_level<R: Real>(mu: &[Vec<R>], wt: &[R], nkc: R, dim: usize) -> R {
+    let mut mc = R::zero();
+    if nkc > R::zero() {
+        for (mi, &wi) in mu.iter().zip(wt) {
+            let si = mi.iter().copied().fold(R::zero(), |acc, x| acc + x);
+            mc = mc + wi * si;
+        }
+        mc = mc / (nkc * R::from_usize(dim).unwrap());
+    }
+    mc
+}
+
+/// Free parameters of a `k`-component fit, for BIC: per component a scalar mean and the covariance
+/// model (AR order ≤ `w_max` and the innovation, the `d` general-Toeplitz autocovariances, or the GS
+/// order and the innovation), and `k − 1` mixing weights.
+fn free_parameters(kind: CovKind, k: usize, dim: usize) -> usize {
+    let cov_p = match kind {
+        CovKind::Ar => 1 + TOEPLITZ_W_MAX,
+        CovKind::ToeplitzFull => dim,
+        CovKind::GsMle => 1 + GS_ORDER_MAX,
+    };
+    k * (1 + cov_p) + (k - 1)
+}
+
 fn argmax<R: Real>(v: &[R]) -> usize {
     let mut best = 0;
     for i in 1..v.len() {
@@ -419,14 +447,7 @@ where
             let wt: Vec<R> = (0..m).map(|i| n[i] * resp[i][c]).collect();
             let nkc: R = wt.iter().copied().sum();
             nk[c] = nkc;
-            let mut mc = R::zero();
-            if nkc > R::zero() {
-                for (i, &wi) in wt.iter().enumerate() {
-                    let si = mu[i].iter().copied().fold(R::zero(), |acc, x| acc + x);
-                    mc = mc + wi * si;
-                }
-                mc = mc / (nkc * R::from_usize(dim).unwrap());
-            }
+            let mc = component_level(&mu, &wt, nkc, dim);
             means[c] = mc;
             covs[c] = match kind {
                 CovKind::Ar => {
@@ -534,14 +555,7 @@ where
     let mut best_bic = R::infinity();
     for k in k_min.max(1)..=k_hi {
         let g = gmm_toeplitz_kind(features, k, kind, max_iter, seed);
-        // per component: a scalar mean + the covariance model (AR order ≤ w_max + innovation, or the
-        // `d` general-Toeplitz autocovariances), plus the mixing weights.
-        let cov_p = match kind {
-            CovKind::Ar => 1 + TOEPLITZ_W_MAX,
-            CovKind::ToeplitzFull => dim,
-            CovKind::GsMle => 1 + GS_ORDER_MAX,
-        };
-        let p = k * (1 + cov_p) + (k - 1);
+        let p = free_parameters(kind, k, dim);
         let bic = -two * g.loglik + R::from_usize(p).unwrap() * ntot.ln();
         if bic < best_bic {
             best_bic = bic;
@@ -1176,13 +1190,311 @@ mod tests {
         let specs: &[&[f64]] = &[&[0.8], &[1.1, -0.4], &[]];
         let (feats, _) = ar_mixture(64, 20, specs, 4);
         // The relative change drops under 1e-6 on the 15th iteration here, and the iterates stop
-        // moving to the last bit only at the 50th: a stop that fires late leaves 15 short of 3000.
+        // moving to the last bit only at the 50th: a stop that fires late leaves 15 short of 60.
+        // The long budget is 60 and not more because a stop that never fires spends all of it, and
+        // a budget in the thousands turned every such mutant into a timeout instead of a failure.
         let short = gmm_toeplitz(&feats, 3, 14, 2);
         let stop = gmm_toeplitz(&feats, 3, 15, 2);
-        let long = gmm_toeplitz(&feats, 3, 3000, 2);
+        let long = gmm_toeplitz(&feats, 3, 60, 2);
         assert_ne!(short.loglik, long.loglik);
         assert_eq!(stop.loglik, long.loglik);
         assert_eq!(stop.labels, long.labels);
         assert_eq!(stop.means, long.means);
+    }
+
+    #[test]
+    fn bic_counts_a_level_the_covariance_model_and_k_minus_one_weights() {
+        // AR: a level, `w_max` coefficients and an innovation; general Toeplitz: a level and `d`
+        // autocovariances; GS: a level, `GS_ORDER_MAX` reflections and an innovation. Plus the
+        // `k − 1` free mixing weights.
+        let ar = TOEPLITZ_W_MAX + 2;
+        let gs = GS_ORDER_MAX + 2;
+        assert_eq!(free_parameters(CovKind::Ar, 1, 64), ar);
+        assert_eq!(free_parameters(CovKind::Ar, 3, 64), 3 * ar + 2);
+        assert_eq!(free_parameters(CovKind::ToeplitzFull, 2, 16), 2 * 17 + 1);
+        assert_eq!(free_parameters(CovKind::GsMle, 4, 64), 4 * gs + 3);
+    }
+
+    #[test]
+    fn a_component_without_mass_sits_at_level_zero() {
+        // (1·(1 + 2) + 3·(3 + 5)) / (4 · 2) = 27/8; with no mass the level is 0, not 0/0.
+        let mu = vec![vec![1.0, 2.0], vec![3.0, 5.0]];
+        assert_eq!(component_level(&mu, &[1.0, 3.0], 4.0, 2), 27.0 / 8.0);
+        assert_eq!(component_level(&mu, &[0.0, 0.0], 0.0, 2), 0.0);
+    }
+
+    #[test]
+    fn a_tied_responsibility_row_labels_the_lowest_component() {
+        assert_eq!(argmax(&[0.5, 0.5]), 0);
+        assert_eq!(argmax(&[0.25, 0.5, 0.5, 0.25]), 1);
+    }
+
+    #[test]
+    fn the_first_m_step_starts_from_the_seeded_responsibilities() {
+        // Each leaf draws `k` uniforms, shifted off zero by 1e-3 and normalised; the first M-step's
+        // weights and levels are mass-weighted sums of exactly those responsibilities. Unequal
+        // masses and levels keep both sums from collapsing to a plain average.
+        let specs: &[&[f64]] = &[&[0.8], &[1.1, -0.4], &[]];
+        let (base, _) = ar_mixture(16, 6, specs, 9);
+        let feats: Vec<Spherical<f64>> = base
+            .iter()
+            .enumerate()
+            .map(|(i, f)| {
+                let row = f.mean().iter().map(|x| x + 0.1 * i as f64).collect();
+                Spherical::from_moments(1.0 + (i % 4) as f64, row, 0.0)
+            })
+            .collect();
+        let (k, seed, dim) = (3usize, 21u64, 16usize);
+        let mut rng = SplitMix64::new(seed);
+        let resp: Vec<Vec<f64>> = feats
+            .iter()
+            .map(|_| {
+                let u: Vec<f64> = (0..k).map(|_| rng.next_f64() + 1e-3).collect();
+                let s: f64 = u.iter().sum();
+                u.iter().map(|x| x / s).collect()
+            })
+            .collect();
+        let nk: Vec<f64> = (0..k)
+            .map(|c| {
+                feats
+                    .iter()
+                    .zip(&resp)
+                    .map(|(f, r)| f.weight() * r[c])
+                    .sum()
+            })
+            .collect();
+        let ntot: f64 = nk.iter().sum();
+
+        let g: GmmToeplitz<f64> =
+            gmm_toeplitz_once(&feats, k, TOEPLITZ_W_MAX, CovKind::Ar, 1, seed);
+        for c in 0..k {
+            let level = feats
+                .iter()
+                .zip(&resp)
+                .map(|(f, r)| f.weight() * r[c] * f.mean().iter().sum::<f64>())
+                .sum::<f64>()
+                / (nk[c] * dim as f64);
+            assert!(
+                (g.weights[c] - nk[c] / ntot).abs() < 1e-12,
+                "weight {c}: {:?}",
+                g.weights
+            );
+            assert!(
+                (g.means[c] - level).abs() < 1e-12,
+                "level {c}: {:?}",
+                g.means
+            );
+        }
+    }
+
+    #[test]
+    fn the_gs_fit_does_not_move_when_the_data_and_its_level_shift_together() {
+        // The likelihood scores deviations from the component level, so adding a constant to every
+        // coordinate and to the level leaves the fitted precision unchanged.
+        let mut rng = SplitMix64::new(23);
+        let dim = 20;
+        let rows: Vec<Vec<f64>> = (0..24)
+            .map(|_| ar_window(&mut rng, dim, &[0.6, -0.25]))
+            .collect();
+        let wt = vec![1.0; rows.len()];
+        let fit = |shift: f64| {
+            let feats: Vec<Spherical<f64>> = rows
+                .iter()
+                .map(|r| Spherical::from_moments(1.0, r.iter().map(|x| x + shift).collect(), 0.0))
+                .collect();
+            let mu_c = feats.iter().flat_map(|f| f.mean().to_vec()).sum::<f64>()
+                / (rows.len() * dim) as f64;
+            let StationaryCov::Ar { phi, v } = fit_component_gs(&feats, &wt, mu_c, dim) else {
+                panic!("GS fit must return an AR covariance");
+            };
+            (phi, v)
+        };
+        let ((phi0, v0), (phi1, v1)) = (fit(0.0), fit(3.0));
+        for (m, (a, b)) in phi0.iter().zip(&phi1).enumerate() {
+            for (&x, &y) in a.iter().zip(b) {
+                assert!((x - y).abs() < 1e-9, "order {m}: {a:?} vs {b:?}");
+            }
+        }
+        for (&x, &y) in v0.iter().zip(&v1) {
+            assert!((x - y).abs() < 1e-9 * x.max(1.0), "{v0:?} vs {v1:?}");
+        }
+    }
+
+    #[test]
+    fn the_mixture_fit_moves_only_its_levels_when_the_data_shifts_by_a_constant() {
+        // `ar_mixture` centres every window, so on it a level that entered the E-step with the wrong
+        // sign would still sit at zero and change nothing; the shifted copy puts it at 3.
+        let specs: &[&[f64]] = &[&[0.85], &[1.2, -0.5], &[]];
+        let (feats, _truth) = ar_mixture(48, 20, specs, 3);
+        let shift = 3.0;
+        let moved: Vec<Spherical<f64>> = feats
+            .iter()
+            .map(|f| {
+                Spherical::from_moments(
+                    f.weight(),
+                    f.mean().iter().map(|x| x + shift).collect(),
+                    f.ssd(),
+                )
+            })
+            .collect();
+        let (a, b) = (
+            gmm_toeplitz(&feats, 3, 50, 3),
+            gmm_toeplitz(&moved, 3, 50, 3),
+        );
+        assert_eq!(a.labels, b.labels);
+        assert!(
+            (a.loglik - b.loglik).abs() < 1e-9 * a.loglik.abs(),
+            "{} vs {}",
+            a.loglik,
+            b.loglik
+        );
+        for (ma, mb) in a.means.iter().zip(&b.means) {
+            assert!(
+                (mb - ma - shift).abs() < 1e-9,
+                "{:?} vs {:?}",
+                a.means,
+                b.means
+            );
+        }
+    }
+
+    #[test]
+    fn the_reported_fit_is_the_e_step_of_its_own_mixture() {
+        // The returned responsibilities and log-likelihood come from the last E-step, which ran on
+        // the returned parameters, so recomputing them from the mixture must agree. The leaves carry
+        // unequal mass so that the likelihood has to weigh each one rather than count it.
+        let specs: &[&[f64]] = &[&[0.85], &[1.2, -0.5], &[]];
+        let (feats, _truth) = ar_mixture(32, 12, specs, 5);
+        let feats: Vec<Spherical<f64>> = feats
+            .iter()
+            .enumerate()
+            .map(|(i, f)| Spherical::from_moments((1 + i % 3) as f64, f.mean().to_vec(), f.ssd()))
+            .collect();
+        let g = gmm_toeplitz(&feats, 3, 5, 9);
+        let mut lj = Vec::new();
+        let mut loglik = 0.0;
+        for (f, resp) in feats.iter().zip(&g.resp) {
+            g.mixture.log_joint(f.mean(), &mut lj);
+            let top = lj.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+            let lse = top + lj.iter().map(|l| (l - top).exp()).sum::<f64>().ln();
+            loglik += f.weight() * lse;
+            for (&r, &l) in resp.iter().zip(&lj) {
+                assert!((r - (l - lse).exp()).abs() < 1e-12, "{resp:?} vs {lj:?}");
+            }
+        }
+        assert!(
+            (g.loglik - loglik).abs() < 1e-12 * loglik.abs(),
+            "{} vs {loglik}",
+            g.loglik
+        );
+    }
+
+    #[test]
+    fn the_gs_ascent_weighs_each_leaf_by_its_responsibility() {
+        // Two processes, one carrying fifteen times the mass of the other: an ascent that counted
+        // leaves instead of weighing them would settle between the two.
+        let mut rng = SplitMix64::new(29);
+        let dim = 24;
+        let mut feats = Vec::new();
+        let mut wt = Vec::new();
+        for (a, w) in [(&[0.6, -0.25][..], 3.0), (&[-0.5][..], 0.2)] {
+            for _ in 0..15 {
+                feats.push(Spherical::from_moments(
+                    1.0,
+                    ar_window(&mut rng, dim, a),
+                    0.0,
+                ));
+                wt.push(w);
+            }
+        }
+        let StationaryCov::Ar { phi, .. } = fit_component_gs(&feats, &wt, 0.0, dim) else {
+            panic!("GS fit must return an AR covariance");
+        };
+        let p = GS_ORDER_MAX.min(dim - 1).max(1);
+        let refl = reference_gs_reflections(&feats, &wt, 0.0, dim);
+        for m in 1..=p {
+            let got = *phi[m].last().unwrap();
+            assert!(
+                (got - refl[m]).abs() < 1e-9,
+                "reflection {m}: {got} vs {}",
+                refl[m]
+            );
+        }
+    }
+
+    #[test]
+    fn the_ar_order_does_not_move_when_the_data_and_its_level_shift_together() {
+        // The order is chosen by the likelihood of the deviations from the level, so a constant
+        // added to every coordinate and to the level changes neither the order nor the predictor.
+        let mut rng = SplitMix64::new(23);
+        let dim = 20;
+        let rows: Vec<Vec<f64>> = (0..24)
+            .map(|_| ar_window(&mut rng, dim, &[0.6, -0.25]))
+            .collect();
+        let wt = vec![1.0; rows.len()];
+        let fit = |shift: f64| {
+            let feats: Vec<Spherical<f64>> = rows
+                .iter()
+                .map(|r| Spherical::from_moments(1.0, r.iter().map(|x| x + shift).collect(), 0.0))
+                .collect();
+            let mu_c = feats.iter().flat_map(|f| f.mean().to_vec()).sum::<f64>()
+                / (rows.len() * dim) as f64;
+            fit_component(&feats, &wt, mu_c, dim, TOEPLITZ_W_MAX)
+        };
+        let ((phi0, v0), (phi1, v1)) = (fit(0.0), fit(3.0));
+        assert_eq!(phi0.len(), phi1.len(), "the selected order moved");
+        for (m, (a, b)) in phi0.iter().zip(&phi1).enumerate() {
+            for (&x, &y) in a.iter().zip(b) {
+                assert!((x - y).abs() < 1e-9, "order {m}: {a:?} vs {b:?}");
+            }
+        }
+        for (&x, &y) in v0.iter().zip(&v1) {
+            assert!((x - y).abs() < 1e-9 * x.max(1.0), "{v0:?} vs {v1:?}");
+        }
+    }
+
+    /// Leaves that all sit on the level `c` and carry only within-leaf scatter: every deviation is
+    /// exactly zero, so every lag past zero is zero and the likelihood depends on the predictor only
+    /// through the error variances.
+    fn flat_component(rows: usize, dim: usize, c: f64) -> Vec<Spherical<f64>> {
+        (0..rows)
+            .map(|_| Spherical::from_moments(1.0, vec![c; dim], 3.0))
+            .collect()
+    }
+
+    #[test]
+    fn an_ar_order_that_only_ties_does_not_displace_a_lower_one() {
+        // Every reflection coefficient is zero, so every order scores the same likelihood to the
+        // last bit, and a total mass of 1/d makes `ln(n_eff)` zero, so the penalty cannot separate
+        // them either. Only the tie rule picks, and it keeps the lowest order.
+        let dim = 8;
+        let feats = flat_component(4, dim, 2.0);
+        let wt = vec![1.0 / (4 * dim) as f64; 4];
+        let r = component_autocov(&feats, &wt, 2.0, dim, dim - 1);
+        let (phi, v) = levinson_full(&r, dim - 1);
+        let zero = vec![0.0; dim];
+        assert_eq!(
+            ar_loglik_exact(&zero, &phi[..=1], &v[..=1], 1),
+            ar_loglik_exact(&zero, &phi, &v, dim - 1),
+            "the fixture does not tie"
+        );
+        let (got, _) = fit_component(&feats, &wt, 2.0, dim, TOEPLITZ_W_MAX);
+        assert_eq!(got.len() - 1, 1);
+    }
+
+    #[test]
+    fn the_gs_ascent_keeps_the_first_of_two_exactly_tied_candidates() {
+        // With zero deviations the likelihood sees each reflection coefficient only through `k²`,
+        // so from `k = 0` the candidates `+s` and `−s` tie exactly. The search tries +0.15, −0.15,
+        // +0.05, −0.05 and a candidate must beat the incumbent strictly, so every coefficient
+        // lands on +0.15.
+        let dim = 6;
+        let feats = flat_component(3, dim, -1.5);
+        let StationaryCov::Ar { phi, .. } = fit_component_gs(&feats, &[1.0; 3], -1.5, dim) else {
+            panic!("GS fit must return an AR covariance");
+        };
+        for (m, row) in phi.iter().enumerate().skip(1) {
+            assert_eq!(row.last(), Some(&0.15), "order {m}: {phi:?}");
+        }
     }
 }

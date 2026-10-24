@@ -698,31 +698,57 @@ src/clustering/xmeans.rs:200:16: replace > with >= in xmeans
 # label never equals `used.len()`, and `<=` never reaches the index past the end.
 src/model.rs:219:14: replace < with <= in medoid_centers
 
-# ── src/clustering/gmm_toeplitz.rs (22) ──
-# Debt. Also the largest timeout pool (17), so some of these are unmeasured rather
-# than surviving.
+# ── src/clustering/gmm_toeplitz.rs (6) ──
+# **Re-measured 2026-10-24, whole file** (`cargo mutants -f src/clustering/gmm_toeplitz.rs -j4
+# --test-tool nextest -- --lib -E 'test(/clustering::gmm_toeplitz::/)'`, frozen in a worktree,
+# under `MemoryMax=10G` with a disk-backed `TMPDIR`): 309 mutants -- 220 caught, 9 missed, 19
+# timeouts, 61 unviable. The section this replaces was 22 entries of unargued debt. The production
+# edits since are two extractions, `component_level` (the M-step's level) and `free_parameters`
+# (the BIC count), which made both reachable from a test; nothing else in the file moved.
+#
+# Three of the nine survivors were then killed entry by entry (test code only):
+#   348:62  `f.mean()[t] - mu_c` -> `+` in the AR order's BIC. `ar_mixture` centres every window,
+#           so on every fixture the level was 0 and its sign could not matter:
+#           `the_ar_order_does_not_move_when_the_data_and_its_level_shift_together`.
+#   471:63  the same sign in the E-step:
+#           `the_mixture_fit_moves_only_its_levels_when_the_data_shifts_by_a_constant`.
+#   480:36  `n[i] * lse` -> `+`, which moves the reported log-likelihood by a constant and nothing
+#           else: `the_reported_fit_is_the_e_step_of_its_own_mixture` recomputes it from
+#           `Mixture::log_joint` on leaves of unequal mass.
+#
+# **Four of the 19 timeouts were unmeasured, not detected.** nextest runs without fail-fast, so a
+# mutant times out once its slowest test passes the 300 s floor, whatever the others did. 15 logs
+# show a test that had already failed. The other four showed none: 283:30 `*` -> `+` (the GS
+# objective counting leaves instead of weighing them, which every unit-weight fixture hides) and
+# 485:15, 485:30 `+`, 485:30 `/` (a convergence stop that never fires, which
+# `em_stops_where_the_likelihood_stops_moving` saw only after 3000 iterations).
+# `the_gs_ascent_weighs_each_leaf_by_its_responsibility` kills the first, and the convergence
+# test's long budget, cut from 3000 to 60 iterations, kills the other three in seconds. The E-step
+# test also kills the other ten timeouts of the init, M-step and E-step in under a second each.
+#
+# Believed equivalent, with the argument:
+#   102:23  `for i in 0..m - 1` -> `0..m / 1` adds the term `i = m - 1`, `acc - a[m-1] * r[0]`.
+#           `a[m-1]` is still the zero it was allocated as -- it is written later in the same
+#           iteration -- and `r[0]` is finite and `>= 0` (a weighted sum of squares over a
+#           denominator floored at 1e-12), so the term is `+0`, and `acc - 0` is `acc`, sign
+#           of zero included.
+#   106:14, 108:21  the reflection clamp `k > lim` / `k < -lim` -> `>=` / `<=`. At equality the
+#           assignment stores the value already there.
+#   275:30  `w > 0` -> `>=` in the GS deltas admits the leaves of zero responsibility, each scored
+#           `0 * ar_loglik_exact(..)`. That is a zero while the log-density is finite, which the
+#           reflection clamp guarantees (every `v[m] > 0`) short of a deviation that overflows when
+#           squared.
+#   336:24  `x > 0` -> `>=` in the mass sum `nsum` adds zeros.
+#
+# Debt. `bic < best_bic` -> `<=` in the auto-k loop, the tie of `gmm.rs:646:18`: it differs only
+# when two `k` produce a bit-identical BIC, and `free_parameters` is strictly increasing in `k`, so
+# that needs log-likelihoods `(p_k - p_j) * ln(n) / 2` apart to the last bit.
 src/clustering/gmm_toeplitz.rs:102:23: replace - with / in levinson_full
 src/clustering/gmm_toeplitz.rs:106:14: replace > with >= in levinson_full
 src/clustering/gmm_toeplitz.rs:108:21: replace < with <= in levinson_full
 src/clustering/gmm_toeplitz.rs:275:30: replace > with >= in fit_component_gs
-src/clustering/gmm_toeplitz.rs:276:57: replace - with + in fit_component_gs
-src/clustering/gmm_toeplitz.rs:296:41: replace + with - in fit_component_gs
-src/clustering/gmm_toeplitz.rs:301:26: replace > with >= in fit_component_gs
 src/clustering/gmm_toeplitz.rs:336:24: replace > with >= in fit_component
-src/clustering/gmm_toeplitz.rs:338:23: replace * with + in fit_component
-src/clustering/gmm_toeplitz.rs:352:16: replace < with <= in fit_component
-src/clustering/gmm_toeplitz.rs:363:17: replace > with >= in argmax
-src/clustering/gmm_toeplitz.rs:395:48: replace + with * in gmm_toeplitz_once
-src/clustering/gmm_toeplitz.rs:395:48: replace + with - in gmm_toeplitz_once
-src/clustering/gmm_toeplitz.rs:423:20: replace > with >= in gmm_toeplitz_once
-src/clustering/gmm_toeplitz.rs:442:32: replace / with * in gmm_toeplitz_once
-src/clustering/gmm_toeplitz.rs:540:30: replace + with * in gmm_toeplitz_auto_kind
-src/clustering/gmm_toeplitz.rs:542:33: replace + with * in gmm_toeplitz_auto_kind
-src/clustering/gmm_toeplitz.rs:544:24: replace + with * in gmm_toeplitz_auto_kind
-src/clustering/gmm_toeplitz.rs:544:33: replace + with - in gmm_toeplitz_auto_kind
-src/clustering/gmm_toeplitz.rs:544:38: replace - with + in gmm_toeplitz_auto_kind
-src/clustering/gmm_toeplitz.rs:544:38: replace - with / in gmm_toeplitz_auto_kind
-src/clustering/gmm_toeplitz.rs:546:16: replace < with <= in gmm_toeplitz_auto_kind
+src/clustering/gmm_toeplitz.rs:560:16: replace < with <= in gmm_toeplitz_auto_kind
 
 # ── src/sketch/kll.rs (0) ──
 # Emptied 2026-10-24, entry by entry: all 20 survived a re-run at c016e3b, and four tests kill all
