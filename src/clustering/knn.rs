@@ -683,4 +683,60 @@ mod tests {
         }
         assert!(got.iter().all(|&r| r > 0.88), "recall = {got:?}");
     }
+
+    /// Five vertices on a path `0—1—2—3—4` at positions `0..=4`, and the query (vertex 5, joined to
+    /// nothing) at `x`.
+    fn path_search(x: f64, ef: usize, cap: usize, entries: &[usize]) -> Vec<(usize, f64)> {
+        let pos = [0.0, 1.0, 2.0, 3.0, 4.0, x];
+        let link = |v: usize| -> Vec<(usize, f64)> {
+            [v.wrapping_sub(1), v + 1]
+                .into_iter()
+                .filter(|&u| u < 5)
+                .map(|u| (u, (pos[u] - pos[v]).abs()))
+                .collect()
+        };
+        let g = Graph {
+            adj: (0..6)
+                .map(|v| if v < 5 { link(v) } else { Vec::new() })
+                .collect(),
+            long: vec![Vec::new(); 6],
+        };
+        let mut scratch = Scratch {
+            visited: vec![false; 6],
+            touched: Vec::new(),
+        };
+        let dist = |a: usize, b: usize| (pos[a] - pos[b]).abs();
+        search(5, ef, cap, entries, &g, &dist, &mut scratch)
+    }
+
+    #[test]
+    fn the_search_expands_exactly_cap_vertices_and_no_more() {
+        // From vertex 0 toward a query at 4.5 every expansion moves one step closer, so the result
+        // reads off how many expansions ran: one reaches vertex 1, an unbounded walk reaches 4.
+        assert_eq!(path_search(4.5, 1, 1, &[0]), vec![(1, 3.5)]);
+        assert_eq!(path_search(4.5, 1, 2, &[0]), vec![(2, 2.5)]);
+        // The first candidate is always exactly as far as the worst result it is the only member
+        // of; the stop rule must not fire on that tie, or no search ever leaves its entry point.
+        assert_eq!(path_search(4.5, 1, 10, &[0]), vec![(4, 0.5)]);
+    }
+
+    #[test]
+    fn a_neighbour_only_as_near_as_the_worst_result_does_not_displace_it() {
+        // The query at 2.5 is 0.5 from vertices 2 and 3. Entered at 3, the search meets 2 at the
+        // same distance; a candidate must be strictly nearer than the worst kept result.
+        assert_eq!(path_search(2.5, 1, 10, &[3]), vec![(3, 0.5)]);
+    }
+
+    #[test]
+    fn an_offer_tied_with_the_last_kept_neighbour_takes_its_place() {
+        // A full list and a newcomer at the distance of its last entry: the newcomer goes ahead of
+        // the tie and the old entry is truncated away.
+        let mut list = vec![(1, 0.5), (2, 1.0)];
+        offer(&mut list, 3, 1.0, 2);
+        assert_eq!(list, vec![(1, 0.5), (3, 1.0)]);
+        offer(&mut list, 4, 1.5, 2);
+        assert_eq!(list, vec![(1, 0.5), (3, 1.0)]);
+        offer(&mut list, 3, 0.1, 2);
+        assert_eq!(list, vec![(1, 0.5), (3, 1.0)], "a vertex is offered once");
+    }
 }

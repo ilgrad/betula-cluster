@@ -1545,7 +1545,14 @@ src/clustering/agglomerative.rs:775:44: replace - with + in agglomerative_auto
 src/clustering/agglomerative.rs:775:44: replace - with / in agglomerative_auto
 src/clustering/agglomerative.rs:780:18: replace > with >= in agglomerative_auto
 
-# ── src/clustering/knn.rs (24) ──
+# ── src/clustering/knn.rs (17) ──
+# 2026-10-24, entry by entry: the seven older `search` / `offer` entries all survived a re-run at
+# c016e3b, and three tests on a hand-built path graph kill all seven, each verified against its own
+# mutant (test-only change):
+#   138:34, 141:20, 142:23 (x2)  the_search_expands_exactly_cap_vertices_and_no_more
+#   154:27, 154:38               a_neighbour_only_as_near_as_the_worst_result_does_not_displace_it
+#   173:49                       an_offer_tied_with_the_last_kept_neighbour_takes_its_place
+#
 # Same run as agglomerative.rs above; the mass extension's survivors were re-checked after the test
 # that every extended list reaches `need` at exactly its core radius.
 #
@@ -1578,15 +1585,6 @@ src/clustering/knn.rs:367:16: replace *= with += in extend_to_mass
 # `&&` keeps doubling past the first sufficient width up to `m`, then returns the same prefix of
 # an exact search.
 src/clustering/knn.rs:360:33: replace || with && in extend_to_mass
-#
-# Debt. Older code, re-anchored but not reviewed in this pass.
-src/clustering/knn.rs:138:34: replace > with >= in search
-src/clustering/knn.rs:141:20: replace += with *= in search
-src/clustering/knn.rs:142:23: replace > with == in search
-src/clustering/knn.rs:142:23: replace > with >= in search
-src/clustering/knn.rs:154:27: replace < with <= in search
-src/clustering/knn.rs:154:38: replace < with <= in search
-src/clustering/knn.rs:173:49: replace < with <= in offer
 
 # ── src/adwin.rs (8) ──
 # Entry by entry, 2026-10-22, against the 62 registered from CI run 39237087351 (test code only
