@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.4.0] — 2026-10-24
+
 ### Added
 - **`KPrototypes` clusters an all-categorical table: k-modes** (Huang, 1998). List every column in
   `categorical=`; the prototypes are per-attribute modes and the distance is the mismatch count.
@@ -3941,7 +3943,8 @@ First public release.
   far below `max_leaves`), and rebuilds reinsert in reverse-DFS leaf order. The CF-tree build is now
   byte-for-byte the reference (`betulars`) tree shape and at speed parity with matched build flags.
 
-[Unreleased]: https://github.com/ilgrad/betula-cluster/compare/v1.3.0...HEAD
+[Unreleased]: https://github.com/ilgrad/betula-cluster/compare/v1.4.0...HEAD
+[1.4.0]: https://github.com/ilgrad/betula-cluster/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/ilgrad/betula-cluster/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/ilgrad/betula-cluster/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/ilgrad/betula-cluster/compare/v1.0.0...v1.1.0

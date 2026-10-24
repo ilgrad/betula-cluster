@@ -10,8 +10,8 @@ authors:
   - family-names: "Gradina"
     given-names: "Ilia"
     orcid: "https://orcid.org/0009-0008-0911-8765"
-version: "1.3.0"
-date-released: "2026-10-22"
+version: "1.4.0"
+date-released: "2026-10-24"
 identifiers:
   - type: doi
     value: "10.5281/zenodo.21427331"
