@@ -3955,6 +3955,72 @@ mod tests {
         }
     }
 
+    /// The compaction's cap filter at equality: a pair whose merged weight *is* the cap respects
+    /// it. The fixture needs the cap-respecting pass to meet the budget on its own — otherwise the
+    /// uncapped pass merges the same sorted list and the filter leaves no trace — and its cheapest
+    /// pair to sit exactly on the cap. Six points, a budget of four leaves: the rebuild wants one
+    /// merge, the cap is `max(2 · 6/4, 2) = 3`, and the cheapest pair is the doubled point at 0
+    /// with the one at 1, of weight `2 + 1`. A filter refusing that pair merges 10 with 12 instead.
+    #[test]
+    fn a_rebuild_merges_a_pair_that_lands_exactly_on_the_mass_cap() {
+        let mut t: CFTree<f64, Spherical<f64>, _, _> =
+            CFTree::new(1, 8, 8, 0.0, 4, CentroidEuclidean, CentroidEuclidean);
+        t.set_balance(Some(2.0));
+        let pts = [0.0, 0.0, 1.0, 10.0, 12.0, 30.0];
+        for p in pts {
+            t.insert(&[p]);
+        }
+        assert_eq!(t.rebuilds(), 1, "fixture");
+        assert_eq!(t.mass_cap(), Some(3.0), "fixture");
+        let mut leaves: Vec<(f64, f64)> = t
+            .leaf_features()
+            .iter()
+            .map(|c| (c.mean()[0], c.weight()))
+            .collect();
+        leaves.sort_by(|a, b| a.0.total_cmp(&b.0));
+        assert_eq!(
+            leaves,
+            [(1.0 / 3.0, 3.0), (10.0, 1.0), (12.0, 1.0), (30.0, 1.0)]
+        );
+        verify(&t, pts.len());
+    }
+
+    /// A rebuild with no pair to merge leaves the arena exactly as it was. The only shape without a
+    /// pair is one where every leaf parent holds a single one-entry leaf — no insert builds it, but
+    /// `validate` accepts it, so a loaded file can carry it. Reinserting there would restructure a
+    /// tree nothing was merged in.
+    #[test]
+    fn a_rebuild_that_finds_no_pair_does_not_restructure_the_tree() {
+        let mut t = EuclidTree::new(1, 2, 1, 0.0, 1, CentroidEuclidean, CentroidEuclidean);
+        let node = |children: Vec<usize>, leaf: bool, parent: Option<usize>| Node {
+            cf: Spherical::new(1),
+            children,
+            leaf,
+            parent,
+        };
+        t.nodes = vec![
+            node(vec![1, 2], false, None),
+            node(vec![3], false, Some(0)),
+            node(vec![4], false, Some(0)),
+            node(vec![0], true, Some(1)),
+            node(vec![1], true, Some(2)),
+        ];
+        t.entries = vec![feature_at(0.0), feature_at(5.0)];
+        t.refold_node_cfs();
+        assert_eq!(t.validate(), Ok(()), "fixture");
+        let shape = |t: &EuclidTree| -> Vec<(Vec<usize>, bool, Option<usize>)> {
+            t.nodes
+                .iter()
+                .map(|n| (n.children.clone(), n.leaf, n.parent))
+                .collect()
+        };
+        let before = shape(&t);
+        t.rebuild();
+        assert_eq!(t.rebuilds(), 1);
+        assert_eq!(shape(&t), before);
+        verify(&t, 2);
+    }
+
     /// Each clause of the refit's guard is load-bearing on its own. With no rows the pass would
     /// otherwise re-accumulate every entry from nothing, find them all empty and drop the lot —
     /// the tree would come back as a root with no children.
