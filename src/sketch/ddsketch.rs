@@ -347,4 +347,34 @@ mod tests {
         assert_eq!(a.min(), -1000.0);
         assert_eq!(a.max(), 10000.0);
     }
+
+    #[test]
+    fn a_zero_goes_to_its_own_counter_and_never_into_a_bucket() {
+        // `ln 0 = −∞`, so a zero routed into either store lands in bucket `i32::MIN`, whose value
+        // underflows to 0 and hides it from every quantile.
+        let mut s = DdSketch::new(0.01, 64).unwrap();
+        s.update(0.0);
+        s.update(-0.0);
+        assert_eq!(s.zero, 2);
+        assert!(s.positive.is_empty() && s.negative.is_empty());
+        assert_eq!(s.alpha(), 0.01);
+    }
+
+    #[test]
+    fn a_full_store_keeps_exactly_max_bins_buckets() {
+        for max_bins in [16usize, 1] {
+            let mut s = DdSketch::new(0.001, max_bins).unwrap();
+            for i in 1..=5_000 {
+                s.update(i as f64);
+                s.update(-(i as f64));
+            }
+            assert_eq!(s.positive.len(), max_bins);
+            assert_eq!(s.negative.len(), max_bins);
+            let mut t = DdSketch::new(0.001, max_bins).unwrap();
+            t.update(1e6);
+            t.merge(&s).unwrap();
+            assert_eq!(t.positive.len(), max_bins, "after a merge");
+            assert_eq!(t.positive.values().sum::<u64>(), 5_001);
+        }
+    }
 }

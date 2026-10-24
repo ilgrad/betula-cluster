@@ -1067,16 +1067,19 @@ src/clustering/nmf.rs:731:40: replace > with >= in project
 # component's dependence on `q` and separates the two orderings. A sparse fixture that varies only
 # the geometry cannot test the weights.
 
-# ── src/sketch/ddsketch.rs (8) ──
-# Debt: bucket-index arithmetic.
+# ── src/sketch/ddsketch.rs (1) ──
+# 2026-10-24, entry by entry: all 8 survived a re-run at c016e3b. Two tests kill 7, each verified
+# against its own mutant; the change is test-only, so nothing outside the set moves.
+#   52:9 (x3), 82:14, 85:21  a_zero_goes_to_its_own_counter_and_never_into_a_bucket -- `ln 0 = -inf`
+#                            puts a zero routed into either store in bucket `i32::MIN`, whose value
+#                            underflows to 0, so every quantile still read 0
+#   67:27 (== and >=)        a_full_store_keeps_exactly_max_bins_buckets
+#
+# Debt, one tie on the merge tolerance:
+#   151:45  `(γ_a - γ_b).abs() > 1e-12` -> `>=` refuses a merge only when the two γ differ by exactly
+#           1e-12 in f64. Two sketches built by `new` from one `alpha` have bit-identical γ, and two
+#           different `alpha` that land exactly 1e-12 apart would pin a bit pattern, not a contract.
 src/sketch/ddsketch.rs:151:45: replace > with >= in DdSketch::merge
-src/sketch/ddsketch.rs:52:9: replace DdSketch::alpha -> f64 with -1.0
-src/sketch/ddsketch.rs:52:9: replace DdSketch::alpha -> f64 with 0.0
-src/sketch/ddsketch.rs:52:9: replace DdSketch::alpha -> f64 with 1.0
-src/sketch/ddsketch.rs:67:27: replace > with == in DdSketch::collapse
-src/sketch/ddsketch.rs:67:27: replace > with >= in DdSketch::collapse
-src/sketch/ddsketch.rs:82:14: replace > with >= in DdSketch::update
-src/sketch/ddsketch.rs:85:21: replace < with <= in DdSketch::update
 
 # ── src/topology.rs (8) ──
 # Re-measured 2026-08-26 after the `Link::Bhattacharyya` work renumbered the file: 110 mutants,
