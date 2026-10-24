@@ -881,9 +881,14 @@ fn constraint_msg(e: ConstraintError) -> String {
     }
 }
 
-/// `(centers_flat, a, b, dim)` returned by the introspection helpers as `f64`, regardless of the
-/// tree's element type (`a`/`b` are weights+radii for leaves, radii+weights for clusters).
-type F64Stats = (Vec<f64>, Vec<f64>, Vec<f64>, usize);
+/// Per-row statistics returned by the introspection helpers as `f64`, regardless of the tree's
+/// element type: flat row-major `centers` (`rows × dim`), point mass `weights` and RMS `radii`.
+struct F64Stats {
+    centers: Vec<f64>,
+    weights: Vec<f64>,
+    radii: Vec<f64>,
+    dim: usize,
+}
 
 /// Number of cluster rows to materialise for the macro accessors: `max(label) + 1` over non-noise
 /// labels, so `cluster_centers_[label]` is addressable by the value `predict` returns (an empty
@@ -1032,8 +1037,8 @@ fn projected_rule<R: Real>(
         (None, Rule::Microcluster) => return None,
         (None, Rule::Centroid { unit }) => {
             let k = cluster_count_for_centers(labels);
-            let (centers, _radii, weights, dim) = compute_cluster_stats(&proj.coded, labels, k);
-            centers_rule(&centers, &weights, dim, unit)?
+            let st = compute_cluster_stats(&proj.coded, labels, k);
+            centers_rule(&st.centers, &st.weights, st.dim, unit)?
         }
     };
     Some(PointRule::Projected {
@@ -1208,7 +1213,12 @@ fn compute_leaf_stats<R: Real, C: ClusterFeature<R>>(feats: &[C]) -> F64Stats {
         radii.push(if w > 0.0 { (ssd / w).sqrt() } else { 0.0 });
         weights.push(w);
     }
-    (centers, weights, radii, dim)
+    F64Stats {
+        centers,
+        weights,
+        radii,
+        dim,
+    }
 }
 
 /// Pooled per-cluster statistics over labelled leaves (`k` rows): mass-weighted `centers`, RMS
@@ -1267,7 +1277,12 @@ fn compute_cluster_stats<R: Real, C: ClusterFeature<R>>(
             0.0
         };
     }
-    (centers, radii, weights, dim)
+    F64Stats {
+        centers,
+        weights,
+        radii,
+        dim,
+    }
 }
 
 /// What an outlier score divides the centroid deviation by.
@@ -2695,7 +2710,7 @@ impl<R: Real> TreeState<R> {
         out
     }
 
-    /// Per-leaf (microcluster) `(centers, weights, radii, dim)` in `f64`.
+    /// Per-leaf (microcluster) statistics in `f64`.
     fn leaf_stats(&self) -> F64Stats {
         match self {
             TreeState::Spherical(t) => compute_leaf_stats(t.leaf_features()),
@@ -2705,7 +2720,7 @@ impl<R: Real> TreeState<R> {
         }
     }
 
-    /// Pooled per-cluster `(centers, radii, weights, dim)` for `k` clusters, given the leaf labels.
+    /// Pooled per-cluster statistics for `k` clusters, given the leaf labels.
     fn cluster_stats(&self, labels: &[i64], k: usize) -> F64Stats {
         match self {
             TreeState::Spherical(t) => compute_cluster_stats(t.leaf_features(), labels, k),
@@ -3457,10 +3472,8 @@ impl Betula {
             // coordinates, and that mean is not the Lorentzian centroid.
             Rule::Lorentz | Rule::Microcluster => return None,
         };
-        // `cluster_stats_any` yields radii *before* weights (`F64Stats` swaps the two between the
-        // leaf and the cluster helper); reading them in leaf order drops every zero-radius cluster.
-        let (centers, _radii, weights, dim) = self.cluster_stats_any().ok()?;
-        centers_rule(&centers, &weights, dim, unit)
+        let st = self.cluster_stats_any().ok()?;
+        centers_rule(&st.centers, &st.weights, st.dim, unit)
     }
 
     /// `leaf_refit` Lloyd passes at the *micro-cluster* level, between the tree build and the head:
@@ -4161,7 +4174,7 @@ impl Betula {
     /// Microcluster (leaf) centroids — `(n_microclusters, dim)`.
     #[getter]
     fn microcluster_centers_<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray2<f64>>> {
-        let (centers, _w, _r, dim) = self.leaf_stats_any()?;
+        let F64Stats { centers, dim, .. } = self.leaf_stats_any()?;
         let rows = centers.len().checked_div(dim).unwrap_or(0);
         Ok(Array2::from_shape_vec((rows, dim), centers)
             .expect("centers length is rows*dim")
@@ -4171,13 +4184,13 @@ impl Betula {
     /// Microcluster effective point mass — `(n_microclusters,)`.
     #[getter]
     fn microcluster_weights_<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray1<f64>>> {
-        Ok(self.leaf_stats_any()?.1.into_pyarray(py))
+        Ok(self.leaf_stats_any()?.weights.into_pyarray(py))
     }
 
     /// Microcluster RMS radius `sqrt(ssd / weight)` — `(n_microclusters,)`.
     #[getter]
     fn microcluster_radii_<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray1<f64>>> {
-        Ok(self.leaf_stats_any()?.2.into_pyarray(py))
+        Ok(self.leaf_stats_any()?.radii.into_pyarray(py))
     }
 
     /// Per-microcluster GMM soft responsibilities — `(n_microclusters, k)`. Only the GMM heads have a
@@ -4232,7 +4245,7 @@ impl Betula {
     /// `cluster_sizes_` describe a partition neither of them was computed under.
     #[getter]
     fn cluster_centers_<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray2<f64>>> {
-        let (centers, _r, _w, dim) = self.cluster_stats_any()?;
+        let F64Stats { centers, dim, .. } = self.cluster_stats_any()?;
         let rows = centers.len().checked_div(dim).unwrap_or(0);
         Ok(Array2::from_shape_vec((rows, dim), centers)
             .expect("centers length is rows*dim")
@@ -4242,13 +4255,13 @@ impl Betula {
     /// Macro-cluster RMS radius — `(n_clusters,)`; requires a finalized clustering.
     #[getter]
     fn cluster_radii_<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray1<f64>>> {
-        Ok(self.cluster_stats_any()?.1.into_pyarray(py))
+        Ok(self.cluster_stats_any()?.radii.into_pyarray(py))
     }
 
     /// Macro-cluster total point mass — `(n_clusters,)`; requires a finalized clustering.
     #[getter]
     fn cluster_sizes_<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray1<f64>>> {
-        Ok(self.cluster_stats_any()?.2.into_pyarray(py))
+        Ok(self.cluster_stats_any()?.weights.into_pyarray(py))
     }
 
     /// `(calinski_harabasz, davies_bouldin, medoid_silhouette)` over the leaf summary; requires a
@@ -4319,7 +4332,7 @@ impl Betula {
         };
         let k = cluster_count_for_centers(labels);
         if let Some(t) = &self.state64 {
-            let (centers, radii, _w, _d) = t.cluster_stats(labels, k);
+            let F64Stats { centers, radii, .. } = t.cluster_stats(labels, k);
             let chols = if whiten {
                 t.cluster_chol(labels, k, &centers)
             } else {
@@ -4337,7 +4350,7 @@ impl Betula {
                 .detach(|| t.outlier_scores(labels, &centers, scale, flat, n, dim, self.route_beam))
                 .into_pyarray(py))
         } else if let Some(t) = &self.state32 {
-            let (centers, radii, _w, _d) = t.cluster_stats(labels, k);
+            let F64Stats { centers, radii, .. } = t.cluster_stats(labels, k);
             let chols = if whiten {
                 t.cluster_chol(labels, k, &centers)
             } else {
@@ -5052,7 +5065,7 @@ impl PyDenStream {
 
     #[getter]
     fn microcluster_centers_<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray2<f64>>> {
-        let (centers, _w, _r, dim) = self.stats()?;
+        let F64Stats { centers, dim, .. } = self.stats()?;
         let rows = centers.len().checked_div(dim).unwrap_or(0);
         Ok(Array2::from_shape_vec((rows, dim), centers)
             .expect("centers length is rows*dim")
@@ -5061,22 +5074,28 @@ impl PyDenStream {
 
     #[getter]
     fn microcluster_weights_<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray1<f64>>> {
-        Ok(self.stats()?.1.into_pyarray(py))
+        Ok(self.stats()?.weights.into_pyarray(py))
     }
 
     #[getter]
     fn microcluster_radii_<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray1<f64>>> {
-        Ok(self.stats()?.2.into_pyarray(py))
+        Ok(self.stats()?.radii.into_pyarray(py))
     }
 }
 
 impl PyDenStream {
     fn stats(&self) -> PyResult<F64Stats> {
-        Ok(self
+        let (centers, weights, radii, dim) = self
             .inner
             .as_ref()
             .ok_or_else(|| PyValueError::new_err("call partial_fit() or fit() first"))?
-            .potential_stats())
+            .potential_stats();
+        Ok(F64Stats {
+            centers,
+            weights,
+            radii,
+            dim,
+        })
     }
 }
 
@@ -5223,7 +5242,7 @@ impl PyDbStream {
 
     #[getter]
     fn microcluster_centers_<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray2<f64>>> {
-        let (centers, _w, _r, dim) = self.stats()?;
+        let F64Stats { centers, dim, .. } = self.stats()?;
         let rows = centers.len().checked_div(dim).unwrap_or(0);
         Ok(Array2::from_shape_vec((rows, dim), centers)
             .expect("centers length is rows*dim")
@@ -5232,22 +5251,28 @@ impl PyDbStream {
 
     #[getter]
     fn microcluster_weights_<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray1<f64>>> {
-        Ok(self.stats()?.1.into_pyarray(py))
+        Ok(self.stats()?.weights.into_pyarray(py))
     }
 
     #[getter]
     fn microcluster_radii_<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray1<f64>>> {
-        Ok(self.stats()?.2.into_pyarray(py))
+        Ok(self.stats()?.radii.into_pyarray(py))
     }
 }
 
 impl PyDbStream {
     fn stats(&self) -> PyResult<F64Stats> {
-        Ok(self
+        let (centers, weights, radii, dim) = self
             .inner
             .as_ref()
             .ok_or_else(|| PyValueError::new_err("call partial_fit() or fit() first"))?
-            .micro_stats())
+            .micro_stats();
+        Ok(F64Stats {
+            centers,
+            weights,
+            radii,
+            dim,
+        })
     }
 }
 
