@@ -1548,8 +1548,6 @@ src/clustering/agglomerative.rs:320:28: replace < with <= in dendrogram
 src/clustering/agglomerative.rs:151:30: replace > with >= in Node<R>::leaf
 #
 # Debt. Older code, re-anchored but not reviewed in this pass.
-src/clustering/agglomerative.rs:454:22: replace < with <= in anderberg
-src/clustering/agglomerative.rs:454:22: replace < with == in anderberg
 src/clustering/agglomerative.rs:559:42: replace < with <= in dendrogram_below
 src/clustering/agglomerative.rs:569:21: replace + with * in dendrogram_below
 src/clustering/agglomerative.rs:642:22: replace < with <= in dendrogram_below
