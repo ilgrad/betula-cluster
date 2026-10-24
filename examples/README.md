@@ -73,6 +73,18 @@ measures the thread count rather than the algorithm:
 OMP_NUM_THREADS=1 RAYON_NUM_THREADS=1 jupytext --to ipynb --execute examples/01_quickstart.py
 ```
 
+Then store the figures as 256-colour palette PNGs before committing. Matplotlib writes truecolour
+PNGs, which are 95 % of these notebooks' bytes, and every re-execution adds all of them to the
+history again; the palette keeps them without visible change at a third of the size:
+
+```bash
+uv run --no-sync --with pillow python scripts/shrink_notebook_images.py \
+    examples/*.ipynb examples/usecases/*.ipynb
+```
+
+Re-execute a notebook when a change alters what it prints, and batch those runs into the release
+that carries the change rather than refreshing after every commit.
+
 All plots use [seaborn](https://seaborn.pydata.org/) for a consistent look; graphs use
 [networkx](https://networkx.org/) and tables use [pandas](https://pandas.pydata.org/). These are
 **example-only** dependencies — the `betula-cluster` package itself requires none of them.
