@@ -7,7 +7,7 @@ Rust core (`src/`) with a thin scikit-learn-style Python wrapper (`python/betula
 ## Development setup
 
 ```bash
-# Rust toolchain (1.82+) and a Python 3.11+ venv
+# Rust toolchain (1.85+) and a Python 3.11+ venv
 python -m venv .venv && . .venv/bin/activate
 pip install maturin
 maturin develop --release        # builds the extension into the venv (editable Python source)
@@ -28,7 +28,7 @@ Python (against the built extension):
 
 ```bash
 pytest tests/test_python.py --cov=betula_cluster --cov-fail-under=100   # 100% wrapper coverage is enforced
-pytest tests/test_python.py -q   # again with NO optional deps installed: 523 passed, 49 skipped
+pytest tests/test_python.py -q   # again with NO optional deps installed: 531 passed, 49 skipped
 ruff check python/ tests/ bench/ examples/   # examples/ is linted but not formatted -- it is
 ruff format --check python/ tests/ bench/    # notebook cells, and reflowing them desyncs the .ipynb
 ty check python/                                   # or mypy / pyright
