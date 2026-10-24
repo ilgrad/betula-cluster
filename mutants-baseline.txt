@@ -533,30 +533,34 @@ src/stream.rs:756:33: replace > with >= in DbStream<R, C>::micro_stats
 src/stream.rs:350:19: replace > with >= in DenStream<R, C>::tick
 src/stream.rs:644:19: replace > with >= in DbStream<R, C>::tick
 
-# ── src/clustering/scalespace.rs (17) ──
-# **2026-09-13 whole-file**, 213 mutants in 90 min: 170 caught, 36 missed, 6 timeouts, 1 unviable.
-# The previous section described a file that no longer existed -- 22 of its 27 entries were stale
-# moves and none of the 36 measured survivors matched it.
+# ── src/clustering/scalespace.rs (9) ──
+# **Re-measured 2026-10-24, whole file** (`cargo mutants -f src/clustering/scalespace.rs -j4
+# --test-tool nextest -- --lib -E 'test(/clustering::scalespace::/)'`, frozen in a worktree, under
+# `MemoryMax=10G` with a disk-backed `TMPDIR`): 223 mutants -- 206 caught, 10 missed, 6 timeouts,
+# 1 unviable. A production edit preceded it: the kernel mass `n_j * s_j^(-d)` is kept as a
+# logarithm (`widths`), the ascent moved into `shift_endpoints` and normalises its weights by the
+# per-point maximum, and `prominence_modes` takes `ln rho` by log-sum-exp. At d = 784 the old mass
+# left the f64 range for every width outside [0.40, 2.58] (CHANGELOG, Unreleased).
 #
-# 19 of the 36 were then killed by three tests, and verified entry by entry rather than by a second
-# whole-file run: adding a test can kill a mutant but can never create one, so nothing outside the
-# recorded set moves (the exception this file's header already documents).
-#   * `select_scale_takes_the_midpoint_of_the_widest_plateau_and_breaks_ties_finer` kills all 12
-#     survivors in `select_scale`. It is a pure function on a mode-count curve and nothing called it
-#     directly; every case had reached it through a fitted tree, three layers under the assertion.
-#   * `the_sweep_grid_spans_its_closed_range_when_nothing_merges_early` kills `146:53`. With
-#     `steps - 1` the last grid point is `hi`; with `steps + 1` it stops short, which no mode count
-#     on a clean fixture notices.
-#   * `the_head_derives_each_leafs_variance_from_its_own_scatter` kills 5 of the 6 in the `var`
-#     derivation. The fixture needed two triples of equal geometry and unequal scatter, and a
-#     scatter large enough to matter *inside* `[h_min, h_max]`: at sigma^2 = 4 with a gap of 4 the
-#     head's own lower bound already sits above the scale where mollification changes a mode count,
-#     and the test passed under every mutant. At sigma^2 = 64 it discriminates.
+# What became of the 2026-09-13 section's 17: the refinement guard's `true` and `||` mutants are
+# caught (`a_cascade_seen_at_one_scale_is_not_refined`), its `>=` is now argued below; `den > 0`
+# (then 235:20, debt) is equivalent now that `den >= 1`; the tolerance's `-` mutants are caught by
+# the reference ascent; `229:83` vanished with the rewrite; and the prominence-merge constants are
+# caught except the self-union below. `330:56`, the pair cut-off at equality, was then killed entry
+# by entry by `modes_exactly_at_the_cutoff_are_still_tested_for_a_shallow_valley` (test code only).
+#
+# The 6 timeouts are hangs, not survivors: `367:21` and `371:21` (`!=` -> `==` in `uf_find`) spin on
+# a root, and the four `select_scale` mutants at 398-399 stop the run-length scan from advancing.
 #
 # Believed equivalent, with the argument:
 #   79:18  `w > 0.0` -> `>=` differs only at `w == 0`, where the mutant evaluates
 #          `(0.0 / 0.0).max(0.0)`. Rust's `f64::max` returns the non-NaN operand, so that is `0.0` --
 #          exactly what the `else` branch returns. Same value on every input.
+#   111:53 `h > h_min` -> `>=` in the refinement guard. Every sweep starts at `h_min` on a strictly
+#          increasing grid: the first sweep's top is `h_max >= median_nn = 2 h_min`, and every
+#          refined top is a later point of an earlier sweep. So the last scale reaches `h_min` only
+#          on a one-point curve, where `cascade` counts that one single-mode point and is 0, and the
+#          guard fails under both operators.
 #   169:19, 172:19  `d2 < nn[i]` -> `<=` guards `nn[i] = d2`; at equality the assignment writes the
 #          value already there.
 #   175:19  same shape for `diam2 = d2`.
@@ -564,32 +568,25 @@ src/stream.rs:644:19: replace > with >= in DbStream<R, C>::tick
 #          Where the clamp binds at all (`diam < 2 * median_nn`) every candidate diameter in
 #          `[diam, 2 * median_nn]` satisfies `0.5 * diameter <= median_nn`, so the outer `.max`
 #          returns `median_nn` either way; where it does not bind both forms leave `diameter = diam`.
-#   229:83  `.exp() * 2.0 * inv2s2` -> `/ 2.0 * inv2s2` scales every `g` by exactly 1/4, a power of
-#          two, so `num[k]` and `den` are both scaled exactly and the quotient `num[k] / den` is
-#          bit-identical. `den > 0.0` is unaffected.
+#   261:20 `den > 0.0` -> `>=`. `den` sums `exp(lg[j] - top)` with `top` the largest `lg[j]`, whose
+#          own term is `exp(0) = 1`, so `den >= 1` whenever `top` is finite; when it is not, every
+#          difference is NaN and so is `den`, which fails both operators. `den` is never exactly 0.
+#   329:21 `(a + 1)..m` -> `(a * 1)..m` adds the pair `(a, a)`. Its only possible effect is
+#          `union(a, a)`, which `ra == rb` makes a no-op; the two `uf_find` calls may compress paths,
+#          which moves no node to another root, so the labels are the same.
 #
-# Debt: the refinement guard (nothing drives a cascade deep enough to re-enter the second sweep), the
-# mean-shift convergence tolerance (`tol` and the `moved` test only decide when the ascent stops, and
-# every fixture converges far inside both), `235:20` (`den >= 0.0` differs only where `den` underflows
-# to zero, which needs a data diameter ~38x the mollified width -- reachable in principle at many
-# leaves, so not claimed equivalent), and the three prominence-merge constants.
+# Debt: `264:47`, the ascent's `|step| > tol` -> `>=`. It differs only when a coordinate step equals
+# `1e-4 * h` to the last bit, and then the mutant runs one more iteration. A fixture would pin a bit
+# pattern of one ascent, not a property -- the same reason as the BIC ties.
 src/clustering/scalespace.rs:79:18: replace > with >= in scale_space
-src/clustering/scalespace.rs:111:35: replace match guard cascade >= 2 && h > h_min with true in scale_space
-src/clustering/scalespace.rs:111:48: replace && with || in scale_space
 src/clustering/scalespace.rs:111:53: replace > with >= in scale_space
 src/clustering/scalespace.rs:169:19: replace < with <= in bandwidth_range
 src/clustering/scalespace.rs:172:19: replace < with <= in bandwidth_range
 src/clustering/scalespace.rs:175:19: replace > with >= in bandwidth_range
 src/clustering/scalespace.rs:183:47: replace * with / in bandwidth_range
-src/clustering/scalespace.rs:217:20: replace * with / in mean_shift
-src/clustering/scalespace.rs:229:83: replace * with / in mean_shift
-src/clustering/scalespace.rs:235:20: replace > with >= in mean_shift
-src/clustering/scalespace.rs:238:28: replace - with + in mean_shift
-src/clustering/scalespace.rs:238:28: replace - with / in mean_shift
-src/clustering/scalespace.rs:238:47: replace > with >= in mean_shift
-src/clustering/scalespace.rs:267:21: replace * with + in prominence_modes
-src/clustering/scalespace.rs:300:21: replace + with * in prominence_modes
-src/clustering/scalespace.rs:301:56: replace > with >= in prominence_modes
+src/clustering/scalespace.rs:261:20: replace > with >= in shift_endpoints
+src/clustering/scalespace.rs:264:47: replace > with >= in shift_endpoints
+src/clustering/scalespace.rs:329:21: replace + with * in prominence_modes
 
 # ── src/clustering/kmeans.rs (5) ──
 # **Re-measured 2026-09-13, whole file**: 158 mutants in 27m at -j4 -- 131 caught, 5 missed, 20

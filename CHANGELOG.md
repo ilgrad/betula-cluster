@@ -15,6 +15,17 @@ All notable changes to this project are documented here. The format follows
   weight is priced against the numeric block, and with no numeric block the defaults would price a
   turned direction against a category mismatch at an arbitrary 1 : 1.
 
+### Fixed
+- **`scale-space` no longer depends on the units of high-dimensional data.** Each leaf's kernel mass
+  `n_j·s_j^(−d)` was formed as a number before any ratio was taken, and at d = 784 that number leaves
+  the f64 range for every width outside [0.40, 2.58]. On finely scaled data it overflowed: three
+  well-separated 784-dimensional blobs scaled by 0.01 came back as 180 clusters (ARI 0.74). On
+  coarsely scaled data it underflowed to zero, mean-shift stopped moving, and the modes came from the
+  pairwise cut-off alone. The masses are now logarithms, normalised before they are exponentiated,
+  and the same blobs give 3 clusters (ARI 1.0) at scales 0.01, 1 and 100. Labels change only where
+  the old kernel left the range: on iris, wine, digits and two synthetic sets at 100 and 400 leaves
+  they are bit-identical. Found while closing the module's mutation survivors.
+
 ## [1.3.0] — 2026-10-22
 
 ### Fixed

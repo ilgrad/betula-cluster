@@ -184,14 +184,18 @@ fn bandwidth_range(mu: &[Vec<f64>]) -> (f64, f64) {
     (0.5 * median_nn, (0.5 * diameter).max(median_nn))
 }
 
-/// Per-leaf kernel constants at bandwidth `h`: `(1/2s²_j, n_j·s_j^(−d))`, with `s²_j = h² + σ²_j` the
-/// mollified width of leaf `j` and the second entry its already-scaled mass.
+/// Per-leaf kernel constants at bandwidth `h`: `(1/2s²_j, ln(n_j·s_j^(−d)))`, with `s²_j = h² + σ²_j`
+/// the mollified width of leaf `j` and the second entry the log of its already-scaled mass.
+///
+/// The mass stays a logarithm because `s^(−d)` does not fit in an f64 at high dimension: at d = 784 it
+/// overflows for every `s < 0.40` and underflows for every `s > 2.58`. Only ratios of masses ever
+/// matter, so every consumer subtracts a common maximum before exponentiating.
 fn widths(n: &[f64], var: &[f64], h: f64, d: usize) -> Vec<(f64, f64)> {
     n.iter()
         .zip(var)
         .map(|(&nj, &vj)| {
             let s2 = h * h + vj;
-            (0.5 / s2, nj * s2.powf(-0.5 * d as f64))
+            (0.5 / s2, nj.ln() - 0.5 * d as f64 * s2.ln())
         })
         .collect()
 }
@@ -199,11 +203,6 @@ fn widths(n: &[f64], var: &[f64], h: f64, d: usize) -> Vec<(f64, f64)> {
 /// Mean-shift every microcluster mean uphill on `ρ_h` (the leaves fixed at `μ`, each a Gaussian of
 /// width `s²_j = h² + σ²_j` carrying mass `n_j`), then group the converged positions into modes by
 /// [`prominence_modes`]. Returns `(mode label per point, #modes)`.
-///
-/// The stationary point of a variable-width kernel sum is `x = Σ_j (w_j/s²_j)·μ_j / Σ_j (w_j/s²_j)`,
-/// not `Σ w_j μ_j / Σ w_j`: the `1/s²_j` comes straight out of `∇ρ = Σ_j w_j (μ_j − x)/s²_j`
-/// (Comaniciu, Ramesh & Meer 2001). With equal widths it is a constant and the two agree.
-#[allow(clippy::needless_range_loop)] // mean-shift mutates pts[i] in place while reading μ/pts by index
 fn mean_shift(
     mu: &[Vec<f64>],
     n: &[f64],
@@ -211,22 +210,49 @@ fn mean_shift(
     h: f64,
     max_iter: usize,
 ) -> (Vec<usize>, usize) {
+    let pts = shift_endpoints(mu, n, var, h, max_iter);
+    prominence_modes(&pts, mu, n, var, h)
+}
+
+/// The ascent behind [`mean_shift`]: every point starts at its own leaf mean and moves until no
+/// coordinate moves by more than `1e-4·h` in one iteration. Returns the converged positions.
+///
+/// The stationary point of a variable-width kernel sum is `x = Σ_j (w_j/s²_j)·μ_j / Σ_j (w_j/s²_j)`,
+/// not `Σ w_j μ_j / Σ w_j`: the `1/s²_j` comes straight out of `∇ρ = Σ_j w_j (μ_j − x)/s²_j`
+/// (Comaniciu, Ramesh & Meer 2001). With equal widths it is a constant and the two agree.
+#[allow(clippy::needless_range_loop)] // mean-shift mutates pts[i] in place while reading μ/pts by index
+fn shift_endpoints(
+    mu: &[Vec<f64>],
+    n: &[f64],
+    var: &[f64],
+    h: f64,
+    max_iter: usize,
+) -> Vec<Vec<f64>> {
     let m = mu.len();
     let d = mu[0].len();
     let ker = widths(n, var, h, d);
+    // The shift weight carries one more `1/s²_j` than the density, as the note above derives.
+    let ln_pull: Vec<f64> = ker
+        .iter()
+        .map(|&(inv2s2, ln_mass)| ln_mass + (2.0 * inv2s2).ln())
+        .collect();
     let tol = 1e-4 * h;
     let mut pts = mu.to_vec();
+    let mut lg = vec![0.0; m];
     // This head is dispatched outside `fit_head`, so the one-iteration floor is normalised here
     // instead — see the note there for why zero iterations is never what a caller meant.
     for _ in 0..max_iter.max(1) {
         let mut moved = false;
         for i in 0..m {
+            let mut top = f64::NEG_INFINITY;
+            for j in 0..m {
+                lg[j] = ln_pull[j] - sq_euclidean::<f64>(&pts[i], &mu[j]) * ker[j].0;
+                top = top.max(lg[j]);
+            }
             let mut num = vec![0.0; d];
             let mut den = 0.0;
             for j in 0..m {
-                let (inv2s2, mass) = ker[j];
-                let g =
-                    mass * (-sq_euclidean::<f64>(&pts[i], &mu[j]) * inv2s2).exp() * 2.0 * inv2s2;
+                let g = (lg[j] - top).exp();
                 den += g;
                 for k in 0..d {
                     num[k] += g * mu[j][k];
@@ -246,7 +272,7 @@ fn mean_shift(
             break;
         }
     }
-    prominence_modes(&pts, mu, n, var, h)
+    pts
 }
 
 /// Group converged mean-shift points into modes by **prominence**: tight-unique the endpoints into
@@ -277,13 +303,16 @@ fn prominence_modes(
         }
     }
     let m = reps.len();
-    let rho = |x: &[f64]| -> f64 {
-        mu.iter()
+    let ln_rho = |x: &[f64]| -> f64 {
+        let l: Vec<f64> = mu
+            .iter()
             .zip(&ker)
-            .map(|(muj, &(inv2s2, mass))| mass * (-sq_euclidean::<f64>(x, muj) * inv2s2).exp())
-            .sum()
+            .map(|(muj, &(inv2s2, ln_mass))| ln_mass - sq_euclidean::<f64>(x, muj) * inv2s2)
+            .collect();
+        let top = l.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        top + l.iter().map(|&v| (v - top).exp()).sum::<f64>().ln()
     };
-    let peak: Vec<f64> = reps.iter().map(|r| rho(r)).collect();
+    let peak: Vec<f64> = reps.iter().map(|r| ln_rho(r)).collect();
 
     // Union raw modes joined by a shallow valley. Only nearby pairs can qualify — modes farther than
     // four times the *widest* leaf apart always have a deep valley, so they are skipped (keeps this
@@ -307,9 +336,9 @@ fn prominence_modes(
                 let seg: Vec<f64> = (0..dim)
                     .map(|k| reps[a][k] * (1.0 - f) + reps[b][k] * f)
                     .collect();
-                valley = valley.min(rho(&seg));
+                valley = valley.min(ln_rho(&seg));
             }
-            if valley >= VALLEY_RATIO * peak[a].min(peak[b]) {
+            if valley >= VALLEY_RATIO.ln() + peak[a].min(peak[b]) {
                 let (ra, rb) = (uf_find(&mut parent, a), uf_find(&mut parent, b));
                 if ra != rb {
                     parent[ra] = rb;
@@ -630,6 +659,16 @@ mod tests {
             let h = 0.25 * 1.45_f64.powi(step);
             let (labels, modes) = mean_shift(&mu, &n, &var, h, 100);
             let endpoints = reference_shift_endpoints(&mu, &n, &var, h, 100);
+            // The endpoints too, not only what they group into: the stopping rule moves them by
+            // up to the tolerance, far less than the `0.1·h` that decides a raw mode.
+            for (a, b) in shift_endpoints(&mu, &n, &var, h, 100)
+                .iter()
+                .zip(&endpoints)
+            {
+                for (x, y) in a.iter().zip(b) {
+                    assert!((x - y).abs() < 1e-9, "h = {h}: endpoint {a:?} vs {b:?}");
+                }
+            }
             let (rlabels, rmodes) = prominence_modes(&endpoints, &mu, &n, &var, h);
             assert_eq!(modes, rmodes, "h = {h}: mode count");
             assert_eq!(labels, rlabels, "h = {h}: labelling");
@@ -897,7 +936,9 @@ mod tests {
     /// on a well-separated fixture it agrees with almost any corruption of the density.
     #[test]
     fn the_valley_test_flips_where_the_density_says_it_does() {
-        for &h in &[0.5_f64, 1.0, 2.0] {
+        // At h = 0.02 every separation below is under `0.1 + h`, so a tight-unique tolerance
+        // that added the bandwidth instead of scaling by it would join every pair.
+        for &h in &[0.02_f64, 0.5, 1.0, 2.0] {
             let mut seen = Vec::new();
             for step in 0..40 {
                 let s = 0.05 * h + 0.09 * h * step as f64;
@@ -921,6 +962,17 @@ mod tests {
                 "h = {h}: the sweep never crossed the valley threshold: {seen:?}"
             );
         }
+    }
+
+    /// The pair cut-off skips only pairs *beyond* four widths. Two raw modes exactly `4·s_max` apart
+    /// — `h = 0.25` and point leaves, so the distance and the cut-off are both exactly 1 — with a
+    /// chain of leaves between them, which keeps the valley shallow, must still be joined.
+    #[test]
+    fn modes_exactly_at_the_cutoff_are_still_tested_for_a_shallow_valley() {
+        let mu: Vec<Vec<f64>> = (0..5).map(|j| vec![0.25 * j as f64]).collect();
+        let pts = vec![vec![0.0], vec![1.0]];
+        let (labels, modes) = prominence_modes(&pts, &mu, &[1.0; 5], &[0.0; 5], 0.25);
+        assert_eq!((labels, modes), (vec![0, 0], 1));
     }
 
     /// [`select_scale`] is a pure function on a mode-count curve, and nothing tested it directly:
@@ -1041,5 +1093,85 @@ mod tests {
             point.1,
             mollified.1
         );
+    }
+
+    #[test]
+    fn the_modes_do_not_depend_on_the_units_in_high_dimension() {
+        // Scaling the data by `c` scales every width by `c` and every leaf mass by the common factor
+        // `c^−d`, which cancels in every ratio the head takes. At d = 784 that factor leaves the f64
+        // range for any width outside [0.40, 2.58] -- to infinity below, to zero above -- so it has
+        // to cancel before it is formed, not after.
+        let d = 784;
+        let mut rng = SplitMix64::new(13);
+        let centres: Vec<Vec<f64>> = (0..3)
+            .map(|_| (0..d).map(|_| 0.2 * rng.gauss()).collect())
+            .collect();
+        let mu: Vec<Vec<f64>> = (0..30)
+            .map(|i| {
+                centres[i % 3]
+                    .iter()
+                    .map(|c| c + 0.05 * rng.gauss())
+                    .collect()
+            })
+            .collect();
+        let n: Vec<f64> = (0..30).map(|i| 1.0 + (i % 4) as f64).collect();
+        let var = vec![0.05; 30];
+        let scaled = |c: f64| -> (Vec<Vec<f64>>, Vec<f64>) {
+            let m = mu
+                .iter()
+                .map(|r| r.iter().map(|x| c * x).collect())
+                .collect();
+            (m, var.iter().map(|v| c * c * v).collect())
+        };
+        for h in [0.6, 1.0, 1.6] {
+            let want = mean_shift(&mu, &n, &var, h, 100);
+            assert!(
+                want.1 > 1 && want.1 < mu.len(),
+                "h = {h}: degenerate at unit scale ({} modes)",
+                want.1
+            );
+            for c in [0.01, 100.0] {
+                let (m, v) = scaled(c);
+                assert_eq!(mean_shift(&m, &n, &v, c * h, 100), want, "h = {h}, c = {c}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_cascade_seen_at_one_scale_is_not_refined() {
+        // One multi-mode scale before the merge is the sub-peak sliver of a single cluster, not a
+        // cascade, and zooming into it manufactures plateaus. The answer stays the first sweep's:
+        // one mode, at the scale where it merged.
+        for (seed, npts, sd, cell) in [
+            (0u64, 200usize, 0.7, 0.6),
+            (1, 200, 0.7, 0.6),
+            (2, 60, 0.8, 0.7),
+        ] {
+            let mut rng = SplitMix64::new(seed);
+            let (pts, _) = blobs(&mut rng, npts, &[[0.0, 0.0]], sd);
+            let (micros, _) = grid_micros(&pts, cell);
+            let mu: Vec<Vec<f64>> = micros.iter().map(|f| f.mean().to_vec()).collect();
+            let (h_min, h_max) = bandwidth_range(&mu);
+            let first = sweep(
+                &mu,
+                &n_of(&micros),
+                &leaf_variances(&micros),
+                h_min,
+                h_max,
+                9,
+                100,
+            );
+            let counts: Vec<usize> = first.iter().map(|(_, r)| r.1).collect();
+            assert!(
+                counts.len() == 2 && counts[0] >= 2 && counts[1] == 1,
+                "seed {seed}: not a one-scale cascade: {counts:?}"
+            );
+            let got = scale_space(&micros, 9, 100);
+            assert_eq!(got.n_modes, 1, "seed {seed}");
+            assert_eq!(
+                got.bandwidth, first[1].0,
+                "seed {seed}: the range was refined"
+            );
+        }
     }
 }
