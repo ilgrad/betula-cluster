@@ -366,4 +366,63 @@ mod tests {
         assert!((0.3..0.7).contains(&med), "median {med} is not plausible");
         assert!(small.min() <= med && med <= small.max());
     }
+
+    #[test]
+    fn compactor_capacities_shrink_by_two_thirds_per_level_below_the_top() {
+        // `⌈k·(2/3)^depth⌉ + 1`, depth counted down from the top compactor: at k = 100 and three
+        // levels that is ⌈44.4⌉ + 1, ⌈66.7⌉ + 1 and 100 + 1.
+        let s = KllSketch::new(100, 1);
+        let caps: Vec<usize> = (0..3).map(|h| s.capacity(h, 3)).collect();
+        assert_eq!(caps, vec![46, 68, 101]);
+        assert_eq!(s.capacity(0, 1), 101);
+    }
+
+    #[test]
+    fn the_compaction_coin_is_the_low_bit_of_xorshift64() {
+        // Marsaglia's (13, 7, 17) xorshift64 from the state `seed | 1`. The coin decides which half
+        // of every compaction survives, so a seeded sketch reproduces only while this sequence does.
+        let seed = 0x5eed_0000_0000_0002_u64;
+        let mut s = KllSketch::new(8, seed);
+        let mut x = seed | 1;
+        for i in 0..64 {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            assert_eq!(s.coin(), (x & 1) as usize, "draw {i}");
+        }
+    }
+
+    #[test]
+    fn rank_counts_every_stored_item_at_or_below_the_value_at_its_level_weight() {
+        // Compacted deep enough to hold items at several weights. The values are distinct, so the
+        // rank of a stored value is the cumulative weight the sorted CDF reaches at it, and a
+        // value between two stored ones ranks with the lower.
+        let mut s = KllSketch::new(8, 3);
+        for i in 0..500 {
+            s.update(((i * 37) % 500) as f64);
+        }
+        assert!(
+            s.compactors.iter().skip(2).any(|c| !c.is_empty()),
+            "too shallow to weight anything"
+        );
+        assert_eq!(s.rank(s.min() - 1.0), 0);
+        for (v, cum) in s.cdf() {
+            assert_eq!(s.rank(v), cum, "at {v}");
+            assert_eq!(s.rank(v + 0.5), cum, "above {v}");
+        }
+    }
+
+    #[test]
+    fn merging_a_sketch_of_equal_height_adds_no_level() {
+        let mut a = KllSketch::new(64, 1);
+        let mut b = KllSketch::new(64, 2);
+        for i in 0..3 {
+            a.update(i as f64);
+            b.update(10.0 + i as f64);
+        }
+        a.merge(&b);
+        assert_eq!(a.compactors.len(), 1);
+        assert_eq!(a.max_size, a.capacity(0, 1));
+        assert_eq!(a.count(), 6);
+    }
 }
