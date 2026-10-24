@@ -40,6 +40,16 @@ dependencies: the `python (pytest · pyX)` CI jobs install the wheel without the
 imports one without `pytest.importorskip` fails there and in no other command on this page. That is
 exactly how `main` went red for three runs on 2026-09-10.
 
+When a PR adds or removes a test:
+
+```bash
+python scripts/check_test_counts.py   # README.md and paper/paper.md quote the size of both suites
+```
+
+Those counts are typed by hand, and no test fails when one goes stale. The script collects both
+suites without running them and names every sentence that disagrees. CI runs it in the
+`python (build · clippy)` job.
+
 When a PR adds or changes a **parallel reduction over floats** — a rayon `fold`/`reduce`,
 `par_iter().sum()`, anything whose chunking the pool size decides:
 

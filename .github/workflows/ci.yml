@@ -142,6 +142,17 @@ jobs:
             --with numpy --with "scikit-learn>=1.3" --with scipy --with networkx \
             --with pytest --with pytest-cov --with "$(ls dist/*.whl | head -1)" \
             pytest tests/test_python.py -q --cov=betula_cluster --cov-fail-under=100
+      # README.md and paper/paper.md quote the size of both suites, and no test can see a stale
+      # count: on 2026-10-24 twenty-eight new Rust tests left three claims behind, and only the local
+      # gate noticed. The collectors run no test, but `--list` builds every target with every
+      # feature, and the Python half needs the wheel and the optional test dependencies -- which is
+      # why this sits here, next to the coverage step that installs them, and not in `rust`.
+      - name: published test counts match the suite
+        run: |
+          uv run --python 3.12 \
+            --with numpy --with "scikit-learn>=1.3" --with scipy --with networkx \
+            --with pytest --with "$(ls dist/*.whl | head -1)" \
+            python scripts/check_test_counts.py
 
   python-test:
     name: python (pytest · py${{ matrix.python-version }})
