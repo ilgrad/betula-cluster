@@ -391,4 +391,27 @@ mod tests {
         let score = ari(&ward_hac(&feats, 4).labels, &brute_ward(&feats, 4));
         assert!(score > 0.999, "NN-chain vs brute ARI = {score}");
     }
+
+    #[test]
+    fn auto_k_keeps_the_smallest_cut_among_equally_scored_ones() {
+        // Two sites, two coincident leaves each: the cuts at 2 and 3 clusters both have zero
+        // within-cluster scatter, so Calinski-Harabasz scores both +inf and only the tie rule
+        // picks. It keeps the first, coarsest cut.
+        use crate::feature::Spherical;
+        let leaf = |x: f64, y: f64| {
+            let mut cf = Spherical::<f64>::new(2);
+            cf.push(&[x, y], 1.0);
+            cf
+        };
+        let feats = vec![
+            leaf(0.0, 0.0),
+            leaf(0.0, 0.0),
+            leaf(4.0, 1.0),
+            leaf(4.0, 1.0),
+        ];
+        let labels = ward_hac_auto(&feats, 2, 4).labels;
+        assert_eq!(labels[0], labels[1]);
+        assert_eq!(labels[2], labels[3]);
+        assert_ne!(labels[0], labels[2]);
+    }
 }

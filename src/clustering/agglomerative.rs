@@ -1440,4 +1440,50 @@ mod tests {
         assert!((n.spread - want).abs() < 1e-9, "{} vs {want}", n.spread);
         assert!((n.spread - 10.0).abs() < 1e-9, "{}", n.spread);
     }
+
+    /// The sparse driver on integer grids, where every value ties with another: weighted and Ward
+    /// compute each linkage value to the same bits in both drivers, so a run certified to the top
+    /// must reproduce the full scan merge for merge, ties broken the same way.
+    #[test]
+    fn on_integer_grids_the_sparse_run_breaks_ties_as_the_full_scan_does() {
+        for seed in 0..500u64 {
+            let mut rng = SplitMix64::new(seed);
+            let m = 6 + (seed % 7) as usize;
+            let feats: Vec<Spherical<f64>> = (0..m)
+                .map(|_| {
+                    let x = (rng.next_u64() % 5) as f64;
+                    let y = (rng.next_u64() % 5) as f64;
+                    leaf(&[[x, y]])
+                })
+                .collect();
+            for linkage in [Linkage::Weighted, Linkage::Ward] {
+                let dense = dendrogram(&feats, linkage);
+                let top = dense.iter().map(|mg| mg.height).fold(0.0, f64::max);
+                let got = dendrogram_below(&feats, linkage, top + 1.0).expect("certified linkage");
+                assert!(got.complete, "seed {seed} {linkage:?}");
+                assert_eq!(
+                    canonical(&got.merges, m),
+                    canonical(&dense, m),
+                    "seed {seed} {linkage:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn auto_k_keeps_the_smallest_cut_among_equally_scored_ones() {
+        // Two sites, two coincident leaves each: every cut from 2 to 4 clusters has zero
+        // within-cluster scatter, so Calinski-Harabasz is +inf for all of them and only the tie
+        // rule picks. It keeps the first, coarsest cut.
+        let feats = vec![
+            leaf(&[[0.0, 0.0]]),
+            leaf(&[[0.0, 0.0]]),
+            leaf(&[[4.0, 1.0]]),
+            leaf(&[[4.0, 1.0]]),
+        ];
+        let labels = agglomerative_auto(&feats, Linkage::Average, 2, 4).labels;
+        assert_eq!(labels[0], labels[1]);
+        assert_eq!(labels[2], labels[3]);
+        assert_ne!(labels[0], labels[2]);
+    }
 }

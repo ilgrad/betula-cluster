@@ -1187,11 +1187,30 @@ src/wasserstein.rs:398:17: replace < with <= in tree_path
 src/wasserstein.rs:440:20: replace + with * in tree_path
 
 # ── src/clustering/community.rs (6) ──
-# Debt: remainder after the 2026-08-19 reference tests. Re-keyed 2026-10-20 from CI run 39237087351
+# Remainder after the 2026-08-19 reference tests. Re-keyed 2026-10-20 from CI run 39237087351
 # (b0c5f69) after `6847c12` (Leiden passes) moved the file: the two `leiden` guards are now the same
 # two in `affinity`, the four `refine` entries moved 258/259 -> 347/348, and `detect`'s `+=` no longer
 # exists. The two `pass_seed` constants that `6847c12` added are caught since 2026-10-21 by
-# `pass_seed_keeps_the_callers_seed_first_and_then_avoids_the_level_seeds`.
+# `pass_seed_keeps_the_callers_seed_first_and_then_avoids_the_level_seeds`. All six survived a
+# re-run at c016e3b (2026-10-24), and all six are believed equivalent:
+#   153:32, 155:25  `weight > 0.0` -> `>=` builds the log-covariances or tangent bases at weight 0 and
+#           adds `0·x` to every squared distance. `log_covariances` floors the spectrum at
+#           `max(1e-8·scale, 1e-12)` and `grassmann_sq` is bounded by the rank, so `x` is finite and
+#           `v + 0·x` is `v`: the same graph, at the cost of the unused terms.
+#   347:29, 348:30 (`+=` and `/=` each)  the mover's own sub-community totals, inflated instead of
+#           cleared (`3k_v` or `1 + k_v` once added back). They are read again only if a later node
+#           scores joining `v`'s sub-community. If `v` moved, its old id has no members and is
+#           never a candidate. If `v` stayed, every gain it scored was <= 0 -- including toward
+#           each neighbouring singleton `u`, and `gain` is symmetric in the two singletons:
+#           `w - γ·k_u·k_v/2m`, `w - γ·s_u·s_v`. So `u` scoring `v`'s singleton gets the same
+#           gain <= 0, and the mutants only lower it further, below a `best` that starts at 0 and
+#           admits a strictly positive gain. Nobody joins a singleton after its own turn either:
+#           nodes join only at their own turn, each once, and a node still singleton at its turn
+#           was singleton at `v`'s. A zero `k_v` or `s_v` under `/=` gives NaN, which `s > best`
+#           also rejects. The symmetry is exact on the level-0 graph, whose two directions of an
+#           edge are one `exp` of one symmetric distance. On an aggregated graph each direction is
+#           a sum taken in a different order, so the argument holds there up to a gain that lies
+#           within rounding of zero.
 src/clustering/community.rs:153:32: replace > with >= in affinity
 src/clustering/community.rs:155:25: replace > with >= in affinity
 src/clustering/community.rs:347:29: replace -= with += in refine
@@ -1377,9 +1396,10 @@ src/clustering/spectral.rs:358:40: replace ^ with | in chebyshev_top_eigenvector
 src/clustering/spectral.rs:432:43: replace - with + in chebyshev_top_eigenvectors
 src/clustering/spectral.rs:432:43: replace - with / in chebyshev_top_eigenvectors
 
-# ── src/clustering/ward.rs (6) ──
-# Debt.
-src/clustering/ward.rs:222:18: replace > with >= in ward_hac_auto
+# ── src/clustering/ward.rs (5) ──
+# `222:18` (`score > best_score` -> `>=`) survived a re-run at c016e3b (2026-10-24) and is killed by
+# `auto_k_keeps_the_smallest_cut_among_equally_scored_ones`: two sites of coincident leaves score
+# the cuts at 2 and 3 clusters both at CH = +inf (test-only change).
 #
 # Entry by entry, 2026-10-22: 11 registered from CI run 39237087351, 6 caught by the module filter.
 # Five argued:
@@ -1494,7 +1514,7 @@ src/order.rs:313:26: replace > with >= in quantise
 # other incumbent was an earlier `j` -- so `j <= best` and `j < best` agree on every input.
 src/assign.rs:341:58: replace < with <= in AssignPlan<R>::nearest_permuted
 
-# ── src/clustering/agglomerative.rs (27) ──
+# ── src/clustering/agglomerative.rs (23) ──
 # Whole-file re-measure 2026-10-22, after Anderberg's cache gave way to the heap of searchers: 344
 # mutants over this file and knn.rs together, against the lib tests of every module that calls
 # them, each test binary capped at 4 GiB; the new functions' survivors were re-checked after the
@@ -1535,15 +1555,28 @@ src/clustering/agglomerative.rs:320:28: replace < with <= in dendrogram
 # same zero the guard does.
 src/clustering/agglomerative.rs:151:30: replace > with >= in Node<R>::leaf
 #
-# Debt. Older code, re-anchored but not reviewed in this pass.
+# The older code, reviewed 2026-10-24 entry by entry: all 8 survived a re-run at c016e3b, and two
+# tests kill 4, each verified against its own mutant (test-only change):
+#   642:22 (<= and ==), 683:14  on_integer_grids_the_sparse_run_breaks_ties_as_the_full_scan_does --
+#                               every grid value ties with another, and the sparse driver has to
+#                               keep the incumbent on each tie exactly as the full scan does
+#   780:18                      auto_k_keeps_the_smallest_cut_among_equally_scored_ones -- two sites
+#                               of coincident leaves score every cut at CH = +inf
+# Believed equivalent, the other four:
+#   559:42  the `w_min` fold `if b < a { b } else { a }` -> `<=`: at equality both branches return
+#           the same value, and NaN takes the `else` either way.
+#   569:21  `(i + 1)..m` -> `i..m` adds each leaf to its own candidate list (its distance to itself
+#           is 0, inside any radius). `refresh` drops `c == i` and runs on every list before the
+#           first read, so the self entries never reach a value.
+#   775:44 (`+` and `/`)  the fallback cut before the CH loop. Any cut the loop reaches replaces it,
+#           because CH is `0.0`, finite or `+inf` -- never below the initial `-inf` -- on finite
+#           input. The loop is empty only at `k_hi < 2`, which forces `k_lo = 1`; then `m + 1` and
+#           `m` both hand `labels_at` at least its `m - 1` merges, `take` stops at the end, and the
+#           result is one cluster, as with `m - 1`. (The `ward.rs:217:44` argument, one file over.)
 src/clustering/agglomerative.rs:559:42: replace < with <= in dendrogram_below
 src/clustering/agglomerative.rs:569:21: replace + with * in dendrogram_below
-src/clustering/agglomerative.rs:642:22: replace < with <= in dendrogram_below
-src/clustering/agglomerative.rs:642:22: replace < with == in dendrogram_below
-src/clustering/agglomerative.rs:683:14: replace < with <= in refresh
 src/clustering/agglomerative.rs:775:44: replace - with + in agglomerative_auto
 src/clustering/agglomerative.rs:775:44: replace - with / in agglomerative_auto
-src/clustering/agglomerative.rs:780:18: replace > with >= in agglomerative_auto
 
 # ── src/clustering/knn.rs (17) ──
 # 2026-10-24, entry by entry: the seven older `search` / `offer` entries all survived a re-run at
