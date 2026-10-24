@@ -2342,9 +2342,11 @@ class KPrototypes:
     convention, not a result — treat both as parameters to sweep.
 
     Rows are summarised into bounded mixed micro-clusters (a flat leader pass capped at
-    ``max_leaves``) before clustering, so memory stays bounded. A numeric column is always required,
-    as is at least one categorical or directional column; a one-column directional block is
-    rejected, because a direction in one dimension is a sign. ``float64``.
+    ``max_leaves``) before clustering, so memory stays bounded. At least one categorical or
+    directional column is required. With no numeric column the table must be all categorical, and
+    the head is k-modes: ``gamma`` then scales every distance alike and only rescales
+    ``threshold``. A directional block needs a numeric one to be priced against, and a one-column
+    directional block is rejected, because a direction in one dimension is a sign. ``float64``.
     """
 
     def __init__(

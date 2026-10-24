@@ -2665,10 +2665,62 @@ def test_kprototypes_requires_a_non_numeric_block(mixed):
         betula_cluster.KPrototypes(n_clusters=2, categorical=[]).fit(x)
 
 
-def test_kprototypes_requires_numeric():
-    x = np.array([[0.0, 1.0], [1.0, 0.0], [0.0, 1.0]], dtype=np.float64)
-    with pytest.raises(ValueError, match="numeric column"):
-        betula_cluster.KPrototypes(n_clusters=2, categorical=[0, 1]).fit(x)
+@pytest.fixture(scope="module")
+def all_categorical():
+    """Three groups over four 5-code attributes: each row keeps its group's code with p = 0.8."""
+    rng = np.random.default_rng(11)
+    profiles = np.array([[0, 1, 2, 3], [4, 3, 0, 1], [2, 4, 3, 0]])
+    truth = np.repeat(np.arange(3), 80)
+    x = profiles[truth].copy()
+    flip = rng.random(x.shape) < 0.2
+    x[flip] = (x[flip] + rng.integers(1, 5, flip.sum())) % 5
+    return x.astype(np.float64), profiles
+
+
+def test_kprototypes_clusters_an_all_categorical_table_as_k_modes(all_categorical):
+    x, profiles = all_categorical
+    kp = betula_cluster.KPrototypes(n_clusters=3, categorical=[0, 1, 2, 3], seed=3)
+    labels = np.asarray(kp.fit_predict(x))
+    modes = np.asarray(kp.cluster_modes_)
+    assert sorted(map(tuple, modes)) == sorted(map(tuple, profiles))
+    # The planted profiles differ in every attribute, so a row with two flips can sit as close to
+    # another profile as to its own; compare against the nearest profile wherever it is unique.
+    to_profile = [next(i for i, p in enumerate(profiles) if (p == m).all()) for m in modes]
+    d = (x[:, None, :] != profiles[None, :, :]).sum(axis=2)
+    unique = (d == d.min(axis=1, keepdims=True)).sum(axis=1) == 1
+    assert unique.sum() > 0.9 * len(x)
+    assert np.array_equal(np.asarray(to_profile)[labels][unique], d.argmin(axis=1)[unique])
+    assert kp.cluster_centroids_.shape == (3, 0)
+    assert np.array_equal(np.asarray(kp.predict(x)), labels)
+    # Huang's k-modes fixed point on the raw rows: every row is nearest (Hamming) to its own
+    # cluster's mode, and every mode is the column-wise mode of its cluster's rows.
+    hamming = (x[:, None, :] != modes[None, :, :]).sum(axis=2)
+    assert np.all(hamming[np.arange(len(x)), labels] == hamming.min(axis=1))
+    for c in range(3):
+        rows = x[labels == c].astype(int)
+        assert [np.bincount(col, minlength=5).argmax() for col in rows.T] == list(modes[c])
+
+
+def test_kprototypes_all_categorical_partition_ignores_gamma(all_categorical):
+    # With no numeric block, gamma multiplies every distance alike; at threshold 0 it cannot move
+    # anything.
+    x, _ = all_categorical
+
+    def fit(gamma):
+        kp = betula_cluster.KPrototypes(n_clusters=3, categorical=[0, 1, 2, 3], gamma=gamma)
+        return np.asarray(kp.fit_predict(x))
+
+    assert np.array_equal(fit(1.0), fit(7.0))
+
+
+@pytest.mark.parametrize(
+    ("cols", "blocks"),
+    [(3, {"categorical": [0], "directional": [1, 2]}), (2, {"directional": [0, 1]})],
+)
+def test_kprototypes_a_directional_block_needs_a_numeric_one(cols, blocks):
+    x = np.ones((4, cols), dtype=np.float64)
+    with pytest.raises(ValueError, match="numeric column to be priced against"):
+        betula_cluster.KPrototypes(n_clusters=2, **blocks).fit(x)
 
 
 @pytest.mark.parametrize("block", ["categorical", "directional"])

@@ -5287,9 +5287,12 @@ enum Block {
 /// Resolve the per-column block assignment: validate indices, reject overlaps, and derive the three
 /// block widths. The split order within a block is ascending column order.
 ///
-/// A numeric block is always required — it is what the two other block weights are priced against —
-/// and at least one of the other two must be present, or this is `Betula(method='kmeans')` with extra
-/// steps. A one-column directional block is rejected outright: a "direction" in one dimension is a
+/// At least one non-numeric block must be present, or this is `Betula(method='kmeans')` with extra
+/// steps. A table with no numeric column is accepted only when it is all categorical — k-modes, where
+/// `γ_cat` scales every distance alike and so cannot move the partition. A directional block without a
+/// numeric one is refused: its weight is priced against the numeric block, and with categorical columns
+/// beside it the defaults would price a turned direction against a category mismatch at an arbitrary
+/// 1 : 1. A one-column directional block is rejected outright: a "direction" in one dimension is a
 /// sign, and a sign is a category.
 fn block_mask(
     categorical: &[usize],
@@ -5318,11 +5321,6 @@ fn block_mask(
     let count = |b: Block| kind.iter().filter(|&&k| k == b).count();
     let (n_cat, n_dir) = (count(Block::Categorical), count(Block::Directional));
     let n_num = dim - n_cat - n_dir;
-    if n_num == 0 {
-        return Err(PyValueError::new_err(
-            "KPrototypes needs at least one numeric column (pure k-modes is not supported)",
-        ));
-    }
     if n_cat == 0 && n_dir == 0 {
         return Err(PyValueError::new_err(
             "KPrototypes needs at least one categorical or directional column (otherwise use Betula(method='kmeans'))",
@@ -5331,6 +5329,11 @@ fn block_mask(
     if n_dir == 1 {
         return Err(PyValueError::new_err(
             "a directional block needs at least two columns: a direction in one dimension is a sign, which belongs in `categorical`",
+        ));
+    }
+    if n_num == 0 && n_dir > 0 {
+        return Err(PyValueError::new_err(
+            "a directional block needs at least one numeric column to be priced against; without numeric columns only an all-categorical table (k-modes) is supported, and directions alone are Betula(method='spherical-kmeans')",
         ));
     }
     Ok((kind, n_num, n_cat, n_dir))

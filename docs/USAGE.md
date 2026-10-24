@@ -1941,9 +1941,16 @@ from $(n_i, R_i)$, with no scatter term, so a leaf carries the block in one vect
 
 Rules and defaults:
 
-- At least one numeric column is always required, plus at least one categorical **or** directional
-  column. A one-column directional block is rejected — a direction in one dimension is a sign, which
-  belongs in `categorical=`.
+- At least one categorical **or** directional column is required. A one-column directional block is
+  rejected — a direction in one dimension is a sign, which belongs in `categorical=`.
+- **An all-categorical table is k-modes** (Huang, 1998): list every column in `categorical=`. Each
+  cluster's prototype is its per-attribute mode, the distance is the mismatch count, and `gamma`
+  scales every distance alike, so it cannot move the partition — it only rescales `threshold`, which
+  at the default `gamma = 1` counts mismatched attributes. At `threshold=0` each micro-cluster holds
+  one distinct row profile, so the summary is exact until `max_leaves` distinct profiles are seen.
+- A directional block needs a numeric one. Its weight is priced against the numeric block, and
+  without one the defaults would price a turned direction against a category mismatch at an
+  arbitrary 1 : 1. Directions alone are `Betula(method="spherical-kmeans")`.
 - A row whose directional part is all zeros has no direction. It keeps the zero vector, which makes
   its term equal for every prototype: it stops voting rather than voting arbitrarily. Same for a
   cluster whose members' directions cancel — its `cluster_directions_` row is all zeros.

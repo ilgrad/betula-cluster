@@ -6,6 +6,15 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- **`KPrototypes` clusters an all-categorical table: k-modes** (Huang, 1998). List every column in
+  `categorical=`; the prototypes are per-attribute modes and the distance is the mismatch count.
+  Until now such a table was refused with "needs at least one numeric column", though the categorical
+  block already carried the exact histogram k-modes needs. `gamma` scales every distance alike there,
+  so it cannot move the partition. A directional block is still refused without a numeric one: its
+  weight is priced against the numeric block, and with no numeric block the defaults would price a
+  turned direction against a category mismatch at an arbitrary 1 : 1.
+
 ## [1.3.0] — 2026-10-22
 
 ### Fixed
