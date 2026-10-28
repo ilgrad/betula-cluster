@@ -32,6 +32,10 @@ All notable changes to this project are documented here. The format follows
   at 1 and 8 threads); `scripts/thread_determinism.py` gains a `leaf_refit` configuration above the
   cutoff. The speed-up is not yet timed.
 
+### Notes
+- **Documentation:** USAGE states the Leiden head's leaf-graph cost: an exact `O(m²·d)`
+  nearest-neighbour scan at every leaf count, with no approximate graph past 2 048 leaves as
+  `spectral` has, so doubling `max_leaves` quadruples it.
 
 ## [1.5.0] — 2026-10-28
 

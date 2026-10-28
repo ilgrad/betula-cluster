@@ -220,6 +220,10 @@ answer.
 
 `n_clusters=0` auto-selects `k` for the parametric heads; `leiden` / `hdbscan` always discover it
 (`leiden` reads the count off the graph — tune granularity with `resolution` γ, higher ⇒ more).
+Leiden builds its leaf graph by an exact nearest-neighbour scan at every size, `O(m²·d)` in the leaf
+count `m`: unlike `spectral`, it has no approximate graph past 2 048 leaves, so doubling
+`max_leaves` quadruples its cost (retired instructions ×4.0–4.2 per doubling from 900 to 7 400
+leaves).
 For a robustness score per point, wrap any partitional head in `consensus` (see below).
 
 ### The leaf feature a covariance head can read
