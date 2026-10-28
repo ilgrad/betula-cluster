@@ -6,6 +6,49 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- **`WindowStream` keeps old frames narrow relative to their age; it used to merge every overflow
+  into the oldest frame.** When `capacity` filled, the two oldest frames were always merged, so one
+  frame grew over the whole past and a window reaching back to it took in everything older. Forty
+  frames of ten points at `capacity=6`: the window `[30, 40]` holds 100 points and came back with 400.
+  The index now merges the adjacent pair whose merged span is narrowest relative to its age, never
+  the newest frame. Every frame then satisfies `W ≤ ε·A` with `ε = H^(1/⌊capacity/2⌋) − 1` over a
+  history of `H` frame widths, a bound that is proved and tight: at the default `capacity=64` a
+  boundary at age `A` is resolved to within 0.33·`A` over 10 000 frames. The same window now reads
+  180. Windows over streams longer than `capacity` frames change. The docs called the old rule
+  "pyramidal" and its error "bounded by `frame_width`"; both claims are replaced by the bound and a
+  table of `ε` (`docs/USAGE.md`, *Windowed stream queries*).
+- **`vmf` with `n_clusters=0` counted one parameter per component too many.** A unit mean direction
+  on the sphere has `d − 1` free coordinates, so a component costs `d` with its `κ`, as `watson`
+  already counted; `vmf` charged `d + 1`. That leaned BIC toward fewer components by `ln N` per
+  component. It moves `k` only where the BIC margin is that close: on the fixtures measured (five
+  spherical blobs at three spreads, digits-PCA20 normalised, seeds 0/1/2) the chosen `k` is unchanged.
+- **The Gaussian auto-`k` heads compare restarted fits.** `gmm`, `gmm-full`, `mppca` and `mfa` with
+  `n_clusters=0` ran one EM per `k`, while the same heads at a fixed `k` keep the best of four
+  restarts, so the BIC comparison inherited one seed's luck and the model kept at the chosen `k` could
+  be worse than the fixed-`k` fit. Each `k` is now fitted as the fixed-`k` head fits it, and pinning
+  `n_clusters` to the chosen `k` returns the same model. On six blobs (d = 8, seeds 0–4) 1.4.0 chose 7
+  for one seed on all four heads; every seed now chooses 6. On digits-PCA20 `gmm-full` chose 5–8 and
+  now chooses 7 in four seeds of five. The sweep costs up to four times as many EM runs, run in
+  parallel.
+
+### Notes
+- **Documentation corrected:** the `float32` section said a leaf mean "is bounded by the data, not by
+  the row count"; its accuracy is not, and the section now gives the row count past which an `f32`
+  mean stops moving, `W* ≈ 2²⁴·σ/|μ|`, with the advice to centre the data. The coreset size is
+  optimal only for `ε ≥ k^(−1/4)` (Huang, Li & Wu, STOC 2024), not "matching the STOC 2022 lower
+  bound". Greedy k-means++ is not "strictly" better than plain sampling, and its worst-case factor is
+  `O(ℓ³ log³ k)`, not `O(log k)`. Also: the X-means threshold table at d = 32 and 64, the free-threading
+  input contract in the README, the `DESIGN.md` limitations, the E-step prior art and a hierarchical
+  entry in `docs/MATH.md`, the `vmf` collapse evidence, the cause of the `digits`/`ward` spread in
+  `bench/RESULTS.md` (the routing descent, not tie-breaks) and the provenance of the example
+  notebooks.
+- **The benchmark harness fails loudly.** A failed dataset load raised nothing and printed "skipped":
+  `fetch_openml` on scikit-learn 1.9.1 with pandas 3.1 raises, so MNIST dropped out of every table
+  with no error. The loader now uses `parser="liac-arff"` and a failed load stops the run; a method
+  that fails keeps its row with the error instead of ending its table; `median_of_seeds.py` refuses a
+  table that some seeds are missing.
+
 ## [1.4.0] — 2026-10-24
 
 ### Added

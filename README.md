@@ -25,7 +25,7 @@
 pip install betula-cluster
 ```
 
-**Verified:** a **580-case** Python suite at **100% wrapper coverage** + **1032** Rust tests,
+**Verified:** a **580-case** Python suite at **100% wrapper coverage** + **1036** Rust tests,
 `clippy -D warnings` + `fmt` clean across all feature sets, CI on CPython 3.11–3.15 (one abi3 wheel)
 plus free-threaded 3.14t and 3.15t.
 
@@ -163,6 +163,11 @@ supported Python. Building from source needs a Rust toolchain — `maturin devel
 free-threaded minor, and pip picks it on a GIL 3.15+ too. Importing does *not*
 re-enable the GIL — CI asserts that on every push, because a module that quietly turns free threading
 back off for the whole process would be worse than no wheel at all.
+
+**One rule for threads, on every build.** A C-contiguous array of the right dtype is read in place,
+without a copy, and the heavy work runs with the interpreter released (`py.detach`). So do not write
+to an array from another thread while a call that reads it is running: the call would read a
+half-written input. This holds with the GIL too, since the GIL is released for the duration.
 
 ## Quick start
 
@@ -383,7 +388,7 @@ And six **end-to-end use cases** (each scored against ground truth):
 - [**Benchmarks**](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md) — methodology, every metric, all tables, honest wins & losses.
 - [**Design**](https://github.com/ilgrad/betula-cluster/blob/main/DESIGN.md) — internal design, invariants, and testing strategy.
 
-Verified: **1032** Rust tests (library, equivariance, integration and CLI) + a **580-case**
+Verified: **1036** Rust tests (library, equivariance, integration and CLI) + a **580-case**
 Python suite at **100%** wrapper coverage (Rust ≥95%, CI-enforced), `clippy -D warnings` + `fmt`
 clean across all feature sets, on Python 3.11–3.15 (single abi3 wheel) and free-threaded
 3.14t and 3.15t.

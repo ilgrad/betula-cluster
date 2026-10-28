@@ -265,9 +265,13 @@ fn chunklet_scatter<R: Real, C: ClusterFeature<R>>(
 
 /// **Greedy** weighted k-means++ (Arthur–Vassilvitskii; scikit-learn's default since 1.0). Each new
 /// centre samples `n_trials = 2 + ⌊ln k⌋` candidates ∝ the leaf's own contribution to the potential
-/// and keeps the one that most reduces the total `Σ_i [S_i + n_i‖μ_i − c‖²]` — strictly lower-variance,
-/// lower-inertia seeds than single-candidate sampling, at ~`ln k`× the (already negligible) init cost
-/// over the `M ≪ N` leaves.
+/// and keeps the one that most reduces the total `Σ_i [S_i + n_i‖μ_i − c‖²]`, at ~`ln k`× the (already
+/// negligible) init cost over the `M ≪ N` leaves. Usually, not always, better than single-candidate
+/// sampling: on six leaf sets × seeds 0–4 it gave the lower post-Lloyd SSE in 26 of 30 runs (covtype
+/// the exception, 2 of 5). Its worst case is *worse* — `O(ℓ³ log³ k)` with `ℓ` trials against plain
+/// k-means++'s `O(log k)` (Grunau, Özüdoğru, Rozhoň & Tětek, arXiv:2207.07949) — and its advantage is
+/// proved for well-separated Gaussian-like data at `ℓ = Θ(log k)` (Chen, Im, Moseley et al., NeurIPS
+/// 2025).
 ///
 /// The sampling weight is the **exact** CF-adapted potential of Lang's Eq. 5.4, `S_i + n_i·D²_i`, not
 /// the `n_i·D²_i` of point-level k-means++: a leaf that sits on a chosen centre still carries `S_i` of

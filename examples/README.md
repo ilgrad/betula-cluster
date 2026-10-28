@@ -5,19 +5,21 @@ Executed Jupyter notebooks (with plots, tables, and graphs) demonstrating **ever
 source (the diff-friendly form); the `.ipynb` is the rendered, executed output you can read on GitHub.
 
 > **Provenance.** The stored outputs were executed on **2026-08-30** against the working tree after
-> 0.7.0, which is **no longer** the tree [`bench/RESULTS.md`](../bench/RESULTS.md) is measured on: that
-> page was re-measured on 2026-09-07 for 0.8.0, and the `method="spectral"` head was rewritten in
-> between, so a spectral figure printed in a notebook is a 0.7.0 figure. Except
-> [`07_mixed_data_kprototypes`](07_mixed_data_kprototypes.ipynb), re-executed on **2026-09-02** when
-> its directional section was added. Every notebook prints the build it ran under in its first cell,
-> and every one pins its seeds in code, so re-executing reproduces what you see.
+> 0.7.0 ([`07_mixed_data_kprototypes`](07_mixed_data_kprototypes.ipynb) on **2026-09-02**), and every
+> notebook's first cell prints `betula-cluster 0.7.0`. Labels have changed since in more heads than
+> one: the tree build itself (the cost-ranked rebuild, 1.0.0, which reaches every head), `spectral`
+> (rewritten before 0.8.0, again at 1.2.0 above 2 048 leaves), the graph-HDBSCAN `min_samples`
+> (1.2.0), `fuzzy-cmeans` (1.3.0) and
+> `scale-space` (1.4.0) — see [`CHANGELOG.md`](../CHANGELOG.md). A figure printed here is a 0.7.0
+> figure; every notebook pins its seeds in code, so re-executing reproduces the current numbers.
 >
-> But a quality figure printed here is a **single draw**, and clustering quality is seed-dependent.
-> Where a notebook makes a head-to-head claim it says which seed produced it. The seeded medians of
-> record — seeds 0/1/2, with per-cell ranges — are in `bench/RESULTS.md`, and that is what to quote.
-> Wall-clock cells were run single-threaded on both sides (`OMP_NUM_THREADS=1`,
-> `RAYON_NUM_THREADS=1`), matching the benchmark harness; anything else compares thread counts rather
-> than algorithms.
+> A quality figure printed here is also a **single draw**, and clustering quality is
+> seed-dependent. Where a notebook makes a head-to-head claim it says which seed produced it. The
+> seeded medians of record — seeds 0/1/2, with per-cell ranges — are in
+> [`bench/RESULTS.md`](../bench/RESULTS.md), and that is what to quote. Wall-clock cells were run
+> single-threaded on both sides (`OMP_NUM_THREADS=1`, `RAYON_NUM_THREADS=1`), which the benchmark
+> harness no longer does: its speed rows give both libraries the machine (`bench/RESULTS.md`, the
+> *Threads* row), so a notebook timing and a bench timing are not comparable.
 
 | notebook | what it covers |
 |----------|----------------|

@@ -336,13 +336,21 @@ future refinement.
 
 ## Known limitations
 Honest scope — inherent to CF-compression + streaming, not bugs:
-1. **Insertion-order sensitive**, like all BIRCH-family streaming (the parallel build differs from
-   serial, as a different order would).
+1. **Insertion-order sensitive by default**, like all BIRCH-family streaming (the parallel build
+   differs from serial, as a different order would). `canonical_order=True` (0.8.0) removes it for an
+   in-memory `fit`: the rows are sorted by a data-derived key first, so any permutation of the input
+   gives the same summary and labels. `partial_fit` sees one chunk at a time and stays order-sensitive.
 2. **`threshold` / `max_leaves` are real hyperparameters** (compression vs resolution; watch
    `n_rebuilds_` / `threshold_`).
 3. **CF-level heads approximate raw-data clustering** — quality degrades when clusters overlap at the
-   compression scale; mitigation is more leaves.
+   compression scale; mitigation is more leaves. The size of the cost, from Lang's dissertation
+   (§5.5.7): BETULA's k-means RMSD is 3–4 % above raw k-means on five real datasets (5.2 % at 840 : 1
+   compression), against 20–43 % for unweighted BIRCH on the sets where density varies. The
+   quadratic heads (`ward`, HDBSCAN, Mapper) limit how far "more leaves" can go.
 4. **HDBSCAN-on-CF ≠ raw-point HDBSCAN** — mass-aware HDBSCAN over the microclusters (approximate).
+   On the overlap contest of `bench/RESULTS.md` it reads 0.821 at 2 000 leaves and 0.822 at 8 000
+   (medians of seeds 0/1/2) against 0.910 for `fast_hdbscan` on the raw points. The gap is the
+   between-leaf density contrast the summary drops, which no per-leaf radius puts back.
 5. **Expected-log GMM optimizes a CF-level objective**, not pointwise EM — but it is the *exact*
    variational bound on the pointwise one. $\log \mathcal{N}(x \mid \mu_k, \Sigma_k)$ is quadratic in
    $x$, so $\mathbb{E}_{x \sim \text{leaf}}[\log \mathcal{N}]$ is exact from $(n, \mu, S)$: the E-step

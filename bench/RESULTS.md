@@ -882,7 +882,7 @@ centre-based heads label each row by its nearest cluster centroid rather than it
 micro-cluster — moved both betula ARIs when it landed: `betula-sparse` 0.004 → **0.038**, `betula-svd`
 0.164 → **0.200**. Those are the values above and they have not moved since.
 
-The `betula-svd` row changed meaning at 0.4.0. It used to call scikit-learn's `TruncatedSVD` and then
+The `betula-svd` row changed meaning at 0.8.0. It used to call scikit-learn's `TruncatedSVD` and then
 cluster with betula, so it measured scikit-learn's reducer; it now runs betula's own
 `projection="svd"` — a CF-weighted PCA of the leaf summary — end to end in one call. The `betula-nmf`
 row still borrows scikit-learn's NMF, and says so.
@@ -2835,9 +2835,13 @@ Three results:
 This closes the loose end from task 27: `ward` on `digits` varied 0.6224–0.6525 across the four
 routing distances at an identical singleton leaf set, which had no explanation while the leaf set was
 believed to be the only input. Here the same head varies 0.6428–0.6587 across permutations of that
-same identical leaf set. Both are the tie-break order in which equal-distance leaves are visited, and
-the budget sweep above shows why it was visible at all: `digits` at ×1.0 is exactly where nothing
-else can differ.
+same identical leaf set. It is not a tie-break: it is the routing descent. The leaf set is the same,
+but the tree above it is not, and the greedy descent that labels each row commits to one child per
+level, so a row can land in a leaf other than its own (the misroute `route_beam` addresses).
+Re-measured 2026-10-28 (`digits`, every row its own leaf, `ward`, five row orders, seed 0): ARI
+0.6361–0.6600 at `route_beam=1`, 0.6615–0.6645 at 2, and 0.6643 in all five orders once the beam is
+wide enough to be an exact scan. The budget sweep above shows why it was visible at all: `digits` at
+×1.0 is exactly where nothing else can differ.
 
 ### The cure — `canonical_order=True`
 
@@ -3373,9 +3377,11 @@ question from what it costs to learn.
 
 **The row that is a loss by construction.** CluStream's actual contribution is the pyramidal time
 frame — snapshots that let a caller ask afterwards for the clustering of an arbitrary past window.
-Nothing here does that: a `partial_fit` tree carries one summary at the current time and cannot be
-rewound. That is a capability we do not have rather than a number we lose, and it is written down
-rather than left out of the table.
+The `partial_fit` heads timed here do not do that: a tree carries one summary at the current time
+and cannot be rewound. `WindowStream` does answer past windows, by summing per-frame summaries
+rather than subtracting snapshots (`docs/USAGE.md`, *Windowed stream queries*); since 1.5.0 its frame
+merging keeps a boundary at age `A` within `ε·A` (the table there). It is not in this table, which
+times the single-summary heads.
 
 ## Conclusions
 

@@ -319,7 +319,7 @@ captures more than `1 − 2^(−2/d)` of the region's sum of squares:
 
 | `d` | 2 | 5 | 10 | 32 | 64 |
 |---|---|---|---|---|---|
-| fraction of the scatter one cut must capture | **0.50** | 0.24 | 0.13 | 0.043 | 0.022 |
+| fraction of the scatter one cut must capture | **0.50** | 0.24 | 0.13 | 0.042 | 0.021 |
 
 A cut through a cloud that is round at every scale captures about `0.64/d`, always less than the
 `1.39/d` the rule asks for. **The recursion therefore starts at `k = 2`, not at `k = 1`** — a greedy
@@ -586,7 +586,12 @@ own leaf, medians of seeds 0/1/2.
 The true topics are near-equal, the largest 0.053 of the rows. The independent EM (Banerjee et al.,
 JMLR 2005, started from a k-means partition) collapses the same way, and tying `κ` removes the
 collapse, so this is the model and not the implementation. It is not the summary either: at 500, 2 000
-and 8 000 leaves `vmf` reads 0.073–0.100 and `spherical-kmeans` 0.146–0.174. On data like this —
+and 8 000 leaves `vmf` reads 0.073–0.100 and `spherical-kmeans` 0.146–0.174. Nor is it a local
+optimum: the collapsed fit is the *more likely* one, by 1.16–1.25 nats per row, and BIC and ICL both
+prefer it, so neither criterion with `n_clusters=0` steers away from it. Two published studies report
+the same on text: Hornik & Grün (*J. Stat. Softw.* 2014, §6.1, 20 CLUTO corpora) find the free-`κ`
+model always fits better by BIC and never classifies better, and Gopal & Yang (ICML 2014) find one
+shared `κ` "significantly better" than per-cluster ones. On data like this —
 many rows about equally far from every cluster — start with `spherical-kmeans`, and read `vmf`'s
 cluster sizes before its labels. The case the extra parameter is for is tight clusters of unequal
 spread, such as identities in a face or speaker embedding; that case is not measured here. On
@@ -1411,10 +1416,26 @@ weight had dropped (1.0058 on unit-variance data 200 000 rows past the ceiling, 
 
 The fix is that **the weight is a `f64` running total whatever the tree's element type**, because its
 precision is set by how many rows a leaf absorbs rather than by how precisely a coordinate is stored.
-The mean stays in the tree's type: it is bounded by the data, not by the row count. So
-`microcluster_weights_`, `cluster_sizes_`, every mass fraction and every mass-weighted head are exact
-at any stream length. What a caller sees is rounded to the tree's type on the way out — one part in
-16 777 216 of a total that is itself exact — which is the precision `float32` was chosen for.
+So `microcluster_weights_`, `cluster_sizes_`, every mass fraction and every mass-weighted head are
+exact at any stream length. What a caller sees is rounded to the tree's type on the way out — one
+part in 16 777 216 of a total that is itself exact — which is the precision `float32` was chosen for.
+
+**The mean is another matter: it stops moving on data far from the origin.** It stays in the tree's
+type, so its *size* is bounded by the data, but its *accuracy* is not. Each row moves a leaf's mean
+by `(x − μ)/W`, and in `float32` that step rounds to nothing once it falls below half a unit in the
+last place of `μ`. That happens past about
+
+```text
+W* ≈ 2²⁴ · σ / |μ|
+```
+
+rows in one leaf, where `σ` is the leaf's spread and `μ` its mean, both in the data's own units. Data
+centred near zero reaches it only at millions of rows per leaf. Data in raw units reaches it early:
+GPS degrees, temperatures in kelvin, timestamps, unscaled sensor counts. Measured on one leaf of 10⁶
+rows at `|μ|/σ = 100` (`W*` ≈ 168 000): the mean came back 0.25 σ off in random order, and 0.9–3.0 σ
+off under `canonical_order=True`, which feeds each leaf its rows sorted. A `float64` tree on the same
+rows is within 2·10⁻¹¹ σ. **Centre the data before a `float32` fit** (subtract its mean, which is
+what any scaler does), or pass `float64`.
 
 **One residual, measured and left in.** `feature="spherical"` (the default) also keeps its scatter in
 `f64`: it is one number per leaf, so it costs nothing. The per-axis and full-matrix scatters of
@@ -1683,8 +1704,10 @@ approximation factor you assume rather than picking one for you — `reference_c
 **Sampling** — only when `size` is given. Since `ĉost(C) = Δ + Σᵢ nᵢ‖μᵢ − C‖²` and `Δ` does not
 depend on `C`, the sample only has to be a coreset of the weighted set `{(μᵢ, nᵢ)}`; `offset`
 carries the constant instead of losing it, and `coreset.cost(centers)` adds it back so you cannot
-forget. Sensitivity sampling attains the optimal worst-case size `Õ(k·ε⁻²·min(√k, ε⁻²))` — matching
-the STOC 2022 lower bound — and `Õ(k/ε²)` on stable instances (arXiv 2405.01339).
+forget. Sensitivity sampling attains the worst-case size `Õ(k·ε⁻²·min(√k, ε⁻²))`. It is optimal
+for `ε ≥ k^(−1/4)`, where it reads `Õ(k·ε⁻⁴)` against the `Ω(k·ε⁻⁴)` lower bound of Huang, Li & Wu
+(STOC 2024); below that only `Ω(k·ε⁻²)` is known (Cohen-Addad et al., STOC 2022). On stable
+instances it is `Õ(k/ε²)` (arXiv 2405.01339).
 
 ```python
 cs = est.export_coreset(size=500, k=8)
@@ -2050,9 +2073,20 @@ Two properties are worth stating because they are the whole design:
   guard sees nothing. On a two-half fixture measured here it costs a factor of **6155** in the
   recovered variance at a mass ratio of 2.0. Summation has no such term.
 - **The price is resolution, and it is bounded.** A window resolves only to a frame boundary: a query
-  ending 0.1 s into a frame gets that whole frame. The error is bounded by `frame_width`, where the
-  subtraction's error is bounded by nothing. Pick `frame_width` as the coarsest resolution you will
-  ever query at, and `capacity` as how far back you want to be able to look.
+  ending 0.1 s into a frame gets that whole frame. When `capacity` fills, the adjacent pair of frames
+  narrowest relative to its age is merged (never the newest frame), so a boundary at age `A` is
+  resolved to within `max(frame_width, ε·A)` with `ε = H^(1/⌊capacity/2⌋) − 1`, `H` being the history
+  in frame widths. The subtraction's error is bounded by nothing. Pick `frame_width` as the finest
+  resolution you will query recent data at, and `capacity` from the table:
+
+  | `capacity` | H = 10³ | H = 10⁴ | H = 10⁶ |
+  |---|---|---|---|
+  | 16 | 1.37 | 2.16 | 4.62 |
+  | 48 | 0.334 | 0.468 | 0.778 |
+  | 64 (default) | 0.241 | 0.334 | 0.540 |
+
+  At the default, a boundary one day back on hourly frames over a year (H ≈ 8 760) is resolved to
+  about a third of a day. The bound is tight: some stream reaches it.
 
 `Moments::checked_subtract` in the Rust core does implement the inverse merge, and refuses rather
 than returning digits it does not have — it is there to be measured against, not to be relied on.

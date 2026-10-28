@@ -65,6 +65,15 @@ cells against 32/36 for the plug-in and 22/36 for the convolution). The same the
 generalization — $\mathbb{E}_{x \in i}[d_\varphi(x, \mu_k)] = S_i/n_i + d_\varphi(\mu_i, \mu_k)$, exact
 for every $\varphi$ — is what the `BregmanBetula` head's monotone `elbo` reports.
 
+**Prior art.** This tied bound is published. Verbeek, Nunnink & Vlassis (*Data Min. Knowl. Discov.*
+2006) run EM on it over kd-tree cells and show that refining the partition cannot lower it;
+Kurihara, Welling & Vlassis (NIPS 2006) use the same bound for variational Dirichlet-process
+mixtures. EMACF (Jin, Leung, Wong & Xu 2005) is its diagonal-covariance case. Two other summary
+E-steps are not lower bounds: EMADS (Jin, Wong & Leung 2005) keeps only the first eigen-component of
+the trace term, dropping $\sum_{j \ge 2} \lambda_j c_j^\top \Sigma_k^{-1} c_j \ge 0$ and so
+over-stating the expected log-density; scalable EM (Bradley, Fayyad & Reina 1998) is the plug-in at
+the summary mean. No published E-step on the same $(n, \mu, S)$ is tighter.
+
 **High-dimensional floor.** With few effective leaves per component, $\Sigma_k$ can still go
 near-singular along a low-variance direction, which makes the $-\tfrac12\mathrm{tr}(\Sigma_k^{-1}\Sigma_i)$
 correction over-confident and *starves* the component — its responsibility collapses to zero and the
@@ -553,6 +562,27 @@ Theorem 6.1, which also rests on the companion *The Unique Games theorem*). With
 matrix this looks like k-means, but it is a different objective: k-means divides each cluster's sum
 by the cluster's size, and this one does not. No head here optimises it.
 
+**`ward`, `average` — factors a random tree also earns, or that need separation.** Take
+$d_{ij} = \lVert x_i - x_j\rVert^2$ and the tree value $\sum_{i<j} d_{ij}\,|T_{ij}|$, where
+$|T_{ij}|$ is the size of the smallest cluster holding both points. Average linkage scores at least
+half of the trivial bound $N \sum_{i<j} d_{ij}$ (Cohen-Addad, Kanade, Mallmann-Trenn & Mathieu,
+[arXiv:1704.02147](https://arxiv.org/abs/1704.02147), Theorem 6.2). Charikar, Chatziafratis &
+Niazadeh ([arXiv:1808.02227](https://arxiv.org/abs/1808.02227)) cite $2/3$ for the published
+analysis, show it is tight, and show that a uniformly random tree earns $2/3$ as well. On leaves the
+`average` head is average linkage on $n_a$ coincident copies of each leaf, so the factor reaches the
+points scaled by $1 - \rho$, with $\rho = \sum_a n_a S_a / (N S_{\text{tot}}) \le \max_a n_a / N$.
+Ward's $k$-cut is a 2-approximation of the $k$-means cost only when the optimal clustering is weakly
+$(2 + 2\sqrt2 + \varepsilon)$-centre-separated; without separation the factor is
+$\Omega((3/2)^d)$ (Großwendt, Röglin & Schmidt, [arXiv:1907.05094](https://arxiv.org/abs/1907.05094),
+Theorem 10). Dasgupta's cost admits no constant factor under the Small-Set Expansion hypothesis
+(Charikar & Chatziafratis, [arXiv:1609.09548](https://arxiv.org/abs/1609.09548)), and no head
+claims one. One exact statement does hold: Ward heights are monotone SSE increments, so among all
+partitions of a Ward tree into $k$ subtrees the horizontal cut has the least SSE, and any score
+monotone in SSE at fixed $k$ (Calinski–Harabasz among them) is maximised by it. `n_clusters=0`
+therefore loses nothing to non-horizontal cuts under `ward`. Average linkage has no such property:
+two leaves of mass 100 that sit 0.9 apart and two of mass 1 that sit 1 apart give a 3-cluster
+horizontal cut of SSE $81/2$ against $1/2$ for the antichain that splits the heavy pair.
+
 **`leiden` — no factor, and a measured detection gap.** Approximating maximum modularity within
 any positive multiplicative factor is NP-hard (Dinh, Li & Thai,
 [arXiv:1602.01016](https://arxiv.org/abs/1602.01016)). Detection has an exact limit on the symmetric
@@ -607,7 +637,9 @@ at modularity 0.548. Modularity never fell from one pass to the next in any of t
 passes raise modularity by fitting noise (0.369 to 0.415 at $n = 30\,000$) and recover nothing,
 so the $s = 0.6$ control holds at every pass count. At $s = 3$, $n = 30\,000$, two passes move
 ARI only from 0.017 to 0.032, and the partition is still changing after 143 to more than 200
-passes, at 0.11–0.23; `n_iterations < 0` stops at 100 passes. On the benchmark's own leaf graphs
+passes, at 0.11–0.23; `n_iterations < 0` stops at 100 passes. igraph does not settle there either:
+on the same graphs three of four of its runs were still changing after 300 passes and the fourth
+stopped at 235, so the cap decides nothing a longer run would. It stays at 100. On the benchmark's own leaf graphs
 the passes matter much less: with the `bench/comprehensive.py` call (800 leaves, 20 000-row draws,
 seeds 0/1/2) the median ARI over one pass / two / until stable reads 0.728 / 0.731 / 0.731 on
 digits, 0.281 / 0.283 / 0.311 on MNIST and 0.046 / 0.046 / 0.046 on covtype. The default stays at

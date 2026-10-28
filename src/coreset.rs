@@ -54,8 +54,10 @@
 //! Sample `T` leaves with probability `s_i/S` and weight each `n_i·S/(T·s_i)`; the estimator is
 //! unbiased for any positive `s_i`, and it is this particular `s_i` — an upper bound on the true
 //! sensitivity — that bounds the variance and hence the sample size. Sensitivity sampling is now
-//! known to attain the *optimal* worst-case coreset size `Õ(k·ε⁻²·min(√k, ε⁻²))`, matching the
-//! STOC 2022 lower bound, and `Õ(k/ε²)` on `Ω(1)`-cost-stable instances (arXiv 2405.01339).
+//! known to attain the worst-case coreset size `Õ(k·ε⁻²·min(√k, ε⁻²))`. That is optimal for
+//! `ε ≥ k^(−1/4)`, where it reads `Õ(k·ε⁻⁴)` against the `Ω(k·ε⁻⁴)` lower bound of Huang, Li & Wu
+//! (STOC 2024); below that only `Ω(k·ε⁻²)` is known (Cohen-Addad et al., STOC 2022). On
+//! `Ω(1)`-cost-stable instances it is `Õ(k/ε²)` (arXiv 2405.01339).
 //!
 //! The α-approximate solution comes from the crate's own weighted k-means, whose seeding samples on
 //! the exact CF potential `S_i + n_i·D²_i`, so the guarantee is stated over the weighted instance
@@ -98,8 +100,8 @@ impl<R: Real> Coreset<R> {
     /// solution, and it is a required argument for a reason: `reference_cost ≥ OPT_k` always, so
     /// `offset / reference_cost` *under*-states `Δ/OPT_k` and `summary_epsilon(1.0)` is an
     /// optimistic reading, not a certificate. The shipped seeding is k-means++ with greedy trials,
-    /// whose guarantee is `O(log k)` in expectation — a distribution, not a bound on the run in
-    /// hand. Pass the factor you can defend.
+    /// whose guarantee is `O(ℓ³ log³ k)` in expectation for `ℓ` trials (plain k-means++ has
+    /// `O(log k)`) — a distribution, not a bound on the run in hand. Pass the factor you can defend.
     ///
     /// The result covers the summary only. Sampling error is on top of it, and is what the coreset
     /// size buys down.

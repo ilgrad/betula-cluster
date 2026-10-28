@@ -229,8 +229,8 @@ class Coreset:
         solution and therefore **upper**-bounds ``OPT_k``, so ``offset / reference_cost``
         *under*-states the true ``ρ = Δ/OPT_k`` and ``summary_epsilon(1.0)`` is an optimistic
         reading rather than a certificate. The shipped seeding is k-means++ with greedy trials,
-        whose ``O(log k)`` guarantee holds in expectation, not for the run in hand — so pass the
-        factor you can defend.
+        whose guarantee is ``O(ℓ³ log³ k)`` in expectation for ``ℓ`` trials (plain k-means++ has
+        ``O(log k)``), and holds for no single run — so pass the factor you can defend.
 
         Covers the summary only; sampling error sits on top of it and is what ``size`` buys down.
         """
@@ -1693,8 +1693,10 @@ class Betula:
         **Sampling**, present only when ``size`` is given. ``ĉost(C) = Δ + Σᵢ nᵢ‖μᵢ − C‖²`` and
         ``Δ`` does not depend on ``C``, so the sample only has to be a coreset of the weighted set
         ``{(μᵢ, nᵢ)}`` — ``offset`` carries the constant instead of losing it. Sensitivity sampling
-        attains the optimal worst-case size ``Õ(k·ε⁻²·min(√k, ε⁻²))``, matching the STOC 2022 lower
-        bound, and ``Õ(k/ε²)`` on stable instances (arXiv 2405.01339).
+        attains the worst-case size ``Õ(k·ε⁻²·min(√k, ε⁻²))``, optimal for ``ε ≥ k^(−1/4)``, where
+        it reads ``Õ(k·ε⁻⁴)`` against the ``Ω(k·ε⁻⁴)`` lower bound of Huang, Li & Wu (STOC 2024);
+        below that only ``Ω(k·ε⁻²)`` is known (Cohen-Addad et al., STOC 2022). On stable instances
+        it is ``Õ(k/ε²)`` (arXiv 2405.01339).
 
         ``size`` at or above the leaf count returns every leaf exactly, with no sampling error,
         rather than a noisy redraw of something already held exactly. ``k`` defaults to
@@ -1955,11 +1957,13 @@ class WindowStream:
     So this keeps micro-clusters **per frame** instead, and a window is a *sum* of frames — every
     combination is the stable merge. The trade runs the other way and is worth knowing: a window
     resolves only to the frame boundary, so a query ending inside a frame receives that whole frame.
-    That error is bounded by ``frame_width``. The subtraction's is bounded by nothing.
+    The subtraction's error is bounded by nothing.
 
     Unlike :class:`DenStream`, which fades old data into one current model, this retains history:
-    you can ask about last Tuesday. Older frames are merged pairwise as ``capacity`` fills, so
-    resolution coarsens with age and never with recency.
+    you can ask about last Tuesday. As ``capacity`` fills, the adjacent pair of frames narrowest
+    relative to its age is merged, never the newest frame. A boundary at age ``A`` is then resolved
+    to within ``max(frame_width, eps * A)`` with ``eps = H ** (1 / (capacity // 2)) - 1``, ``H`` the
+    history in frame widths: 0.33 at the default ``capacity=64`` over 10 000 frames.
 
     >>> ws = WindowStream(frame_width=3600.0, capacity=48)
     >>> ws.partial_fit(X, timestamps)     # doctest: +SKIP
