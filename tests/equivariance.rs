@@ -58,6 +58,7 @@ use betula_cluster::clustering::{
     mfa, movmf, mppca, scale_space, spectral, spherical_kmeans, ward_hac, watson, xmeans,
 };
 use betula_cluster::feature::{ClusterFeature, Diagonal, Full, Spherical};
+use betula_cluster::types::Real;
 
 const K: usize = 4;
 const SEED: u64 = 11;
@@ -187,7 +188,11 @@ fn as_i64(labels: &[usize]) -> Vec<i64> {
 
 /// Every head, run on one leaf set. Returns `(name, labels)` so a whole frame is one call.
 fn all_heads(pts: &[Vec<f64>]) -> Vec<(&'static str, Vec<i64>)> {
-    let lv = leaves(pts);
+    all_heads_of(&leaves(pts))
+}
+
+fn all_heads_of<R: Real>(lv: &[Full<R>]) -> Vec<(&'static str, Vec<i64>)> {
+    let lv = lv.to_vec();
     vec![
         ("kmeans", as_i64(&kmeans(&lv, K, 100, 4, SEED).labels)),
         ("xmeans", as_i64(&xmeans(&lv, 2, K, 100, SEED).labels)),
@@ -257,6 +262,42 @@ fn check(frame: &str, transform: fn(&[Vec<f64>]) -> Vec<Vec<f64>>, skip: &[&str]
 #[test]
 fn every_euclidean_head_is_invariant_under_translation() {
     check("translation", translate, &[]);
+}
+
+/// The frame the Python binding builds a `float32` tree in for every head above: rows far from
+/// zero, shifted by their per-coordinate median in `f64`, then rounded to `f32`. Each head must
+/// return the partition it returns on the `f64` rows where they started — the translation arm,
+/// carried through the narrowing.
+#[test]
+fn every_euclidean_head_on_f32_leaves_built_around_the_median_matches_f64() {
+    let far: Vec<Vec<f64>> = points()
+        .iter()
+        .map(|p| vec![p[0] + 1.0e4, p[1] - 3.0e4])
+        .collect();
+    let origin: Vec<f64> = (0..2)
+        .map(|j| {
+            let mut col: Vec<f64> = far.iter().map(|p| p[j]).collect();
+            let mid = (col.len() - 1) / 2;
+            *col.select_nth_unstable_by(mid, f64::total_cmp).1
+        })
+        .collect();
+    let narrowed: Vec<Full<f32>> = far
+        .chunks(4)
+        .map(|chunk| {
+            let mut f = Full::<f32>::new(2);
+            for p in chunk {
+                let row: Vec<f32> = p.iter().zip(&origin).map(|(x, o)| (x - o) as f32).collect();
+                f.push(&row, 1.0);
+            }
+            f
+        })
+        .collect();
+    for ((name, a), (_, b)) in all_heads(&points()).iter().zip(&all_heads_of(&narrowed)) {
+        assert!(
+            same_partition(a, b),
+            "{name} on f32 leaves around the median differs from f64:\n  {a:?}\n  {b:?}"
+        );
+    }
 }
 
 #[test]

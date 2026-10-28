@@ -31,6 +31,20 @@ All notable changes to this project are documented here. The format follows
   for one seed on all four heads; every seed now chooses 6. On digits-PCA20 `gmm-full` chose 5–8 and
   now chooses 7 in four seeds of five. The sweep costs up to four times as many EM runs, run in
   parallel.
+- **A `float32` leaf mean keeps moving on data far from zero.** An `f32` mean stops moving once the
+  per-row step `(x − μ)/W` falls below half an ulp of `μ`, past `W* ≈ 2²⁴·σ/|μ|` rows in one leaf:
+  at `|μ|/σ = 10⁴` that is about 1 700 rows, and one leaf of 200 000 came back 2.8·10⁻² σ off. A
+  `float32` tree is now built around the per-coordinate median of the first rows it sees: it holds
+  `x − o`, and `o` is added back to every reported location (`cluster_centers_`,
+  `microcluster_centers_`, `export_coreset`, Mapper centroids and its `coordinate` lens). The same
+  leaf now reads 1.2·10⁻⁸ σ. On 2 M GPS-like rows in degrees, the König–Huygens residual of the
+  summary falls from 0.10–4.7 of the within-leaf scatter to at most 4·10⁻⁴ over twelve
+  configurations. Over five row orders of raw covtype-50k, the median `float32`/`float64` label
+  agreement stays 1.00 for `ward` and `kmeans` and rises from 0.67 to 0.89 for `gmm`. Only heads that ignore a translation get an origin: the directional
+  heads, `hyperbolic`, `normalize=True` and the NMF projections keep the old frame. `float32` labels
+  change; `float64` output does not. A model with an origin saves as schema version 3, which 1.4
+  refuses instead of loading in the wrong frame; every other model still saves as version 2
+  (`docs/USAGE.md`, *How much a `float32` tree can count*).
 
 ### Notes
 - **Documentation corrected:** the `float32` section said a leaf mean "is bounded by the data, not by

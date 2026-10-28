@@ -1429,13 +1429,30 @@ last place of `μ`. That happens past about
 W* ≈ 2²⁴ · σ / |μ|
 ```
 
-rows in one leaf, where `σ` is the leaf's spread and `μ` its mean, both in the data's own units. Data
-centred near zero reaches it only at millions of rows per leaf. Data in raw units reaches it early:
-GPS degrees, temperatures in kelvin, timestamps, unscaled sensor counts. Measured on one leaf of 10⁶
-rows at `|μ|/σ = 100` (`W*` ≈ 168 000): the mean came back 0.25 σ off in random order, and 0.9–3.0 σ
-off under `canonical_order=True`, which feeds each leaf its rows sorted. A `float64` tree on the same
-rows is within 2·10⁻¹¹ σ. **Centre the data before a `float32` fit** (subtract its mean, which is
-what any scaler does), or pass `float64`.
+rows in one leaf, where `σ` is the leaf's spread and `μ` its mean. Data in raw units used to reach it
+early — GPS degrees, temperatures in kelvin, timestamps, unscaled sensor counts. Measured on one leaf
+of 10⁶ rows at `|μ|/σ = 100` (`W*` ≈ 168 000): the mean came back 0.25 σ off in random order, and
+0.9–3.0 σ off under `canonical_order=True`, which feeds each leaf its rows sorted.
+
+**Since 1.5.0 a `float32` tree is built around the data's own median** (Chan, Golub & LeVeque 1983
+§3). The estimator takes the per-coordinate median `o` of the first rows it sees, feeds the tree
+`x − o` (the difference taken in `float64`, then rounded), and adds `o` back to every location it
+reports: `cluster_centers_`, `microcluster_centers_`, `export_coreset`, the Mapper node centroids
+and its `coordinate` lens. `predict`, `predict_proba`, `outlier_scores` and `summary_mmd` shift
+their rows the same way. A cluster feature's scatter does not depend on where the origin is, so the
+summary is the same one, held where `float32` has its precision. One leaf of 200 000 rows at
+`|μ|/σ = 10⁴` (`W*` ≈ 1 700): 2.8·10⁻² σ off before, 1.2·10⁻⁸ σ after, against 1.7·10⁻¹⁰ σ for a
+`float64` tree. `o` is fixed at the first `partial_fit` chunk and saved with the model.
+
+What is left is the leaf's distance from the median rather than from zero, `|μ − o|/σ`, which grows
+with the number of leaves in low dimension: standardized 2-D data at 4 000 leaves reaches `W*` near
+9·10⁴ rows per leaf. Past that, pass `float64`.
+
+Only a head whose partition ignores a translation of the data gets an origin. The directional heads
+(`spherical-kmeans`, `vmf`, `watson`), `hyperbolic`, `normalize=True` and the NMF projections read
+where zero is, so their `float32` trees keep `o = 0` and the bound above as it stands; so do sparse
+input (always `float64`) and the `float64` tree, whose output does not change. A model with an origin
+is saved as schema version 3, which 1.4 and earlier refuse rather than load in the wrong frame.
 
 **One residual, measured and left in.** `feature="spherical"` (the default) also keeps its scatter in
 `f64`: it is one number per leaf, so it costs nothing. The per-axis and full-matrix scatters of
@@ -1465,7 +1482,8 @@ out of bounds and `normalize=True` scaled the row to zero; 3000 `float32` rows s
 `±4.5e18` left the radii of every non-directional head non-finite and made `kmedoids` panic.
 
 What is checked is what gets squared: the row as given, except under `method="hyperbolic"`, which
-lifts the row onto the sheet and squares the lifted one. Needing no count has a price — a small
+lifts the row onto the sheet and squares the lifted one, and in a `float32` tree built around an
+origin, which squares `x − o`. Needing no count has a price — a small
 `float32` fit past the bound that happened to stay in range is refused too. Rescale the data, or pass
 `float64`.
 
@@ -1502,12 +1520,15 @@ A column-major leaf layout was implemented as a prototype and **rejected**: on t
 worth only **1.06–1.17×**, because CBOR tags every float with its width and the tag bytes dilute the
 column similarity that makes the layout pay on a raw array.
 
-**Compatibility.** A saved model is **not portable across major versions**. `load` accepts one schema
-version and refuses every other, naming the version it found:
+**Compatibility.** A saved model is **not portable across major versions**. `load` accepts the schema
+versions its build writes and refuses every other, naming the version it found:
 
 ```
-ValueError: unsupported model version 3 (this build expects 2)
+ValueError: unsupported model version 4 (this build reads 2 and 3)
 ```
+
+Version 3 is version 2 plus the origin of a `float32` tree (see above); every other model is still
+written as version 2. A 1.4 build refuses a version 3 file instead of loading it in the wrong frame.
 
 Re-save with the version that wrote the file before upgrading, or keep the training code and re-fit.
 The alternative — a reader for every past layout — would pin the internals of the CF-tree for the

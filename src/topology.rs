@@ -392,6 +392,17 @@ fn find_bridges(n: usize, edges: &[(usize, usize, usize)]) -> Vec<usize> {
 
 /// Build a Mapper graph over the leaf microcluster `features`.
 pub fn mapper<R: Real, C: ClusterFeature<R>>(features: &[C], p: &MapperParams) -> MapperGraph {
+    mapper_at(features, p, None)
+}
+
+/// [`mapper`] over features stored relative to `origin`: every centroid is read as `μ + origin`,
+/// so the lens, the links and the node centroids are those of the unshifted data. Two lenses read
+/// the frame itself — `L2Norm` and `Coordinate` — which is why the shift cannot be left to the caller.
+pub(crate) fn mapper_at<R: Real, C: ClusterFeature<R>>(
+    features: &[C],
+    p: &MapperParams,
+    origin: Option<&[f64]>,
+) -> MapperGraph {
     let m = features.len();
     let empty = MapperGraph {
         nodes: Vec::new(),
@@ -403,7 +414,12 @@ pub fn mapper<R: Real, C: ClusterFeature<R>>(features: &[C], p: &MapperParams) -
     if m == 0 {
         return empty;
     }
-    let mu: Vec<Vec<f64>> = features.iter().map(centroid64).collect();
+    let mut mu: Vec<Vec<f64>> = features.iter().map(centroid64).collect();
+    if let Some(o) = origin {
+        for c in &mut mu {
+            c.iter_mut().zip(o).for_each(|(v, o)| *v += o);
+        }
+    }
     let mass: Vec<f64> = features
         .iter()
         .map(|f| f.weight().to_f64().unwrap())

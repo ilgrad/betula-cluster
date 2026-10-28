@@ -50,7 +50,7 @@ use crate::order::{canonical_permutation, canonical_permutation_csr, canonical_s
 use crate::sparse::{SparseCentroids, normalize_csr_rows, summarize_sparse};
 use crate::stats::chi2_quantile;
 use crate::stream::{DbStream, DenStream, DriftReport};
-use crate::topology::{Lens, Link, MapperGraph, MapperParams, mapper};
+use crate::topology::{Lens, Link, MapperGraph, MapperParams, mapper_at};
 use crate::tree::{AUTO_BALANCE_MULTIPLE, AUTO_BALANCE_TOP1, CFTree};
 use crate::types::Real;
 use crate::wasserstein::{GaussianMixture, Spread, mixture_w2};
@@ -1986,10 +1986,20 @@ fn run_oneshot<R: Real + Element>(
         _ => RowPrep::None,
     };
     let (rows, n, dim) = to_rows(data, prep)?;
-    let flat = rows.as_slice();
-    if matches!(nmf_dim.map(|s| s.kind), Some(ProjectionKind::Nmf { .. })) {
-        require_nonnegative(flat)?;
+    let nmf = matches!(nmf_dim.map(|s| s.kind), Some(ProjectionKind::Nmf { .. }));
+    if nmf {
+        require_nonnegative(rows.as_slice())?;
     }
+    // The origin `Betula` builds an `f32` tree around (see `Betula::origin`). Nothing here reports a
+    // location, so the shifted rows are all there is to it. A prepared row is on a manifold the
+    // shift would take it off, which is also what excludes every head without translation symmetry.
+    let shifted = if std::mem::size_of::<R>() == 4 && prep == RowPrep::None && !nmf {
+        let origin = median_origin(rows.as_slice(), n, dim);
+        Some(shift_rows::<R, R>(rows.as_slice(), &origin)?)
+    } else {
+        None
+    };
+    let flat = shifted.as_deref().unwrap_or(rows.as_slice());
     let route = parse_route(distance)?;
     let balance = balance.and_then(R::from_f64);
     // Computed here rather than inside the build: this is the boundary that can report a refusal,
@@ -2846,13 +2856,13 @@ impl<R: Real> TreeState<R> {
         }
     }
 
-    /// Mapper topological-skeleton graph over the leaf microclusters.
-    fn mapper(&self, p: &MapperParams) -> MapperGraph {
+    /// Mapper topological-skeleton graph over the leaf microclusters, in the frame `origin` names.
+    fn mapper(&self, p: &MapperParams, origin: Option<&[f64]>) -> MapperGraph {
         match self {
-            TreeState::Spherical(t) => mapper(t.leaf_features(), p),
-            TreeState::Diagonal(t) => mapper(t.leaf_features(), p),
-            TreeState::Full(t) => mapper(t.leaf_features(), p),
-            TreeState::Fd(t) => mapper(t.leaf_features(), p),
+            TreeState::Spherical(t) => mapper_at(t.leaf_features(), p, origin),
+            TreeState::Diagonal(t) => mapper_at(t.leaf_features(), p, origin),
+            TreeState::Full(t) => mapper_at(t.leaf_features(), p, origin),
+            TreeState::Fd(t) => mapper_at(t.leaf_features(), p, origin),
         }
     }
 
@@ -3155,6 +3165,15 @@ struct Betula {
     /// "until stable". A model persisted before this field existed ran one pass, and loads as `1`.
     #[serde(default = "default_n_iterations")]
     n_iterations: i64,
+    /// The point an `f32` tree is built around: every row enters as `f32(x − origin)`, and every
+    /// location the estimator reports has it added back. An `f32` leaf mean stops moving once its
+    /// weight passes `~2^24·σ/|μ|`, so data far from zero — raw coordinates, kelvin — stalled it
+    /// within a few thousand rows. Measured from the data's own median, `|μ|` is a leaf's distance
+    /// from the bulk of the data rather than from zero (Chan, Golub & LeVeque 1983 §3). `None` for an `f64` tree, whose digests it must not move,
+    /// and for heads with no translation symmetry to borrow (see [`Betula::origin_applies`]).
+    /// Left out of the file when absent, so every other model saves byte-for-byte as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    origin: Option<Vec<f64>>,
 }
 
 /// A 2-D array as flat row-major rows, casting from the other float dtype if needed (lossless
@@ -3179,6 +3198,75 @@ fn flat_as<'py, R: Real + Element>(
     // After the cast: a finite `f64` past `f32::MAX` narrows to `inf`, which only the cast value shows.
     prepare_checked(&mut flat, n, dim, prep)?;
     Ok((Rows::Owned(flat), n, dim))
+}
+
+/// [`flat_as`] in the frame of a model built around `origin`: each row enters as `R(x − origin)`,
+/// the difference taken in `f64` before the narrowing, so a row loses nothing to the frame that it
+/// would not lose to `R` anyway. Without an origin this is [`flat_as`] itself.
+///
+/// The norm check runs on the shifted rows, because those are what the tree squares.
+fn frame_rows<'py, R: Real + Element>(
+    data: &Bound<'py, PyAny>,
+    prep: RowPrep,
+    origin: Option<&[f64]>,
+) -> PyResult<(Rows<'py, R>, usize, usize)> {
+    let Some(origin) = origin else {
+        return flat_as::<R>(data, prep);
+    };
+    // Read in whichever float type arrived, so a float32 array is copied once, into the shifted
+    // buffer, rather than widened first.
+    let (shifted, n, dim) = if let Ok(a) = data.extract::<PyReadonlyArray2<'py, f32>>() {
+        shift_checked(to_rows(a, prep)?, origin)?
+    } else {
+        shift_checked(flat_as::<f64>(data, prep)?, origin)?
+    };
+    Ok((Rows::Owned(shifted), n, dim))
+}
+
+fn shift_checked<S: Real + Element, R: Real>(
+    (src, n, dim): (Rows<'_, S>, usize, usize),
+    origin: &[f64],
+) -> PyResult<(Vec<R>, usize, usize)> {
+    if dim != origin.len() {
+        return Err(PyValueError::new_err(
+            "dimension mismatch with previously fitted data",
+        ));
+    }
+    Ok((shift_rows(src.as_slice(), origin)?, n, dim))
+}
+
+/// `R(x − origin)` for every row of `flat`, the difference taken in `f64`, refused like any other
+/// row past [`max_sq_norm`] — the shifted rows are the ones the tree squares.
+fn shift_rows<S: Real, R: Real>(flat: &[S], origin: &[f64]) -> PyResult<Vec<R>> {
+    let dim = origin.len();
+    let shifted: Vec<R> = flat
+        .chunks_exact(dim)
+        .flat_map(|row| {
+            row.iter()
+                .zip(origin)
+                .map(|(&x, &o)| R::from_f64(x.to_f64().unwrap() - o).unwrap())
+        })
+        .collect();
+    check_norms(&shifted, dim)?;
+    Ok(shifted)
+}
+
+/// The per-coordinate lower median of `n × dim` rows: the origin an `f32` tree is built around.
+///
+/// A median rather than the mean, for two reasons. It is an element of the data, so it is exactly
+/// an `f32` value and `x − o` is exact whenever `x` is within a factor of two of `o` (Sterbenz).
+/// And it is a function of the multiset alone, with no summation order to depend on, so a fit
+/// under `canonical_order` stays bit-identical across row permutations.
+fn median_origin<R: Real>(flat: &[R], n: usize, dim: usize) -> Vec<f64> {
+    let mut col = vec![0.0f64; n];
+    (0..dim)
+        .map(|j| {
+            for (c, row) in col.iter_mut().zip(flat.chunks_exact(dim)) {
+                *c = row[j].to_f64().unwrap();
+            }
+            *col.select_nth_unstable_by((n - 1) / 2, f64::total_cmp).1
+        })
+        .collect()
 }
 
 fn cast_flat<S: Real + Element, R: Real>(
@@ -3216,6 +3304,7 @@ impl Betula {
         self.proba = None;
         self.rule = None;
         self.dim = 0;
+        self.origin = None;
     }
 
     /// Should this whole-array build be repeated with the mass cap on?
@@ -3279,7 +3368,18 @@ impl Betula {
             auto_balance: self.balance_auto && arrival != Arrival::Whole,
         };
         if use_f32 {
-            let (src, n, dim) = flat_as::<f32>(data, self.row_prep())?;
+            // Chosen by the first rows the tree sees and fixed from then on, so a `partial_fit`
+            // stream stays in one frame. Stored only once the tree exists: an origin without an
+            // `f32` tree would shift the `f64` one a later call might build.
+            let origin = if self.state32.is_some() {
+                self.origin.clone()
+            } else if self.origin_applies() {
+                let (src, n, dim) = flat_as::<f32>(data, RowPrep::None)?;
+                Some(median_origin(src.as_slice(), n, dim))
+            } else {
+                None
+            };
+            let (src, n, dim) = frame_rows::<f32>(data, self.row_prep(), origin.as_deref())?;
             let flat = src.as_slice();
             if self.dim != 0 && self.dim != dim {
                 return Err(PyValueError::new_err(
@@ -3300,8 +3400,9 @@ impl Betula {
                     .map_err(PyValueError::new_err)?;
             }
             self.dim = dim;
+            self.origin = origin;
         } else {
-            let (src, n, dim) = flat_as::<f64>(data, self.row_prep())?;
+            let (src, n, dim) = self.rows_of::<f64>(data)?;
             let flat = src.as_slice();
             if self.dim != 0 && self.dim != dim {
                 return Err(PyValueError::new_err(
@@ -3426,6 +3527,39 @@ impl Betula {
         }
     }
 
+    /// Whether an `f32` tree for this configuration is built around an origin. Only a head whose
+    /// partition does not move under a translation of the data may be: the directional and
+    /// hyperbolic heads read where the origin is, and so do unit rows and an NMF projection, which
+    /// needs the rows non-negative. `tests/equivariance.rs` holds the table this follows.
+    fn origin_applies(&self) -> bool {
+        let directional = matches!(
+            self.kind,
+            Kind::Parametric(
+                Method::SphericalKMeans | Method::Movmf | Method::Watson | Method::Hyperbolic
+            )
+        );
+        let nmf = self.nmf_dim.is_some() && !self.projection_svd;
+        self.row_prep() == RowPrep::None && !directional && !nmf
+    }
+
+    /// The rows of `data` as this estimator's tree sees them: prepared, and shifted by the origin
+    /// when it has one. Every entry point that reads rows goes through here or [`frame_rows`].
+    fn rows_of<'py, R: Real + Element>(
+        &self,
+        data: &Bound<'py, PyAny>,
+    ) -> PyResult<(Rows<'py, R>, usize, usize)> {
+        frame_rows(data, self.row_prep(), self.origin.as_deref())
+    }
+
+    /// Take row-major locations from the tree's frame to the data's by adding the origin back.
+    fn to_data_frame(&self, rows: &mut [f64]) {
+        if let Some(o) = self.origin.as_deref() {
+            for row in rows.chunks_exact_mut(o.len()) {
+                row.iter_mut().zip(o).for_each(|(v, o)| *v += o);
+            }
+        }
+    }
+
     fn check_dim(&self, dim: usize) -> PyResult<()> {
         if self.dim != 0 && self.dim != dim {
             return Err(PyValueError::new_err(
@@ -3501,7 +3635,7 @@ impl Betula {
                 }
             });
         } else if let Some(t) = self.state32.as_mut() {
-            let (src, n, _) = flat_as::<f32>(data, prep)?;
+            let (src, n, _) = frame_rows::<f32>(data, prep, self.origin.as_deref())?;
             let flat = src.as_slice();
             py.detach(|| {
                 for _ in 0..passes {
@@ -3538,7 +3672,7 @@ impl Betula {
         if self.refine == 0 || !matches!(self.rule, Some(PointRule::Centers { .. })) {
             return Ok(());
         }
-        let (src, n, dim) = flat_as::<f64>(data, self.row_prep())?;
+        let (src, n, dim) = self.rows_of::<f64>(data)?;
         let flat = src.as_slice();
         self.check_dim(dim)?;
         let iters = self.refine;
@@ -3608,19 +3742,18 @@ impl Betula {
         must: &[(i64, i64)],
         cannot: &[(i64, i64)],
     ) -> PyResult<()> {
-        let (k, mi, ni, seed, norm) = (
+        let (k, mi, ni, seed) = (
             self.n_clusters,
             self.max_iter,
             self.n_init.unwrap_or(0),
             self.seed,
-            self.row_prep(),
         );
         let labels = if let Some(t) = self.state64.as_ref() {
-            let (src, n, dim) = flat_as::<f64>(data, norm)?;
+            let (src, n, dim) = self.rows_of::<f64>(data)?;
             let flat = src.as_slice();
             constrained_labels(t, flat, n, dim, must, cannot, k, mi, ni, seed)?
         } else if let Some(t) = self.state32.as_ref() {
-            let (src, n, dim) = flat_as::<f32>(data, norm)?;
+            let (src, n, dim) = self.rows_of::<f32>(data)?;
             let flat = src.as_slice();
             constrained_labels(t, flat, n, dim, must, cannot, k, mi, ni, seed)?
         } else {
@@ -3644,7 +3777,7 @@ impl Betula {
         })?;
         let rule = self.rule.as_ref();
         if let Some(t) = &self.state64 {
-            let (src, n, dim) = flat_as::<f64>(data, self.row_prep())?;
+            let (src, n, dim) = self.rows_of::<f64>(data)?;
             let flat = src.as_slice();
             self.check_dim(dim)?;
             Ok(py
@@ -3654,7 +3787,7 @@ impl Betula {
                 })
                 .into_pyarray(py))
         } else if let Some(t) = &self.state32 {
-            let (src, n, dim) = flat_as::<f32>(data, self.row_prep())?;
+            let (src, n, dim) = self.rows_of::<f32>(data)?;
             let flat = src.as_slice();
             self.check_dim(dim)?;
             Ok(py
@@ -3760,7 +3893,13 @@ impl Betula {
         if let Some(t) = &self.state64 {
             Ok(t.summary_mmd(flat, bandwidth))
         } else if let Some(t) = &self.state32 {
-            let narrowed: Vec<f32> = flat.iter().map(|&v| v as f32).collect();
+            let narrowed: Vec<f32> = match self.origin.as_deref() {
+                Some(o) => flat
+                    .chunks_exact(dim)
+                    .flat_map(|row| row.iter().zip(o).map(|(&v, &o)| (v - o) as f32))
+                    .collect(),
+                None => flat.iter().map(|&v| v as f32).collect(),
+            };
             Ok(t.summary_mmd(&narrowed, bandwidth.map(|h| h as f32)))
         } else {
             Err(PyValueError::new_err("not fitted"))
@@ -3936,6 +4075,7 @@ impl Betula {
             canonical_order,
             balance_auto,
             n_iterations,
+            origin: None,
         })
     }
 
@@ -3995,12 +4135,12 @@ impl Betula {
         data: &Bound<'py, PyAny>,
     ) -> PyResult<Bound<'py, PyArray2<f64>>> {
         let (flat, k) = if let Some(t) = &self.state64 {
-            let (src, n, dim) = flat_as::<f64>(data, self.row_prep())?;
+            let (src, n, dim) = self.rows_of::<f64>(data)?;
             let rows = src.as_slice();
             self.check_dim(dim)?;
             self.proba_of(py, t, rows, n, dim)?
         } else if let Some(t) = &self.state32 {
-            let (src, n, dim) = flat_as::<f32>(data, self.row_prep())?;
+            let (src, n, dim) = self.rows_of::<f32>(data)?;
             let rows = src.as_slice();
             self.check_dim(dim)?;
             self.proba_of(py, t, rows, n, dim)?
@@ -4174,7 +4314,10 @@ impl Betula {
     /// Microcluster (leaf) centroids — `(n_microclusters, dim)`.
     #[getter]
     fn microcluster_centers_<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray2<f64>>> {
-        let F64Stats { centers, dim, .. } = self.leaf_stats_any()?;
+        let F64Stats {
+            mut centers, dim, ..
+        } = self.leaf_stats_any()?;
+        self.to_data_frame(&mut centers);
         let rows = centers.len().checked_div(dim).unwrap_or(0);
         Ok(Array2::from_shape_vec((rows, dim), centers)
             .expect("centers length is rows*dim")
@@ -4245,7 +4388,10 @@ impl Betula {
     /// `cluster_sizes_` describe a partition neither of them was computed under.
     #[getter]
     fn cluster_centers_<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray2<f64>>> {
-        let F64Stats { centers, dim, .. } = self.cluster_stats_any()?;
+        let F64Stats {
+            mut centers, dim, ..
+        } = self.cluster_stats_any()?;
+        self.to_data_frame(&mut centers);
         let rows = centers.len().checked_div(dim).unwrap_or(0);
         Ok(Array2::from_shape_vec((rows, dim), centers)
             .expect("centers length is rows*dim")
@@ -4291,7 +4437,8 @@ impl Betula {
         size: usize,
         seed: u64,
     ) -> PyResult<CoresetPy<'py>> {
-        let out = self.coreset_any(k, size, seed)?;
+        let mut out = self.coreset_any(k, size, seed)?;
+        self.to_data_frame(&mut out.points);
         let rows = out.points.len().checked_div(out.dim).unwrap_or(0);
         let points = Array2::from_shape_vec((rows, out.dim), out.points)
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
@@ -4343,7 +4490,7 @@ impl Betula {
             } else {
                 OutlierScale::Radius(&radii)
             };
-            let (src, n, dim) = flat_as::<f64>(data, self.row_prep())?;
+            let (src, n, dim) = self.rows_of::<f64>(data)?;
             let flat = src.as_slice();
             self.check_dim(dim)?;
             Ok(py
@@ -4361,7 +4508,7 @@ impl Betula {
             } else {
                 OutlierScale::Radius(&radii)
             };
-            let (src, n, dim) = flat_as::<f32>(data, self.row_prep())?;
+            let (src, n, dim) = self.rows_of::<f32>(data)?;
             let flat = src.as_slice();
             self.check_dim(dim)?;
             Ok(py
@@ -4379,14 +4526,14 @@ impl Betula {
         data: &Bound<'py, PyAny>,
     ) -> PyResult<Bound<'py, PyArray1<i64>>> {
         if let Some(t) = &self.state64 {
-            let (src, n, dim) = flat_as::<f64>(data, self.row_prep())?;
+            let (src, n, dim) = self.rows_of::<f64>(data)?;
             let flat = src.as_slice();
             self.check_dim(dim)?;
             Ok(py
                 .detach(|| t.assign_microclusters(flat, n, dim, self.route_beam))
                 .into_pyarray(py))
         } else if let Some(t) = &self.state32 {
-            let (src, n, dim) = flat_as::<f32>(data, self.row_prep())?;
+            let (src, n, dim) = self.rows_of::<f32>(data)?;
             let flat = src.as_slice();
             self.check_dim(dim)?;
             Ok(py
@@ -4492,8 +4639,8 @@ impl Betula {
             link,
         };
         let g = match (&self.state64, &self.state32) {
-            (Some(t), _) => py.detach(|| t.mapper(&p)),
-            (_, Some(t)) => py.detach(|| t.mapper(&p)),
+            (Some(t), _) => py.detach(|| t.mapper(&p, None)),
+            (_, Some(t)) => py.detach(|| t.mapper(&p, self.origin.as_deref())),
             _ => {
                 return Err(PyValueError::new_err(
                     "call fit() or partial_fit() before mapper()",
@@ -4689,6 +4836,13 @@ impl Betula {
 /// wider ones with the same values. `test_a_snapshot_written_by_0_6_0_still_loads` is the proof.
 const SCHEMA_VERSION: u32 = 2;
 
+/// The schema of a model built around an origin ([`Betula::origin`]). The field alone would load
+/// in a 1.4 build — serde skips a key it does not know — and that build would then report every
+/// location shifted by it and route every new row against a tree in another frame. Writing these
+/// files under a version 1.4 refuses is what turns that into an error. Every other model is still
+/// written as [`SCHEMA_VERSION`], so it stays readable by the builds that wrote its kind.
+const SCHEMA_VERSION_ORIGIN: u32 = 3;
+
 /// Leading bytes of a gzip member (RFC 1952 §2.3.1), which is how [`decode`] tells a compressed
 /// model from one written before `save` framed them.
 const GZIP_MAGIC: [u8; 2] = [0x1f, 0x8b];
@@ -4705,7 +4859,12 @@ const GZIP_MAGIC: [u8; 2] = [0x1f, 0x8b];
 /// cross-compiles without a C toolchain, and a `.betula` file stays readable by `gzip -d`.
 fn encode(est: &Betula) -> PyResult<Vec<u8>> {
     let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
-    ciborium::into_writer(&(SCHEMA_VERSION, est), &mut gz)
+    let version = if est.origin.is_some() {
+        SCHEMA_VERSION_ORIGIN
+    } else {
+        SCHEMA_VERSION
+    };
+    ciborium::into_writer(&(version, est), &mut gz)
         .map_err(|e| PyValueError::new_err(format!("serialize failed: {e}")))?;
     gz.finish()
         .map_err(|e| PyValueError::new_err(format!("compress failed: {e}")))
@@ -4733,10 +4892,28 @@ fn decode(bytes: &[u8]) -> PyResult<Betula> {
         ciborium::from_reader(bytes)
     }
     .map_err(|e| PyValueError::new_err(format!("deserialize failed: {e}")))?;
-    if version != SCHEMA_VERSION {
+    if version != SCHEMA_VERSION && version != SCHEMA_VERSION_ORIGIN {
         return Err(PyValueError::new_err(format!(
-            "unsupported model version {version} (this build expects {SCHEMA_VERSION})"
+            "unsupported model version {version} (this build reads {SCHEMA_VERSION} and \
+             {SCHEMA_VERSION_ORIGIN})"
         )));
+    }
+    if (version == SCHEMA_VERSION_ORIGIN) != est.origin.is_some() {
+        return Err(PyValueError::new_err(format!(
+            "corrupt model: a version {version} file {} an origin",
+            if est.origin.is_some() {
+                "with"
+            } else {
+                "without"
+            }
+        )));
+    }
+    if let Some(o) = &est.origin {
+        if est.state32.is_none() || o.len() != est.dim || o.iter().any(|v| !v.is_finite()) {
+            return Err(PyValueError::new_err(
+                "corrupt model: the origin needs a float32 tree, one finite entry per dimension",
+            ));
+        }
     }
     for state in [
         est.state64.as_ref().map(TreeState::validate),

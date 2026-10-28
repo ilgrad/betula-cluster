@@ -1500,6 +1500,148 @@ def test_a_float32_leaf_keeps_counting_past_two_to_the_twenty_fourth():
     assert [w for w in caught if issubclass(w.category, UserWarning)] == []
 
 
+def test_a_float32_leaf_mean_keeps_moving_on_data_far_from_zero():
+    """An ``f32`` leaf mean stops moving once its weight passes ``~2^24·σ/|μ|``: past it, the
+    Welford step ``(x − m)/W`` is below half an ulp of ``m``. At ``|μ|/σ = 10^4`` that is about
+    1 700 rows, and 200 000 rows left the mean 2.8e-2 σ off. Built around the data's median, the
+    tree keeps ``|μ|`` near ``σ`` and the error is the ``f32`` rounding of the shifted rows.
+    """
+    rng = np.random.default_rng(0)
+    x = (rng.normal(size=(200_000, 2)) + 1e4).astype(np.float32)
+    est = betula_cluster.Betula(
+        n_clusters=1, method="kmeans", feature="spherical", threshold=1e9, max_leaves=1
+    ).fit(x)
+    (centre,) = est.microcluster_centers_
+    assert np.abs(centre - x.astype(np.float64).mean(0)).max() < 1e-4
+
+
+@pytest.mark.parametrize(
+    "method",
+    [
+        "kmeans",
+        "fuzzy-cmeans",
+        "gmm",
+        "gmm-full",
+        "gmm-toeplitz",
+        "mppca",
+        "ward",
+        "average",
+        "spectral",
+        "leiden",
+        "hdbscan",
+        "dc-center",
+        "scale-space",
+    ],
+)
+def test_a_float32_partition_ignores_a_translation_of_dyadic_data(blobs, method):
+    """Rows on a 1/64 grid stay exact in ``f32`` at an offset of 1024, and so does their median,
+    so the shifted rows the tree sees are the same bits either way and the partition must be too.
+    """
+    x, _ = blobs
+    x = (np.round(x * 64) / 64).astype(np.float32)
+    kw = dict(n_clusters=4, method=method, max_leaves=200, seed=1)
+    if method == "hdbscan":
+        kw = dict(method=method, max_leaves=200, min_cluster_size=20)
+    near = betula_cluster.Betula(**kw).fit_predict(x)
+    far = betula_cluster.Betula(**kw).fit_predict(x + np.float32(1024))
+    assert np.array_equal(near, far)
+
+
+def _offset_blobs(blobs):
+    x, _ = blobs
+    return x + 1e4
+
+
+def test_float32_locations_are_reported_in_the_data_frame(blobs):
+    """The tree holds ``x − origin``; every location the estimator hands back must have it added."""
+    x = _offset_blobs(blobs)
+    kw = dict(n_clusters=4, method="kmeans", feature="diagonal", max_leaves=200, seed=1)
+    e64 = betula_cluster.Betula(**kw).fit(x)
+    e32 = betula_cluster.Betula(**kw).fit(x.astype(np.float32))
+
+    def by_row(a):
+        a = np.asarray(a)
+        return a[np.lexsort(a.T[::-1])]
+
+    assert np.allclose(by_row(e32.cluster_centers_), by_row(e64.cluster_centers_), atol=0.05)
+    lo, hi = x.min(0), x.max(0)
+    for name, pts in (
+        ("microcluster_centers_", e32.microcluster_centers_),
+        ("export_coreset", e32.export_coreset(size=50).centers),
+        ("mapper", e32.mapper(lens="coordinate", coordinate=1).node_centroids),
+    ):
+        assert ((pts >= lo - 1) & (pts <= hi + 1)).all(), name
+    lens = e32.mapper(lens="coordinate", coordinate=1).node_lens
+    assert lens.min() > lo[1] - 1, "the coordinate lens reads the data's own coordinate"
+    assert e32.summary_mmd(x[::7]) == pytest.approx(e64.summary_mmd(x[::7]), abs=0.02)
+
+
+def test_a_float32_stream_keeps_the_origin_of_its_first_chunk(blobs):
+    x = _offset_blobs(blobs).astype(np.float32)
+    rng = np.random.default_rng(3)
+    x = x[rng.permutation(len(x))]
+    est = betula_cluster.Betula(n_clusters=4, method="kmeans", max_leaves=200, seed=1)
+    for chunk in np.array_split(x, 5):
+        est.partial_fit(chunk)
+    est.partial_fit()
+    fitted = betula_cluster.Betula(n_clusters=4, method="kmeans", max_leaves=200, seed=1).fit(x)
+    assert ari(est.predict(x), fitted.predict(x)) > 0.99
+    assert np.abs(np.asarray(est.cluster_sizes_).sum() - len(x)) < 1e-6
+
+
+def test_a_float32_model_round_trips_its_origin(blobs, tmp_path):
+    import pickle
+
+    x = _offset_blobs(blobs).astype(np.float32)
+    est = betula_cluster.Betula(n_clusters=4, method="gmm", max_leaves=200, seed=1).fit(x)
+    path = tmp_path / "model.betula"
+    est.save(str(path))
+    for loaded in (betula_cluster.Betula.load(str(path)), pickle.loads(pickle.dumps(est))):
+        assert np.array_equal(loaded.predict(x), est.predict(x))
+        assert np.array_equal(loaded.cluster_centers_, est.cluster_centers_)
+
+
+def _schema_version(est, tmp_path):
+    import gzip
+
+    path = tmp_path / "model.betula"
+    est.save(str(path))
+    cbor = gzip.decompress(path.read_bytes())
+    assert cbor[0] == 0x82, "a (version, estimator) pair"
+    return cbor[1]
+
+
+def test_only_a_model_built_around_an_origin_is_written_as_schema_3(blobs, tmp_path):
+    """1.4 would load an origin it does not know about and report everything shifted by it, so
+    those files carry a version 1.4 refuses -- and every other model keeps the one it reads."""
+    x = _offset_blobs(blobs)
+    shifted = betula_cluster.Betula(n_clusters=4, method="kmeans").fit(x.astype(np.float32))
+    assert _schema_version(shifted, tmp_path) == 3
+    for est in (
+        betula_cluster.Betula(n_clusters=4, method="kmeans").fit(x),
+        betula_cluster.Betula(n_clusters=4, method="kmeans", normalize=True).fit(
+            x.astype(np.float32)
+        ),
+        betula_cluster.Betula(n_clusters=4, method="vmf").fit(x.astype(np.float32)),
+    ):
+        assert _schema_version(est, tmp_path) == 2
+
+
+def test_a_schema_2_file_that_carries_an_origin_is_refused(blobs, tmp_path):
+    import gzip
+
+    est = betula_cluster.Betula(n_clusters=4, method="kmeans").fit(
+        _offset_blobs(blobs).astype(np.float32)
+    )
+    path = tmp_path / "model.betula"
+    est.save(str(path))
+    cbor = bytearray(gzip.decompress(path.read_bytes()))
+    cbor[1] = 0x02
+    path.write_bytes(gzip.compress(bytes(cbor)))
+    with pytest.raises(ValueError, match="corrupt model: a version 2 file with an origin"):
+        betula_cluster.Betula.load(str(path))
+
+
 def test_a_float64_tree_of_the_same_mass_counts_the_same():
     """The control that was already exact before the accumulators widened, and still is."""
     rows = 2**24 + 2**21
