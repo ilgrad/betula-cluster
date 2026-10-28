@@ -30,7 +30,15 @@ All notable changes to this project are documented here. The format follows
   like the others, and the fold into the new entries stays serial in row order. Labels, centres and
   saved files are byte-identical (36 digests over three datasets, `leaf_refit` 1 and 2, beam 1 and 2,
   at 1 and 8 threads); `scripts/thread_determinism.py` gains a `leaf_refit` configuration above the
-  cutoff. The speed-up is not yet timed.
+  cutoff. On eight threads a `kmeans` fit with `leaf_refit=2` at `max_leaves=2000` takes 0.52× the
+  time on MNIST-20k and 0.35× on covtype-100k; on one thread it is unchanged (0.98×).
+- **Ward's nearest-neighbour chain skips candidates on a staged lower bound from `d ≥ 128`.** Each
+  scan evaluates the chain predecessor first, then drops every leaf whose partial distance over the
+  highest-variance coordinates already exceeds the incumbent, with a rounding margin that keeps the
+  bound below the height the full evaluation returns. Merges, labels and tie-breaks are exactly
+  those of the full scan. On MNIST-20k the head takes 0.54× the time at 1 966 leaves on one thread
+  and at 3 847 leaves on eight threads, and is unchanged (1.02×) at 1 966 leaves on eight threads;
+  below `d = 128` the scan is the old one.
 
 ### Notes
 - **Documentation:** USAGE states the Leiden head's leaf-graph cost: an exact `O(m²·d)`

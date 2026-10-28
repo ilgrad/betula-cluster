@@ -101,7 +101,9 @@ fn nearest_active<R: Real, C: ClusterFeature<R>>(
 /// at 64, and saves `43 %` at 784: below 128 a stage is shorter than one SIMD block and the checks
 /// cost more than they skip. On MNIST-20k leaves (`d = 784`, 924 / 1 966 / 3 847 leaves) it saves
 /// `−2 %`, `0 %` and costs `+5 %`, since a 64-coordinate stage costs about what its check does; what
-/// it can still save there is memory traffic, which only a timing shows.
+/// it saves there is memory traffic. Timed on that head, it takes `0.54×` the time at 1 966 leaves on
+/// one thread (L1 misses and cycles both `−45 %`) and at 3 847 leaves on eight, and `1.02×` at 1 966
+/// on eight, where the means stay resident in L3.
 const PRUNE_MIN_DIM: usize = 128;
 
 /// Leaf means permuted into descending-variance order, for the staged lower bound on a Ward height.
