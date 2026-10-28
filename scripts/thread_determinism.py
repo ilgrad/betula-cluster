@@ -97,6 +97,8 @@ CONFIGS: dict[str, dict[str, object]] = {
         "fixture": "nonneg",
     },
     "kmeans+svd": {"method": "kmeans", "projection": "svd", "projection_dim": 8},
+    # The refit pass routes every row again, in parallel only from 4 096 rows: twice the fixture.
+    "kmeans+leaf_refit": {"method": "kmeans", "leaf_refit": 2, "repeat": 2},
 }
 
 
@@ -107,6 +109,7 @@ def digest(config: str) -> str:
 
     spec = dict(CONFIGS[config])
     fixture, discovers_k = spec.pop("fixture", None), "k" in spec
+    repeat = int(spec.pop("repeat", 1))  # type: ignore[call-overload]
     spec.pop("k", None)
     spec.pop("normalize", None)
 
@@ -120,7 +123,7 @@ def digest(config: str) -> str:
     masses, spreads = (1400, 1000, 700, 500, 400), (0.6, 1.0, 1.4, 0.8, 1.8)
     x = np.vstack(
         [
-            c + rng.normal(scale=s, size=(m, 12))
+            c + rng.normal(scale=s, size=(m * repeat, 12))
             for c, m, s in zip(centres, masses, spreads, strict=True)
         ]
     )

@@ -24,6 +24,15 @@ All notable changes to this project are documented here. The format follows
   −0.022 to +0.019, covtype −0.035 to −0.004 around an ARI near 0, and two moons / two circles stay
   at 1.000. Rust: `clustering::spectral_on`.
 
+### Performance
+- **`leaf_refit` routes its rows on the thread pool.** Each refit round re-routed every row serially,
+  the only full-data route that did not go through the parallel row map; it now forks from 4 096 rows
+  like the others, and the fold into the new entries stays serial in row order. Labels, centres and
+  saved files are byte-identical (36 digests over three datasets, `leaf_refit` 1 and 2, beam 1 and 2,
+  at 1 and 8 threads); `scripts/thread_determinism.py` gains a `leaf_refit` configuration above the
+  cutoff. The speed-up is not yet timed.
+
+
 ## [1.5.0] — 2026-10-28
 
 ### Fixed

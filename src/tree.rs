@@ -106,6 +106,10 @@ const ROBUST_MIN_WEIGHT: f64 = 5.0;
 /// the tree gets re-matched to the entries the update moved and the cascade has not started.
 const REFIT_REBALANCE_ROUNDS: usize = 1;
 
+/// Rows from which the refit route forks: the cutoff `map_rows` uses for the other full-data routes.
+#[cfg(feature = "parallel")]
+const REFIT_PAR_MIN: usize = 4096;
+
 impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> CFTree<R, C, D, A> {
     /// New empty tree. `branching` = max children per internal node, `leaf_cap` = max entries
     /// per leaf, `threshold` = absorption limit (units of `abs`, squared for euclidean),
@@ -568,11 +572,22 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> CF
 
     /// Route every row against the tree as it stands and replace each entry with the exact
     /// sufficient statistic of the rows it won, returning which entries won any.
+    ///
+    /// The route reads the tree only, so it runs in parallel past [`REFIT_PAR_MIN`] rows; an indexed
+    /// `collect` keeps row order, and the fold into `fresh` stays serial in that order, so every
+    /// entry's CF is the same bits either way.
     fn reaccumulate(&mut self, flat: &[R], n: usize, beam: usize) -> Vec<bool> {
         let dim = self.dim;
-        let assign: Vec<usize> = (0..n)
-            .map(|i| self.nearest_entry_beam(&flat[i * dim..(i + 1) * dim], beam))
-            .collect();
+        let route = |i: usize| self.nearest_entry_beam(&flat[i * dim..(i + 1) * dim], beam);
+        #[cfg(feature = "parallel")]
+        let assign: Vec<usize> = if n >= REFIT_PAR_MIN {
+            use rayon::prelude::*;
+            (0..n).into_par_iter().map(route).collect()
+        } else {
+            (0..n).map(route).collect()
+        };
+        #[cfg(not(feature = "parallel"))]
+        let assign: Vec<usize> = (0..n).map(route).collect();
         let mut fresh: Vec<C> = (0..self.entries.len()).map(|_| C::new(dim)).collect();
         for (i, &e) in assign.iter().enumerate() {
             fresh[e].push(&flat[i * dim..(i + 1) * dim], R::one());
