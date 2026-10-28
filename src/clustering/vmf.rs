@@ -651,8 +651,9 @@ fn init_kappas<R: Real>(mu: &[Vec<R>], n: &[R], labels: &[usize], k: usize, dim:
 }
 
 /// Fit a vMF mixture with automatic component count: fit every `k ∈ [k_min, k_max]` and keep the
-/// lowest-BIC model. Free parameters per component: `d` (mean direction) + `1` (κ), plus `k−1`
-/// mixing weights.
+/// lowest-BIC model. Free parameters per component: `d − 1` (a unit mean direction on `S^{d−1}`) +
+/// `1` (κ), plus `k−1` mixing weights — `k·d + (k − 1)`, the count `watson_auto` uses
+/// for the same geometry.
 pub fn movmf_auto<R: Real, C: ClusterFeature<R>>(
     features: &[C],
     k_min: usize,
@@ -669,7 +670,7 @@ pub fn movmf_auto<R: Real, C: ClusterFeature<R>>(
     let mut best: Option<Movmf<R>> = None;
     for k in k_lo..=k_hi {
         let g = movmf(features, k, max_iter, seed);
-        let p = k * (d + 1) + (k - 1);
+        let p = k * d + (k - 1);
         let score = -two * g.loglik + R::from_usize(p).unwrap() * ntot.ln();
         if score < best_score {
             best_score = score;
@@ -1425,19 +1426,21 @@ mod tests {
 
     #[test]
     fn movmf_auto_minimises_an_independently_counted_bic() {
-        // `p = k(d + 1) + (k - 1)`: a mean direction and a concentration per component, plus the
-        // free mixing weights. Every rival count below differs from it by one or two parameters per
-        // component -- one or two `ln n` of penalty -- so it can only decide where the likelihood an
-        // extra component buys is the same order as what it costs. Sweeping the *separation* walks
-        // the fixture through that regime; sweeping the dimension does not, because the difference
-        // between these counts is constant in `d`.
+        // `p = k·d + (k - 1)`: a unit mean direction (`d - 1` free coordinates) and a concentration
+        // per component, plus the free mixing weights. Up to 1.4.0 the code counted `k(d + 1)`,
+        // charging each component one `ln n` too many and leaning `n_clusters=0` toward fewer
+        // components; that count is the first rival now. Every rival differs from it by one or two
+        // parameters per component -- one or two `ln n` of penalty -- so it can only decide where the
+        // likelihood an extra component buys is the same order as what it costs. Sweeping the
+        // *separation* walks the fixture through that regime; sweeping the dimension does not,
+        // because the difference between these counts is constant in `d`.
         let dim = 6usize;
         /// A rival free-parameter count, in `(k, d)`.
         type ParamCount = fn(usize, usize) -> usize;
         let rivals: [(&str, ParamCount); 3] = [
-            ("k·d + (k-1)", |k, d| k * d + (k - 1)),
-            ("k(d-1) + (k-1)", |k, d| k * (d - 1) + (k - 1)),
-            ("k(d+1) - (k-1)", |k, d| k * (d + 1) - (k - 1)),
+            ("k(d+1) + (k-1)", |k, d| k * (d + 1) + (k - 1)),
+            ("k(d-2) + (k-1)", |k, d| k * (d - 2) + (k - 1)),
+            ("k(d+2) + (k-1)", |k, d| k * (d + 2) + (k - 1)),
         ];
         let mut discriminating = [false; 3];
         let mut chosen = Vec::new();
@@ -1456,7 +1459,7 @@ mod tests {
                     })
                     .unwrap()
             };
-            let want = pick(&|k| k * (dim + 1) + (k - 1));
+            let want = pick(&|k| k * dim + (k - 1));
             for (i, (_, f)) in rivals.iter().enumerate() {
                 if pick(&|k| f(k, dim)) != want {
                     discriminating[i] = true;
