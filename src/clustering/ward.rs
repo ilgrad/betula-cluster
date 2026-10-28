@@ -47,25 +47,135 @@ const PAR_MIN_READS: usize = 1 << 15;
 /// `active` is the *dense* list of surviving clusters, not a mask over all `m`: a chain that is
 /// 90 % through its merges would otherwise pay a full `m`-length pass to find the 10 % still alive,
 /// and rayon would split that pass into chunks that are mostly holes.
+///
+/// With a [`Prefix`] (`dim ≥` [`PRUNE_MIN_DIM`]) `hint`, the chain predecessor, is evaluated
+/// first, so the scan starts from an incumbent no farther than the answer, and [`Prefix::exceeds`]
+/// drops every candidate whose lower bound is already beyond it. A dropped candidate's height is
+/// strictly greater than the incumbent's, so neither the minimum nor its smallest-index tie-break
+/// can move, and every survivor's height is the one [`VarianceIncrease`] computes.
 fn nearest_active<R: Real, C: ClusterFeature<R>>(
     cf: &[C],
+    prefix: Option<&Prefix<R>>,
     active: &[usize],
     a: usize,
+    hint: Option<usize>,
 ) -> (R, usize) {
-    let eval = |&j: &usize| (VarianceIncrease.between(&cf[a], &cf[j]), j);
+    let Some(prefix) = prefix else {
+        let eval = |&j: &usize| (VarianceIncrease.between(&cf[a], &cf[j]), j);
+        #[cfg(feature = "parallel")]
+        if active.len().saturating_mul(cf[a].dim()) >= PAR_MIN_READS {
+            return active
+                .par_iter()
+                .filter(|&&j| j != a)
+                .map(eval)
+                .reduce(|| (R::infinity(), usize::MAX), nearer);
+        }
+        return active
+            .iter()
+            .filter(|&&j| j != a)
+            .map(eval)
+            .fold((R::infinity(), usize::MAX), nearer);
+    };
+    let exact = |j: usize| (VarianceIncrease.between(&cf[a], &cf[j]), j);
+    let start = hint.map_or((R::infinity(), usize::MAX), exact);
+    let na = cf[a].weight();
+    let step = |best: (R, usize), &j: &usize| {
+        if j == a || Some(j) == hint || prefix.exceeds(a, j, na, cf[j].weight(), best.0) {
+            best
+        } else {
+            nearer(best, exact(j))
+        }
+    };
     #[cfg(feature = "parallel")]
     if active.len().saturating_mul(cf[a].dim()) >= PAR_MIN_READS {
         return active
             .par_iter()
-            .filter(|&&j| j != a)
-            .map(eval)
-            .reduce(|| (R::infinity(), usize::MAX), nearer);
+            .fold(|| start, step)
+            .reduce(|| start, nearer);
     }
-    active
-        .iter()
-        .filter(|&&j| j != a)
-        .map(eval)
-        .fold((R::infinity(), usize::MAX), nearer)
+    active.iter().fold(start, step)
+}
+
+/// Dimension from which the staged bound is used. Counted in retired instructions on the Ward head
+/// over ten Gaussians (`m ≈ 900 / 1 800` leaves, 30 000 rows) it costs `+32 %` at `d = 16` and `+15 %`
+/// at 64, and saves `43 %` at 784: below 128 a stage is shorter than one SIMD block and the checks
+/// cost more than they skip. On MNIST-20k leaves (`d = 784`, 924 / 1 966 / 3 847 leaves) it saves
+/// `−2 %`, `0 %` and costs `+5 %`, since a 64-coordinate stage costs about what its check does; what
+/// it can still save there is memory traffic, which only a timing shows.
+const PRUNE_MIN_DIM: usize = 128;
+
+/// Leaf means permuted into descending-variance order, for the staged lower bound on a Ward height.
+///
+/// Every staged prefix of `‖μ_a − μ_b‖²` sums non-negative terms, so in exact arithmetic it is at
+/// most the full sum. In floating point the two are summed in different orders, so the prefix is
+/// first lowered by a relative margin that covers both roundings, `γ_d` each (Higham, *Accuracy and
+/// Stability*, §4.2), plus the absolute error gradual underflow can add. The lowered value is then
+/// at most the full sum the kernel returns, and it is scaled by the same `· n_a · n_b / n_ab`
+/// sequence [`VarianceIncrease`] applies; rounding is monotone, so the bound stays below the
+/// height that sequence would compute.
+struct Prefix<R> {
+    means: Vec<Vec<R>>,
+    order: Vec<u32>,
+    stages: Vec<usize>,
+    shrink: R,
+    floor: R,
+}
+
+impl<R: Real> Prefix<R> {
+    fn new<C: ClusterFeature<R>>(cf: &[C]) -> Option<Self> {
+        let dim = cf.first().map_or(0, |f| f.dim());
+        if dim < PRUNE_MIN_DIM {
+            return None;
+        }
+        let raw: Vec<Vec<R>> = cf.iter().map(|f| f.mean().to_vec()).collect();
+        let mass: Vec<R> = cf.iter().map(|f| f.weight()).collect();
+        let order = crate::assign::variance_order(&raw, Some(&mass), dim);
+        let block = crate::assign::default_block(dim);
+        let stages = (1..)
+            .map(|s| s * block)
+            .take_while(|&at| at < dim)
+            .chain(std::iter::once(dim))
+            .collect();
+        let d = R::from_usize(dim).unwrap();
+        let mut prefix = Prefix {
+            means: Vec::with_capacity(cf.len()),
+            order,
+            stages,
+            shrink: R::one()
+                - (d * R::from_f64(4.0).unwrap() + R::from_f64(16.0).unwrap()) * R::epsilon(),
+            floor: (d + R::one()) * R::min_positive_value(),
+        };
+        prefix.means = raw.iter().map(|m| prefix.permuted(m)).collect();
+        Some(prefix)
+    }
+
+    fn permuted(&self, mean: &[R]) -> Vec<R> {
+        self.order.iter().map(|&j| mean[j as usize]).collect()
+    }
+
+    /// Re-read cluster `a`'s mean after a merge changed it.
+    fn update(&mut self, a: usize, mean: &[R]) {
+        self.means[a] = self.permuted(mean);
+    }
+
+    /// Whether the Ward height of `(a, b)` is certainly greater than `best`.
+    fn exceeds(&self, a: usize, b: usize, na: R, nb: R, best: R) -> bool {
+        let nab = na + nb;
+        if nab <= R::zero() {
+            return false;
+        }
+        let (x, y) = (&self.means[a], &self.means[b]);
+        let mut acc = R::zero();
+        let mut lo = 0;
+        for &hi in &self.stages {
+            acc = acc + crate::kernels::sq_euclidean(&x[lo..hi], &y[lo..hi]);
+            lo = hi;
+            if (acc * self.shrink - self.floor) * na * nb / nab > best {
+                return true;
+            }
+        }
+        false
+    }
 }
 
 /// Result of a Ward-HAC run over features.
@@ -90,6 +200,7 @@ fn dendrogram<R: Real, C: ClusterFeature<R>>(features: &[C]) -> Vec<Merge<R>> {
     // somewhere else would reorder the merge list, and the height sort that follows is not a total
     // order, so equal heights would come out cut differently.
     let mut active: Vec<usize> = (0..m).collect();
+    let mut prefix = Prefix::new(&cf);
     let mut chain: Vec<usize> = Vec::new();
     let mut merges: Vec<Merge<R>> = Vec::with_capacity(m.saturating_sub(1));
 
@@ -99,13 +210,17 @@ fn dendrogram<R: Real, C: ClusterFeature<R>>(features: &[C]) -> Vec<Merge<R>> {
         }
         loop {
             let a = *chain.last().unwrap();
-            let (best_d, b) = nearest_active(&cf, &active, a);
+            let hint = chain.len().checked_sub(2).map(|i| chain[i]);
+            let (best_d, b) = nearest_active(&cf, prefix.as_ref(), &active, a, hint);
             if chain.len() >= 2 && chain[chain.len() - 2] == b {
                 // a and b are reciprocal nearest neighbours → merge b into a.
                 chain.pop();
                 chain.pop();
                 let other = cf[b].clone();
                 cf[a].merge(&other);
+                if let Some(prefix) = prefix.as_mut() {
+                    prefix.update(a, cf[a].mean());
+                }
                 if let Ok(at) = active.binary_search(&b) {
                     active.remove(at);
                 }
@@ -413,5 +528,151 @@ mod tests {
         assert_eq!(labels[0], labels[1]);
         assert_eq!(labels[2], labels[3]);
         assert_ne!(labels[0], labels[2]);
+    }
+
+    /// The chain as it ran before the prefix bound: every candidate evaluated in full.
+    fn full_scan_dendrogram<R: Real, C: ClusterFeature<R>>(features: &[C]) -> Vec<Merge<R>> {
+        let mut cf: Vec<C> = features.to_vec();
+        let mut active: Vec<usize> = (0..cf.len()).collect();
+        let mut chain: Vec<usize> = Vec::new();
+        let mut merges = Vec::new();
+        while active.len() > 1 {
+            if chain.is_empty() {
+                chain.push(active[0]);
+            }
+            loop {
+                let a = *chain.last().unwrap();
+                let (best_d, b) = active
+                    .iter()
+                    .filter(|&&j| j != a)
+                    .map(|&j| (VarianceIncrease.between(&cf[a], &cf[j]), j))
+                    .fold((R::infinity(), usize::MAX), nearer);
+                if chain.len() >= 2 && chain[chain.len() - 2] == b {
+                    chain.pop();
+                    chain.pop();
+                    let other = cf[b].clone();
+                    cf[a].merge(&other);
+                    let at = active.binary_search(&b).unwrap();
+                    active.remove(at);
+                    merges.push(Merge {
+                        into: a,
+                        from: b,
+                        height: best_d,
+                    });
+                    break;
+                }
+                chain.push(b);
+            }
+        }
+        merges.sort_by(|x, y| x.height.partial_cmp(&y.height).unwrap());
+        merges
+    }
+
+    fn same_merges<R: Real, C: ClusterFeature<R>>(features: &[C], what: &str) {
+        let got = dendrogram::<R, C>(features);
+        let want = full_scan_dendrogram::<R, C>(features);
+        assert_eq!(got.len(), want.len(), "{what}");
+        for (t, (g, w)) in got.iter().zip(&want).enumerate() {
+            assert!(
+                (g.into, g.from) == (w.into, w.from) && g.height.to_f64() == w.height.to_f64(),
+                "{what}: merge {t} is ({}, {}) at {:?}, the full scan's ({}, {}) at {:?}",
+                g.into,
+                g.from,
+                g.height,
+                w.into,
+                w.from,
+                w.height
+            );
+        }
+    }
+
+    fn features<R: Real>(rows: &[Vec<f64>], mass: &[f64]) -> Vec<crate::feature::Spherical<R>> {
+        rows.iter()
+            .zip(mass)
+            .map(|(row, &w)| {
+                let x: Vec<R> = row.iter().map(|&v| R::from_f64(v).unwrap()).collect();
+                let mut f = crate::feature::Spherical::new(x.len());
+                f.push(&x, R::from_f64(w).unwrap());
+                f
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_pruned_chain_merges_exactly_as_the_full_scan() {
+        let mut rng = SplitMix64::new(11);
+        for dim in [2usize, 64, PRUNE_MIN_DIM, 150, 784] {
+            let rows: Vec<Vec<f64>> = (0..240)
+                .map(|i| {
+                    let c = (i % 5) as f64 * 3.0;
+                    (0..dim)
+                        .map(|_| c + rng.gauss() * (1.0 + 4.0 * rng.next_f64()))
+                        .collect()
+                })
+                .collect();
+            let mass: Vec<f64> = (0..240)
+                .map(|_| 1.0 + (rng.next_u64() % 50) as f64)
+                .collect();
+            same_merges::<f64, _>(&features::<f64>(&rows, &mass), &format!("f64, d = {dim}"));
+            same_merges::<f32, _>(&features::<f32>(&rows, &mass), &format!("f32, d = {dim}"));
+        }
+    }
+
+    #[test]
+    fn the_pruned_chain_breaks_ties_exactly_as_the_full_scan() {
+        // Small integer lattices with repeats: sums are exact, so heights tie to the bit, and a
+        // bound that dropped a tied candidate would hand the merge to a larger index.
+        let mut rng = SplitMix64::new(3);
+        for dim in [2usize, 3, 130] {
+            let rows: Vec<Vec<f64>> = (0..200)
+                .map(|_| (0..dim).map(|_| (rng.next_u64() % 3) as f64).collect())
+                .collect();
+            for mass in [
+                vec![1.0; 200],
+                (0..200).map(|i| (1 + i % 4) as f64).collect(),
+            ] {
+                same_merges::<f64, _>(&features::<f64>(&rows, &mass), &format!("grid, d = {dim}"));
+            }
+        }
+    }
+
+    #[test]
+    fn the_bound_never_rules_out_a_pair_at_its_own_height() {
+        // `exceeds(a, b, …, h)` with `h` the height `VarianceIncrease` computes for the same pair
+        // must be false, or a pruned candidate could have been the minimum. Coordinates of one
+        // magnitude make the two summation orders round apart most often; a spread over 790 binary
+        // orders reaches subnormal squares, where only the absolute floor holds.
+        let mut rng = SplitMix64::new(5);
+        let mut cases = 0usize;
+        for (dim, spread) in [PRUNE_MIN_DIM, 200, 784, 3000]
+            .into_iter()
+            .flat_map(|d| [(d, 2u64), (d, 790)])
+        {
+            for _ in 0..400 {
+                let draw = |rng: &mut SplitMix64| -> f64 {
+                    let e = (rng.next_u64() % spread) as i32 - (spread as i32 * 2) / 3;
+                    let sign = if rng.next_u64() % 2 == 0 { 1.0 } else { -1.0 };
+                    sign * (1.0 + rng.next_f64())
+                        * 2f64.powi(e)
+                        * if rng.next_u64() % 9 == 0 { 1e-20 } else { 1.0 }
+                };
+                let rows: Vec<Vec<f64>> = (0..2)
+                    .map(|_| (0..dim).map(|_| draw(&mut rng)).collect())
+                    .collect();
+                let mass = [
+                    1.0 + (rng.next_u64() % 30) as f64,
+                    1.0 + (rng.next_u64() % 30) as f64,
+                ];
+                let feats = features::<f64>(&rows, &mass);
+                let prefix = Prefix::new(&feats).unwrap();
+                let h: f64 = VarianceIncrease.between(&feats[0], &feats[1]);
+                assert!(
+                    !prefix.exceeds(0, 1, mass[0], mass[1], h),
+                    "d = {dim}: the pair is ruled out at its own height {h:e}"
+                );
+                cases += 1;
+            }
+        }
+        assert_eq!(cases, 3200);
     }
 }
