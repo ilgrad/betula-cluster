@@ -266,6 +266,27 @@ pub fn betula_cluster::clustering::bregman::bregman_agglomerative<R: betula_clus
 pub fn betula_cluster::clustering::bregman::bregman_em<R: betula_cluster::types::Real, B: betula_cluster::bregman::BregmanDivergence<R>>(&[betula_cluster::bregman::BregmanCf<R, B>], usize, R, usize, u64) -> betula_cluster::clustering::bregman::BregmanMixture<R>
 pub fn betula_cluster::clustering::bregman::bregman_kmeans<R: betula_cluster::types::Real, B: betula_cluster::bregman::BregmanDivergence<R>>(&[betula_cluster::bregman::BregmanCf<R, B>], usize, usize, usize, u64) -> betula_cluster::clustering::kmeans::KMeans<R>
 pub mod betula_cluster::clustering::community
+pub enum betula_cluster::clustering::community::LeafGraph
+pub betula_cluster::clustering::community::LeafGraph::Mass
+pub betula_cluster::clustering::community::LeafGraph::Unit
+impl core::clone::Clone for betula_cluster::clustering::community::LeafGraph
+pub fn betula_cluster::clustering::community::LeafGraph::clone(&self) -> betula_cluster::clustering::community::LeafGraph
+impl core::cmp::Eq for betula_cluster::clustering::community::LeafGraph
+impl core::cmp::PartialEq for betula_cluster::clustering::community::LeafGraph
+pub fn betula_cluster::clustering::community::LeafGraph::eq(&self, &betula_cluster::clustering::community::LeafGraph) -> bool
+impl core::default::Default for betula_cluster::clustering::community::LeafGraph
+pub fn betula_cluster::clustering::community::LeafGraph::default() -> betula_cluster::clustering::community::LeafGraph
+impl core::fmt::Debug for betula_cluster::clustering::community::LeafGraph
+pub fn betula_cluster::clustering::community::LeafGraph::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for betula_cluster::clustering::community::LeafGraph
+impl core::marker::StructuralPartialEq for betula_cluster::clustering::community::LeafGraph
+impl core::marker::Freeze for betula_cluster::clustering::community::LeafGraph
+impl core::marker::Send for betula_cluster::clustering::community::LeafGraph
+impl core::marker::Sync for betula_cluster::clustering::community::LeafGraph
+impl core::marker::Unpin for betula_cluster::clustering::community::LeafGraph
+impl core::marker::UnsafeUnpin for betula_cluster::clustering::community::LeafGraph
+impl core::panic::unwind_safe::RefUnwindSafe for betula_cluster::clustering::community::LeafGraph
+impl core::panic::unwind_safe::UnwindSafe for betula_cluster::clustering::community::LeafGraph
 pub enum betula_cluster::clustering::community::Objective
 pub betula_cluster::clustering::community::Objective::Cpm
 pub betula_cluster::clustering::community::Objective::Modularity
@@ -290,6 +311,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for betula_cluster::clustering::com
 impl core::panic::unwind_safe::UnwindSafe for betula_cluster::clustering::community::Community
 pub fn betula_cluster::clustering::community::leiden<R: betula_cluster::types::Real, C: betula_cluster::feature::ClusterFeature<R>>(&[C], f64, betula_cluster::clustering::community::Objective, u64, f64, f64, usize) -> betula_cluster::clustering::community::Community
 pub fn betula_cluster::clustering::community::leiden_iterated<R: betula_cluster::types::Real, C: betula_cluster::feature::ClusterFeature<R>>(&[C], f64, betula_cluster::clustering::community::Objective, u64, f64, f64, usize, usize) -> betula_cluster::clustering::community::Community
+pub fn betula_cluster::clustering::community::leiden_on<R: betula_cluster::types::Real, C: betula_cluster::feature::ClusterFeature<R>>(&[C], f64, betula_cluster::clustering::community::Objective, u64, f64, f64, usize, usize, betula_cluster::clustering::community::LeafGraph) -> betula_cluster::clustering::community::Community
 pub mod betula_cluster::clustering::dcdist
 pub enum betula_cluster::clustering::dcdist::DcObjective
 pub betula_cluster::clustering::dcdist::DcObjective::Center
@@ -805,6 +827,27 @@ impl core::marker::Unpin for betula_cluster::clustering::dcdist::DcObjective
 impl core::marker::UnsafeUnpin for betula_cluster::clustering::dcdist::DcObjective
 impl core::panic::unwind_safe::RefUnwindSafe for betula_cluster::clustering::dcdist::DcObjective
 impl core::panic::unwind_safe::UnwindSafe for betula_cluster::clustering::dcdist::DcObjective
+pub enum betula_cluster::clustering::LeafGraph
+pub betula_cluster::clustering::LeafGraph::Mass
+pub betula_cluster::clustering::LeafGraph::Unit
+impl core::clone::Clone for betula_cluster::clustering::community::LeafGraph
+pub fn betula_cluster::clustering::community::LeafGraph::clone(&self) -> betula_cluster::clustering::community::LeafGraph
+impl core::cmp::Eq for betula_cluster::clustering::community::LeafGraph
+impl core::cmp::PartialEq for betula_cluster::clustering::community::LeafGraph
+pub fn betula_cluster::clustering::community::LeafGraph::eq(&self, &betula_cluster::clustering::community::LeafGraph) -> bool
+impl core::default::Default for betula_cluster::clustering::community::LeafGraph
+pub fn betula_cluster::clustering::community::LeafGraph::default() -> betula_cluster::clustering::community::LeafGraph
+impl core::fmt::Debug for betula_cluster::clustering::community::LeafGraph
+pub fn betula_cluster::clustering::community::LeafGraph::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for betula_cluster::clustering::community::LeafGraph
+impl core::marker::StructuralPartialEq for betula_cluster::clustering::community::LeafGraph
+impl core::marker::Freeze for betula_cluster::clustering::community::LeafGraph
+impl core::marker::Send for betula_cluster::clustering::community::LeafGraph
+impl core::marker::Sync for betula_cluster::clustering::community::LeafGraph
+impl core::marker::Unpin for betula_cluster::clustering::community::LeafGraph
+impl core::marker::UnsafeUnpin for betula_cluster::clustering::community::LeafGraph
+impl core::panic::unwind_safe::RefUnwindSafe for betula_cluster::clustering::community::LeafGraph
+impl core::panic::unwind_safe::UnwindSafe for betula_cluster::clustering::community::LeafGraph
 pub enum betula_cluster::clustering::Linkage
 pub betula_cluster::clustering::Linkage::Average
 pub betula_cluster::clustering::Linkage::Centroid
@@ -1253,6 +1296,7 @@ pub fn betula_cluster::clustering::kmedoids<R: betula_cluster::types::Real, C: b
 pub fn betula_cluster::clustering::kprototypes<R: betula_cluster::types::Real>(&[betula_cluster::clustering::kprototypes::MixedCf<R>], usize, betula_cluster::clustering::kprototypes::BlockWeights<R>, usize, usize, u64) -> alloc::vec::Vec<usize>
 pub fn betula_cluster::clustering::leiden<R: betula_cluster::types::Real, C: betula_cluster::feature::ClusterFeature<R>>(&[C], f64, betula_cluster::clustering::community::Objective, u64, f64, f64, usize) -> betula_cluster::clustering::community::Community
 pub fn betula_cluster::clustering::leiden_iterated<R: betula_cluster::types::Real, C: betula_cluster::feature::ClusterFeature<R>>(&[C], f64, betula_cluster::clustering::community::Objective, u64, f64, f64, usize, usize) -> betula_cluster::clustering::community::Community
+pub fn betula_cluster::clustering::leiden_on<R: betula_cluster::types::Real, C: betula_cluster::feature::ClusterFeature<R>>(&[C], f64, betula_cluster::clustering::community::Objective, u64, f64, f64, usize, usize, betula_cluster::clustering::community::LeafGraph) -> betula_cluster::clustering::community::Community
 pub fn betula_cluster::clustering::merge_increase<R: betula_cluster::types::Real>(&[R], &[R]) -> R
 pub fn betula_cluster::clustering::mfa<R: betula_cluster::types::Real, C: betula_cluster::feature::ClusterFeature<R>>(&[C], usize, usize, usize, u64) -> betula_cluster::clustering::mfa::Mfa<R>
 pub fn betula_cluster::clustering::mfa_auto<R: betula_cluster::types::Real, C: betula_cluster::feature::ClusterFeature<R>>(&[C], usize, usize, usize, usize, u64) -> betula_cluster::clustering::mfa::Mfa<R>

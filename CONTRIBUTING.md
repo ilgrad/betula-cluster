@@ -28,7 +28,7 @@ Python (against the built extension):
 
 ```bash
 pytest tests/test_python.py --cov=betula_cluster --cov-fail-under=100   # 100% wrapper coverage is enforced
-pytest tests/test_python.py -q   # again with NO optional deps installed: 550 passed, 49 skipped
+pytest tests/test_python.py -q   # again with NO optional deps installed: 555 passed, 49 skipped
 ruff check python/ tests/ bench/ examples/   # examples/ is linted but not formatted -- it is
 ruff format --check python/ tests/ bench/    # notebook cells, and reflowing them desyncs the .ipynb
 ty check python/                                   # or mypy / pyright
@@ -88,7 +88,7 @@ outside this contract by construction — the same command reports moving one *i
 which is why it is a release-boundary decision. CI runs this on every pull request; before 1.0.0 was
 published it reported rather than gated, since 0.x was allowed to break.
 
-`public-api.txt` is the same contract as a list — 1 036 items, regenerated with
+`public-api.txt` is the same contract as a list — 1 052 items, regenerated with
 
 ```bash
 cargo public-api --simplified > public-api.txt   # needs a nightly toolchain: rustdoc JSON

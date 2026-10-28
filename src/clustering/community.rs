@@ -31,6 +31,25 @@ pub enum Objective {
     Cpm,
 }
 
+/// What a leaf is in the graph Leiden partitions.
+///
+/// A leaf summarises `n_i` points, and the leaves of one tree are very unequal in mass. With
+/// [`LeafGraph::Unit`] every leaf is one node of size 1 joined by its affinity `w_ij`, so the
+/// objective is not that of any point graph: a singleton leaf counts as much as a leaf of a
+/// thousand points. [`LeafGraph::Mass`] partitions the quotient of the point graph instead
+/// (Traag, Waltman & van Eck 2019, App. A): each pair of points across two leaves carries their
+/// leaves' affinity, so the edge is `n_i·n_j·w_ij`, and the node size is `n_i`, which is the point
+/// count the CPM null model charges for. The within-leaf edges are left out: the kernel inside a
+/// leaf needs a spread the leaf means do not set, and the two forms that model it measured worse.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum LeafGraph {
+    /// One node of size 1 per leaf, joined by the leaf-mean affinity — the graph of 1.x.
+    #[default]
+    Unit,
+    /// The point graph's quotient over the leaves: edges `n_i·n_j·w_ij`, node size `n_i`.
+    Mass,
+}
+
 /// Result of a community-detection run: one community label per input microcluster.
 pub struct Community {
     /// Community index per input feature.
@@ -49,12 +68,16 @@ struct Graph {
 
 impl Graph {
     fn from_adj(adj: Vec<Vec<(usize, f64)>>) -> Self {
+        let size = vec![1.0; adj.len()];
+        Self::from_adj_sized(adj, size)
+    }
+
+    fn from_adj_sized(adj: Vec<Vec<(usize, f64)>>, size: Vec<f64>) -> Self {
         let degree: Vec<f64> = adj
             .iter()
             .map(|r| r.iter().map(|&(_, w)| w).sum())
             .collect();
         let two_m = degree.iter().sum();
-        let size = vec![1.0; adj.len()];
         Self {
             adj,
             degree,
@@ -128,13 +151,59 @@ pub fn leiden_iterated<R: Real, C: ClusterFeature<R>>(
     tangent_rank: usize,
     max_passes: usize,
 ) -> Community {
+    leiden_on(
+        features,
+        resolution,
+        objective,
+        seed,
+        cov_weight,
+        tangent_weight,
+        tangent_rank,
+        max_passes,
+        LeafGraph::Unit,
+    )
+}
+
+/// [`leiden_iterated`] on the leaf graph `graph` names. [`LeafGraph::Unit`] is
+/// [`leiden_iterated`] itself, bit for bit.
+#[allow(clippy::too_many_arguments)]
+pub fn leiden_on<R: Real, C: ClusterFeature<R>>(
+    features: &[C],
+    resolution: f64,
+    objective: Objective,
+    seed: u64,
+    cov_weight: f64,
+    tangent_weight: f64,
+    tangent_rank: usize,
+    max_passes: usize,
+    graph: LeafGraph,
+) -> Community {
     let n = features.len();
     if n <= 1 {
         return Community { labels: vec![0; n] };
     }
-    let base = affinity(features, cov_weight, tangent_weight, tangent_rank);
+    let mut base = affinity(features, cov_weight, tangent_weight, tangent_rank);
+    let sizes = match graph {
+        LeafGraph::Unit => None,
+        LeafGraph::Mass => {
+            let mass: Vec<f64> = features
+                .iter()
+                .map(|f| f.weight().to_f64().unwrap())
+                .collect();
+            mass_quotient(&mut base, &mass);
+            Some(mass)
+        }
+    };
     Community {
-        labels: detect_passes(&base, resolution, objective, seed, max_passes).0,
+        labels: detect_passes_sized(
+            &base,
+            sizes.as_deref(),
+            resolution,
+            objective,
+            seed,
+            max_passes,
+        )
+        .0,
     }
 }
 
@@ -197,6 +266,17 @@ fn shuffled(n: usize, seed: u64) -> Vec<usize> {
 /// Seed of pass `pass` (counted from 0). The first pass keeps the caller's seed, which is what
 /// makes one pass bit-identical to [`detect`]; the odd Weyl increment keeps the later passes off the
 /// `seed + level` seeds a pass already spends on its levels.
+/// Turn a leaf graph into the quotient of its point graph: every edge `w_ij` becomes
+/// `n_i·n_j·w_ij`, the sum of `w_ij` over the point pairs it stands for. With node sizes `n_i`, a
+/// partition of the leaves then scores exactly what the same partition of their points scores.
+fn mass_quotient(base: &mut [Vec<(usize, f64)>], mass: &[f64]) {
+    for (i, row) in base.iter_mut().enumerate() {
+        for (j, w) in row.iter_mut() {
+            *w *= mass[i] * mass[*j];
+        }
+    }
+}
+
 fn pass_seed(seed: u64, pass: usize) -> u64 {
     seed.wrapping_add((pass as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15))
 }
@@ -204,6 +284,7 @@ fn pass_seed(seed: u64, pass: usize) -> u64 {
 /// Up to `max_passes` Leiden passes (at least one), each but the first started from the previous
 /// partition; stops early at the first pass that returns its input. Returns the partition and the
 /// number of passes run.
+#[cfg(test)]
 fn detect_passes(
     base: &[Vec<(usize, f64)>],
     gamma: f64,
@@ -211,10 +292,23 @@ fn detect_passes(
     seed: u64,
     max_passes: usize,
 ) -> (Vec<usize>, usize) {
-    let mut labels = detect(base, gamma, obj, seed);
+    detect_passes_sized(base, None, gamma, obj, seed, max_passes)
+}
+
+/// [`detect_passes`] over nodes of the given sizes; `None` is size 1 for every node.
+fn detect_passes_sized(
+    base: &[Vec<(usize, f64)>],
+    sizes: Option<&[f64]>,
+    gamma: f64,
+    obj: Objective,
+    seed: u64,
+    max_passes: usize,
+) -> (Vec<usize>, usize) {
+    let singletons: Vec<usize> = (0..base.len()).collect();
+    let mut labels = detect_from_sized(base, sizes, gamma, obj, seed, &singletons);
     let mut passes = 1;
     while passes < max_passes {
-        let next = detect_from(base, gamma, obj, pass_seed(seed, passes), &labels);
+        let next = detect_from_sized(base, sizes, gamma, obj, pass_seed(seed, passes), &labels);
         passes += 1;
         // Both sides are in first-seen order, so equal vectors are equal partitions.
         if next == labels {
@@ -227,12 +321,14 @@ fn detect_passes(
 
 /// Multi-level Leiden: local-move → refine → aggregate (seeded from the local-move partition),
 /// until aggregation no longer coarsens the graph.
+#[cfg(test)]
 fn detect(base: &[Vec<(usize, f64)>], gamma: f64, obj: Objective, seed: u64) -> Vec<usize> {
     let singletons: Vec<usize> = (0..base.len()).collect();
     detect_from(base, gamma, obj, seed, &singletons)
 }
 
 /// [`detect`] with the first local move started from `start` instead of from singletons.
+#[cfg(test)]
 fn detect_from(
     base: &[Vec<(usize, f64)>],
     gamma: f64,
@@ -240,9 +336,24 @@ fn detect_from(
     seed: u64,
     start: &[usize],
 ) -> Vec<usize> {
+    detect_from_sized(base, None, gamma, obj, seed, start)
+}
+
+/// [`detect_from`] over nodes of the given sizes; `None` is size 1 for every node.
+fn detect_from_sized(
+    base: &[Vec<(usize, f64)>],
+    sizes: Option<&[f64]>,
+    gamma: f64,
+    obj: Objective,
+    seed: u64,
+    start: &[usize],
+) -> Vec<usize> {
     let n = base.len();
     let mut membership: Vec<usize> = (0..n).collect(); // original node → current super-node
-    let mut g = Graph::from_adj(base.to_vec());
+    let mut g = match sizes {
+        Some(s) => Graph::from_adj_sized(base.to_vec(), s.to_vec()),
+        None => Graph::from_adj(base.to_vec()),
+    };
     let mut init: Vec<usize> = start.to_vec(); // seed partition for the current local-move
     let mut level = 0u64;
     loop {
@@ -766,6 +877,79 @@ mod tests {
             Objective::Cpm => (0..nc)
                 .map(|c| 0.5 * inner[c] - 0.5 * gamma * size[c] * (size[c] - 1.0))
                 .sum(),
+        }
+    }
+
+    /// The defining property of [`LeafGraph::Mass`]: a partition of the leaves scores on the
+    /// quotient graph exactly what it scores on the point graph it summarises — each leaf `i`
+    /// expanded into `n_i` points, every cross-leaf point pair joined at `w_ij`, none inside a leaf.
+    /// Both objectives, several partitions, unequal masses.
+    #[test]
+    fn the_mass_graph_scores_a_leaf_partition_as_the_point_graph_scores_its_points() {
+        let leaves = irregular_graph();
+        let mass: Vec<f64> = (0..leaves.len())
+            .map(|i| (1 + (i * 7) % 5) as f64)
+            .collect();
+        let mut quotient = leaves.clone();
+        mass_quotient(&mut quotient, &mass);
+        let q = Graph::from_adj_sized(quotient, mass.clone());
+
+        let first: Vec<usize> = mass
+            .iter()
+            .scan(0, |next, &m| {
+                let at = *next;
+                *next += m as usize;
+                Some(at)
+            })
+            .collect();
+        let leaf_of: Vec<usize> = (0..leaves.len())
+            .flat_map(|i| std::iter::repeat_n(i, mass[i] as usize))
+            .collect();
+        let expanded: Vec<Vec<(usize, f64)>> = leaf_of
+            .iter()
+            .map(|&i| {
+                let mut row = Vec::new();
+                for &(j, w) in &leaves[i] {
+                    row.extend((0..mass[j] as usize).map(|t| (first[j] + t, w)));
+                }
+                row
+            })
+            .collect();
+        let p = Graph::from_adj(expanded);
+
+        let mut rng = SplitMix64::new(5);
+        for _ in 0..6 {
+            let part: Vec<usize> = (0..leaves.len())
+                .map(|_| (rng.next_u64() % 3) as usize)
+                .collect();
+            let points: Vec<usize> = leaf_of.iter().map(|&i| part[i]).collect();
+            for (obj, gamma) in [(Objective::Modularity, 1.0), (Objective::Cpm, 0.05)] {
+                let (a, b) = (
+                    quality(&q, obj, gamma, &part),
+                    quality(&p, obj, gamma, &points),
+                );
+                assert!((a - b).abs() <= 1e-12 * b.abs().max(1.0), "{a} vs {b}");
+            }
+        }
+    }
+
+    /// At unit mass the quotient is the unit graph, so the two must agree label for label.
+    #[test]
+    fn the_mass_graph_of_unit_leaves_is_the_unit_graph() {
+        let mut rng = SplitMix64::new(4);
+        let centers = [[0.0, 0.0], [12.0, 0.0], [0.0, 12.0]];
+        let (pts, _) = blobs(&mut rng, 120, &centers, 1.5);
+        let singles: Vec<crate::feature::Spherical<f64>> = pts
+            .iter()
+            .map(|p| {
+                let mut f = crate::feature::Spherical::new(2);
+                f.push(p, 1.0);
+                f
+            })
+            .collect();
+        for obj in [Objective::Modularity, Objective::Cpm] {
+            let run = |graph| leiden_on(&singles, 1.0, obj, 3, 0.0, 0.0, 2, 4, graph).labels;
+            assert_eq!(run(LeafGraph::Unit), run(LeafGraph::Mass));
         }
     }
 

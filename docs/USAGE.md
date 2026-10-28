@@ -66,7 +66,12 @@ nothing; a negative value repeats until that happens, capped at 100 passes. `1`,
 single pass of every earlier release and keeps its labels. One pass stops at a local optimum: on a
 three-community planted partition at four times the detection threshold, two passes move ARI from
 0.44–0.70 to 0.85–0.93 — see *What the heads can and cannot guarantee* in
-[MATH.md](MATH.md)), `rank` (subspace rank `q` for `method="mppca"` and `method="mfa"`, clamped to at
+[MATH.md](MATH.md)), `leaf_graph` (the graph Leiden partitions: `"unit"`, the default and the graph of
+every earlier release, makes each leaf one node of size 1, so a singleton leaf counts as much as a
+leaf of a thousand points; `"mass"` partitions the quotient of the point graph instead — an edge
+weighs `n_i·n_j` times the leaves' affinity and a node counts `n_i` points. On MNIST-20k it lifts the
+median ARI by 0.02–0.14 at every budget from 400 to 3 200 leaves; it costs 0.035 on digits at 800
+leaves and 0.01 on covtype — see *Mass-weighted leaf graphs* in [MATH.md](MATH.md)), `rank` (subspace rank `q` for `method="mppca"` and `method="mfa"`, clamped to at
 most `dim - 1`; `0` makes every `mppca` component spherical and every `mfa` component diagonal), `fuzzifier` (the exponent `m > 1` of
 `method="fuzzy-cmeans"`, default `2.0`; `m → 1⁺` is k-means, `m → ∞` sends every membership to
 `1/k`), `projection` / `projection_dim` / `projection_max_iter` (reduce the leaf centroids to
@@ -88,7 +93,7 @@ is a request the fit was never going to honour:
 |---|---|
 | `min_samples`, `graph_degree` | `hdbscan`, `dc-center`, `dc-median` |
 | `min_cluster_size` | `hdbscan` |
-| `resolution`, `covariance_weight`, `tangent_weight`, `tangent_rank`, `n_iterations` | `leiden`, `leiden-cpm` |
+| `resolution`, `covariance_weight`, `tangent_weight`, `tangent_rank`, `n_iterations`, `leaf_graph` | `leiden`, `leiden-cpm` |
 | `rank` | `mppca`, `mfa` |
 | `fuzzifier` | `fuzzy-cmeans` |
 

@@ -35,7 +35,7 @@ pub use agglomerative::{
     certificate_radius, dendrogram_below,
 };
 pub use bregman::{BregmanMixture, bregman_agglomerative, bregman_em, bregman_kmeans};
-pub use community::{Community, Objective, leiden, leiden_iterated};
+pub use community::{Community, LeafGraph, Objective, leiden, leiden_iterated, leiden_on};
 pub use dcdist::{DcClustering, DcObjective, dc_clustering};
 pub use fuzzy::{FuzzyCMeans, fuzzy_cmeans, fuzzy_cmeans_auto};
 pub use gmm::{Gmm, GmmFull, gmm_diagonal, gmm_diagonal_auto, gmm_full, gmm_full_auto};

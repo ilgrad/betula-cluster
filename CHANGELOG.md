@@ -6,6 +6,18 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- **`leaf_graph="mass"` for `method="leiden"` / `"leiden-cpm"`.** The Leiden head made every leaf one
+  node of size 1, so its objective was that of no point graph: a singleton leaf counted as much as a
+  leaf of a thousand points. `"mass"` partitions the quotient of the point graph instead (Traag,
+  Waltman & van Eck 2019, App. A): an edge between leaves `i` and `j` weighs `n_i·n_j·w_ij`, and a node
+  counts `n_i` points for the CPM null model. On MNIST-20k (seeds 0/1/2, 400–3 200 leaves, one pass
+  and until stable) the median ARI rises by 0.02–0.14 in all eight cells and reaches the point-level
+  kNN graph's 0.46 from 800 leaves; on digits it moves −0.035 to +0.027, and on covtype-20k, whose
+  point-level ceiling is 0.02, it loses 0.01. `"unit"` stays the default until 2.0, and its labels
+  and saved files are byte-identical to 1.5.0 (56 digests). Rust: `clustering::leiden_on` and
+  `clustering::LeafGraph`.
+
 ## [1.5.0] — 2026-10-28
 
 ### Fixed

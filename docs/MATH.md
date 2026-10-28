@@ -645,6 +645,38 @@ seeds 0/1/2) the median ARI over one pass / two / until stable reads 0.728 / 0.7
 digits, 0.281 / 0.283 / 0.311 on MNIST and 0.046 / 0.046 / 0.046 on covtype. The default stays at
 one pass, because a second one changes the labels of every 1.x release.
 
+**Mass-weighted leaf graphs.** The leaf graph above gives every leaf one node of size 1, joined to
+its neighbours by the affinity $w_{ij}$ of the leaf means. Leaf masses are far from equal (more
+than half of the digits leaves at 800 hold one point), so the leaf objective is that of no point
+graph. `leaf_graph="mass"` partitions the quotient of the point graph instead (Traag, Waltman &
+van Eck 2019, App. A): with every cross-leaf pair of points joined at its leaves' $w_{ij}$, the
+edge between leaves $i$ and $j$ is $n_i n_j w_{ij}$ and node $i$ has size $n_i$. A partition of the
+leaves then scores exactly what the same partition of their points scores, under modularity and
+CPM alike; `the_mass_graph_scores_a_leaf_partition_as_the_point_graph_scores_its_points` checks it
+against the expanded graph. Within-leaf pairs are left out. Modelling them needs a kernel inside a
+leaf, which the leaf means do not set: the Jensen bound $e^{-2r_i^2/\sigma_i^2}$ lifts digits at 800
+leaves by 0.048 and loses up to 0.012 elsewhere, and kernels corrected for the leaf spread lose up
+to 0.10 on MNIST, where that spread at $d = 784$ dwarfs the $\sigma$ the means set.
+
+Median ARI, seeds 0/1/2, 20 000-row draws, threshold 0, one pass / until stable:
+
+| leaves | 400 | 800 | 1 600 | 3 200 |
+|---|---|---|---|---|
+| MNIST, `unit` | 0.225 / 0.224 | 0.281 / 0.282 | 0.419 / 0.426 | 0.443 / 0.446 |
+| MNIST, `mass` | 0.307 / 0.325 | 0.420 / 0.415 | 0.438 / 0.456 | 0.503 / 0.504 |
+| digits, `unit` | 0.654 / 0.662 | 0.728 / 0.731 | 0.819 / 0.831 | 0.811 / 0.822 |
+| digits, `mass` | 0.681 / 0.674 | 0.693 / 0.696 | 0.824 / 0.828 | 0.811 / 0.822 |
+| covtype, `unit` | 0.055 / 0.055 | 0.045 / 0.045 | 0.043 / 0.043 | 0.040 / 0.040 |
+| covtype, `mass` | 0.045 / 0.045 | 0.043 / 0.043 | 0.033 / 0.033 | 0.030 / 0.030 |
+
+Two references bound what a graph change can do. The optimiser is not the limit: python-igraph's
+Leiden on the same unit leaf graphs reads within 0.03 of these rows in eleven cells of twelve. The
+data is: Leiden on a point-level graph (15 nearest neighbours, Jaccard weights) reads 0.46 on
+MNIST, 0.79 on digits and 0.02 on covtype, so on covtype no leaf graph has anything to recover and
+the `mass` row moves inside noise. Digits at 3 200 leaves is a control: 1 797 rows give every leaf
+one point, and the two graphs coincide. `unit` stays the default for 1.x because `mass` changes the
+labels.
+
 Sources (2026 preprints, OpenAI):
 
 - *The Gaussian propeller bound in every dimension*, 24 September 2026 —
