@@ -474,7 +474,7 @@ algorithms** it implements. Machine-readable metadata (including the method refe
   author  = {Gradina, Ilia},
   title   = {betula-cluster: numerically stable {BETULA} clustering with a {Rust} core},
   year    = {2026},
-  version = {1.4.0},
+  version = {1.5.0},
   doi     = {10.5281/zenodo.21427331},
   license = {MIT},
   url     = {https://github.com/ilgrad/betula-cluster}
