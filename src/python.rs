@@ -377,7 +377,7 @@ const HEAD_KEYWORDS: &[(&str, &[&str])] = &[
     ("tangent_weight", &["leiden", "leiden-cpm"]),
     ("tangent_rank", &["leiden", "leiden-cpm"]),
     ("n_iterations", &["leiden", "leiden-cpm"]),
-    ("leaf_graph", &["leiden", "leiden-cpm"]),
+    ("leaf_graph", &["leiden", "leiden-cpm", "spectral"]),
     ("rank", &["mppca", "mfa"]),
     ("fuzzifier", &["fuzzy-cmeans"]),
 ];

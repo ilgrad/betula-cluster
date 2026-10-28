@@ -709,6 +709,7 @@ pub const betula_cluster::clustering::spectral::SPECTRAL_DEFAULT_K: usize
 pub const betula_cluster::clustering::spectral::SPECTRAL_DENSE_GRAPH_MAX: usize
 pub const betula_cluster::clustering::spectral::SPECTRAL_EXACT_NODES: usize
 pub fn betula_cluster::clustering::spectral::spectral<R: betula_cluster::types::Real, C: betula_cluster::feature::ClusterFeature<R>>(&[C], usize, usize, usize, u64) -> betula_cluster::clustering::spectral::Spectral
+pub fn betula_cluster::clustering::spectral::spectral_on<R: betula_cluster::types::Real, C: betula_cluster::feature::ClusterFeature<R>>(&[C], usize, usize, usize, u64, betula_cluster::clustering::community::LeafGraph) -> betula_cluster::clustering::spectral::Spectral
 pub mod betula_cluster::clustering::vmf
 pub struct betula_cluster::clustering::vmf::Movmf<R: betula_cluster::types::Real>
 pub betula_cluster::clustering::vmf::Movmf::kappas: alloc::vec::Vec<R>
@@ -1309,6 +1310,7 @@ pub fn betula_cluster::clustering::optics<R: betula_cluster::types::Real, C: bet
 pub fn betula_cluster::clustering::project_to_sheet<R: betula_cluster::types::Real>(&[R]) -> alloc::vec::Vec<R>
 pub fn betula_cluster::clustering::scale_space<R: betula_cluster::types::Real, C: betula_cluster::feature::ClusterFeature<R>>(&[C], usize, usize) -> betula_cluster::clustering::scalespace::ScaleSpace
 pub fn betula_cluster::clustering::spectral<R: betula_cluster::types::Real, C: betula_cluster::feature::ClusterFeature<R>>(&[C], usize, usize, usize, u64) -> betula_cluster::clustering::spectral::Spectral
+pub fn betula_cluster::clustering::spectral_on<R: betula_cluster::types::Real, C: betula_cluster::feature::ClusterFeature<R>>(&[C], usize, usize, usize, u64, betula_cluster::clustering::community::LeafGraph) -> betula_cluster::clustering::spectral::Spectral
 pub fn betula_cluster::clustering::spherical_kmeans<R: betula_cluster::types::Real, C: betula_cluster::feature::ClusterFeature<R>>(&[C], usize, usize, usize, u64) -> betula_cluster::clustering::vmf::SphericalKMeans<R>
 pub fn betula_cluster::clustering::summarize_mixed<R: betula_cluster::types::Real>(betula_cluster::clustering::kprototypes::MixedRows<'_, R>, &betula_cluster::clustering::kprototypes::MixedSchema, betula_cluster::clustering::kprototypes::BlockWeights<R>, R, usize) -> alloc::vec::Vec<betula_cluster::clustering::kprototypes::MixedCf<R>>
 pub fn betula_cluster::clustering::ward_hac<R: betula_cluster::types::Real, C: betula_cluster::feature::ClusterFeature<R>>(&[C], usize) -> betula_cluster::clustering::ward::WardHac

@@ -978,25 +978,24 @@ def test_leiden_passes_default_to_the_single_pass_and_survive_a_round_trip(blobs
         np.testing.assert_array_equal(restored.predict(x), est.predict(x))
 
 
-@pytest.mark.parametrize("method", ["leiden", "leiden-cpm"])
+@pytest.mark.parametrize("method", ["leiden", "leiden-cpm", "spectral"])
 def test_the_mass_leaf_graph_is_opt_in_and_survives_a_round_trip(blobs, method, tmp_path):
     """``"unit"`` is the graph of every earlier release, so naming it changes nothing; ``"mass"``
     is a different graph, read the same way by both entry points and kept through a save."""
     import pickle
 
     x, y = blobs
+    k = 4 if method == "spectral" else 99  # Leiden ignores it
     kw = dict(method=method, threshold=0.3, max_leaves=400, seed=1)
     if method == "leiden-cpm":
         kw["resolution"] = 0.03
-    unit = betula_cluster.fit_predict(x, 99, **kw)
-    np.testing.assert_array_equal(betula_cluster.fit_predict(x, 99, leaf_graph="unit", **kw), unit)
-    est = betula_cluster.Betula(n_clusters=99, leaf_graph="mass", **kw)
+    unit = betula_cluster.fit_predict(x, k, **kw)
+    np.testing.assert_array_equal(betula_cluster.fit_predict(x, k, leaf_graph="unit", **kw), unit)
+    est = betula_cluster.Betula(n_clusters=k, leaf_graph="mass", **kw)
     labels = est.fit_predict(x)
     assert est.get_params()["leaf_graph"] == "mass"
     assert ari(labels, y) > 0.95
-    np.testing.assert_array_equal(
-        betula_cluster.fit_predict(x, 99, leaf_graph="mass", **kw), labels
-    )
+    np.testing.assert_array_equal(betula_cluster.fit_predict(x, k, leaf_graph="mass", **kw), labels)
     path = tmp_path / "model.betula"
     est.save(str(path))
     for restored in (pickle.loads(pickle.dumps(est)), betula_cluster.Betula.load(str(path))):

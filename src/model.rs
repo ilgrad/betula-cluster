@@ -6,7 +6,7 @@ use crate::clustering::{
     gmm_diagonal, gmm_diagonal_auto, gmm_full, gmm_full_auto, gmm_toeplitz, gmm_toeplitz_auto,
     gmm_toeplitz_full, gmm_toeplitz_full_auto, gmm_toeplitz_gs, gmm_toeplitz_gs_auto,
     hyperbolic_kmeans, kmeans, kmeans_auto, kmedoids, leiden_on, mfa, mfa_auto, movmf, movmf_auto,
-    mppca, mppca_auto, project_to_sheet, spectral, spherical_kmeans, ward_hac, ward_hac_auto,
+    mppca, mppca_auto, project_to_sheet, spectral_on, spherical_kmeans, ward_hac, ward_hac_auto,
     watson, watson_auto, xmeans,
 };
 use crate::distance::CFDistance;
@@ -732,7 +732,9 @@ pub(crate) fn fit_head<R: Real, C: ClusterFeature<R>>(
             HeadFit::hard(agglomerative(features, linkage, kk).labels)
         }
         // Spectral resolves `k == 0` (eigengap) and clamps internally, so one arm covers both.
-        Method::Spectral => HeadFit::hard(spectral(features, k, max_iter, n_init, seed).labels),
+        Method::Spectral => {
+            HeadFit::hard(spectral_on(features, k, max_iter, n_init, seed, leiden.graph).labels)
+        }
         // Leiden discovers the community count from the graph; `k` is ignored (like HDBSCAN).
         Method::Leiden {
             resolution,

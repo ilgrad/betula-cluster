@@ -17,6 +17,12 @@ All notable changes to this project are documented here. The format follows
   point-level ceiling is 0.02, it loses 0.01. `"unit"` stays the default until 2.0, and its labels
   and saved files are byte-identical to 1.5.0 (56 digests). Rust: `clustering::leiden_on` and
   `clustering::LeafGraph`.
+- **`leaf_graph="mass"` for `method="spectral"`.** The same quotient, through KASP's operator (Yan,
+  Huang & Jordan 2009, Lemma 8): the leaf eigenproblem has the spectrum of the graph that replicates
+  each leaf into its points, and the k-means rounding weighs each leaf by its mass. On MNIST-20k
+  (seeds 0/1/2, 400–3 200 leaves) the median ARI rises by 0.06–0.25 in every cell; digits moves
+  −0.022 to +0.019, covtype −0.035 to −0.004 around an ARI near 0, and two moons / two circles stay
+  at 1.000. Rust: `clustering::spectral_on`.
 
 ## [1.5.0] — 2026-10-28
 

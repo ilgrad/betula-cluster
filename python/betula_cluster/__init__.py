@@ -876,11 +876,12 @@ class Betula:
         # One pass stops at a local optimum: on a three-community planted partition at four times
         # the detection threshold, two passes move ARI from about 0.6 to about 0.9.
         self.n_iterations = n_iterations
-        # The graph Leiden partitions (method="leiden" / "leiden-cpm"). "unit" (default) is the
-        # graph of every earlier release: one node per leaf, as if each leaf were one point. "mass"
-        # is the quotient of the point graph: an edge between two leaves weighs n_i·n_j times their
-        # affinity and a node counts n_i points, so a singleton leaf no longer counts as much as a
-        # leaf of a thousand. It changes labels, which is why it is opt-in until 2.0.
+        # The leaf graph the graph heads cut (method="leiden" / "leiden-cpm" / "spectral"). "unit"
+        # (default) is the graph of every earlier release: one node per leaf, as if each leaf were
+        # one point. "mass" is the quotient of the point graph: an edge between two leaves weighs
+        # n_i·n_j times their affinity and a node counts n_i points, so a singleton leaf no longer
+        # counts as much as a leaf of a thousand. It changes labels, which is why it is opt-in
+        # until 2.0.
         self.leaf_graph = leaf_graph
         # Subspace rank q of the two subspace heads: each component's covariance is W Wᵀ + σ²I
         # (method="mppca") or W Wᵀ + diag(ψ) (method="mfa") with W of rank q, clamped to at most

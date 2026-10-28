@@ -677,6 +677,30 @@ the `mass` row moves inside noise. Digits at 3 200 leaves is a control: 1 797 ro
 one point, and the two graphs coincide. `unit` stays the default for 1.x because `mass` changes the
 labels.
 
+The spectral head takes the same parameter. Its `mass` operator is KASP's (Yan, Huang & Jordan 2009,
+Lemma 8): the normalized affinity of the graph that replicates leaf $i$ into $n_i$ points has the
+spectrum of $R^{1/2} D^{-1/2} A D^{-1/2} R^{1/2}$ with $R = \mathrm{diag}(n_i)$, which is the
+symmetric normalisation of the quotient $n_i n_j w_{ij}$, plus one zero per extra replica;
+`the_mass_operator_has_the_spectrum_of_the_replicated_point_graph` checks it against the expanded
+graph. A replica's embedding row is its leaf's scaled by $n_i^{-1/2}$, which the row normalisation
+removes, so the k-means that rounds the embedding weighs leaf $i$ by $n_i$. Rounding the same
+operator unweighted loses 0.05–0.09 on MNIST at 800 and 1 600 leaves, gains 0.04 at 3 200, and
+changes digits by at most 0.004, so the digits loss below comes from the operator, not the rounding.
+
+Spectral, median ARI over seeds 0/1/2, 20 000-row draws, threshold 0, the true `k`:
+
+| leaves | 400 | 800 | 1 600 | 3 200 |
+|---|---|---|---|---|
+| MNIST, `unit` | 0.089 | 0.205 | 0.284 | 0.322 |
+| MNIST, `mass` | 0.336 | 0.411 | 0.435 | 0.382 |
+| digits, `unit` | 0.625 | 0.669 | 0.680 | 0.669 |
+| digits, `mass` | 0.644 | 0.653 | 0.659 | 0.669 |
+| covtype, `unit` | 0.008 | 0.073 | 0.070 | 0.030 |
+| covtype, `mass` | 0.003 | 0.041 | 0.035 | 0.027 |
+
+Two moons and two circles at 20 000 points read 1.000 on both graphs at every budget; one seed of
+three falls to 0.55 on the moons at 3 200 leaves with `mass`.
+
 Sources (2026 preprints, OpenAI):
 
 - *The Gaussian propeller bound in every dimension*, 24 September 2026 —

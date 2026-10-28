@@ -43,6 +43,7 @@
 //! Spectral has no built-in cluster-count selection (the eigengap is unreliable on k-NN graphs), so
 //! `k == 0` (auto) falls back to [`SPECTRAL_DEFAULT_K`].
 
+use crate::clustering::community::LeafGraph;
 use crate::clustering::graph::{knn_affinity, knn_affinity_approx, knn_affinity_with_degree};
 use crate::clustering::kmeans::kmeans;
 use crate::clustering::rng::SplitMix64;
@@ -111,6 +112,42 @@ pub fn spectral<R: Real, C: ClusterFeature<R>>(
     }
 }
 
+/// [`spectral`] on the leaf graph `graph` names. [`LeafGraph::Unit`] is [`spectral`] exactly.
+/// [`LeafGraph::Mass`] solves the eigenproblem of the point graph that replicates every leaf `n_i`
+/// times (KASP, Yan, Huang & Jordan 2009, Lemma 8): its spectrum is that of
+/// `R^{½} D^{−½} A D^{−½} R^{½}` with `R = diag(n_i)` and `D` the degree of a replicated point,
+/// which is the symmetric normalisation of the quotient affinity `n_i n_j A_ij`. A replicated
+/// point's embedding row is its leaf's row scaled by `n_i^{−½}`, which the row normalisation
+/// removes, so the rounding is a k-means over the leaf rows weighted by `n_i`.
+pub fn spectral_on<R: Real, C: ClusterFeature<R>>(
+    features: &[C],
+    k: usize,
+    max_iter: usize,
+    n_init: usize,
+    seed: u64,
+    graph: LeafGraph,
+) -> Spectral {
+    if graph == LeafGraph::Unit {
+        return spectral(features, k, max_iter, n_init, seed);
+    }
+    assert!(!features.is_empty(), "spectral needs at least one feature");
+    let k = if k == 0 { SPECTRAL_DEFAULT_K } else { k };
+    let centers: Vec<Vec<R>> = features.iter().map(|f| f.mean().to_vec()).collect();
+    let mass: Vec<R> = features.iter().map(|f| f.weight()).collect();
+    Spectral {
+        labels: spectral_core_full(
+            &centers,
+            Some(&mass),
+            k,
+            max_iter,
+            n_init,
+            seed,
+            DIFFUSION_ALPHA,
+            None,
+        ),
+    }
+}
+
 /// Diffusion-maps density normalisation exponent `α` (Coifman & Lafon, *Diffusion maps*, ACHA 21(1),
 /// 2006, §3). Replacing `A_ij` by `A_ij / (q_i^α q_j^α)` with `q_i = Σ_j A_ij` before the usual
 /// symmetric normalisation interpolates between two different operators: `α = 0` is the
@@ -145,6 +182,23 @@ fn spectral_core_alpha<R: Real>(
     alpha: f64,
     degree: Option<usize>,
 ) -> Vec<usize> {
+    spectral_core_full(centers, None, k, max_iter, n_init, seed, alpha, degree)
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the measurement harnesses reach the operator through alpha and degree"
+)]
+fn spectral_core_full<R: Real>(
+    centers: &[Vec<R>],
+    mass: Option<&[R]>,
+    k: usize,
+    max_iter: usize,
+    n_init: usize,
+    seed: u64,
+    alpha: f64,
+    degree: Option<usize>,
+) -> Vec<usize> {
     let n = centers.len();
     if n == 1 {
         return vec![0];
@@ -170,6 +224,9 @@ fn spectral_core_alpha<R: Real>(
     if alpha != 0.0 {
         density_normalize(&mut adj, alpha);
     }
+    if let Some(mass) = mass {
+        mass_quotient(&mut adj, mass);
+    }
     let p = normalized_affinity(&adj);
 
     // Top-`k` eigenvectors of `P` are the bottom-`k` of `L_sym = I − P` (here `2 ≤ k < n`).
@@ -179,7 +236,7 @@ fn spectral_core_alpha<R: Real>(
         chebyshev_top_eigenvectors(&p, k, seed)
     };
 
-    kmeans(&njw_embedding(vecs, k), k, max_iter, n_init, seed).labels
+    kmeans(&njw_embedding(vecs, k, mass), k, max_iter, n_init, seed).labels
 }
 
 /// Coifman–Lafon α-normalisation: divide every weight by `(q_i q_j)^α`, where `q` is the kernel
@@ -210,7 +267,18 @@ fn density_normalize<R: Real>(adj: &mut [Vec<(usize, R)>], alpha: f64) {
     }
 }
 
-/// The Ng–Jordan–Weiss embedding: each row of the eigenvector block, scaled to unit length.
+/// `A_ij ← n_i n_j A_ij`: the affinity between the leaves' replicated points, summed. Replicas of
+/// one leaf are not joined to each other, as in the Leiden quotient.
+fn mass_quotient<R: Real>(adj: &mut [Vec<(usize, R)>], mass: &[R]) {
+    for (i, row) in adj.iter_mut().enumerate() {
+        for (j, w) in row.iter_mut() {
+            *w = *w * mass[i] * mass[*j];
+        }
+    }
+}
+
+/// The Ng–Jordan–Weiss embedding: each row of the eigenvector block, scaled to unit length, and
+/// carrying its leaf's mass when the operator was the mass quotient's.
 ///
 /// Eigenvector entries scale like `1/sqrt(cluster size)`, so the raw rows of a small group are
 /// several times longer than a large group's. Normalising sends every row onto the unit sphere, so
@@ -220,16 +288,17 @@ fn density_normalize<R: Real>(adj: &mut [Vec<(usize, R)>], alpha: f64) {
 /// well-separated graph the rows already lie on near-orthogonal rays, so dropping the scaling
 /// changes three tight groups at three radii into three tight groups at one, and no label moves.
 /// The unit length is the contract; the labels are not the instrument for it.
-fn njw_embedding<R: Real>(vecs: Vec<Vec<R>>, k: usize) -> Vec<Spherical<R>> {
+fn njw_embedding<R: Real>(vecs: Vec<Vec<R>>, k: usize, mass: Option<&[R]>) -> Vec<Spherical<R>> {
     let tiny = R::from_f64(1e-12).unwrap();
     vecs.into_iter()
-        .map(|mut row| {
+        .enumerate()
+        .map(|(i, mut row)| {
             let norm = row.iter().map(|&x| x * x).sum::<R>().sqrt().max(tiny);
             for x in row.iter_mut() {
                 *x = *x / norm;
             }
             let mut f = Spherical::new(k);
-            f.push(&row, R::one());
+            f.push(&row, mass.map_or_else(R::one, |m| m[i]));
             f
         })
         .collect()
@@ -707,6 +776,85 @@ mod tests {
     }
 
     #[test]
+    fn the_mass_operator_has_the_spectrum_of_the_replicated_point_graph() {
+        // KASP Lemma 8: replicate leaf i into n_i points joined to every replica of every other
+        // leaf j by A_ij (not to each other). The normalized affinity of that point graph has the
+        // spectrum of the leaf operator plus one zero per extra replica, Σ(n_i − 1) of them.
+        let mass = [1.0f64, 2.0, 3.0, 1.0];
+        let a =
+            |i: usize, j: usize| (-(i as f64 - j as f64).abs() * 0.7).exp() + 0.1 * (i + j) as f64;
+        let mut adj: Vec<Vec<(usize, f64)>> = (0..4)
+            .map(|i| (0..4).filter(|&j| j != i).map(|j| (j, a(i, j))).collect())
+            .collect();
+        mass_quotient(&mut adj, &mass);
+        let p = normalized_affinity(&adj);
+        let mut dense = vec![vec![0.0; 4]; 4];
+        for (i, row) in p.iter().enumerate() {
+            for &(j, w) in row {
+                dense[i][j] = w;
+            }
+        }
+        let mut leaf_spectrum = jacobi_eigen(&dense).0;
+        leaf_spectrum.extend([0.0; 3]);
+
+        let owner: Vec<usize> = (0..4).flat_map(|i| vec![i; mass[i] as usize]).collect();
+        let points: Vec<Vec<(usize, f64)>> = owner
+            .iter()
+            .map(|&li| {
+                (0..owner.len())
+                    .filter(|&q| owner[q] != li)
+                    .map(|q| (q, a(li, owner[q])))
+                    .collect()
+            })
+            .collect();
+        let pp = normalized_affinity(&points);
+        let mut dense = vec![vec![0.0; owner.len()]; owner.len()];
+        for (i, row) in pp.iter().enumerate() {
+            for &(j, w) in row {
+                dense[i][j] = w;
+            }
+        }
+        let mut point_spectrum = jacobi_eigen(&dense).0;
+
+        leaf_spectrum.sort_by(f64::total_cmp);
+        point_spectrum.sort_by(f64::total_cmp);
+        for (l, q) in leaf_spectrum.iter().zip(&point_spectrum) {
+            assert!(
+                (l - q).abs() < 1e-10,
+                "leaf {leaf_spectrum:?} vs point {point_spectrum:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_mass_graph_of_unit_leaves_is_the_unit_graph() {
+        let mut rng = SplitMix64::new(7);
+        let (pts, _truth) = two_moons(&mut rng, 150, 0.05);
+        let singles: Vec<Spherical<f64>> = pts
+            .iter()
+            .map(|p| {
+                let mut f = Spherical::new(2);
+                f.push(p, 1.0);
+                f
+            })
+            .collect();
+        assert_eq!(
+            spectral_on(&singles, 2, 100, 4, 1, LeafGraph::Mass).labels,
+            spectral(&singles, 2, 100, 4, 1).labels
+        );
+    }
+
+    #[test]
+    fn the_mass_embedding_rounds_each_leaf_at_its_mass() {
+        let rows = vec![vec![1.0f64, 0.0], vec![0.0, 2.0]];
+        let weights: Vec<f64> = njw_embedding(rows, 2, Some(&[3.0, 5.0]))
+            .iter()
+            .map(|f| f.weight())
+            .collect();
+        assert_eq!(weights, vec![3.0, 5.0]);
+    }
+
+    #[test]
     fn spectral_auto_k_defaults_to_two() {
         // k == 0 (auto) ⇒ SPECTRAL_DEFAULT_K = 2, which is exactly right for the two moons.
         let mut rng = SplitMix64::new(5);
@@ -1051,7 +1199,7 @@ mod tests {
         let run = |adj: Sparse| -> Vec<usize> {
             let p = normalized_affinity(&adj);
             let vecs = dense_top_eigenvectors(&p, 2);
-            kmeans(&njw_embedding(vecs, 2), 2, 100, 4, 5).labels
+            kmeans(&njw_embedding(vecs, 2, None), 2, 100, 4, 5).labels
         };
         let exact = run(knn_affinity(&pts));
         let approx = run(knn_affinity_approx(&pts, 5));
@@ -1090,7 +1238,11 @@ mod tests {
             vec![1.0, 1.0, 1.0],
             vec![0.0, 0.0, 0.0], // the `tiny` floor -- a zero row must not divide by zero
         ];
-        for (r, (f, raw)) in njw_embedding(rows.clone(), 3).iter().zip(&rows).enumerate() {
+        for (r, (f, raw)) in njw_embedding(rows.clone(), 3, None)
+            .iter()
+            .zip(&rows)
+            .enumerate()
+        {
             let got = f.mean().to_vec();
             let len = norm_of(&got);
             let raw_len = norm_of(raw);

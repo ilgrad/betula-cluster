@@ -58,7 +58,7 @@ pub use mfa::{Mfa, mfa, mfa_auto};
 pub use mppca::{Mppca, mppca, mppca_auto};
 pub use optics::{Reachability, optics};
 pub use scalespace::{ScaleSpace, scale_space};
-pub use spectral::{Spectral, spectral};
+pub use spectral::{Spectral, spectral, spectral_on};
 pub use vmf::{Movmf, SphericalKMeans, movmf, movmf_auto, spherical_kmeans};
 pub use ward::{WardHac, ward_hac, ward_hac_auto};
 pub use watson::{Watson, watson, watson_auto};

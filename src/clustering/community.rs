@@ -31,7 +31,7 @@ pub enum Objective {
     Cpm,
 }
 
-/// What a leaf is in the graph Leiden partitions.
+/// What a leaf is in the graph Leiden partitions and the spectral head cuts.
 ///
 /// A leaf summarises `n_i` points, and the leaves of one tree are very unequal in mass. With
 /// [`LeafGraph::Unit`] every leaf is one node of size 1 joined by its affinity `w_ij`, so the
