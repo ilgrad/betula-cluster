@@ -131,8 +131,9 @@ A capability-by-capability reference. For runnable code see [`USAGE.md`](USAGE.m
   two cumulative snapshots the way CluStream does it — an inverse merge loses `log₁₀(S_AB/S_B)`
   digits of the scatter, and under drift that ratio runs away while the point counts stay small (a
   measured 6155× error at a mass ratio of 2.0). The price is that a window resolves only to the frame
-  boundary, which is an error bounded by `frame_width` rather than by nothing. Old frames merge
-  pairwise as `capacity` fills, so resolution coarsens with age and never with recency.
+  boundary. As `capacity` fills, the adjacent pair narrowest relative to its age is merged, so a
+  boundary at age `A` is resolved to within `max(frame_width, ε·A)`, `ε = H^(1/⌊capacity/2⌋) − 1`
+  over a history of `H` frame widths: resolution coarsens with age and never with recency.
 - **Streaming quantile sketches** (`KllSketch`, `DdSketch`) — compact, mergeable summaries that
   answer quantile / rank queries over a stream in bounded memory: **KLL** with a rank-error guarantee
   (uniform across the distribution) and **DDSketch** with a relative-error guarantee (ideal for

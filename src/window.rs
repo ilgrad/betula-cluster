@@ -47,8 +47,9 @@
 //! *sum* of frames and every combination is the stable Chan merge. The trade is explicit and goes
 //! the other way from CluStream's: exact in real arithmetic is given up (a window can only be
 //! resolved to the frame boundary) in exchange for an answer that is sound in floating point at
-//! every ratio. Older frames are merged pairwise as capacity is reached, so resolution coarsens
-//! with age — the pyramidal property, obtained by merging rather than by differencing.
+//! every ratio. As capacity is reached, the adjacent pair narrowest relative to its age is merged, so
+//! a boundary at age `A` is resolved to within `ε·A` with `ε = H^(1/⌊capacity/2⌋) − 1` over a history
+//! of `H` frame widths: resolution coarsens with age, obtained by merging rather than by differencing.
 
 use crate::clustering::{KMeans, kmeans};
 use crate::distance::CentroidEuclidean;
@@ -243,11 +244,27 @@ pub struct Frame<C> {
 
 /// A frame index answering window queries by summation.
 ///
-/// Newest frames sit at the end. When the frame count exceeds `capacity` the two *oldest* adjacent
-/// frames are merged, so time resolution degrades with age and never with recency — the pyramidal
-/// property, reached by merging instead of by differencing.
+/// Newest frames sit at the end. When the frame count exceeds `capacity`, one adjacent pair is
+/// merged: the pair whose merged extent `W` is smallest relative to its age `A`, the time from the
+/// pair's newer edge to the newest frame's. The newest frame is never merged, and a tie goes to the
+/// older pair. After every push each merged frame therefore satisfies
+///
+/// ```text
+/// W ≤ ε·A,   ε = H^(1/⌊capacity/2⌋) − 1,
+/// ```
+///
+/// where `H` is the indexed history in units of the second-newest frame's age at the merge (one
+/// frame width on [`WindowStream`]'s grid). Before a merge there are `capacity + 1` frames; if every
+/// allowed pair had `W/A > ε`, the ages of every second frame would grow by more than `1 + ε` per
+/// step, and the history would exceed `(1 + ε)^⌊capacity/2⌋`. The bound is tight. So a window
+/// boundary at age `A` is resolved to within `max(frame width, ε·A)`: resolution coarsens with age
+/// and never with recency, reached by merging instead of by differencing.
 pub struct WindowIndex<R: Real, C: ClusterFeature<R>> {
     frames: Vec<Frame<C>>,
+    /// The time interval each frame stands for, parallel to `frames`: the data span for
+    /// [`push_frame`](Self::push_frame), the grid cells for [`WindowStream`]. `W` and `A` are read
+    /// off these, so the stream's bound is in frame widths, not in where its points happened to fall.
+    extents: Vec<(f64, f64)>,
     capacity: usize,
     max_micros: usize,
     seed: u64,
@@ -260,6 +277,7 @@ impl<R: Real, C: ClusterFeature<R>> WindowIndex<R, C> {
     pub fn new(capacity: usize, max_micros: usize, seed: u64) -> Self {
         WindowIndex {
             frames: Vec::new(),
+            extents: Vec::new(),
             capacity: capacity.max(1),
             max_micros: max_micros.max(1),
             seed,
@@ -275,23 +293,55 @@ impl<R: Real, C: ClusterFeature<R>> WindowIndex<R, C> {
     /// Close a frame. `micros` is that frame's own summary — typically a CF-tree's leaves,
     /// harvested and the tree reset.
     pub fn push_frame(&mut self, span: TimeSpan, micros: Vec<C>) {
+        self.push_frame_over(span, micros, (span.min, span.max));
+    }
+
+    /// [`push_frame`](Self::push_frame) with the interval the frame stands for given explicitly.
+    pub(crate) fn push_frame_over(&mut self, span: TimeSpan, micros: Vec<C>, extent: (f64, f64)) {
         self.frames.push(Frame { span, micros });
+        self.extents.push(extent);
         while self.frames.len() > self.capacity && self.frames.len() >= 2 {
-            let older = self.frames.remove(0);
-            let newer = self.frames.remove(0);
-            let mut span = older.span;
-            span.merge(&newer.span);
-            let mut micros = older.micros;
+            let i = self.pair_to_merge();
+            let newer = self.frames.remove(i + 1);
+            let (lo, hi) = self.extents.remove(i + 1);
+            let older = &mut self.frames[i];
+            older.span.merge(&newer.span);
+            let mut micros = std::mem::take(&mut older.micros);
             micros.extend(newer.micros);
-            let micros = compact(micros, self.max_micros, self.seed);
-            self.frames.insert(0, Frame { span, micros });
+            older.micros = compact(micros, self.max_micros, self.seed);
+            let e = &mut self.extents[i];
+            *e = (e.0.min(lo), e.1.max(hi));
         }
+    }
+
+    /// The `i` of the adjacent pair `(i, i + 1)` with the smallest `W/A`, never touching the newest
+    /// frame; ties go to the older pair. A pair with no positive age (overlapping or out-of-order
+    /// extents) is not a candidate, and with no candidate at all the oldest pair is merged.
+    fn pair_to_merge(&self) -> usize {
+        let n = self.extents.len();
+        let now = self.extents[n - 1].1;
+        let mut best = 0;
+        let mut best_ratio: Option<(f64, f64)> = None;
+        for i in 0..n.saturating_sub(2) {
+            let width = self.extents[i + 1].1 - self.extents[i].0;
+            let age = now - self.extents[i + 1].1;
+            if age.is_nan() || age <= 0.0 {
+                continue;
+            }
+            // `width/age < bw/ba`, cross-multiplied: both ages are positive.
+            if best_ratio.is_none_or(|(bw, ba)| width * ba < bw * age) {
+                best = i;
+                best_ratio = Some((width, age));
+            }
+        }
+        best
     }
 
     /// Every micro-cluster from a frame reaching into `[t0, t1]`.
     ///
     /// Frame-granular, and says so: a frame straddling `t0` contributes whole. That is the price of
-    /// never subtracting, and it is bounded by the frame width rather than by a condition number.
+    /// never subtracting, and it is bounded by the straddling frame's width — at most
+    /// `max(frame width, ε·A)` at age `A` (see [`WindowIndex`]) — rather than by a condition number.
     pub fn window(&self, t0: f64, t1: f64) -> Vec<C> {
         let mut out = Vec::new();
         for f in &self.frames {
@@ -375,7 +425,8 @@ pub struct WindowStream<R: Real, C: ClusterFeature<R>> {
 
 impl<R: Real, C: ClusterFeature<R>> WindowStream<R, C> {
     /// `frame_width` is in stream-time units and sets the resolution a window can be asked at;
-    /// `capacity` frames are retained before the two oldest are merged. The tree parameters are the
+    /// `capacity` frames are retained before an adjacent pair is merged (see [`WindowIndex`] for which
+    /// pair, and the resolution that leaves at each age). The tree parameters are the
     /// usual ones and apply to each frame independently.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -448,7 +499,10 @@ impl<R: Real, C: ClusterFeature<R>> WindowStream<R, C> {
             return;
         }
         let micros = self.tree.leaf_features().to_vec();
-        self.index.push_frame(self.open, micros);
+        // The frame stands for its grid cell, `[end − width, end)`, not for where its points fell.
+        let end = self.frame_end.unwrap_or(self.open.max);
+        self.index
+            .push_frame_over(self.open, micros, (end - self.frame_width, end));
         self.tree = CFTree::new(
             self.dim,
             self.branching,
@@ -962,6 +1016,70 @@ mod tests {
             pp.checked_subtract(&p, 0.0),
             Err(SubtractError::IllConditioned { condition, .. }) if condition.is_infinite()
         ));
+    }
+
+    /// `ε = H^(1/⌊capacity/2⌋) − 1` from the [`WindowIndex`] docs, `H` in frame widths.
+    fn epsilon(history: f64, capacity: usize) -> f64 {
+        history.powf(1.0 / (capacity / 2) as f64) - 1.0
+    }
+
+    #[test]
+    fn every_merged_frame_is_narrow_against_its_age() {
+        // Unit grid cells with random gaps, as `WindowStream` pushes them. After every push, each
+        // frame wider than one cell must satisfy W ≤ ε·A. The rule that always merged the two oldest
+        // frames grew one frame over the whole past, so its W/A ran into the thousands.
+        let mut checked = 0;
+        for capacity in 2..=24 {
+            for (seed, gap) in [(1, 0.0), (2, 0.3), (3, 0.9)] {
+                let mut rng = SplitMix64::new(100 * capacity as u64 + seed);
+                let mut idx: WindowIndex<f64, Spherical<f64>> = WindowIndex::new(capacity, 4, 0);
+                for cell in 0..1500 {
+                    if rng.next_f64() < gap {
+                        continue;
+                    }
+                    let t = cell as f64;
+                    let mut span = TimeSpan::new();
+                    span.push(t + 0.5, 1.0);
+                    idx.push_frame_over(span, vec![cf::<f64>(&[[t, 0.0]])], (t, t + 1.0));
+                    let now = idx.extents.last().unwrap().1;
+                    let eps = epsilon(now - idx.extents[0].0, capacity);
+                    for &(lo, hi) in &idx.extents[..idx.extents.len() - 1] {
+                        if hi - lo > 1.0 {
+                            checked += 1;
+                            let (w, a) = (hi - lo, now - hi);
+                            assert!(
+                                w <= eps * a * (1.0 + 1e-12),
+                                "capacity {capacity}, gap {gap}: W {w} > ε {eps} · A {a}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        assert!(checked > 100_000, "only {checked} merged frames checked");
+    }
+
+    #[test]
+    fn a_recent_window_is_not_swamped_by_the_merged_past() {
+        // Forty frames of ten points at capacity 6. The window [30, 40] holds 100 points; the old
+        // rule merged everything older into one frame reaching to 34 and returned 400.
+        let mut s = stream(1.0, 6);
+        let mut rng = SplitMix64::new(9);
+        for t in 0..40 {
+            for _ in 0..10 {
+                s.insert(&[rng.gauss(), rng.gauss()], t as f64 + 0.5);
+            }
+        }
+        s.close_frame();
+        assert_eq!(s.frames().len(), 6);
+        let got = s.window_moments(30.0, 40.0).weight;
+        let bound = (1.0 + epsilon(40.0, 6)) * 100.0;
+        assert!(
+            got >= 100.0 && got <= bound,
+            "window [30, 40] weighs {got}, bound {bound}"
+        );
+        // The newest frame is never merged.
+        assert_eq!(s.frames().last().unwrap().span.weight, 10.0);
     }
 
     #[test]
