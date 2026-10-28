@@ -75,16 +75,13 @@ def gen_dataset(name: str, n: int, seed: int = 0):
 
 # ── real datasets (download-guarded; fixed N → quality-phase only) ──────────────────────────────────
 def load_real(name: str, seed: int = 0):
-    """Return (X float64 standardized, y, k) for a real dataset, or ``None`` if its download is
-    unavailable (offline run). Large sets are subsampled to ``REAL_CAP`` under the **sub** rule —
-    draw the rows, then standardize the draw. `bench/_fixtures.py` says why the rule needs a name."""
-    try:
-        x, y, k = _fixtures.fetch(name)
-    except ValueError:
-        raise  # programmer error (unknown name), not a download failure
-    except Exception as e:  # offline / download failure → skip this dataset, keep the run alive
-        print(f"  [real] {name}: skipped ({type(e).__name__}: {str(e)[:60]})")
-        return None
+    """Return (X float64 standardized, y, k) for a real dataset. Large sets are subsampled to
+    ``REAL_CAP`` under the **sub** rule — draw the rows, then standardize the draw.
+    `bench/_fixtures.py` says why the rule needs a name.
+
+    A failed load raises. It used to print "skipped" and return ``None``, and a loader bug (not a
+    network failure) then dropped MNIST from every published table with no error anywhere."""
+    x, y, k = _fixtures.fetch(name)
     return (*_fixtures.draw_then_scale(x, y, REAL_CAP, seed), k)
 
 
@@ -241,10 +238,7 @@ def run_real(datasets: list[str], seed: int = 0) -> pd.DataFrame:
     """Quality phase on real datasets (fixed/subsampled N). Same methods + metrics as `run_quality`."""
     rows = []
     for ds in datasets:
-        loaded = load_real(ds, seed)
-        if loaded is None:  # download unavailable → already logged
-            continue
-        X, y, k = loaded
+        X, y, k = load_real(ds, seed)
         print(f"[real] {ds}: N={len(X):,} d={X.shape[1]} k={k}")
         # Full d×d covariance GMMs are O(d^3) per component — infeasible past ~100 dims (e.g. MNIST).
         skip_full_cov = X.shape[1] > 100
@@ -286,10 +280,7 @@ def run_real_hires(datasets: list[str], seed: int = 0) -> pd.DataFrame:
 
     rows = []
     for ds in datasets:
-        loaded = load_real(ds, seed)
-        if loaded is None:
-            continue
-        X, y, k = loaded
+        X, y, k = load_real(ds, seed)
         ml = min(len(X), 16_000)
         kw = dict(threshold=0.0, max_leaves=ml, seed=seed, n_shards=1)
         skip_full = X.shape[1] > 100
@@ -358,10 +349,7 @@ def run_real_normalize(datasets: list[str], seed: int = 0) -> pd.DataFrame:
     kw = {**BETULA_KW, "seed": seed}
     rows = []
     for ds in datasets:
-        loaded = load_real(ds, seed)
-        if loaded is None:  # download unavailable → already logged
-            continue
-        X, y, k = loaded
+        X, y, k = load_real(ds, seed)
         for name, feat, meth in heads:
             rec = {"dataset": ds, "n": len(X), "d": int(X.shape[1]), "method": name}
             for nz in (False, True):
@@ -442,13 +430,12 @@ def run_memory(sizes: list[int], d: int = 20, chunk: int = 50_000) -> pd.DataFra
 
 def run_real_scale(dataset: str = "covtype") -> pd.DataFrame:
     """Headline: betula vs sklearn on the FULL real dataset (no subsample) — time, peak RSS and ARI,
-    each isolated in a subprocess. Skipped (empty) if the dataset can't be downloaded."""
+    each isolated in a subprocess. A method that fails keeps its row, with the error."""
     rows = []
     for name in ["betula-kmeans", "sklearn-kmeans", "sklearn-birch"]:
         res = _run_worker(["real_fit", name, dataset], TIMEOUT * 6)
-        if res.get("error"):
-            print(f"  real-scale {dataset}: skipped ({res['error']})")
-            break
+        # One method's failure is a row with its error, not the end of the table: the old `break`
+        # dropped every later method, and the empty table read as "not run".
         rows.append({"dataset": dataset, "method": name, **res})
         print(f"  real-scale {name:18s} {res}")
     return pd.DataFrame(rows)
@@ -457,7 +444,7 @@ def run_real_scale(dataset: str = "covtype") -> pd.DataFrame:
 def run_sparse(datasets: list[str]) -> pd.DataFrame:
     """High-dimensional sparse text (TF-IDF CSR): betula's O(nnz) sparse-native path
     (`fit_predict_sparse`) vs sklearn, each isolated in a subprocess (time · peak RSS · ARI).
-    Skipped if the corpus can't be downloaded (offline)."""
+    A method that fails keeps its row, with the error."""
     rows = []
     for ds in datasets:
         for name in [
@@ -469,9 +456,6 @@ def run_sparse(datasets: list[str]) -> pd.DataFrame:
             "sklearn-nmf",
         ]:
             res = _run_worker(["sparse_fit", name, ds], TIMEOUT * 3)
-            if res.get("error"):
-                print(f"  sparse {ds}: skipped ({res['error']})")
-                break
             rows.append({"dataset": ds, "method": name, **res})
             print(f"  sparse {ds} {name:18s} {res}")
     return pd.DataFrame(rows)

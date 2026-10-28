@@ -31,13 +31,16 @@ TABLES = {
 
 
 def reduce_table(stem: str, keys: list[str], seeds: list[int]) -> pd.DataFrame | None:
-    parts = []
-    for s in seeds:
-        f = HERE / f"{stem}_s{s}.csv"
-        if not f.exists():
-            print(f"  {stem}: missing {f.name} — table skipped")
-            return None
-        parts.append(pd.read_csv(f).assign(_seed=s))
+    files = {s: HERE / f"{stem}_s{s}.csv" for s in seeds}
+    missing = [f.name for f in files.values() if not f.exists()]
+    if len(missing) == len(files):
+        print(f"  {stem}: not run for any seed — table skipped")
+        return None
+    if missing:
+        # A median over the seeds that happen to exist is a different statistic under the same
+        # name; the old code dropped the whole table here without failing.
+        raise SystemExit(f"{stem}: missing {', '.join(missing)}; rerun those seeds")
+    parts = [pd.read_csv(f).assign(_seed=s) for s, f in files.items()]
     df = pd.concat(parts, ignore_index=True)
 
     # A cell that errored carries no measurement in any seed; keep the message rather than emit a

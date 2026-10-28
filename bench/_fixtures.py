@@ -45,7 +45,9 @@ def fetch(dataset: str) -> tuple[np.ndarray, np.ndarray, int]:
     elif dataset == "mnist":
         from sklearn.datasets import fetch_openml
 
-        d = fetch_openml("mnist_784", version=1, as_frame=False)
+        # `parser="liac-arff"`: the default ("auto" → pandas) raises on scikit-learn 1.9.1 with
+        # pandas 3.1, and the harness used to read that as "offline" and drop the dataset.
+        d = fetch_openml("mnist_784", version=1, as_frame=False, parser="liac-arff")
         x, y, k = d.data, d.target.astype(int), 10
     elif dataset == "covtype":
         from sklearn.datasets import fetch_covtype
