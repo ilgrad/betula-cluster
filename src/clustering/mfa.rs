@@ -554,6 +554,8 @@ fn free_parameters(k: usize, d: usize, q: usize) -> usize {
 
 /// MFA with automatic component count (BIC over `k ∈ [k_min, k_max]`, parameters counted by
 /// [`free_parameters`]).
+/// Each `k` is fitted as the fixed-`k` head fits it, best of its EM restarts, so the model kept at
+/// the chosen `k` is the one the fixed-`k` call returns.
 pub fn mfa_auto<R: Real, C: ClusterFeature<R>>(
     features: &[C],
     k_min: usize,
@@ -570,7 +572,7 @@ pub fn mfa_auto<R: Real, C: ClusterFeature<R>>(
     let mut best_score = R::infinity();
     let mut best: Option<Mfa<R>> = None;
     for k in k_lo..=k_hi {
-        let g = mfa_once(features, k, rank, max_iter, seed);
+        let g = mfa(features, k, rank, max_iter, seed);
         let score = bic(g.loglik, free_parameters(k, d, q), ntot);
         if score < best_score {
             best_score = score;
@@ -727,6 +729,34 @@ mod tests {
     /// The reason the head exists. Where the axes have different scales and the separation sits on
     /// a quiet one, a per-dimension `Ψ` recovers the partition outright and an isotropic `σ² I`
     /// does not — it has to average the loud axes against the tight one carrying the signal.
+    #[test]
+    fn auto_k_keeps_the_fixed_k_fit_at_its_choice() {
+        // Up to 1.4.0 `mfa_auto` and `mppca_auto` ran one EM per k while the fixed-k heads keep
+        // the best of their restarts. Pinning k_min = k_max = k makes the two answers identical.
+        let mut differs = false;
+        for seed in 0..5 {
+            let (pts, _) = heteroscedastic(seed, 300);
+            let feats = leaves(&pts, 5);
+            let mfa_fixed = mfa(&feats, 3, 1, 200, seed).loglik;
+            assert_eq!(
+                mfa_auto(&feats, 3, 3, 1, 200, seed).loglik,
+                mfa_fixed,
+                "mfa, seed {seed}"
+            );
+            let ppca = crate::clustering::mppca::mppca_auto(&feats, 3, 3, 1, 200, seed).loglik;
+            assert_eq!(
+                ppca,
+                mppca(&feats, 3, 1, 200, seed).loglik,
+                "mppca, seed {seed}"
+            );
+            differs |= mfa_once(&feats, 3, 1, 200, seed).loglik != mfa_fixed;
+        }
+        assert!(
+            differs,
+            "one EM run always matched the restarts: the fixture tests nothing"
+        );
+    }
+
     #[test]
     fn diagonal_noise_beats_isotropic_where_the_axes_have_different_scales() {
         for seed in 0..5 {

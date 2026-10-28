@@ -504,6 +504,8 @@ fn free_parameters(k: usize, d: usize, q: usize) -> usize {
 }
 
 /// MPPCA with automatic component count (BIC over `k ∈ [k_min, k_max]`).
+/// Each `k` is fitted as the fixed-`k` head fits it, best of its EM restarts, so the model kept at
+/// the chosen `k` is the one the fixed-`k` call returns.
 pub fn mppca_auto<R: Real, C: ClusterFeature<R>>(
     features: &[C],
     k_min: usize,
@@ -520,7 +522,7 @@ pub fn mppca_auto<R: Real, C: ClusterFeature<R>>(
     let mut best_score = R::infinity();
     let mut best: Option<Mppca<R>> = None;
     for k in k_lo..=k_hi {
-        let g = mppca_once(features, k, rank, max_iter, seed);
+        let g = mppca(features, k, rank, max_iter, seed);
         let p = free_parameters(k, d, q);
         let score = bic(g.loglik, p, ntot);
         if score < best_score {

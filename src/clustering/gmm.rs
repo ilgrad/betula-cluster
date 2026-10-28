@@ -626,6 +626,8 @@ pub(crate) fn total_weight<R: Real, C: ClusterFeature<R>>(features: &[C]) -> R {
 
 /// Diagonal GMM with automatic component count: fit every `k ∈ [k_min, k_max]` and keep the
 /// lowest-BIC model (`k_max` clamped to the feature count). The chosen `k` is `result.means.len()`.
+/// Each `k` is fitted as the fixed-`k` head fits it, best of its EM restarts, so the model kept at
+/// the chosen `k` is the one the fixed-`k` call returns.
 pub fn gmm_diagonal_auto<R: Real, C: ClusterFeature<R>>(
     features: &[C],
     k_min: usize,
@@ -640,7 +642,7 @@ pub fn gmm_diagonal_auto<R: Real, C: ClusterFeature<R>>(
     let mut best_score = R::infinity();
     let mut best: Option<Gmm<R>> = None;
     for k in k_lo..=k_hi {
-        let g = gmm_diagonal_once(features, k, max_iter, seed);
+        let g = gmm_diagonal(features, k, max_iter, seed);
         let p = 2 * k * d + (k - 1); // means + diagonal vars + mixing weights
         let score = bic(g.loglik, p, ntot);
         if score < best_score {
@@ -654,6 +656,8 @@ pub fn gmm_diagonal_auto<R: Real, C: ClusterFeature<R>>(
 /// Full-covariance GMM with automatic component count (BIC over `k ∈ [k_min, k_max]`). Each extra
 /// component costs `d(d+1)/2` covariance parameters, so BIC favours diagonal-like solutions unless
 /// the orientation genuinely pays for itself.
+/// Each `k` is fitted as the fixed-`k` head fits it, best of its EM restarts, so the model kept at
+/// the chosen `k` is the one the fixed-`k` call returns.
 pub fn gmm_full_auto<R: Real, C: ClusterFeature<R>>(
     features: &[C],
     k_min: usize,
@@ -668,7 +672,7 @@ pub fn gmm_full_auto<R: Real, C: ClusterFeature<R>>(
     let mut best_score = R::infinity();
     let mut best: Option<GmmFull<R>> = None;
     for k in k_lo..=k_hi {
-        let g = gmm_full_once(features, k, max_iter, seed);
+        let g = gmm_full(features, k, max_iter, seed);
         let p = k * d + k * d * (d + 1) / 2 + (k - 1); // means + lower-tri cov + mixing
         let score = bic(g.loglik, p, ntot);
         if score < best_score {
@@ -1016,6 +1020,38 @@ mod tests {
                 once.loglik
             );
         }
+    }
+
+    #[test]
+    fn auto_k_keeps_the_fixed_k_fit_at_its_choice() {
+        // Up to 1.4.0 the auto heads ran one EM per k while the fixed-k heads keep the best of
+        // GMM_N_INIT restarts, so the model at the chosen k could be worse than `gmm_full(k)` and
+        // the BIC comparison across k inherited one seed's luck. Pinning k_min = k_max = k makes
+        // the auto head's answer the fixed-k answer, exactly.
+        let mut rng = SplitMix64::new(5);
+        let centers = [[0.0, 0.0], [6.0, 0.0], [0.0, 6.0], [6.0, 6.0]];
+        let (pts, _) = blobs(&mut rng, 300, &centers, 1.4);
+        let (micros, _) = grid_micros(&pts, 0.4);
+        let (mut full_differs, mut diag_differs) = (false, false);
+        for seed in 0..8 {
+            let full = gmm_full(&micros, 4, 200, seed).loglik;
+            assert_eq!(
+                gmm_full_auto(&micros, 4, 4, 200, seed).loglik,
+                full,
+                "full, seed {seed}"
+            );
+            full_differs |= gmm_full_once(&micros, 4, 200, seed).loglik != full;
+            let diag = gmm_diagonal(&micros, 3, 200, seed).loglik;
+            let auto = gmm_diagonal_auto(&micros, 3, 3, 200, seed).loglik;
+            assert_eq!(auto, diag, "diagonal, seed {seed}");
+            diag_differs |= gmm_diagonal_once(&micros, 3, 200, seed).loglik != diag;
+        }
+        // Otherwise one EM run always matched the restarts and the test could not fail. The
+        // diagonal head needs k = 3 on these four blobs: at k = 4 every seed finds the same optimum.
+        assert!(
+            full_differs && diag_differs,
+            "{full_differs} {diag_differs}"
+        );
     }
 
     #[test]
@@ -1730,7 +1766,8 @@ mod tests {
 
     /// The BIC each auto-`k` head minimises, with the parameter count re-derived rather than read
     /// off: a diagonal mixture fits `k·d` means, `k·d` variances and `k−1` free mixing weights; a
-    /// full-covariance one replaces the variances with `k·d(d+1)/2` lower-triangular entries.
+    /// full-covariance one replaces the variances with `k·d(d+1)/2` lower-triangular entries. Each
+    /// `k` is fitted as the fixed-`k` head fits it, best of its restarts.
     fn reference_auto_k(
         features: &[Diagonal<f64>],
         k_lo: usize,
@@ -1745,12 +1782,12 @@ mod tests {
         for k in k_lo..=k_hi {
             let (loglik, p) = if full {
                 (
-                    gmm_full_once(features, k, max_iter, seed).loglik,
+                    gmm_full(features, k, max_iter, seed).loglik,
                     k * d + k * d * (d + 1) / 2 + (k - 1),
                 )
             } else {
                 (
-                    gmm_diagonal_once(features, k, max_iter, seed).loglik,
+                    gmm_diagonal(features, k, max_iter, seed).loglik,
                     k * d + k * d + (k - 1),
                 )
             };
