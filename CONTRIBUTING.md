@@ -61,6 +61,17 @@ Floating-point addition does not associate, so a work-stealing fold makes the an
 how the threads interleaved. It is invisible at one thread, which is why `cargo test` cannot see it,
 and it shipped once in `nmf.rs`. CI runs this as the `threads` job.
 
+When a PR adds or edits a hard-coded reference table (`watson.rs` `GOLDEN`, the `vmf.rs` asymptotic
+fixture, `stats.rs` `CDF_TABLE` / `QUANTILE_TABLE`):
+
+```bash
+uv run --with mpmath python scripts/recheck_goldens.py   # every row against mpmath at 60 digits
+```
+
+A provenance comment is not a check: two tables once sat ~5 ulp wrong for a month under a comment
+that correctly named the engine that produced them. The script recomputes every row at the exact
+`f64` the literal denotes and exits 1 on any row more than 2 ulp off.
+
 When a PR touches an entry point that takes untrusted input — `sparse::validate_csr` and
 `summarize_sparse`, `CFTree::try_insert`, or `CFTree::validate` and the model format it guards:
 
