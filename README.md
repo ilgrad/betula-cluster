@@ -25,7 +25,7 @@
 pip install betula-cluster
 ```
 
-**Verified:** a **620-case** Python suite at **100% wrapper coverage** + **1059** Rust tests,
+**Verified:** a **626-case** Python suite at **100% wrapper coverage** + **1062** Rust tests,
 `clippy -D warnings` + `fmt` clean across all feature sets, CI on CPython 3.11–3.15 (one abi3 wheel)
 plus free-threaded 3.14t and 3.15t.
 
@@ -391,7 +391,7 @@ And six **end-to-end use cases** (each scored against ground truth):
 - [**Benchmarks**](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md) — methodology, every metric, all tables, honest wins & losses.
 - [**Design**](https://github.com/ilgrad/betula-cluster/blob/main/DESIGN.md) — internal design, invariants, and testing strategy.
 
-Verified: **1059** Rust tests (library, equivariance, integration and CLI) + a **620-case**
+Verified: **1062** Rust tests (library, equivariance, integration and CLI) + a **626-case**
 Python suite at **100%** wrapper coverage (Rust ≥95%, CI-enforced), `clippy -D warnings` + `fmt`
 clean across all feature sets, on Python 3.11–3.15 (single abi3 wheel) and free-threaded
 3.14t and 3.15t.

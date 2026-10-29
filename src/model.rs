@@ -2,12 +2,12 @@
 
 use crate::clustering::{
     Gmm, GmmFull, GmmToeplitz, KMEANS_N_INIT, Kappa, LeafGraph, Linkage, Mfa, Movmf, Mppca,
-    Objective, Watson, agglomerative, agglomerative_auto, dyn_msc, fuzzy_cmeans, fuzzy_cmeans_auto,
-    gmm_diagonal, gmm_diagonal_auto, gmm_full, gmm_full_auto, gmm_toeplitz, gmm_toeplitz_auto,
-    gmm_toeplitz_full, gmm_toeplitz_full_auto, gmm_toeplitz_gs, gmm_toeplitz_gs_auto, hartigan,
-    hyperbolic_kmeans, kmeans, kmeans_auto, kmedoids, leiden_on, mfa, mfa_auto, movmf_auto,
-    movmf_auto_with, movmf_with, mppca, mppca_auto, project_to_sheet, spectral_on,
-    spherical_kmeans, ward_hac, ward_hac_auto, watson, watson_auto, xmeans,
+    Objective, Watson, agglomerative, agglomerative_auto, dyn_msc, equal_size, fuzzy_cmeans,
+    fuzzy_cmeans_auto, gmm_diagonal, gmm_diagonal_auto, gmm_full, gmm_full_auto, gmm_toeplitz,
+    gmm_toeplitz_auto, gmm_toeplitz_full, gmm_toeplitz_full_auto, gmm_toeplitz_gs,
+    gmm_toeplitz_gs_auto, hartigan, hyperbolic_kmeans, kmeans, kmeans_auto, kmedoids, leiden_on,
+    mfa, mfa_auto, movmf_auto, movmf_auto_with, movmf_with, mppca, mppca_auto, project_to_sheet,
+    spectral_on, spherical_kmeans, ward_hac, ward_hac_auto, watson, watson_auto, xmeans,
 };
 use crate::distance::CFDistance;
 use crate::feature::ClusterFeature;
@@ -121,6 +121,16 @@ pub(crate) enum Rule {
     Lorentz,
     /// Route down the tree to a leaf and read its label.
     Microcluster,
+}
+
+/// [`assignment_rule`] under the head's options. Equal-size k-means is the one option that changes
+/// it: a size constraint moves rows off their nearest centre by design, so its rows are labelled by
+/// their leaf, as the dendrogram heads' are.
+pub(crate) fn head_rule(method: Method, opts: HeadOptions) -> Rule {
+    match method {
+        Method::KMeans if opts.equal_size => Rule::Microcluster,
+        _ => assignment_rule(method),
+    }
 }
 
 pub(crate) fn assignment_rule(method: Method) -> Rule {
@@ -315,7 +325,7 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> Mo
             opts,
         );
         let n_clusters = distinct_count(&fit.labels);
-        let assign = match (assignment_rule(method), fit.mixture) {
+        let assign = match (head_rule(method, opts), fit.mixture) {
             // A head that named its own centres keeps them: averaging the clusters instead would
             // hand `predict` a Voronoi partition the fit never produced.
             (Rule::Centroid { unit }, _) => Assignment::Centers {
@@ -629,13 +639,15 @@ pub(crate) fn auto_k_ceiling(method: Method, n_leaves: usize, auto_k_max: usize)
 
 /// Head settings that [`Method`] cannot carry: up to `passes` Leiden passes over the leaf graph
 /// `graph` names (`graph` also selects the spectral operator), the vMF concentration model, and
-/// whether k-means ends on Hartigan leaf moves ([`hartigan`]).
+/// whether k-means ends on Hartigan leaf moves ([`hartigan`]) or on equal-size clusters
+/// ([`equal_size`]).
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct HeadOptions {
     pub(crate) passes: usize,
     pub(crate) graph: LeafGraph,
     pub(crate) kappa: Kappa,
     pub(crate) hartigan: bool,
+    pub(crate) equal_size: bool,
 }
 
 impl HeadOptions {
@@ -646,6 +658,7 @@ impl HeadOptions {
         graph: LeafGraph::Unit,
         kappa: Kappa::Free,
         hartigan: false,
+        equal_size: false,
     };
 }
 
@@ -695,6 +708,8 @@ pub(crate) fn fit_head<R: Real, C: ClusterFeature<R>>(
             };
             let fit = if opts.hartigan {
                 hartigan(features, fit, max_iter)
+            } else if opts.equal_size {
+                equal_size(features, fit, max_iter)
             } else {
                 fit
             };

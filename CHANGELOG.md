@@ -34,6 +34,14 @@ All notable changes to this project are documented here. The format follows
   rule is already stable, then ends on Lloyd. Exact on leaves. Point SSE falls by 0.7–1.7 % on ALOI
   at `k` = 100 and 1 000 and by nothing measurable at `k` ≤ 10; ARI is unchanged. Off by default.
   Rust: `clustering::hartigan`.
+- **`equal_size=True` for `method="kmeans"`.** k-means under the constraint that every cluster
+  holds `n/k` rows. Each Lloyd step solves the leaf-to-cluster transport problem exactly (successive
+  shortest paths), so a leaf is split only where the capacities force it — at most `k − 1` leaves.
+  Each row takes its leaf's label, so the row-level sizes are equal to within a leaf's mass: at
+  `max_leaves` 300–1 000 (seeds 0/1/2) the largest cluster is 1.05–1.33 times the smallest, against
+  2.5–408 for plain k-means, at 7–12 % more point SSE on digits and covtype. Refuses `hartigan`,
+  `refine` and a projection, which would relabel rows by their nearest centre. Off by default.
+  Rust: `clustering::equal_size`.
 - **`kappa="shared"` for `method="vmf"`.** One concentration for every component, from the pooled
   resultant length (Hornik & Grün 2014, §3.2; exact on leaves). With a free `κ` per component, one
   low-`κ` component absorbs several topics on text and is still the likelier fit, so neither BIC nor

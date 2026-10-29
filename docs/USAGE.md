@@ -75,7 +75,8 @@ and 0.06–0.25 for spectral; it costs up to 0.035 on digits and 0.035 on covtyp
 either way — see *Mass-weighted leaf graphs* in [MATH.md](MATH.md)), `kappa` (the concentration model of
 `method="vmf"`: `"free"`, the default, fits one `κ` per cluster; `"shared"` fits one for all — see
 *A concentration per cluster, and where it costs* below), `hartigan` (end `method="kmeans"` on
-single-leaf moves that lower the inertia — see *Moves Lloyd cannot see* below), `rank` (subspace rank `q` for `method="mppca"` and `method="mfa"`, clamped to at
+single-leaf moves that lower the inertia — see *Moves Lloyd cannot see* below), `equal_size` (fit
+`method="kmeans"` with `n/k` rows per cluster — see *Clusters of equal size* below), `rank` (subspace rank `q` for `method="mppca"` and `method="mfa"`, clamped to at
 most `dim - 1`; `0` makes every `mppca` component spherical and every `mfa` component diagonal), `fuzzifier` (the exponent `m > 1` of
 `method="fuzzy-cmeans"`, default `2.0`; `m → 1⁺` is k-means, `m → ∞` sends every membership to
 `1/k`), `projection` / `projection_dim` / `projection_max_iter` (reduce the leaf centroids to
@@ -101,6 +102,7 @@ is a request the fit was never going to honour:
 | `leaf_graph` | `leiden`, `leiden-cpm`, `spectral` |
 | `kappa` | `vmf` |
 | `hartigan` | `kmeans` |
+| `equal_size` | `kmeans` |
 | `rank` | `mppca`, `mfa` |
 | `fuzzifier` | `fuzzy-cmeans` |
 
@@ -350,6 +352,32 @@ seeds 0/1/2:
 A sweep costs about one unpruned Lloyd pass over the leaves; the fit times above moved within the
 noise of an unquieted machine. Reach for it when the centres are the product — a codebook, IVF
 centroids — at large `k`.
+
+### Clusters of equal size — `equal_size=True`
+
+Some partitions are used as work units — shards, survey strata, delivery routes — and need the same
+number of rows in each. `equal_size=True` fits k-means under that constraint. Each Lloyd step
+assigns the leaves to the centres as a transport problem: leaf `j` ships its mass `n_j`, every
+cluster receives `n/k`, and moving one row of leaf `j` to centre `c` costs `‖μ_j − c‖²`. The
+problem is solved exactly, and an optimal solution splits at most `k − 1` leaves between clusters.
+The centres move to the flow-weighted means, and the loop stops when the cost stops falling.
+
+The capacities are exact on the leaves and approximate on the rows. A split leaf takes the
+cluster that received most of it, and each row takes its leaf's label, so a cluster can be off by
+part of one leaf's mass. `predict` labels a new row by its leaf, not by the nearest centre — the
+nearest centre would undo the constraint. Row-level spread (largest cluster ÷ smallest) and point
+SSE against plain k-means, seeds 0/1/2:
+
+| data | `k` | `max_leaves` | plain spread | `equal_size` spread | SSE ×plain |
+|---|---|---|---|---|---|
+| digits (standardised) | 10 | 300 | 14–408 | 1.19–1.33 | 1.08–1.12 |
+| four Gaussians of 6 000/3 000/1 000/500 rows, `d = 5` | 4 | 500 | 12.0 | 1.054 | 3.48 |
+| covtype, 10 numeric columns | 7 | 1 000 | 2.5–3.0 | 1.07–1.11 | 1.07 |
+
+The second row is the constraint working as asked: the groups are found exactly by plain k-means
+(ARI 1.0), and equal sizes force each large group to be cut. A larger `max_leaves` makes the leaves
+smaller and the row-level sizes more even. `hartigan`, `refine` and `projection` relabel rows by
+their nearest centre, so each of them is refused with `equal_size=True`.
 
 ### Where `xmeans` refuses to split — `method="xmeans"`
 

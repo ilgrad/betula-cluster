@@ -703,6 +703,228 @@ pub fn kmeans_auto<R: Real, C: ClusterFeature<R>>(
     best.expect("at least one k")
 }
 
+/// Equal-size k-means from a finished k-means: Lloyd iterations whose assignment step sends the
+/// leaf masses to the `k` centres under the constraint that every cluster receives exactly `N/k`
+/// of the total mass `N`, at the least total `Σ f_ic‖μ_i − c‖²` (Bradley, Bennett & Demiriz 2000,
+/// with equal capacities). The update step is the flow-weighted mean, so neither step can raise the
+/// objective and the loop stops when an iteration lowers it by less than `1e-10` relative, or after
+/// `max_iter` iterations.
+///
+/// The transport is exact on a summary — a leaf is a mass at its mean, and its own spread adds the
+/// same `S_i` wherever it goes. What a summary cannot do is split a leaf by row: an optimal basic
+/// solution splits at most `k − 1` leaves, and each one takes the label of the cluster that
+/// received most of it, so the label masses are equal to within the mass of those leaves. The
+/// returned `centers` are the flow-weighted means; `inertia` is `Σ S_i` plus the transport cost.
+///
+/// The result is not a Voronoi partition of its centres — a size constraint moves rows away from
+/// their nearest centre by design — so a row is labelled by its leaf, never by a nearest-centre rule.
+pub fn equal_size<R: Real, C: ClusterFeature<R>>(
+    features: &[C],
+    start: KMeans<R>,
+    max_iter: usize,
+) -> KMeans<R> {
+    let m = features.len();
+    let k = start.centers.len();
+    let dim = features[0].dim();
+    let means: Vec<Vec<f64>> = features
+        .iter()
+        .map(|f| f.mean().iter().map(|v| v.to_f64().unwrap()).collect())
+        .collect();
+    let mass: Vec<f64> = features
+        .iter()
+        .map(|f| f.weight().to_f64().unwrap())
+        .collect();
+    let spread: f64 = features.iter().map(|f| f.ssd().to_f64().unwrap()).sum();
+    let mut centers: Vec<Vec<f64>> = start
+        .centers
+        .iter()
+        .map(|c| c.iter().map(|v| v.to_f64().unwrap()).collect())
+        .collect();
+    let sq = |a: &[f64], b: &[f64]| a.iter().zip(b).map(|(x, y)| (x - y) * (x - y)).sum::<f64>();
+    let mut flow = Vec::new();
+    let mut best = f64::INFINITY;
+    for _ in 0..max_iter.max(1) {
+        let cost: Vec<Vec<f64>> = means
+            .iter()
+            .map(|mu| centers.iter().map(|c| sq(mu, c)).collect())
+            .collect();
+        flow = transport_equal(&mass, &cost, k);
+        let mut sums = vec![vec![0.0; dim]; k];
+        let mut got = vec![0.0; k];
+        for (i, row) in flow.iter().enumerate() {
+            for &(c, f) in row {
+                got[c] += f;
+                for (s, &x) in sums[c].iter_mut().zip(&means[i]) {
+                    *s += f * x;
+                }
+            }
+        }
+        for c in 0..k {
+            if got[c] > 0.0 {
+                centers[c] = sums[c].iter().map(|s| s / got[c]).collect();
+            }
+        }
+        let objective: f64 = flow
+            .iter()
+            .enumerate()
+            .map(|(i, row)| {
+                row.iter()
+                    .map(|&(c, f)| f * sq(&means[i], &centers[c]))
+                    .sum::<f64>()
+            })
+            .sum();
+        let done = best - objective <= 1e-10 * best.abs();
+        best = best.min(objective);
+        if done {
+            break;
+        }
+    }
+    let labels = (0..m)
+        .map(
+            |i| match flow[i].iter().max_by(|a, b| a.1.total_cmp(&b.1)) {
+                Some(&(c, _)) => c,
+                None => (0..k)
+                    .min_by(|&a, &b| {
+                        sq(&means[i], &centers[a]).total_cmp(&sq(&means[i], &centers[b]))
+                    })
+                    .unwrap_or(0),
+            },
+        )
+        .collect();
+    KMeans {
+        labels,
+        centers: centers
+            .iter()
+            .map(|c| c.iter().map(|&v| R::from_f64(v).unwrap()).collect())
+            .collect(),
+        inertia: R::from_f64(spread + best).unwrap(),
+    }
+}
+
+/// `f64` ordered by `total_cmp`, for the transport's heaps.
+#[derive(Clone, Copy, PartialEq)]
+struct Key(f64);
+impl Eq for Key {}
+impl PartialOrd for Key {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for Key {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.0.total_cmp(&other.0)
+    }
+}
+
+/// Minimum-cost transport of `mass[i]` from every leaf to `k` clusters that each receive exactly
+/// `Σ mass / k`, at per-unit cost `cost[i][c]`; returns each leaf's `(cluster, flow)` pairs.
+///
+/// Successive shortest paths (Ahuja, Magnanti & Orlin 1993, §9.7), with the leaf nodes contracted
+/// away: a residual path leaves its source leaf for some cluster and then hops cluster to cluster,
+/// each hop `a → b` moving flow some leaf `i` already sends to `a` over to `b` at cost
+/// `cost[i][b] − cost[i][a]`. The cheapest such `i` for every ordered pair sits on top of a lazy
+/// heap, so a shortest path is a Dijkstra over `k` nodes and the whole solve is
+/// `O(m·k·log m + paths·k²)`, not `O(paths·m·k)`. The cluster potentials keep every reduced hop
+/// cost non-negative, which is what lets Dijkstra run on costs that are themselves differences.
+fn transport_equal(mass: &[f64], cost: &[Vec<f64>], k: usize) -> Vec<Vec<(usize, f64)>> {
+    use std::cmp::Reverse;
+    use std::collections::BinaryHeap;
+
+    let m = mass.len();
+    let total: f64 = mass.iter().filter(|w| **w > 0.0).sum();
+    let mut flow: Vec<Vec<(usize, f64)>> = vec![Vec::new(); m];
+    if k == 0 || total <= 0.0 {
+        return flow;
+    }
+    let cap = total / k as f64;
+    let tol = total * 1e-12;
+    let mut load = vec![0.0; k];
+    let mut pot = vec![0.0; k];
+    let mut hops: Vec<BinaryHeap<Reverse<(Key, usize)>>> = vec![BinaryHeap::new(); k * k];
+    let on = |flow: &[Vec<(usize, f64)>], i: usize, c: usize| {
+        flow[i].iter().find(|e| e.0 == c).map_or(0.0, |e| e.1)
+    };
+    let add = |flow: &mut Vec<Vec<(usize, f64)>>,
+               hops: &mut Vec<BinaryHeap<Reverse<(Key, usize)>>>,
+               i: usize,
+               c: usize,
+               delta: f64| {
+        if let Some(e) = flow[i].iter_mut().find(|e| e.0 == c) {
+            e.1 += delta;
+            if e.1 <= tol {
+                flow[i].retain(|e| e.0 != c);
+            }
+        } else if delta > tol {
+            flow[i].push((c, delta));
+            for b in (0..k).filter(|&b| b != c) {
+                hops[c * k + b].push(Reverse((Key(cost[i][b] - cost[i][c]), i)));
+            }
+        }
+    };
+    let mut dist = vec![0.0; k];
+    let mut prev: Vec<Option<(usize, usize)>> = vec![None; k];
+    let mut done = vec![false; k];
+    for j in 0..m {
+        let mut left = mass[j];
+        while left > tol {
+            for c in 0..k {
+                dist[c] = cost[j][c] - pot[c];
+                prev[c] = None;
+                done[c] = false;
+            }
+            let mut target = None;
+            for _ in 0..k {
+                let Some(a) = (0..k)
+                    .filter(|&c| !done[c])
+                    .min_by(|&x, &y| dist[x].total_cmp(&dist[y]))
+                else {
+                    break;
+                };
+                done[a] = true;
+                if load[a] < cap - tol {
+                    target = Some(a);
+                    break;
+                }
+                for b in (0..k).filter(|&b| !done[b]) {
+                    let heap = &mut hops[a * k + b];
+                    while let Some(&Reverse((key, i))) = heap.peek() {
+                        if on(&flow, i, a) > tol {
+                            let d = dist[a] + key.0 + pot[a] - pot[b];
+                            if d < dist[b] {
+                                dist[b] = d;
+                                prev[b] = Some((a, i));
+                            }
+                            break;
+                        }
+                        heap.pop();
+                    }
+                }
+            }
+            let t = target.expect("total capacity equals total mass, so a cluster has room");
+            let reach = dist[t];
+            for c in 0..k {
+                pot[c] += if done[c] { dist[c] - reach } else { 0.0 };
+            }
+            let mut delta = left.min(cap - load[t]);
+            let mut c = t;
+            while let Some((a, i)) = prev[c] {
+                delta = delta.min(on(&flow, i, a));
+                c = a;
+            }
+            load[t] += delta;
+            left -= delta;
+            let mut c = t;
+            while let Some((a, i)) = prev[c] {
+                add(&mut flow, &mut hops, i, c, delta);
+                add(&mut flow, &mut hops, i, a, -delta);
+                c = a;
+            }
+            add(&mut flow, &mut hops, j, c, delta);
+        }
+    }
+    flow
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1464,5 +1686,140 @@ mod tests {
             }
         }
         assert!(moved_somewhere, "no seed gave Hartigan a move to make");
+    }
+
+    /// The least cost of every integral plan, by enumeration. Integral supplies and capacities make
+    /// the transport polytope's vertices integral, so this is the optimum the solver must reach.
+    fn brute_transport(mass: &[usize], cost: &[Vec<f64>], k: usize) -> f64 {
+        fn go(i: usize, mass: &[usize], cost: &[Vec<f64>], room: &mut [usize]) -> f64 {
+            if i == mass.len() {
+                return 0.0;
+            }
+            fn split(
+                i: usize,
+                c: usize,
+                left: usize,
+                mass: &[usize],
+                cost: &[Vec<f64>],
+                room: &mut [usize],
+            ) -> f64 {
+                let k = room.len();
+                if c == k - 1 {
+                    if left > room[c] {
+                        return f64::INFINITY;
+                    }
+                    room[c] -= left;
+                    let v = left as f64 * cost[i][c] + go(i + 1, mass, cost, room);
+                    room[c] += left;
+                    return v;
+                }
+                let mut best = f64::INFINITY;
+                for take in 0..=left.min(room[c]) {
+                    room[c] -= take;
+                    let v =
+                        take as f64 * cost[i][c] + split(i, c + 1, left - take, mass, cost, room);
+                    room[c] += take;
+                    best = best.min(v);
+                }
+                best
+            }
+            split(i, 0, mass[i], mass, cost, room)
+        }
+        let total: usize = mass.iter().sum();
+        go(0, mass, cost, &mut vec![total / k; k])
+    }
+
+    #[test]
+    fn equal_size_transport_reaches_the_enumerated_optimum() {
+        let mut checked = 0;
+        for seed in 0..300u64 {
+            let mut rng = SplitMix64::new(seed);
+            let k = 2 + (seed % 2) as usize;
+            let m = 3 + (seed % 3) as usize;
+            let mut mass: Vec<usize> = (0..m).map(|_| 1 + (rng.next_u64() % 3) as usize).collect();
+            let rem = mass.iter().sum::<usize>() % k;
+            mass[0] += (k - rem) % k;
+            let cost: Vec<Vec<f64>> = (0..m)
+                .map(|_| (0..k).map(|_| (rng.next_u64() % 17) as f64).collect())
+                .collect();
+            let w: Vec<f64> = mass.iter().map(|&v| v as f64).collect();
+            let flow = transport_equal(&w, &cost, k);
+            let got: f64 = flow
+                .iter()
+                .enumerate()
+                .map(|(i, row)| row.iter().map(|&(c, f)| f * cost[i][c]).sum::<f64>())
+                .sum();
+            let want = brute_transport(&mass, &cost, k);
+            assert!(
+                (got - want).abs() < 1e-9,
+                "seed {seed}: {got} vs optimum {want}"
+            );
+            checked += 1;
+        }
+        assert_eq!(checked, 300);
+    }
+
+    #[test]
+    fn equal_size_fills_every_cluster_exactly_and_splits_at_most_k_minus_one_leaves() {
+        for seed in 0..20u64 {
+            let mut rng = SplitMix64::new(seed);
+            let m = 40 + (seed as usize % 30);
+            let k = 2 + (seed as usize % 5);
+            let mass: Vec<f64> = (0..m).map(|_| 1.0 + 9.0 * rng.next_f64()).collect();
+            let cost: Vec<Vec<f64>> = (0..m)
+                .map(|_| (0..k).map(|_| rng.next_f64()).collect())
+                .collect();
+            let flow = transport_equal(&mass, &cost, k);
+            let total: f64 = mass.iter().sum();
+            let mut got = vec![0.0; k];
+            for (i, row) in flow.iter().enumerate() {
+                let sent: f64 = row.iter().map(|e| e.1).sum();
+                assert!(
+                    (sent - mass[i]).abs() <= 1e-9 * total,
+                    "seed {seed}: leaf {i}"
+                );
+                row.iter().for_each(|&(c, f)| got[c] += f);
+            }
+            for g in got {
+                assert!(
+                    (g - total / k as f64).abs() <= 1e-9 * total,
+                    "seed {seed}: {g}"
+                );
+            }
+            let split = flow.iter().filter(|row| row.len() > 1).count();
+            assert!(split < k, "seed {seed}: {split} split leaves at k = {k}");
+        }
+    }
+
+    #[test]
+    fn equal_size_evens_out_unequal_groups_and_leaves_equal_ones_alone() {
+        let mut rng = SplitMix64::new(3);
+        let mut pts = Vec::new();
+        for (c, n) in [(0.0, 600), (8.0, 200), (16.0, 100), (24.0, 100)] {
+            for _ in 0..n {
+                pts.push(vec![c + rng.next_f64(), rng.next_f64()]);
+            }
+        }
+        let (feats, _) = grid_micros(&pts, 0.25);
+        let plain: KMeans<f64> = kmeans(&feats, 4, 100, 4, 0);
+        let got = equal_size(&feats, plain, 100);
+        let mut mass = [0.0; 4];
+        for (f, &l) in feats.iter().zip(&got.labels) {
+            mass[l] += f.weight();
+        }
+        let biggest = feats.iter().map(|f| f.weight()).fold(0.0, f64::max);
+        for w in mass {
+            assert!((w - 250.0).abs() <= 3.0 * biggest, "{mass:?}");
+        }
+        // Four equal, separated groups already satisfy the constraint: nothing moves.
+        let mut rng = SplitMix64::new(4);
+        let pts: Vec<Vec<f64>> = (0..800)
+            .map(|i| vec![10.0 * (i % 4) as f64 + rng.next_f64(), rng.next_f64()])
+            .collect();
+        let (feats, _) = grid_micros(&pts, 0.25);
+        let plain: KMeans<f64> = kmeans(&feats, 4, 100, 4, 0);
+        let before = plain.labels.clone();
+        let got = equal_size(&feats, plain, 100);
+        assert_eq!(ari(&got.labels, &before), 1.0);
     }
 }

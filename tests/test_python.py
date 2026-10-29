@@ -1088,6 +1088,48 @@ def test_hartigan_moves_are_opt_in_and_survive_a_round_trip(tmp_path):
         np.testing.assert_array_equal(restored.predict(x), est.predict(x))
 
 
+def test_equal_size_evens_out_unequal_groups_and_survives_a_round_trip(tmp_path):
+    """Four groups of 4000/1000/600/400 rows: plain k-means returns the groups, equal-size k-means
+    returns four clusters of ~1500 rows. Every row carries its leaf's label, so `fit_predict`,
+    `predict` and the functional entry point agree, and the setting outlives a save."""
+    import pickle
+
+    rng = np.random.default_rng(0)
+    sizes = [((0, 0), 4000), ((6, 0), 1000), ((0, 6), 600), ((6, 6), 400)]
+    x = np.vstack([rng.normal(c, 0.5, (n, 2)) for c, n in sizes])
+    kw = dict(method="kmeans", max_leaves=400, seed=0)
+    plain = np.bincount(betula_cluster.fit_predict(x, 4, **kw))
+    assert plain.max() / plain.min() > 5
+    est = betula_cluster.Betula(n_clusters=4, equal_size=True, **kw)
+    labels = est.fit_predict(x)
+    counts = np.bincount(labels)
+    assert counts.max() / counts.min() < 1.1
+    assert est.get_params()["equal_size"] is True
+    np.testing.assert_array_equal(est.predict(x), labels)
+    np.testing.assert_array_equal(betula_cluster.fit_predict(x, 4, equal_size=True, **kw), labels)
+    path = tmp_path / "model.betula"
+    est.save(str(path))
+    for restored in (pickle.loads(pickle.dumps(est)), betula_cluster.Betula.load(str(path))):
+        assert restored.get_params()["equal_size"] is True
+        np.testing.assert_array_equal(restored.predict(x), labels)
+
+
+@pytest.mark.parametrize(
+    "extra,match",
+    [
+        (dict(hartigan=True), "hartigan and equal_size"),
+        (dict(refine=2), "refine cannot be combined"),
+        (dict(projection="svd", projection_dim=1), "projection cannot be combined"),
+    ],
+)
+def test_equal_size_refuses_the_keywords_that_relabel_rows(blobs, extra, match):
+    x, _ = blobs
+    with pytest.raises(ValueError, match=match):
+        betula_cluster.Betula(n_clusters=4, method="kmeans", equal_size=True, **extra).fit(x)
+    with pytest.raises(ValueError, match=match):
+        betula_cluster.fit_predict(x, 4, method="kmeans", equal_size=True, **extra)
+
+
 def test_an_unknown_kappa_is_refused_at_both_entry_points(blobs):
     x, _ = blobs
     with pytest.raises(ValueError, match="kappa must be 'free' or 'shared', got 'tied'"):
@@ -4140,6 +4182,7 @@ _HEAD_KEYWORDS = [
     ("leaf_graph", "mass", "leiden", "kmeans"),
     ("kappa", "shared", "vmf", "kmeans"),
     ("hartigan", True, "kmeans", "ward"),
+    ("equal_size", True, "kmeans", "ward"),
     ("rank", 1, "mppca", "ward"),
     ("fuzzifier", 1.5, "fuzzy-cmeans", "kmeans"),
 ]

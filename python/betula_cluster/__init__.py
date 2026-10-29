@@ -752,6 +752,7 @@ _DEFAULTS = {
     "leaf_graph": "unit",
     "kappa": "free",
     "hartigan": False,
+    "equal_size": False,
     "memory_budget_mb": None,
 }
 _PARAM_NAMES = tuple(_DEFAULTS)
@@ -821,6 +822,7 @@ class Betula:
         leaf_graph="unit",
         kappa="free",
         hartigan=False,
+        equal_size=False,
         memory_budget_mb=None,
     ):
         self.n_clusters = n_clusters
@@ -942,6 +944,11 @@ class Betula:
         # see. A lower inertia, not better labels — it pays at large k (codebooks, IVF centroids).
         # Off by default. Ignored by every other head.
         self.hartigan = hartigan
+        # Fit k-means (method="kmeans") under the constraint that every cluster holds n/k rows: the
+        # leaves are transported onto the clusters, at most k-1 leaves are split, and each row takes
+        # its leaf's label, so the row-level sizes are equal to within a leaf's mass. Off by
+        # default.
+        self.equal_size = equal_size
         # Subspace rank q of the two subspace heads: each component's covariance is W Wᵀ + σ²I
         # (method="mppca") or W Wᵀ + diag(ψ) (method="mfa") with W of rank q, clamped to at most
         # dim - 1. Ignored by every other head.
