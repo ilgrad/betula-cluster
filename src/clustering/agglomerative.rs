@@ -182,10 +182,13 @@ pub(crate) struct Merge<R> {
 }
 
 /// A searcher's current answer: `owner`'s nearest live cluster was `target` at `value`, as of the
-/// two clusters' versions when the search ran. Ordered by `(value, owner)` so the heap pops the
-/// lowest-index cluster among equal minima, as Anderberg's scan does.
+/// two clusters' versions when the search ran. Ordered by `(value, tie)`: `tie` is `(owner, 0)` on
+/// the full-search driver, so the heap pops the lowest-index cluster among equal minima as
+/// Anderberg's scan does, and the pair `(min, max)` on the older-only one, which needs the canonical
+/// pair order to stay independent of which side of a pair searched.
 struct Entry<R> {
     value: R,
+    tie: (usize, usize),
     owner: usize,
     owner_version: u32,
     target: usize,
@@ -213,7 +216,7 @@ impl<R: Real> Ord for Entry<R> {
             .value
             .partial_cmp(&self.value)
             .unwrap_or(std::cmp::Ordering::Equal)
-            .then(other.owner.cmp(&self.owner))
+            .then(other.tie.cmp(&self.tie))
     }
 }
 
@@ -243,6 +246,18 @@ impl<R: Real> Ord for Entry<R> {
 /// index exactly as in a full scan. Measured in coordinate reads against Anderberg on 1 921 MNIST
 /// leaves (`local/scratch/a5/restart_from_mean.py`): 10× fewer for centroid linkage, with every
 /// merge identical.
+///
+/// **Older-only re-search** (average, weighted, Ward). Order live clusters by the step their current
+/// version was born at, then by index. Of any live pair the newer member searched while the older one
+/// was alive and unchanged, so the newer member's entry is at most the pair's value or is stale and
+/// will be searched again before it can be merged. The merged cluster is the newest and searches
+/// every live cluster, as before; every other search — a leaf's first, a stale entry's repeat — needs
+/// only the clusters older than its owner. With the pair key on the heap the merges are the canonical
+/// ones (the global minimum, ties to the lowest pair), which the full-search driver also produces for
+/// these three linkages: 1.52–1.95× fewer coordinate reads, the same merges on five leaf sets and on
+/// 1 600 tie-dense integer grids (`local/scratch/research-2026-10-25/c5/`). Centroid and median keep
+/// the full search: on 28 of 1 200 grids the full search leaves the canonical order there, so the
+/// older-only driver would merge exact ties differently.
 fn dendrogram<R: Real, C: ClusterFeature<R>>(features: &[C], linkage: Linkage) -> Vec<Merge<R>> {
     let m = features.len();
     let mut node: Vec<Node<R>> = features.iter().map(Node::leaf).collect();
@@ -268,15 +283,36 @@ fn dendrogram<R: Real, C: ClusterFeature<R>>(features: &[C], linkage: Linkage) -
     let mut alive = vec![true; m];
     let mut live: Vec<usize> = (0..m).collect();
     let mut version = vec![0u32; m];
+    let mut born = vec![0usize; m];
     let mut heap = std::collections::BinaryHeap::with_capacity(2 * m);
+    let older_only = matches!(
+        linkage,
+        Linkage::Average | Linkage::Weighted | Linkage::Ward
+    );
+    let tie = |x: usize, j: usize| {
+        if older_only {
+            (x.min(j), x.max(j))
+        } else {
+            (x, 0)
+        }
+    };
 
-    let search = |node: &[Node<R>], live: &[usize], x: usize, hint: Option<usize>| {
+    // `scope = Some(born)` restricts the search to clusters older than `x`; `None` scans them all.
+    let search = |node: &[Node<R>],
+                  live: &[usize],
+                  x: usize,
+                  hint: Option<usize>,
+                  scope: Option<&[usize]>| {
         let me = &node[x];
         let mut best = usize::MAX;
         let mut best_value = R::infinity();
-        let candidates = hint.into_iter().chain(live.iter().copied());
+        let older = |j: usize| scope.is_none_or(|born| (born[j], j) < (born[x], x));
+        let candidates = hint
+            .filter(|&h| older(h))
+            .into_iter()
+            .chain(live.iter().copied());
         for (i, j) in candidates.enumerate() {
-            if j == x || (i > 0 && Some(j) == hint) {
+            if j == x || (i > 0 && Some(j) == hint) || !older(j) {
                 continue;
             }
             let (s, t) = linkage.scale_offset(me, &node[j]);
@@ -306,14 +342,19 @@ fn dendrogram<R: Real, C: ClusterFeature<R>>(features: &[C], linkage: Linkage) -
     };
 
     for x in 0..m {
-        let (j, v) = search(&node, &live, x, None);
-        heap.push(Entry {
-            value: v,
-            owner: x,
-            owner_version: 0,
-            target: j,
-            target_version: 0,
-        });
+        let (j, v) = search(&node, &live, x, None, older_only.then_some(&born[..]));
+        // Under the older-only search the oldest cluster finds nothing: every pair it is in belongs
+        // to the newer partner's search.
+        if j != usize::MAX {
+            heap.push(Entry {
+                value: v,
+                tie: tie(x, j),
+                owner: x,
+                owner_version: 0,
+                target: j,
+                target_version: 0,
+            });
+        }
     }
 
     let mut merges: Vec<Merge<R>> = Vec::with_capacity(m - 1);
@@ -328,14 +369,17 @@ fn dendrogram<R: Real, C: ClusterFeature<R>>(features: &[C], linkage: Linkage) -
             // The target died or changed shape: restart the search from `x`'s mean. A target that
             // only grew is still alive and is the best first guess at the new answer.
             let hint = alive[e.target].then_some(e.target);
-            let (j, v) = search(&node, &live, x, hint);
-            heap.push(Entry {
-                value: v,
-                owner: x,
-                owner_version: version[x],
-                target: j,
-                target_version: version[j],
-            });
+            let (j, v) = search(&node, &live, x, hint, older_only.then_some(&born[..]));
+            if j != usize::MAX {
+                heap.push(Entry {
+                    value: v,
+                    tie: tie(x, j),
+                    owner: x,
+                    owner_version: version[x],
+                    target: j,
+                    target_version: version[j],
+                });
+            }
             continue;
         }
         // The survivor keeps the lower index. Which index it keeps moves no label.
@@ -354,10 +398,12 @@ fn dendrogram<R: Real, C: ClusterFeature<R>>(features: &[C], linkage: Linkage) -
             from: b,
             height: e.value,
         });
+        born[a] = merges.len();
         if live.len() > 1 {
-            let (j, v) = search(&node, &live, a, None);
+            let (j, v) = search(&node, &live, a, None, None);
             heap.push(Entry {
                 value: v,
+                tie: tie(a, j),
                 owner: a,
                 owner_version: version[a],
                 target: j,

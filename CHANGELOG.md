@@ -41,6 +41,14 @@ All notable changes to this project are documented here. The format follows
   (176 digests over 14 heads, f32 and f64, at 1 and 8 threads). `predict` with `method="ward"` takes
   0.57–0.82× the time on eight threads and 0.64–0.72× on one (MNIST-20k, covtype-100k and 20-d
   Gaussians, 2 000 and 7 255 leaves); a `leaf_refit=2` fit takes 0.79–0.92×.
+- **The average and weighted linkages search only older clusters again.** In the heap of searchers
+  a cluster whose cached neighbour went stale searched every live cluster; it now searches only
+  those born before it, since every pair with a newer cluster is that cluster's search to cover, and
+  the heap orders equal values by the pair rather than by the searcher. Merges, labels and saved files
+  are byte-identical (80 digests over five fixtures, one of them an integer grid of exact ties, f32 and
+  f64). Retired instructions in the head: −35 % at 3 757 leaves of 16-D data and −38 % at 1 966 MNIST
+  leaves. Centroid and median keep the full search, where the older-only order would merge exact ties
+  differently; they cost 0.3–1 % more instructions.
 - **Ward's nearest-neighbour chain skips candidates on a staged lower bound from `d ≥ 128`.** Each
   scan evaluates the chain predecessor first, then drops every leaf whose partial distance over the
   highest-variance coordinates already exceeds the incumbent, with a rounding margin that keeps the
