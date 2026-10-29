@@ -34,7 +34,7 @@ use crate::clustering::{
     auto_min_samples, bregman_agglomerative, bregman_em, bregman_kmeans, cop_kmeans, kprototypes,
     nearest_micro, project_to_sheet, summarize_mixed,
 };
-use crate::clustering::{DcObjective, Kappa, LeafGraph, TreeNode, dc_clustering, imm};
+use crate::clustering::{DcObjective, Kappa, LeafGraph, TreeNode, dc_clustering, exkmc, imm};
 use crate::clustering::{Reachability, optics};
 use crate::distance::{
     AverageIntercluster, AverageIntracluster, CFDistance, CentroidEuclidean, CentroidManhattan,
@@ -4574,10 +4574,15 @@ impl Betula {
     }
 
     /// The IMM threshold tree ([`imm`]) over the leaf means, weighed by mass, with the leaves'
-    /// labels and `cluster_centers_` as the reference. Node arrays `(feature, threshold, left,
-    /// right, cluster)`, `-1` / `NaN` where a field does not apply; node 0 is the root.
+    /// labels and `cluster_centers_` as the reference, grown to `n_leaves` leaves by [`exkmc`] when
+    /// that is more than one per cluster. Node arrays `(feature, threshold, left, right,
+    /// cluster)`, `-1` / `NaN` where a field does not apply; node 0 is the root.
+    #[pyo3(signature = (n_leaves = None))]
     #[allow(clippy::type_complexity)]
-    fn _explain_tree(&self) -> PyResult<(Vec<i64>, Vec<f64>, Vec<i64>, Vec<i64>, Vec<i64>)> {
+    fn _explain_tree(
+        &self,
+        n_leaves: Option<usize>,
+    ) -> PyResult<(Vec<i64>, Vec<f64>, Vec<i64>, Vec<i64>, Vec<i64>)> {
         if self.row_prep() != RowPrep::None || self.directional() {
             return Err(PyValueError::new_err(
                 "explain_tree cuts the coordinates the tree was built on, and this configuration \
@@ -4609,7 +4614,24 @@ impl Betula {
                 "every leaf is noise, so there is no cluster to explain",
             ));
         }
-        let tree = imm(&pts, &w, &y, &centers, dim);
+        let k = centers.len() / dim;
+        let tree = match n_leaves {
+            None => imm(&pts, &w, &y, &centers, dim),
+            Some(m) if m < k => {
+                return Err(PyValueError::new_err(format!(
+                    "n_leaves must be at least the number of clusters ({k}), got {m}: the tree \
+                     needs a leaf for each"
+                )));
+            }
+            Some(m) => exkmc(
+                &imm(&pts, &w, &y, &centers, dim),
+                &pts,
+                &w,
+                &centers,
+                dim,
+                m,
+            ),
+        };
         let mut out = (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
         for node in &tree.nodes {
             let (f, t, l, r, c) = match *node {

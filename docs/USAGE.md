@@ -1820,7 +1820,7 @@ noise leaves are left out.
 ```python
 est = Betula(n_clusters=4, method="kmeans").fit(X)
 tree = est.explain_tree()
-tree.rules(["age", "income", "tenure"])   # {2: ["income > …", "age <= …"], ...}
+tree.rules(["age", "income", "tenure"])   # {2: [["income > …", "age <= …"]], ...}
 tree.predict(X)                           # labels by the tree alone
 ```
 
@@ -1838,6 +1838,27 @@ poor vocabulary for a digit, which is the method's limit and not the summary's. 
 instead of the rows, the same IMM costs +0.0 to +2.2 % more SSE than on every point with the same
 centres. `normalize=True` and the directional and hyperbolic heads raise: their tree is built on
 rescaled rows, so a cut would not be a condition on your columns.
+
+**Longer rules for a lower price — `explain_tree(n_leaves=m)`.** With `m` above the number of
+clusters, the IMM tree grows by ExKMC (Frost, Moshkovitz & Rashtchian, 2020). Each step splits the
+leaf whose best cut lowers the k-means cost most, with `cluster_centers_` held fixed, and each leaf
+takes the centre that serves it best. A cluster can then own several leaves, so `rules()` gives
+each cluster a list of paths, and a row is in the cluster when it meets any one of them. Point SSE,
+tree / head, at `max_leaves=2000`, seeds 0/1/2:
+
+| data | `k` | `m = k` | `2k` | `4k` | `8k` |
+|---|---|---|---|---|---|
+| digits | 10 | 1.219–1.251 | 1.115–1.145 | 1.065–1.079 | 1.028–1.035 |
+| covtype, 10 numeric columns | 7 | 1.099–1.104 | 1.067–1.073 | 1.049–1.061 | 1.043–1.062 |
+| ALOI-27 | 20 | 1.142–1.150 | 1.079–1.098 | 1.081–1.125 | 1.124–1.158 |
+
+On digits the tree's ARI rises from 0.32–0.40 at `m = k` to 0.62–0.63 at `8k`, against the
+head's 0.66–0.67. On ALOI the price rises again past `2k`. The tree cannot cut finer than the
+leaves it reads: a late cut runs through microclusters, and their rows land on both sides while the
+fit counted each one whole. At `max_leaves=2000`, 15 % of ALOI's rows sit on the other side of a
+cut from their leaf's mean at `m = 20` and 26 % at `m = 320`. Raise `max_leaves` before `m`: at
+8 000 leaves the cost against the fixed centres falls from 374 at `m = 20` to 298 at `m = 160` and
+stays there at `m = 320`.
 
 ## A coreset with a guarantee — `export_coreset(size=…)`
 

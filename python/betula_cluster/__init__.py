@@ -247,7 +247,7 @@ class Coreset:
 
 @dataclass(frozen=True)
 class ThresholdTree:
-    """An axis-aligned threshold tree with one leaf per cluster — :meth:`Betula.explain_tree`.
+    """An axis-aligned threshold tree with a leaf or more per cluster — :meth:`Betula.explain_tree`.
 
     Node ``0`` is the root. A cut node sends a row with ``X[:, feature] <= threshold`` to ``left``
     and every other row to ``right``; a leaf node assigns ``cluster``. Fields that do not apply to a
@@ -272,15 +272,19 @@ class ThresholdTree:
             active = self.cluster[node] < 0
         return self.cluster[node]
 
-    def rules(self, feature_names=None) -> dict[int, list[str]]:
-        """Each cluster's path from the root as conditions, e.g. ``{2: ["x3 > 0.41", ...]}``."""
+    def rules(self, feature_names=None) -> dict[int, list[list[str]]]:
+        """Each cluster's paths from the root as conditions, e.g. ``{2: [["x3 > 0.41", ...]]}``.
+
+        A row is in the cluster when it meets every condition of any one of its paths. A tree with
+        one leaf per cluster gives each cluster one path.
+        """
         name = (lambda f: f"x{f}") if feature_names is None else (lambda f: str(feature_names[f]))
-        out: dict[int, list[str]] = {}
+        out: dict[int, list[list[str]]] = {}
         stack: list[tuple[int, list[str]]] = [(0, [])]
         while stack:
             node, path = stack.pop()
             if self.cluster[node] >= 0:
-                out[int(self.cluster[node])] = path
+                out.setdefault(int(self.cluster[node]), []).append(path)
                 continue
             f, t = name(int(self.feature[node])), float(self.threshold[node])
             stack.append((int(self.left[node]), [*path, f"{f} <= {t:.6g}"]))
@@ -1292,7 +1296,7 @@ class Betula:
         """Macro-cluster centroids — ``(n_clusters, dim)``; requires a finalized clustering."""
         return self._require_fit().cluster_centers_
 
-    def explain_tree(self) -> ThresholdTree:
+    def explain_tree(self, n_leaves: int | None = None) -> ThresholdTree:
         """An axis-aligned threshold tree that explains this clustering, one leaf per cluster.
 
         Iterative Mistake Minimization (Moshkovitz, Dasgupta, Rashtchian & Frost, ICML 2020) over
@@ -1302,9 +1306,16 @@ class Betula:
         the two disagree with ``predict``, the tree is the simpler model, not the fitted one.
         Noise leaves are left out. Raises for ``normalize=True`` and the directional and hyperbolic
         heads, whose tree is built on rescaled rows.
+
+        ``n_leaves`` above the number of clusters grows the tree further by ExKMC (Frost,
+        Moshkovitz & Rashtchian, 2020): each step splits the leaf whose best cut lowers the k-means
+        cost most, with ``cluster_centers_`` fixed, so several leaves can carry one cluster. The
+        cost falls towards the clustering's own as the rules get longer. ``None`` keeps one leaf
+        per cluster.
         """
+        fitted = self._require_fit()
         return ThresholdTree(
-            *(np.asarray(a) for a in self._require_fit()._explain_tree())  # type: ignore[arg-type]
+            *(np.asarray(a) for a in fitted._explain_tree(n_leaves))  # type: ignore[arg-type]
         )
 
     @property

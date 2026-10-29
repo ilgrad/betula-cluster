@@ -28,7 +28,11 @@ All notable changes to this project are documented here. The format follows
   2020) over the leaf microclusters, weighed by mass. `rules()` gives each cluster's conditions on the
   input columns and `predict(X)` labels by the tree alone. Against the `kmeans` head at 2 000 leaves
   the tree's point SSE is ×1.10 on covtype, ×1.15 on ALOI-27 and ×1.22–1.25 on digits. Labels of
-  every head are unchanged. Rust: `clustering::imm`, `ThresholdTree`, `TreeNode`.
+  every head are unchanged. `explain_tree(n_leaves=m)` grows the tree past one leaf per cluster by
+  ExKMC (Frost, Moshkovitz & Rashtchian 2020): at `m = 4k` the SSE ratio falls to ×1.05–1.06 on
+  covtype and ×1.06–1.08 on digits, where the tree's ARI rises from 0.32–0.40 to 0.58. `rules()`
+  gives each cluster a list of paths. Rust: `clustering::imm`, `clustering::exkmc`, `ThresholdTree`,
+  `TreeNode`.
 - **`hartigan=True` for `method="kmeans"`.** After the restarts the head runs Hartigan's
   single-leaf moves (Telgarsky & Vattani 2010), which lower the inertia where Lloyd's nearest-centre
   rule is already stable, then ends on Lloyd. Exact on leaves. Point SSE falls by 0.7–1.7 % on ALOI

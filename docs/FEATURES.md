@@ -286,7 +286,9 @@ A capability-by-capability reference. For runnable code see [`USAGE.md`](USAGE.m
   cluster's conditions on the input columns; `predict(X)` labels by the tree alone. Against the
   `kmeans` head it explains, at 2 000 leaves, seeds 0/1/2: point SSE ×1.10 (covtype, 10 numeric
   columns, k = 7), ×1.14–1.15 (ALOI-27, k = 20), ×1.22–1.25 (digits, k = 10); the tree agrees with
-  the head on 0.77–0.80, 0.80–0.83 and 0.65–0.72 of the rows.
+  the head on 0.77–0.80, 0.80–0.83 and 0.65–0.72 of the rows. `explain_tree(n_leaves=m)` grows
+  the tree further by ExKMC (Frost et al., 2020), several leaves per cluster: at `m = 4k` digits
+  falls to ×1.06–1.08 and covtype to ×1.05–1.06.
 - **OPTICS reachability plot** (`reachability()` → `ReachabilityPlot`) — the density *diagnostic*
   over the microclusters: one sweep position per leaf, with `core_distances` and per-leaf `weights`
   alongside, and `labels_at(ε)` for the DBSCAN\* cut. It is not an approximation of the HDBSCAN head

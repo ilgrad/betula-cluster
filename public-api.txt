@@ -431,6 +431,7 @@ impl core::marker::Unpin for betula_cluster::clustering::explain::ThresholdTree
 impl core::marker::UnsafeUnpin for betula_cluster::clustering::explain::ThresholdTree
 impl core::panic::unwind_safe::RefUnwindSafe for betula_cluster::clustering::explain::ThresholdTree
 impl core::panic::unwind_safe::UnwindSafe for betula_cluster::clustering::explain::ThresholdTree
+pub fn betula_cluster::clustering::explain::exkmc(&betula_cluster::clustering::explain::ThresholdTree, &[f64], &[f64], &[f64], usize, usize) -> betula_cluster::clustering::explain::ThresholdTree
 pub fn betula_cluster::clustering::explain::imm(&[f64], &[f64], &[usize], &[f64], usize) -> betula_cluster::clustering::explain::ThresholdTree
 pub mod betula_cluster::clustering::fuzzy
 pub struct betula_cluster::clustering::fuzzy::FuzzyCMeans<R: betula_cluster::types::Real>
@@ -1401,6 +1402,7 @@ pub fn betula_cluster::clustering::dc_clustering<R: betula_cluster::types::Real,
 pub fn betula_cluster::clustering::dendrogram_below<R: betula_cluster::types::Real, C: betula_cluster::feature::ClusterFeature<R>>(&[C], betula_cluster::clustering::agglomerative::Linkage, R) -> core::result::Result<betula_cluster::clustering::agglomerative::BoundedDendrogram<R>, betula_cluster::clustering::agglomerative::CertificateError>
 pub fn betula_cluster::clustering::dyn_msc<R: betula_cluster::types::Real, C: betula_cluster::feature::ClusterFeature<R>>(&[C], usize, usize, u64) -> betula_cluster::clustering::medoid::MedoidClustering
 pub fn betula_cluster::clustering::equal_size<R: betula_cluster::types::Real, C: betula_cluster::feature::ClusterFeature<R>>(&[C], betula_cluster::clustering::kmeans::KMeans<R>, usize) -> betula_cluster::clustering::kmeans::KMeans<R>
+pub fn betula_cluster::clustering::exkmc(&betula_cluster::clustering::explain::ThresholdTree, &[f64], &[f64], &[f64], usize, usize) -> betula_cluster::clustering::explain::ThresholdTree
 pub fn betula_cluster::clustering::f64_working_radius() -> f64
 pub fn betula_cluster::clustering::fuzzy_cmeans<R: betula_cluster::types::Real, C: betula_cluster::feature::ClusterFeature<R>>(&[C], usize, f64, usize, u64) -> betula_cluster::clustering::fuzzy::FuzzyCMeans<R>
 pub fn betula_cluster::clustering::fuzzy_cmeans_auto<R: betula_cluster::types::Real, C: betula_cluster::feature::ClusterFeature<R>>(&[C], usize, f64, usize, u64) -> betula_cluster::clustering::fuzzy::FuzzyCMeans<R>

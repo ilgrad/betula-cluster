@@ -13,6 +13,12 @@
 //! passes through is charged whole to its mean's side. Measured against IMM on all points with the
 //! same reference centres (MNIST-PCA8 k = 10, ALOI-27 k = 20, covtype k = 7, seeds 0/1/2), the
 //! leaf tree's point-level SSE is within +0.0 to +2.2 % of the point tree's.
+//!
+//! [`exkmc`] is the expansion of Frost, Moshkovitz & Rashtchian (2020): it grows a finished tree past
+//! `k` leaves, one split at a time, always taking the split that lowers the k-means cost most with
+//! the reference centres held fixed. Each leaf takes the centre that serves its rows best, so two
+//! leaves can carry one cluster. More leaves buy a cost closer to the clustering's own, at the
+//! price of longer rules.
 
 /// One node of a [`ThresholdTree`].
 #[derive(Clone, Debug, PartialEq)]
@@ -214,6 +220,193 @@ fn best_cut(
     best.map(|(_, feature, threshold)| (feature, threshold))
 }
 
+/// The best cut of one leaf, and the centres its two sides take.
+#[derive(Clone, Copy)]
+struct Split {
+    gain: f64,
+    feature: usize,
+    threshold: f64,
+    left: usize,
+    right: usize,
+}
+
+/// Grow `tree` to at most `n_leaves` leaves by ExKMC's greedy splits over the rows of `points`
+/// (`n × dim`), each weighed by `weights`, with the reference centres `centers` (`k × dim`) fixed.
+///
+/// Every row is routed to its leaf, and the cost of a leaf is `min_c Σ w_j ‖x_j − c‖²` over the rows
+/// it holds. On a CF-tree the rows are the leaf means: a microcluster's spread around its mean adds
+/// the same amount whichever centre serves it, so the cost differences — all the greedy reads — are
+/// exact. Each step splits the leaf whose best cut lowers the cost most, and stops early when no
+/// cut sends its two sides to different centres for a lower cost. A tree that already has
+/// `n_leaves` leaves or more comes back unchanged; otherwise every leaf is first relabelled to the
+/// centre that serves it best, which can only lower the cost. Ties go to the lowest leaf, feature
+/// and threshold, so the tree is a function of its inputs.
+pub fn exkmc(
+    tree: &ThresholdTree,
+    points: &[f64],
+    weights: &[f64],
+    centers: &[f64],
+    dim: usize,
+    n_leaves: usize,
+) -> ThresholdTree {
+    assert!(dim > 0, "dim must be positive");
+    let n = weights.len();
+    assert_eq!(points.len(), n * dim, "points must be n × dim");
+    assert!(
+        !centers.is_empty() && centers.len() % dim == 0,
+        "centers must be k × dim with k ≥ 1"
+    );
+    let k = centers.len() / dim;
+    let mut out = tree.clone();
+    let is_leaf = |node: &TreeNode| matches!(node, TreeNode::Leaf { .. });
+    let mut leaves = out.nodes.iter().filter(|node| is_leaf(node)).count();
+    if leaves >= n_leaves {
+        return out;
+    }
+    // With `G_jc = x_j · c`, a set of rows of mass `W` and `A_c = Σ w_j G_jc` costs
+    // `Σ w_j ‖x_j‖² − max_c (2 A_c − W ‖c‖²)`. The first term splits additively, so a cut's gain
+    // is a difference of `score`s alone.
+    let cn: Vec<f64> = centers
+        .chunks_exact(dim)
+        .map(|c| c.iter().map(|v| v * v).sum())
+        .collect();
+    let mut g = vec![0.0; n * k];
+    for j in 0..n {
+        let x = &points[j * dim..(j + 1) * dim];
+        for (c, centre) in centers.chunks_exact(dim).enumerate() {
+            g[j * k + c] = weights[j] * x.iter().zip(centre).map(|(a, b)| a * b).sum::<f64>();
+        }
+    }
+    let score = |a: &[f64], w: f64| -> (f64, usize) {
+        (0..k).fold((f64::NEG_INFINITY, 0), |best, c| {
+            let v = 2.0 * a[c] - w * cn[c];
+            if v > best.0 { (v, c) } else { best }
+        })
+    };
+    let leaf_of = |tree: &ThresholdTree, x: &[f64]| -> usize {
+        let mut at = 0;
+        while let TreeNode::Cut {
+            feature,
+            threshold,
+            left,
+            right,
+        } = tree.nodes[at]
+        {
+            at = if x[feature] <= threshold { left } else { right };
+        }
+        at
+    };
+    let mut members: Vec<Vec<usize>> = vec![Vec::new(); out.nodes.len()];
+    for j in 0..n {
+        members[leaf_of(&out, &points[j * dim..(j + 1) * dim])].push(j);
+    }
+    let sums = |rows: &[usize]| -> (Vec<f64>, f64) {
+        let mut a = vec![0.0; k];
+        let mut w = 0.0;
+        for &j in rows {
+            a.iter_mut()
+                .zip(&g[j * k..(j + 1) * k])
+                .for_each(|(s, v)| *s += v);
+            w += weights[j];
+        }
+        (a, w)
+    };
+    for (node, rows) in out.nodes.iter_mut().zip(&members) {
+        if let (TreeNode::Leaf { cluster }, false) = (node, rows.is_empty()) {
+            let (a, w) = sums(rows);
+            *cluster = score(&a, w).1;
+        }
+    }
+    let best_split = |rows: &[usize]| -> Option<Split> {
+        let (total, wt) = sums(rows);
+        let here = score(&total, wt).0;
+        let mut best: Option<Split> = None;
+        let mut order = rows.to_vec();
+        let mut a = vec![0.0; k];
+        let mut rest = vec![0.0; k];
+        for feature in 0..dim {
+            let at = |j: usize| points[j * dim + feature];
+            order.sort_by(|&p, &q| at(p).total_cmp(&at(q)).then(p.cmp(&q)));
+            a.iter_mut().for_each(|v| *v = 0.0);
+            let mut w = 0.0;
+            for i in 0..order.len() - 1 {
+                let j = order[i];
+                a.iter_mut()
+                    .zip(&g[j * k..(j + 1) * k])
+                    .for_each(|(s, v)| *s += v);
+                w += weights[j];
+                let (lo, hi) = (at(j), at(order[i + 1]));
+                if lo == hi {
+                    continue;
+                }
+                rest.iter_mut()
+                    .zip(total.iter().zip(&a))
+                    .for_each(|(r, (t, l))| *r = t - l);
+                let (sl, cl) = score(&a, w);
+                let (sr, cr) = score(&rest, wt - w);
+                let gain = sl + sr - here;
+                if cl != cr && gain > 0.0 && best.is_none_or(|b| gain > b.gain) {
+                    best = Some(Split {
+                        gain,
+                        feature,
+                        threshold: lo + (hi - lo) / 2.0,
+                        left: cl,
+                        right: cr,
+                    });
+                }
+            }
+        }
+        best
+    };
+    let mut splits: Vec<Option<Split>> = members
+        .iter()
+        .map(|rows| (rows.len() > 1).then(|| best_split(rows)).flatten())
+        .collect();
+    while leaves < n_leaves {
+        let mut pick: Option<(usize, Split)> = None;
+        for (i, s) in splits.iter().enumerate() {
+            if let Some(s) = *s {
+                if pick.is_none_or(|(_, b)| s.gain > b.gain) {
+                    pick = Some((i, s));
+                }
+            }
+        }
+        let Some((
+            at,
+            Split {
+                feature,
+                threshold,
+                left: cl,
+                right: cr,
+                ..
+            },
+        )) = pick
+        else {
+            break;
+        };
+        let rows = std::mem::take(&mut members[at]);
+        let (lrows, rrows): (Vec<usize>, Vec<usize>) = rows
+            .into_iter()
+            .partition(|&j| points[j * dim + feature] <= threshold);
+        let (left, right) = (out.nodes.len(), out.nodes.len() + 1);
+        out.nodes[at] = TreeNode::Cut {
+            feature,
+            threshold,
+            left,
+            right,
+        };
+        out.nodes.push(TreeNode::Leaf { cluster: cl });
+        out.nodes.push(TreeNode::Leaf { cluster: cr });
+        splits[at] = None;
+        for side in [lrows, rrows] {
+            splits.push((side.len() > 1).then(|| best_split(&side)).flatten());
+            members.push(side);
+        }
+        leaves += 1;
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -377,6 +570,134 @@ mod tests {
         assert_eq!(leaves(&tree), vec![2, 3]);
         assert_eq!(tree.predict(&[0.0, 0.0]), 2);
         assert_eq!(tree.predict(&[5.0, 5.0]), 3);
+    }
+
+    /// `Σ w_j ‖x_j − c_{tree(x_j)}‖²`: the cost the expansion lowers, read directly.
+    fn tree_cost(tree: &ThresholdTree, p: &[f64], w: &[f64], c: &[f64], dim: usize) -> f64 {
+        (0..w.len())
+            .map(|j| {
+                let x = &p[j * dim..(j + 1) * dim];
+                let cc = &c[tree.predict(x) * dim..][..dim];
+                w[j] * x.iter().zip(cc).map(|(a, b)| (a - b).powi(2)).sum::<f64>()
+            })
+            .sum()
+    }
+
+    fn overlapping(seed: u64, dim: usize, k: usize, n: usize) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+        let mut rng = SplitMix64::new(seed);
+        let centers: Vec<f64> = (0..k * dim).map(|_| 2.0 * rng.gauss()).collect();
+        let (mut p, mut w) = (Vec::new(), Vec::new());
+        for j in 0..n {
+            for f in 0..dim {
+                p.push(centers[(j % k) * dim + f] + 1.5 * rng.gauss());
+            }
+            w.push(0.5 + 3.0 * rng.next_f64());
+        }
+        (p, w, centers)
+    }
+
+    #[test]
+    fn exkmc_follows_the_greedy_that_reads_every_cost_directly() {
+        // The reference grows from one leaf by trying every leaf, feature and midpoint and pricing
+        // each side with its best centre from the rows themselves, with no algebra shared.
+        let cost_of = |rows: &[usize], p: &[f64], w: &[f64], c: &[f64], dim: usize| {
+            (0..c.len() / dim)
+                .map(|cc| {
+                    let v: f64 = rows
+                        .iter()
+                        .map(|&j| {
+                            w[j] * (0..dim)
+                                .map(|f| (p[j * dim + f] - c[cc * dim + f]).powi(2))
+                                .sum::<f64>()
+                        })
+                        .sum();
+                    (v, cc)
+                })
+                .fold((f64::INFINITY, 0), |b, x| if x.0 < b.0 { x } else { b })
+        };
+        for seed in 0..12u64 {
+            let (dim, k, n) = (2 + seed as usize % 2, 4, 40);
+            let (p, w, c) = overlapping(seed, dim, k, n);
+            let mut parts: Vec<Vec<usize>> = vec![(0..n).collect()];
+            let root = ThresholdTree {
+                nodes: vec![TreeNode::Leaf { cluster: 0 }],
+            };
+            // A tree that already has `m` leaves comes back as it is, unrelabelled, so the
+            // comparison starts at two.
+            for m in 1..=9 {
+                let want: f64 = parts.iter().map(|r| cost_of(r, &p, &w, &c, dim).0).sum();
+                let tree = exkmc(&root, &p, &w, &c, dim, m);
+                let got = tree_cost(&tree, &p, &w, &c, dim);
+                assert!(
+                    m == 1 || (got - want).abs() <= 1e-9 * want,
+                    "seed {seed}, {m} leaves: exkmc {got}, greedy {want}"
+                );
+                let mut best: Option<(f64, usize, Vec<usize>, Vec<usize>)> = None;
+                for (i, rows) in parts.iter().enumerate() {
+                    let (here, _) = cost_of(rows, &p, &w, &c, dim);
+                    for f in 0..dim {
+                        let mut v: Vec<f64> = rows.iter().map(|&j| p[j * dim + f]).collect();
+                        v.sort_by(f64::total_cmp);
+                        v.dedup();
+                        for t in v.windows(2).map(|x| (x[0] + x[1]) / 2.0) {
+                            let (l, r): (Vec<usize>, Vec<usize>) =
+                                rows.iter().partition(|&&j| p[j * dim + f] <= t);
+                            let ((cl, il), (cr, ir)) =
+                                (cost_of(&l, &p, &w, &c, dim), cost_of(&r, &p, &w, &c, dim));
+                            let gain = here - cl - cr;
+                            if il != ir && gain > 0.0 && best.as_ref().is_none_or(|b| gain > b.0) {
+                                best = Some((gain, i, l, r));
+                            }
+                        }
+                    }
+                }
+                let Some((_, i, l, r)) = best else { break };
+                parts[i] = l;
+                parts.push(r);
+            }
+        }
+    }
+
+    #[test]
+    fn exkmc_only_lowers_the_cost_and_leaves_a_full_tree_alone() {
+        for seed in 0..10u64 {
+            let (dim, k, n) = (3, 5, 120);
+            let (p, w, c) = overlapping(seed, dim, k, n);
+            let y: Vec<usize> = (0..n).map(|j| j % k).collect();
+            let base = imm(&p, &w, &y, &c, dim);
+            assert_eq!(exkmc(&base, &p, &w, &c, dim, k), base, "seed {seed}");
+            let mut last = f64::INFINITY;
+            for m in k + 1..=4 * k {
+                let tree = exkmc(&base, &p, &w, &c, dim, m);
+                let n_leaves = leaves(&tree).len();
+                assert!(n_leaves <= m, "seed {seed}: {n_leaves} leaves for {m}");
+                let cost = tree_cost(&tree, &p, &w, &c, dim);
+                assert!(
+                    cost <= last * (1.0 + 1e-12),
+                    "seed {seed}, {m}: {cost} > {last}"
+                );
+                last = cost;
+            }
+            assert!(last < tree_cost(&base, &p, &w, &c, dim), "seed {seed}");
+        }
+    }
+
+    #[test]
+    fn exkmc_spends_no_leaf_on_a_cut_that_changes_no_label() {
+        // Every row is nearest its own blob's centre, so a cut inside a blob sends both sides to
+        // the same centre: its true gain is zero, and only rounding could make it look positive.
+        let centers = [0.0, 0.0, 50.0, 50.0];
+        let mut rng = SplitMix64::new(5);
+        let (mut p, mut w, mut y) = (Vec::new(), Vec::new(), Vec::new());
+        for j in 0..200 {
+            let c = j % 2;
+            p.push(centers[c * 2] + 3.0 * rng.gauss());
+            p.push(centers[c * 2 + 1] + 3.0 * rng.gauss());
+            w.push(0.1 + 7.0 * rng.next_f64());
+            y.push(c);
+        }
+        let base = imm(&p, &w, &y, &centers, 2);
+        assert_eq!(exkmc(&base, &p, &w, &centers, 2, 10), base);
     }
 
     #[test]

@@ -6307,9 +6307,36 @@ def test_explain_tree_reproduces_separable_clusters_in_the_callers_coordinates(b
     assert np.isnan(tree.threshold[tree.cluster >= 0]).all()
     rules = tree.rules(["east", "north"])
     assert sorted(rules) == [0, 1, 2, 3]
-    assert all(1 <= len(path) <= 3 for path in rules.values())
-    assert all(cond.split()[0] in ("east", "north") for path in rules.values() for cond in path)
-    assert tree.rules()[0][0].startswith("x")
+    assert all(len(paths) == 1 and 1 <= len(paths[0]) <= 3 for paths in rules.values())
+    conds = [c for paths in rules.values() for path in paths for c in path]
+    assert all(cond.split()[0] in ("east", "north") for cond in conds)
+    assert tree.rules()[0][0][0].startswith("x")
+
+
+def test_explain_tree_grows_past_one_leaf_per_cluster_and_lowers_the_cost(blobs):
+    """With every row its own leaf the summary is exact, so the expanded tree's cost against the
+    fixed centres can only fall, and each extra leaf adds one path to some cluster."""
+    x, _ = blobs
+    x = x[:400]
+    est = betula_cluster.Betula(n_clusters=6, method="kmeans", seed=0, max_leaves=1000).fit(x)
+    centres = est.cluster_centers_
+    base = est.explain_tree()
+    np.testing.assert_array_equal(est.explain_tree(n_leaves=6).cluster, base.cluster)
+
+    def cost(tree):
+        return ((x - centres[tree.predict(x)]) ** 2).sum()
+
+    last = cost(base)
+    for m in (9, 12, 24):
+        tree = est.explain_tree(n_leaves=m)
+        n_paths = sum(len(p) for p in tree.rules().values())
+        assert n_paths == (tree.cluster >= 0).sum()
+        assert 6 < n_paths <= m
+        assert cost(tree) <= last * (1 + 1e-12)
+        last = cost(tree)
+    assert last < cost(base)
+    with pytest.raises(ValueError, match="at least the number of clusters"):
+        est.explain_tree(n_leaves=5)
 
 
 def test_explain_tree_leaves_noise_out(blobs_with_stragglers):
