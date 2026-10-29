@@ -1,13 +1,13 @@
 //! End-to-end model: build a CF-tree, cluster its leaves (Phase 3), and label points.
 
 use crate::clustering::{
-    Gmm, GmmFull, GmmToeplitz, KMEANS_N_INIT, LeafGraph, Linkage, Mfa, Movmf, Mppca, Objective,
-    Watson, agglomerative, agglomerative_auto, dyn_msc, fuzzy_cmeans, fuzzy_cmeans_auto,
+    Gmm, GmmFull, GmmToeplitz, KMEANS_N_INIT, Kappa, LeafGraph, Linkage, Mfa, Movmf, Mppca,
+    Objective, Watson, agglomerative, agglomerative_auto, dyn_msc, fuzzy_cmeans, fuzzy_cmeans_auto,
     gmm_diagonal, gmm_diagonal_auto, gmm_full, gmm_full_auto, gmm_toeplitz, gmm_toeplitz_auto,
     gmm_toeplitz_full, gmm_toeplitz_full_auto, gmm_toeplitz_gs, gmm_toeplitz_gs_auto,
-    hyperbolic_kmeans, kmeans, kmeans_auto, kmedoids, leiden_on, mfa, mfa_auto, movmf, movmf_auto,
-    mppca, mppca_auto, project_to_sheet, spectral_on, spherical_kmeans, ward_hac, ward_hac_auto,
-    watson, watson_auto, xmeans,
+    hyperbolic_kmeans, kmeans, kmeans_auto, kmedoids, leiden_on, mfa, mfa_auto, movmf_auto,
+    movmf_auto_with, movmf_with, mppca, mppca_auto, project_to_sheet, spectral_on,
+    spherical_kmeans, ward_hac, ward_hac_auto, watson, watson_auto, xmeans,
 };
 use crate::distance::CFDistance;
 use crate::feature::ClusterFeature;
@@ -288,7 +288,7 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> Mo
             n_init,
             seed,
             auto_k_max,
-            LeidenRun::SINGLE,
+            HeadOptions::DEFAULT,
         )
     }
 
@@ -302,7 +302,7 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> Mo
         n_init: usize,
         seed: u64,
         auto_k_max: usize,
-        leiden: LeidenRun,
+        opts: HeadOptions,
     ) -> Self {
         let fit = fit_head(
             tree.leaf_features(),
@@ -312,7 +312,7 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> Mo
             n_init,
             seed,
             auto_k_max,
-            leiden,
+            opts,
         );
         let n_clusters = distinct_count(&fit.labels);
         let assign = match (assignment_rule(method), fit.mixture) {
@@ -627,18 +627,21 @@ pub(crate) fn auto_k_ceiling(method: Method, n_leaves: usize, auto_k_max: usize)
     .max(1)
 }
 
-/// How the Leiden head runs: up to `passes` passes over the leaf graph `graph` names.
+/// Head settings that [`Method`] cannot carry: up to `passes` Leiden passes over the leaf graph
+/// `graph` names (`graph` also selects the spectral operator), and the vMF concentration model.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct LeidenRun {
+pub(crate) struct HeadOptions {
     pub(crate) passes: usize,
     pub(crate) graph: LeafGraph,
+    pub(crate) kappa: Kappa,
 }
 
-impl LeidenRun {
-    /// One pass over the unit leaf graph: the Leiden head of 1.0.
-    pub(crate) const SINGLE: Self = Self {
+impl HeadOptions {
+    /// One Leiden pass over the unit leaf graph and a free κ per vMF component: the heads of 1.0.
+    pub(crate) const DEFAULT: Self = Self {
         passes: 1,
         graph: LeafGraph::Unit,
+        kappa: Kappa::Free,
     };
 }
 
@@ -654,9 +657,10 @@ impl LeidenRun {
 /// EM heads keep their own restart constants: their restarts are selected by likelihood, and the
 /// curve measured for `bench/RESULTS.md` shows that buys no direction in the labels.
 ///
-/// `leiden` caps the passes of the Leiden head and names the leaf graph it partitions (see
-/// [`leiden_on`]); every other head ignores it. [`Method`] is frozen under semver, so both travel
-/// beside it rather than inside [`Method::Leiden`], and [`LeidenRun::SINGLE`] is the head of 1.0.
+/// `opts` caps the passes of the Leiden head, names the leaf graph it partitions (see
+/// [`leiden_on`]) and picks the vMF concentration model ([`Kappa`]); every other head ignores it.
+/// [`Method`] is frozen under semver, so these travel beside it rather than inside its variants,
+/// and [`HeadOptions::DEFAULT`] is the head of 1.0.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn fit_head<R: Real, C: ClusterFeature<R>>(
     features: &[C],
@@ -666,7 +670,7 @@ pub(crate) fn fit_head<R: Real, C: ClusterFeature<R>>(
     n_init: usize,
     seed: u64,
     auto_k_max: usize,
-    leiden: LeidenRun,
+    opts: HeadOptions,
 ) -> HeadFit<R> {
     let nlv = features.len();
     // One iteration is the floor for every head, normalised here rather than in nine loop bounds:
@@ -733,7 +737,7 @@ pub(crate) fn fit_head<R: Real, C: ClusterFeature<R>>(
         }
         // Spectral resolves `k == 0` (eigengap) and clamps internally, so one arm covers both.
         Method::Spectral => {
-            HeadFit::hard(spectral_on(features, k, max_iter, n_init, seed, leiden.graph).labels)
+            HeadFit::hard(spectral_on(features, k, max_iter, n_init, seed, opts.graph).labels)
         }
         // Leiden discovers the community count from the graph; `k` is ignored (like HDBSCAN).
         Method::Leiden {
@@ -757,8 +761,8 @@ pub(crate) fn fit_head<R: Real, C: ClusterFeature<R>>(
                     cov_weight,
                     tangent_weight,
                     tangent_rank,
-                    leiden.passes,
-                    leiden.graph,
+                    opts.passes,
+                    opts.graph,
                 )
                 .labels,
             )
@@ -773,8 +777,10 @@ pub(crate) fn fit_head<R: Real, C: ClusterFeature<R>>(
         Method::SphericalKMeans => {
             HeadFit::hard(spherical_kmeans(features, kk, max_iter, n_init, seed).labels)
         }
-        Method::Movmf if k == 0 => HeadFit::soft(movmf_auto(features, 1, hi, max_iter, seed)),
-        Method::Movmf => HeadFit::soft(movmf(features, kk, max_iter, seed)),
+        Method::Movmf if k == 0 => {
+            HeadFit::soft(movmf_auto_with(features, 1, hi, max_iter, seed, opts.kappa))
+        }
+        Method::Movmf => HeadFit::soft(movmf_with(features, kk, max_iter, seed, opts.kappa)),
         Method::Watson if k == 0 => HeadFit::soft(watson_auto(features, 1, hi, max_iter, seed)),
         Method::Watson => HeadFit::soft(watson(features, kk, max_iter, seed)),
         Method::GmmToeplitz if k == 0 => {
@@ -843,7 +849,7 @@ mod tests {
                 n_init,
                 3,
                 0,
-                LeidenRun::SINGLE,
+                HeadOptions::DEFAULT,
             )
             .labels
         };
@@ -876,8 +882,8 @@ mod tests {
             Method::FuzzyCMeans { fuzzifier: 2.0 },
             Method::Movmf,
         ] {
-            let zero = fit_head(&feats, 3, method, 0, 0, 7, 0, LeidenRun::SINGLE).labels;
-            let one = fit_head(&feats, 3, method, 1, 0, 7, 0, LeidenRun::SINGLE).labels;
+            let zero = fit_head(&feats, 3, method, 0, 0, 7, 0, HeadOptions::DEFAULT).labels;
+            let one = fit_head(&feats, 3, method, 1, 0, 7, 0, HeadOptions::DEFAULT).labels;
             assert_eq!(
                 zero, one,
                 "{method:?} does not floor max_iter at one iteration"
@@ -889,7 +895,7 @@ mod tests {
             );
         }
         // ...and one iteration is a fit, not a formality: it already recovers the three blobs.
-        let one = fit_head(&feats, 3, Method::Gmm, 1, 0, 7, 0, LeidenRun::SINGLE).labels;
+        let one = fit_head(&feats, 3, Method::Gmm, 1, 0, 7, 0, HeadOptions::DEFAULT).labels;
         assert!(
             ari(&one, &truth) > 0.5,
             "one EM step scored {}",
@@ -1029,7 +1035,7 @@ mod tests {
             Method::Hyperbolic,
         ] {
             for k in [3usize, 0usize] {
-                let labels = fit_head(&feats, k, method, 100, 0, 1, 0, LeidenRun::SINGLE).labels;
+                let labels = fit_head(&feats, k, method, 100, 0, 1, 0, HeadOptions::DEFAULT).labels;
                 assert_eq!(labels.len(), feats.len());
             }
         }
@@ -1130,13 +1136,13 @@ mod tests {
             ("mfa", Method::Mfa { rank: 2 }),
         ] {
             let auto = distinct_count(
-                &fit_head(&feats, 0, method, 100, 0, 1, 0, LeidenRun::SINGLE).labels,
+                &fit_head(&feats, 0, method, 100, 0, 1, 0, HeadOptions::DEFAULT).labels,
             );
             let one = distinct_count(
-                &fit_head(&feats, 1, method, 100, 0, 1, 0, LeidenRun::SINGLE).labels,
+                &fit_head(&feats, 1, method, 100, 0, 1, 0, HeadOptions::DEFAULT).labels,
             );
             let two = distinct_count(
-                &fit_head(&feats, 2, method, 100, 0, 1, 0, LeidenRun::SINGLE).labels,
+                &fit_head(&feats, 2, method, 100, 0, 1, 0, HeadOptions::DEFAULT).labels,
             );
             assert!(auto > 1, "{name}: the automatic arm collapsed to {auto}");
             assert_eq!(one, 1, "{name}: k = 1 did not take the fixed arm");
@@ -1153,19 +1159,49 @@ mod tests {
         let feats = dispatch_leaves();
         for k in 1..=4 {
             let got = distinct_count(
-                &fit_head(&feats, k, Method::XMeans, 100, 0, 1, 0, LeidenRun::SINGLE).labels,
+                &fit_head(
+                    &feats,
+                    k,
+                    Method::XMeans,
+                    100,
+                    0,
+                    1,
+                    0,
+                    HeadOptions::DEFAULT,
+                )
+                .labels,
             );
             assert!(got <= k, "k = {k} is a cap, but the head returned {got}");
         }
         assert_eq!(
             distinct_count(
-                &fit_head(&feats, 1, Method::XMeans, 100, 0, 1, 0, LeidenRun::SINGLE).labels
+                &fit_head(
+                    &feats,
+                    1,
+                    Method::XMeans,
+                    100,
+                    0,
+                    1,
+                    0,
+                    HeadOptions::DEFAULT
+                )
+                .labels
             ),
             1,
             "a cap of 1 leaves nothing to split"
         );
         let auto = distinct_count(
-            &fit_head(&feats, 0, Method::XMeans, 100, 0, 1, 0, LeidenRun::SINGLE).labels,
+            &fit_head(
+                &feats,
+                0,
+                Method::XMeans,
+                100,
+                0,
+                1,
+                0,
+                HeadOptions::DEFAULT,
+            )
+            .labels,
         );
         assert!(auto > 1, "the automatic arm collapsed to {auto}");
         assert!(
@@ -1229,7 +1265,7 @@ mod tests {
             ("mfa", Method::Mfa { rank: 2 }),
         ] {
             let got = distinct_count(
-                &fit_head(&feats, 0, method, 100, 0, 1, 0, LeidenRun::SINGLE).labels,
+                &fit_head(&feats, 0, method, 100, 0, 1, 0, HeadOptions::DEFAULT).labels,
             );
             assert_eq!(
                 got, AUTO_K_MAX,
@@ -1246,7 +1282,7 @@ mod tests {
             ),
             ("xmeans", Method::XMeans),
         ] {
-            let fit = fit_head(&feats, 0, method, 100, 0, 1, 0, LeidenRun::SINGLE);
+            let fit = fit_head(&feats, 0, method, 100, 0, 1, 0, HeadOptions::DEFAULT);
             assert_eq!(
                 distinct_count(&fit.labels),
                 40,
@@ -1266,7 +1302,7 @@ mod tests {
         // its own score's choice and not the ceiling's doing.
         let (feats, truth) = blob_leaves(40, 10, 40, 7);
         for (name, method) in [("kmeans", Method::KMeans), ("gmm", Method::Gmm)] {
-            let fit = fit_head(&feats, 0, method, 100, 0, 1, 60, LeidenRun::SINGLE);
+            let fit = fit_head(&feats, 0, method, 100, 0, 1, 60, HeadOptions::DEFAULT);
             assert_eq!(
                 distinct_count(&fit.labels),
                 40,
@@ -1277,7 +1313,7 @@ mod tests {
         // And it binds downward too, on a head the default does not bound at all: `ward` answers
         // 40 here when left alone. A ceiling is not a target, so what must hold is `<=`.
         let held = distinct_count(
-            &fit_head(&feats, 0, Method::Ward, 100, 0, 1, 6, LeidenRun::SINGLE).labels,
+            &fit_head(&feats, 0, Method::Ward, 100, 0, 1, 6, HeadOptions::DEFAULT).labels,
         );
         assert!(
             (2..=6).contains(&held),

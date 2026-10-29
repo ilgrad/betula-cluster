@@ -72,7 +72,9 @@ leaf counts as much as a leaf of a thousand points; `"mass"` cuts the quotient o
 instead — an edge weighs `n_i·n_j` times the leaves' affinity and a node counts `n_i` points. On
 MNIST-20k it lifts the median ARI at every budget from 400 to 3 200 leaves, by 0.02–0.14 for Leiden
 and 0.06–0.25 for spectral; it costs up to 0.035 on digits and 0.035 on covtype, whose ARI is near 0
-either way — see *Mass-weighted leaf graphs* in [MATH.md](MATH.md)), `rank` (subspace rank `q` for `method="mppca"` and `method="mfa"`, clamped to at
+either way — see *Mass-weighted leaf graphs* in [MATH.md](MATH.md)), `kappa` (the concentration model of
+`method="vmf"`: `"free"`, the default, fits one `κ` per cluster; `"shared"` fits one for all — see
+*A concentration per cluster, and where it costs* below), `rank` (subspace rank `q` for `method="mppca"` and `method="mfa"`, clamped to at
 most `dim - 1`; `0` makes every `mppca` component spherical and every `mfa` component diagonal), `fuzzifier` (the exponent `m > 1` of
 `method="fuzzy-cmeans"`, default `2.0`; `m → 1⁺` is k-means, `m → ∞` sends every membership to
 `1/k`), `projection` / `projection_dim` / `projection_max_iter` (reduce the leaf centroids to
@@ -86,7 +88,7 @@ k-means/GMM, dendrogram cut for Ward). `threshold="auto"` (dense only) drops the
 often have to guess: a subsample pilot estimates a warm-start absorption radius, so the full fit
 starts near-converged instead of growing the threshold from zero.
 
-**A head-specific keyword handed to a head that does not read it raises.** Ten of the keywords above
+**A head-specific keyword handed to a head that does not read it raises.** Twelve of the keywords above
 belong to one family of heads and configure nothing anywhere else, so `rank=8` with `method="ward"`
 is a request the fit was never going to honour:
 
@@ -96,6 +98,7 @@ is a request the fit was never going to honour:
 | `min_cluster_size` | `hdbscan` |
 | `resolution`, `covariance_weight`, `tangent_weight`, `tangent_rank`, `n_iterations` | `leiden`, `leiden-cpm` |
 | `leaf_graph` | `leiden`, `leiden-cpm`, `spectral` |
+| `kappa` | `vmf` |
 | `rank` | `mppca`, `mfa` |
 | `fuzzifier` | `fuzzy-cmeans` |
 
@@ -607,6 +610,14 @@ many rows about equally far from every cluster — start with `spherical-kmeans`
 cluster sizes before its labels. The case the extra parameter is for is tight clusters of unequal
 spread, such as identities in a face or speaker embedding; that case is not measured here. On
 `digits`-PCA20 (below) the two heads tie.
+
+**`kappa="shared"`** fits that tied model through the tree: one `κ` from the pooled resultant length
+`A_d(κ) = Σ_c ‖R_c‖ / N` (Hornik & Grün 2014, §3.2), exact on leaves. On the same corpus at `k = 20`
+(seeds 0/1/2) it lifts the median ARI from 0.062 to 0.132 at 300 leaves and from 0.100 to 0.150 at
+2 000, and the largest cluster falls from 0.38 / 0.31 of the rows to 0.19. On centred `digits` at
+`k = 10` it reads 0.660 against 0.657 at 300 leaves and 0.682 against 0.635 at 800. It changes labels,
+so `"free"` stays the default, and no likelihood criterion picks it for you: the collapsed fit is the
+likelier one. `n_clusters=0` counts the shared `κ` as one parameter.
 
 ### Directions without a sign — `method="watson"`
 

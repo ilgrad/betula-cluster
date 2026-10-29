@@ -34,7 +34,7 @@ use crate::clustering::{
     auto_min_samples, bregman_agglomerative, bregman_em, bregman_kmeans, cop_kmeans, kprototypes,
     nearest_micro, project_to_sheet, summarize_mixed,
 };
-use crate::clustering::{DcObjective, LeafGraph, dc_clustering};
+use crate::clustering::{DcObjective, Kappa, LeafGraph, dc_clustering};
 use crate::clustering::{Reachability, optics};
 use crate::distance::{
     AverageIntercluster, AverageIntracluster, CFDistance, CentroidEuclidean, CentroidManhattan,
@@ -44,7 +44,7 @@ use crate::feature::{ClusterFeature, Diagonal, FdSketch, Full, Spherical};
 use crate::linalg::{cholesky_lower, mahalanobis_sq_from_chol};
 use crate::mixture::{Mixture, SparseAssigner};
 use crate::model::{
-    LeidenRun, Method, Model, Rule, assignment_rule, auto_k_ceiling, fit_head, refinable,
+    HeadOptions, Method, Model, Rule, assignment_rule, auto_k_ceiling, fit_head, refinable,
     refine_centers,
 };
 use crate::order::{canonical_permutation, canonical_permutation_csr, canonical_shards};
@@ -378,6 +378,7 @@ const HEAD_KEYWORDS: &[(&str, &[&str])] = &[
     ("tangent_rank", &["leiden", "leiden-cpm"]),
     ("n_iterations", &["leiden", "leiden-cpm"]),
     ("leaf_graph", &["leiden", "leiden-cpm", "spectral"]),
+    ("kappa", &["vmf"]),
     ("rank", &["mppca", "mfa"]),
     ("fuzzifier", &["fuzzy-cmeans"]),
 ];
@@ -546,11 +547,23 @@ fn parse_n_iterations(method: &str, n_iterations: i64) -> PyResult<usize> {
     Ok(usize::try_from(n_iterations).unwrap_or(UNTIL_STABLE_PASSES))
 }
 
-/// How the Leiden head runs: the pass cap `n_iterations` asks for, over the leaf graph `leaf_graph`
-/// names — `"unit"`, one node per leaf as in 1.x, or `"mass"`, the point graph's quotient (see
-/// [`LeafGraph`]).
-fn parse_leiden(method: &str, n_iterations: i64, leaf_graph: &str) -> PyResult<LeidenRun> {
-    require_head_reads_its_keywords(method, &[("leaf_graph", leaf_graph != "unit")])?;
+/// The head settings [`Method`] does not carry: the Leiden pass cap `n_iterations` asks for, the
+/// leaf graph `leaf_graph` names — `"unit"`, one node per leaf as in 1.x, or `"mass"`, the point
+/// graph's quotient (see [`LeafGraph`]) — and the vMF concentration model `kappa` names, `"free"`
+/// as in 1.x or `"shared"` (see [`Kappa`]).
+fn parse_head_options(
+    method: &str,
+    n_iterations: i64,
+    leaf_graph: &str,
+    kappa: &str,
+) -> PyResult<HeadOptions> {
+    require_head_reads_its_keywords(
+        method,
+        &[
+            ("leaf_graph", leaf_graph != "unit"),
+            ("kappa", kappa != "free"),
+        ],
+    )?;
     let graph = match leaf_graph {
         "unit" => LeafGraph::Unit,
         "mass" => LeafGraph::Mass,
@@ -560,9 +573,19 @@ fn parse_leiden(method: &str, n_iterations: i64, leaf_graph: &str) -> PyResult<L
             )));
         }
     };
-    Ok(LeidenRun {
+    let kappa = match kappa {
+        "free" => Kappa::Free,
+        "shared" => Kappa::Shared,
+        other => {
+            return Err(PyValueError::new_err(format!(
+                "kappa must be 'free' or 'shared', got '{other}'"
+            )));
+        }
+    };
+    Ok(HeadOptions {
         passes: parse_n_iterations(method, n_iterations)?,
         graph,
+        kappa,
     })
 }
 
@@ -643,11 +666,11 @@ fn dispatch_kind<R: Real, C: ClusterFeature<R>>(
     n_init: usize,
     seed: u64,
     auto_k_max: usize,
-    leiden: LeidenRun,
+    opts: HeadOptions,
 ) -> Dispatch {
     match kind {
         Kind::Parametric(method) => {
-            let fit = fit_head(feats, k, method, max_iter, n_init, seed, auto_k_max, leiden);
+            let fit = fit_head(feats, k, method, max_iter, n_init, seed, auto_k_max, opts);
             let proba = fit.resp.map(|r| {
                 let kk = r.first().map_or(0, |row| row.len());
                 let flat = r
@@ -780,7 +803,7 @@ fn label_features_proba<R: Real, C: ClusterFeature<R>>(
     n_init: usize,
     seed: u64,
     auto_k_max: usize,
-    leiden: LeidenRun,
+    opts: HeadOptions,
     nmf_dim: Option<ProjectionSpec>,
 ) -> Labelling {
     match nmf_dim {
@@ -789,9 +812,7 @@ fn label_features_proba<R: Real, C: ClusterFeature<R>>(
             // The head clustered *codes*, so its density lives in code space. A linear projection can
             // carry a raw row there and keep the head's own point rule; an NMF cannot, and falls back
             // to the microcluster route.
-            let d = dispatch_kind(
-                &p.coded, kind, k, max_iter, n_init, seed, auto_k_max, leiden,
-            );
+            let d = dispatch_kind(&p.coded, kind, k, max_iter, n_init, seed, auto_k_max, opts);
             let (labels, proba) = (d.labels, d.proba);
             let rule = projected_rule(&p, &labels, kind, d.mixture, d.rule);
             let parts = p
@@ -812,7 +833,7 @@ fn label_features_proba<R: Real, C: ClusterFeature<R>>(
             }
         }
         None => {
-            let d = dispatch_kind(feats, kind, k, max_iter, n_init, seed, auto_k_max, leiden);
+            let d = dispatch_kind(feats, kind, k, max_iter, n_init, seed, auto_k_max, opts);
             Labelling {
                 labels: d.labels,
                 proba: d.proba,
@@ -1840,7 +1861,7 @@ fn cluster<R: Real, C: ClusterFeature<R>>(
     auto_balance: bool,
     leaf_refit: usize,
     order: Option<&[u32]>,
-    leiden: LeidenRun,
+    opts: HeadOptions,
 ) -> (Vec<i64>, usize) {
     let mut tree = build_tree::<R, C>(
         dim,
@@ -1875,7 +1896,7 @@ fn cluster<R: Real, C: ClusterFeature<R>>(
                     n_init,
                     seed,
                     auto_k_max,
-                    leiden,
+                    opts,
                     nmf_dim,
                 );
                 match out.rule {
@@ -1889,7 +1910,7 @@ fn cluster<R: Real, C: ClusterFeature<R>>(
             }
             None => {
                 let mut model =
-                    Model::fit_passes(tree, k, method, max_iter, n_init, seed, auto_k_max, leiden);
+                    Model::fit_passes(tree, k, method, max_iter, n_init, seed, auto_k_max, opts);
                 model.refine(flat, n, dim, refine);
                 map_rows(n, |i| model.predict(&flat[i * dim..(i + 1) * dim]) as i64)
             }
@@ -1969,7 +1990,7 @@ fn run_oneshot<R: Real + Element>(
     auto_k_max: usize,
     leaf_refit: usize,
     canonical_order: bool,
-    leiden: LeidenRun,
+    opts: HeadOptions,
 ) -> PyResult<(Vec<i64>, usize)> {
     // Directional heads cluster points on the unit sphere and the hyperbolic head on the Lorentz
     // sheet, so they always operate on prepared rows regardless of the caller's `normalize` flag.
@@ -2029,7 +2050,7 @@ fn run_oneshot<R: Real + Element>(
                 auto_balance,
                 leaf_refit,
                 order,
-                leiden,
+                opts,
             )),
             "diagonal" => Ok(cluster::<R, Diagonal<R>>(
                 flat,
@@ -2054,7 +2075,7 @@ fn run_oneshot<R: Real + Element>(
                 auto_balance,
                 leaf_refit,
                 order,
-                leiden,
+                opts,
             )),
             "full" => Ok(cluster::<R, Full<R>>(
                 flat,
@@ -2079,7 +2100,7 @@ fn run_oneshot<R: Real + Element>(
                 auto_balance,
                 leaf_refit,
                 order,
-                leiden,
+                opts,
             )),
             "fd" => Ok(cluster::<R, FdSketch<R>>(
                 flat,
@@ -2104,7 +2125,7 @@ fn run_oneshot<R: Real + Element>(
                 auto_balance,
                 leaf_refit,
                 order,
-                leiden,
+                opts,
             )),
             _ => Err("feature must be 'spherical', 'diagonal', 'full' or 'fd'"),
         }
@@ -2147,7 +2168,7 @@ fn run_oneshot<R: Real + Element>(
     resolution = DEFAULT_RESOLUTION, covariance_weight = DEFAULT_COVARIANCE_WEIGHT, tangent_weight = DEFAULT_TANGENT_WEIGHT, tangent_rank = DEFAULT_TANGENT_RANK,
     projection = "none", projection_dim = 64, projection_max_iter = 100, refine = 0, rank = DEFAULT_RANK,
     graph_degree = 0, balance = None, auto_k_max = 0, fuzzifier = DEFAULT_FUZZIFIER, leaf_refit = 0,
-    canonical_order = false, n_iterations = DEFAULT_N_ITERATIONS, leaf_graph = "unit"
+    canonical_order = false, n_iterations = DEFAULT_N_ITERATIONS, leaf_graph = "unit", kappa = "free"
 ))]
 #[allow(clippy::too_many_arguments)]
 fn fit_predict<'py>(
@@ -2188,6 +2209,7 @@ fn fit_predict<'py>(
     canonical_order: bool,
     n_iterations: i64,
     leaf_graph: &str,
+    kappa: &str,
 ) -> PyResult<Bound<'py, PyArray1<i64>>> {
     // Two mutually exclusive ways to set one count: reject the pair instead of picking a winner.
     // Quietly ignoring the argument is how the old `n_jobs` came to read as a thread count.
@@ -2215,7 +2237,7 @@ fn fit_predict<'py>(
         graph_degree,
         fuzzifier,
     )?;
-    let leiden = parse_leiden(method, n_iterations, leaf_graph)?;
+    let opts = parse_head_options(method, n_iterations, leaf_graph, kappa)?;
     let nmf_dim = parse_projection(projection, projection_dim, projection_max_iter)?;
     let n_init = parse_n_init(n_init, kind, method)?;
     let max_iter = parse_max_iter(max_iter)?;
@@ -2249,7 +2271,7 @@ fn fit_predict<'py>(
             auto_k_max,
             leaf_refit,
             canonical_order,
-            leiden,
+            opts,
         )?
     } else if let Ok(a) = data.extract::<PyReadonlyArray2<'py, f32>>() {
         run_oneshot::<f32>(
@@ -2278,7 +2300,7 @@ fn fit_predict<'py>(
             auto_k_max,
             leaf_refit,
             canonical_order,
-            leiden,
+            opts,
         )?
     } else {
         return Err(PyValueError::new_err(
@@ -2481,7 +2503,7 @@ impl<R: Real> TreeState<R> {
         n_init: usize,
         seed: u64,
         auto_k_max: usize,
-        leiden: LeidenRun,
+        opts: HeadOptions,
         nmf_dim: Option<ProjectionSpec>,
     ) -> Labelling {
         match self {
@@ -2493,7 +2515,7 @@ impl<R: Real> TreeState<R> {
                 n_init,
                 seed,
                 auto_k_max,
-                leiden,
+                opts,
                 nmf_dim,
             ),
             TreeState::Diagonal(t) => label_features_proba(
@@ -2504,7 +2526,7 @@ impl<R: Real> TreeState<R> {
                 n_init,
                 seed,
                 auto_k_max,
-                leiden,
+                opts,
                 nmf_dim,
             ),
             TreeState::Full(t) => label_features_proba(
@@ -2515,7 +2537,7 @@ impl<R: Real> TreeState<R> {
                 n_init,
                 seed,
                 auto_k_max,
-                leiden,
+                opts,
                 nmf_dim,
             ),
             TreeState::Fd(t) => label_features_proba(
@@ -2526,7 +2548,7 @@ impl<R: Real> TreeState<R> {
                 n_init,
                 seed,
                 auto_k_max,
-                leiden,
+                opts,
                 nmf_dim,
             ),
         }
@@ -3059,6 +3081,14 @@ fn is_unit_graph(leaf_graph: &str) -> bool {
     leaf_graph == "unit"
 }
 
+fn default_kappa() -> String {
+    "free".to_owned()
+}
+
+fn is_free_kappa(kappa: &str) -> bool {
+    kappa == "free"
+}
+
 #[pyclass(name = "Betula", module = "betula_cluster._core")]
 #[derive(serde::Serialize, serde::Deserialize)]
 struct Betula {
@@ -3182,6 +3212,10 @@ struct Betula {
     /// at its default, so a model that does not use it saves byte-for-byte as before.
     #[serde(default = "default_leaf_graph", skip_serializing_if = "is_unit_graph")]
     leaf_graph: String,
+    /// vMF concentration model as the caller wrote it (`"free"` or `"shared"`); absent from the
+    /// file at its default, like `leaf_graph`, and a model saved before it existed loads as `"free"`.
+    #[serde(default = "default_kappa", skip_serializing_if = "is_free_kappa")]
+    kappa: String,
     /// The point an `f32` tree is built around: every row enters as `f32(x − origin)`, and every
     /// location the estimator reports has it added back. An `f32` leaf mean stops moving once its
     /// weight passes `~2^24·σ/|μ|`, so data far from zero — raw coordinates, kelvin — stalled it
@@ -3714,7 +3748,12 @@ impl Betula {
             self.auto_k_max,
             self.projection_spec(),
         );
-        let passes = parse_leiden(&self.method, self.n_iterations, &self.leaf_graph)?;
+        let passes = parse_head_options(
+            &self.method,
+            self.n_iterations,
+            &self.leaf_graph,
+            &self.kappa,
+        )?;
         let result = if let Some(t) = &self.state64 {
             Some(t.label_proba(kind, k, mi, ni, seed, akm, passes, nmf))
         } else {
@@ -3953,7 +3992,7 @@ impl Betula {
         tangent_weight = DEFAULT_TANGENT_WEIGHT, tangent_rank = DEFAULT_TANGENT_RANK, projection = "none", projection_dim = 64,
         projection_max_iter = 100, refine = 0, rank = DEFAULT_RANK, graph_degree = 0, balance = None,
         auto_k_max = 0, fuzzifier = DEFAULT_FUZZIFIER, leaf_refit = 0, canonical_order = false,
-        route_beam = 1, n_iterations = DEFAULT_N_ITERATIONS, leaf_graph = "unit"
+        route_beam = 1, n_iterations = DEFAULT_N_ITERATIONS, leaf_graph = "unit", kappa = "free"
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -3994,6 +4033,7 @@ impl Betula {
         route_beam: usize,
         n_iterations: i64,
         leaf_graph: &str,
+        kappa: &str,
     ) -> PyResult<Self> {
         let min_samples = parse_min_samples(min_samples)?;
         let kind = parse_method(
@@ -4041,7 +4081,7 @@ impl Betula {
         }
         let (balance, balance_auto) = parse_balance(balance)?;
         parse_n_init(n_init, kind, method)?; // validated here, lowered to the sentinel at use
-        parse_leiden(method, n_iterations, leaf_graph)?; // likewise, lowered to a run at finalize
+        parse_head_options(method, n_iterations, leaf_graph, kappa)?; // lowered at finalize
         parse_max_iter(max_iter)?;
         check_tree_shape(branching, leaf_cap)?;
         Ok(Self {
@@ -4094,6 +4134,7 @@ impl Betula {
             balance_auto,
             n_iterations,
             leaf_graph: leaf_graph.to_owned(),
+            kappa: kappa.to_owned(),
             origin: None,
         })
     }
@@ -4793,6 +4834,7 @@ impl Betula {
         d.set_item("route_beam", self.route_beam)?;
         d.set_item("n_iterations", self.n_iterations)?;
         d.set_item("leaf_graph", &self.leaf_graph)?;
+        d.set_item("kappa", &self.kappa)?;
         // The projection is stored decomposed — rank, solver flags, sweeps — because the wire format
         // predates the sum type, so reporting it means inverting `projection_spec`. Omitting it is
         // not harmless: `Betula.load` rebuilds the wrapper with `cls(**core.get_params())`, so a
@@ -6480,7 +6522,7 @@ fn fit_predict_sparse<'py>(
             n_init,
             seed,
             auto_k_max,
-            LeidenRun::SINGLE,
+            HeadOptions::DEFAULT,
             spec,
         );
         // A linear projection labels each row from its own code, touching only the non-zeros.

@@ -59,7 +59,9 @@ pub use mppca::{Mppca, mppca, mppca_auto};
 pub use optics::{Reachability, optics};
 pub use scalespace::{ScaleSpace, scale_space};
 pub use spectral::{Spectral, spectral, spectral_on};
-pub use vmf::{Movmf, SphericalKMeans, movmf, movmf_auto, spherical_kmeans};
+pub use vmf::{
+    Kappa, Movmf, SphericalKMeans, movmf, movmf_auto, movmf_auto_with, movmf_with, spherical_kmeans,
+};
 pub use ward::{WardHac, ward_hac, ward_hac_auto};
 pub use watson::{Watson, watson, watson_auto};
 pub use xmeans::xmeans;

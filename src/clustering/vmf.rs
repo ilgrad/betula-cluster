@@ -475,6 +475,19 @@ fn cohesion_of<R: Real>(means: &[Vec<R>], n: &[R], labels: &[usize], k: usize, d
 
 // ───────────────────────── mixture of von Mises–Fisher ─────────────────────────
 
+/// How a vMF mixture estimates its concentrations.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Kappa {
+    /// One `κ_c` per component — the model of every release before this variant existed.
+    #[default]
+    Free,
+    /// One `κ` for every component, from the pooled resultant length
+    /// `A_d(κ) = Σ_c ‖R_c‖ / N` (Hornik & Grün 2014, §3.2). Exact on leaves, since
+    /// `R_c = Σ_i r_ic n_i μ_i`. On text the free model lets one low-`κ` component absorb several
+    /// topics and is still the likelier fit, so no likelihood criterion picks this variant itself.
+    Shared,
+}
+
 /// Result of a movMF EM run over leaf features.
 pub struct Movmf<R: Real> {
     /// Hard label (argmax responsibility) per input feature.
@@ -501,6 +514,17 @@ pub fn movmf<R: Real, C: ClusterFeature<R>>(
     max_iter: usize,
     seed: u64,
 ) -> Movmf<R> {
+    movmf_with(features, k, max_iter, seed, Kappa::Free)
+}
+
+/// [`movmf`] with the concentration model `kappa` names.
+pub fn movmf_with<R: Real, C: ClusterFeature<R>>(
+    features: &[C],
+    k: usize,
+    max_iter: usize,
+    seed: u64,
+    kappa: Kappa,
+) -> Movmf<R> {
     let mut best: Option<Movmf<R>> = None;
     for s in 0..MOVMF_N_INIT {
         let r = movmf_once(
@@ -508,6 +532,7 @@ pub fn movmf<R: Real, C: ClusterFeature<R>>(
             k,
             max_iter,
             seed.wrapping_add(s.wrapping_mul(0x9E37_79B9)),
+            kappa,
         );
         match &best {
             Some(b) if r.loglik <= b.loglik => {}
@@ -523,6 +548,7 @@ fn movmf_once<R: Real, C: ClusterFeature<R>>(
     k: usize,
     max_iter: usize,
     seed: u64,
+    kappa: Kappa,
 ) -> Movmf<R> {
     assert!(k >= 1, "k must be >= 1");
     assert!(features.len() >= k, "need at least k features");
@@ -534,7 +560,7 @@ fn movmf_once<R: Real, C: ClusterFeature<R>>(
     let km = spherical_kmeans(features, k, 50, 1, seed);
     let mut means = km.centers;
     let mut weights = vec![R::one() / R::from_usize(k).unwrap(); k];
-    let mut kappas = init_kappas(&mu, &n, &km.labels, k, dim);
+    let mut kappas = init_kappas(&mu, &n, &km.labels, k, dim, kappa);
 
     let mut resp = vec![vec![R::zero(); k]; m];
     let mut loglik = R::neg_infinity();
@@ -584,6 +610,7 @@ fn movmf_once<R: Real, C: ClusterFeature<R>>(
             }
         }
         let ntot: R = nk.iter().copied().sum();
+        let mut pooled = R::zero();
         for c in 0..k {
             weights[c] = if ntot > R::zero() {
                 nk[c] / ntot
@@ -591,6 +618,7 @@ fn movmf_once<R: Real, C: ClusterFeature<R>>(
                 R::one() / R::from_usize(k).unwrap()
             };
             let rnorm = norm(&rvec[c]);
+            pooled = pooled + rnorm;
             if rnorm > R::zero() {
                 for d in 0..dim {
                     means[c][d] = rvec[c][d] / rnorm;
@@ -602,6 +630,9 @@ fn movmf_once<R: Real, C: ClusterFeature<R>>(
                 0.0
             };
             kappas[c] = R::from_f64(estimate_kappa(rbar, dim)).unwrap();
+        }
+        if kappa == Kappa::Shared {
+            kappas.fill(shared_kappa(pooled, ntot, dim));
         }
 
         if it > 0 && (new_ll - loglik).abs() <= tol * loglik.abs().max(R::one()) {
@@ -628,8 +659,26 @@ fn movmf_once<R: Real, C: ClusterFeature<R>>(
     }
 }
 
-/// Per-component κ from a hard labelling's resultants (used to seed EM).
-fn init_kappas<R: Real>(mu: &[Vec<R>], n: &[R], labels: &[usize], k: usize, dim: usize) -> Vec<R> {
+/// The one concentration of [`Kappa::Shared`]: the Banerjee estimate at the pooled resultant length
+/// `Σ_c ‖R_c‖ / N`.
+fn shared_kappa<R: Real>(pooled: R, ntot: R, dim: usize) -> R {
+    let rbar = if ntot > R::zero() {
+        (pooled / ntot).to_f64().unwrap_or(0.0)
+    } else {
+        0.0
+    };
+    R::from_f64(estimate_kappa(rbar, dim)).unwrap()
+}
+
+/// κ from a hard labelling's resultants (used to seed EM): one per component, or the pooled one.
+fn init_kappas<R: Real>(
+    mu: &[Vec<R>],
+    n: &[R],
+    labels: &[usize],
+    k: usize,
+    dim: usize,
+    kappa: Kappa,
+) -> Vec<R> {
     let mut acc = vec![vec![R::zero(); dim]; k];
     let mut nk = vec![R::zero(); k];
     for (i, &c) in labels.iter().enumerate() {
@@ -637,6 +686,11 @@ fn init_kappas<R: Real>(mu: &[Vec<R>], n: &[R], labels: &[usize], k: usize, dim:
         for (a, &v) in acc[c].iter_mut().zip(&mu[i]) {
             *a = *a + n[i] * v;
         }
+    }
+    if kappa == Kappa::Shared {
+        let pooled = acc.iter().map(|a| norm(a)).fold(R::zero(), |s, x| s + x);
+        let ntot = nk.iter().copied().fold(R::zero(), |s, x| s + x);
+        return vec![shared_kappa(pooled, ntot, dim); k];
     }
     (0..k)
         .map(|c| {
@@ -661,6 +715,19 @@ pub fn movmf_auto<R: Real, C: ClusterFeature<R>>(
     max_iter: usize,
     seed: u64,
 ) -> Movmf<R> {
+    movmf_auto_with(features, k_min, k_max, max_iter, seed, Kappa::Free)
+}
+
+/// [`movmf_auto`] with the concentration model `kappa` names. A shared `κ` is one parameter, not
+/// `k`, so its count is `k·(d − 1) + 1 + (k − 1) = k·d`.
+pub fn movmf_auto_with<R: Real, C: ClusterFeature<R>>(
+    features: &[C],
+    k_min: usize,
+    k_max: usize,
+    max_iter: usize,
+    seed: u64,
+    kappa: Kappa,
+) -> Movmf<R> {
     let d = features[0].dim();
     let ntot: R = features.iter().map(|f| f.weight()).sum();
     let two = R::from_f64(2.0).unwrap();
@@ -669,8 +736,11 @@ pub fn movmf_auto<R: Real, C: ClusterFeature<R>>(
     let mut best_score = R::infinity();
     let mut best: Option<Movmf<R>> = None;
     for k in k_lo..=k_hi {
-        let g = movmf(features, k, max_iter, seed);
-        let p = k * d + (k - 1);
+        let g = movmf_with(features, k, max_iter, seed, kappa);
+        let p = match kappa {
+            Kappa::Free => k * d + (k - 1),
+            Kappa::Shared => k * d,
+        };
         let score = -two * g.loglik + R::from_usize(p).unwrap() * ntot.ln();
         if score < best_score {
             best_score = score;
@@ -917,6 +987,60 @@ mod tests {
         assert!(ari(&res.labels, &truth) > 0.9);
     }
 
+    /// Two tight directions and one diffuse one, so a free fit gives them different κ.
+    fn uneven_blobs() -> (Vec<Spherical<f64>>, Vec<usize>) {
+        let mut rng = SplitMix64::new(5);
+        let (mut feats, mut truth) = unit_blobs(&mut rng, 10, 2, 80, 0.1);
+        let (wide, wide_truth) = unit_blobs(&mut rng, 10, 1, 80, 0.5);
+        feats.extend(wide);
+        truth.extend(wide_truth.into_iter().map(|c| c + 2));
+        (feats, truth)
+    }
+
+    #[test]
+    fn a_shared_kappa_is_the_pooled_estimate_of_the_last_m_step() {
+        let (feats, truth) = uneven_blobs();
+        let free: Movmf<f64> = movmf_with(&feats, 3, 200, 1, Kappa::Free);
+        let spread = free.kappas.iter().copied().fold(0.0, f64::max)
+            / free.kappas.iter().copied().fold(f64::INFINITY, f64::min);
+        assert!(
+            spread > 2.0,
+            "the free fit cannot tell the variants apart: {spread}"
+        );
+
+        let res: Movmf<f64> = movmf_with(&feats, 3, 200, 1, Kappa::Shared);
+        assert!(ari(&res.labels, &truth) > 0.9);
+        // The loop ends on an M-step taken from `resp`, so the pooled resultant of `resp` gives
+        // back exactly the κ every component holds.
+        let (mu, n) = leaf_means(&feats);
+        let mut pooled = 0.0;
+        for c in 0..3 {
+            let mut r = [0.0; 10];
+            for i in 0..mu.len() {
+                for (a, &x) in r.iter_mut().zip(&mu[i]) {
+                    *a += n[i] * res.resp[i][c] * x;
+                }
+            }
+            pooled += norm(&r);
+        }
+        let want = estimate_kappa(pooled / n.iter().sum::<f64>(), 10);
+        for &kap in &res.kappas {
+            assert!(
+                (kap - want).abs() <= 1e-9 * want,
+                "κ = {kap}, pooled estimate {want}"
+            );
+        }
+    }
+
+    #[test]
+    fn movmf_auto_with_a_shared_kappa_picks_component_count() {
+        let mut rng = SplitMix64::new(3);
+        let (feats, truth) = unit_blobs(&mut rng, 12, 3, 70, 0.15);
+        let res: Movmf<f64> = movmf_auto_with(&feats, 1, 6, 100, 1, Kappa::Shared);
+        assert_eq!(res.means.len(), 3, "BIC should recover 3 components");
+        assert!(ari(&res.labels, &truth) > 0.9);
+    }
+
     /// Leaves that AGGREGATE many points (so `‖μ_i‖ < 1`). Regression guard: re-normalizing each
     /// leaf to a unit direction would discard the within-leaf spread, over-estimate `κ`, and make
     /// BIC fragment the mixture into far more than the true 3 components.
@@ -1018,7 +1142,7 @@ mod tests {
         let km = spherical_kmeans(features, k, 50, 1, seed);
         let mut means = km.centers.clone();
         let mut weights = vec![1.0 / k as f64; k];
-        let mut kappas: Vec<f64> = init_kappas(&mu, &n, &km.labels, k, dim);
+        let mut kappas: Vec<f64> = init_kappas(&mu, &n, &km.labels, k, dim, Kappa::Free);
 
         let mut resp = vec![vec![0.0; k]; m];
         let mut loglik = f64::NEG_INFINITY;
@@ -1102,7 +1226,7 @@ mod tests {
     fn movmf_em_matches_an_independent_reference_iteration_for_iteration() {
         let feats = overlapping_directions();
         let (k, iters, seed) = (3, 4, 5);
-        let got: Movmf<f64> = movmf_once(&feats, k, iters, seed);
+        let got: Movmf<f64> = movmf_once(&feats, k, iters, seed, Kappa::Free);
         let (rresp, rweights, rmeans, rkappas, rloglik, ran) =
             reference_movmf_em(&feats, k, iters, seed);
         assert_eq!(
@@ -1137,7 +1261,7 @@ mod tests {
     fn movmf_em_stops_on_the_relative_loglik_test() {
         let feats = overlapping_directions();
         let (k, seed) = (3, 5);
-        let got: Movmf<f64> = movmf_once(&feats, k, 500, seed);
+        let got: Movmf<f64> = movmf_once(&feats, k, 500, seed, Kappa::Free);
         let (_, _, _, rkappas, rloglik, ran) = reference_movmf_em(&feats, k, 500, seed);
         assert!(ran > 3 && ran < 500, "expected convergence, ran {ran}");
         assert_close_rel(got.loglik, rloglik, 1e-6, "converged loglik");
@@ -1147,7 +1271,7 @@ mod tests {
         // movMF EM ascends the same likelihood as any other EM: no iteration may lower it.
         let mut prev = f64::NEG_INFINITY;
         for t in 1..=10 {
-            let ll = movmf_once::<f64, _>(&feats, k, t, seed).loglik;
+            let ll = movmf_once::<f64, _>(&feats, k, t, seed, Kappa::Free).loglik;
             assert!(
                 ll >= prev - 1e-9,
                 "loglik fell at iteration {t}: {prev} -> {ll}"
@@ -1349,7 +1473,7 @@ mod tests {
             "a reference κ sits on the clamp, where any resultant gives the same answer: {want:?}"
         );
 
-        let got = init_kappas(&mu, &n, &labels, k, dim);
+        let got = init_kappas(&mu, &n, &labels, k, dim, Kappa::Free);
         for (c, (g, w)) in got.iter().zip(&want).enumerate() {
             assert!(
                 (g - w).abs() <= 1e-12 * w.abs().max(1.0),
@@ -1381,7 +1505,7 @@ mod tests {
             "the fixture's resultant is {resultant:?}, not exactly zero, so it cannot see the guard"
         );
 
-        let got: Movmf<f64> = movmf_once(&feats, 1, 10, 5);
+        let got: Movmf<f64> = movmf_once(&feats, 1, 10, 5, Kappa::Free);
         assert!(
             got.loglik.is_finite(),
             "the log-likelihood is {}",
@@ -1410,6 +1534,7 @@ mod tests {
                     4,
                     100,
                     17u64.wrapping_add(s.wrapping_mul(0x9E37_79B9)),
+                    Kappa::Free,
                 )
                 .loglik
             })

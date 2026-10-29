@@ -1003,6 +1003,35 @@ def test_the_mass_leaf_graph_is_opt_in_and_survives_a_round_trip(blobs, method, 
         np.testing.assert_array_equal(restored.predict(x), est.predict(x))
 
 
+def test_a_shared_vmf_kappa_is_opt_in_and_survives_a_round_trip(blobs, tmp_path):
+    """``"free"`` is the vMF head of every earlier release, so naming it changes nothing;
+    ``"shared"`` is read the same way by both entry points and kept through a save."""
+    import pickle
+
+    x, _ = blobs
+    kw = dict(method="vmf", max_leaves=200, seed=1)
+    free = betula_cluster.fit_predict(x, 3, **kw)
+    np.testing.assert_array_equal(betula_cluster.fit_predict(x, 3, kappa="free", **kw), free)
+    est = betula_cluster.Betula(n_clusters=3, kappa="shared", **kw)
+    labels = est.fit_predict(x)
+    assert est.get_params()["kappa"] == "shared"
+    assert "kappa='shared'" in repr(est)
+    np.testing.assert_array_equal(betula_cluster.fit_predict(x, 3, kappa="shared", **kw), labels)
+    path = tmp_path / "model.betula"
+    est.save(str(path))
+    for restored in (pickle.loads(pickle.dumps(est)), betula_cluster.Betula.load(str(path))):
+        assert restored.get_params()["kappa"] == "shared"
+        np.testing.assert_array_equal(restored.predict(x), est.predict(x))
+
+
+def test_an_unknown_kappa_is_refused_at_both_entry_points(blobs):
+    x, _ = blobs
+    with pytest.raises(ValueError, match="kappa must be 'free' or 'shared', got 'tied'"):
+        betula_cluster.fit_predict(x, method="vmf", kappa="tied")
+    with pytest.raises(ValueError, match="kappa must be 'free' or 'shared', got 'tied'"):
+        betula_cluster.Betula(method="vmf", kappa="tied").fit(x)
+
+
 def test_an_unknown_leaf_graph_is_refused_at_both_entry_points(blobs):
     x, _ = blobs
     with pytest.raises(ValueError, match="leaf_graph must be 'unit' or 'mass', got 'points'"):
@@ -4045,6 +4074,7 @@ _HEAD_KEYWORDS = [
     ("tangent_rank", 3, "leiden", "kmeans"),
     ("n_iterations", 2, "leiden", "kmeans"),
     ("leaf_graph", "mass", "leiden", "kmeans"),
+    ("kappa", "shared", "vmf", "kmeans"),
     ("rank", 1, "mppca", "ward"),
     ("fuzzifier", 1.5, "fuzzy-cmeans", "kmeans"),
 ]

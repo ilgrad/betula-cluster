@@ -706,6 +706,7 @@ _DEFAULTS = {
     "route_beam": 1,
     "n_iterations": 1,
     "leaf_graph": "unit",
+    "kappa": "free",
     "memory_budget_mb": None,
 }
 _PARAM_NAMES = tuple(_DEFAULTS)
@@ -773,6 +774,7 @@ class Betula:
         route_beam=1,
         n_iterations=1,
         leaf_graph="unit",
+        kappa="free",
         memory_budget_mb=None,
     ):
         self.n_clusters = n_clusters
@@ -883,6 +885,12 @@ class Betula:
         # counts as much as a leaf of a thousand. It changes labels, which is why it is opt-in
         # until 2.0.
         self.leaf_graph = leaf_graph
+        # Concentration model of the vMF head (method="vmf"). "free" (default) fits one κ per
+        # component, as every earlier release did. "shared" fits one κ for all of them: on text the
+        # free model lets one diffuse component absorb several topics, and is still the likelier
+        # fit, so neither BIC nor ICL can choose "shared" for you. It changes labels, so it is
+        # opt-in. Ignored by every other head.
+        self.kappa = kappa
         # Subspace rank q of the two subspace heads: each component's covariance is W Wᵀ + σ²I
         # (method="mppca") or W Wᵀ + diag(ψ) (method="mfa") with W of rank q, clamped to at most
         # dim - 1. Ignored by every other head.

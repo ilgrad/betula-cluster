@@ -23,6 +23,13 @@ All notable changes to this project are documented here. The format follows
   (seeds 0/1/2, 400–3 200 leaves) the median ARI rises by 0.06–0.25 in every cell; digits moves
   −0.022 to +0.019, covtype −0.035 to −0.004 around an ARI near 0, and two moons / two circles stay
   at 1.000. Rust: `clustering::spectral_on`.
+- **`kappa="shared"` for `method="vmf"`.** One concentration for every component, from the pooled
+  resultant length (Hornik & Grün 2014, §3.2; exact on leaves). With a free `κ` per component, one
+  low-`κ` component absorbs several topics on text and is still the likelier fit, so neither BIC nor
+  ICL avoids it. On 20-newsgroups LSA-50 at `k = 20` (seeds 0/1/2) the median ARI rises from 0.062 to
+  0.132 at 300 leaves and from 0.100 to 0.150 at 2 000; centred `digits` moves +0.003 / +0.047.
+  `"free"` stays the default and its labels and saved files are unchanged. Rust: `clustering::Kappa`,
+  `clustering::movmf_with`, `clustering::movmf_auto_with`.
 
 ### Performance
 - **`leaf_refit` routes its rows on the thread pool.** Each refit round re-routed every row serially,

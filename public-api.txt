@@ -332,6 +332,24 @@ impl core::marker::Unpin for betula_cluster::clustering::dcdist::DcObjective
 impl core::marker::UnsafeUnpin for betula_cluster::clustering::dcdist::DcObjective
 impl core::panic::unwind_safe::RefUnwindSafe for betula_cluster::clustering::dcdist::DcObjective
 impl core::panic::unwind_safe::UnwindSafe for betula_cluster::clustering::dcdist::DcObjective
+impl core::clone::Clone for betula_cluster::clustering::vmf::Kappa
+pub fn betula_cluster::clustering::vmf::Kappa::clone(&self) -> betula_cluster::clustering::vmf::Kappa
+impl core::cmp::Eq for betula_cluster::clustering::vmf::Kappa
+impl core::cmp::PartialEq for betula_cluster::clustering::vmf::Kappa
+pub fn betula_cluster::clustering::vmf::Kappa::eq(&self, &betula_cluster::clustering::vmf::Kappa) -> bool
+impl core::default::Default for betula_cluster::clustering::vmf::Kappa
+pub fn betula_cluster::clustering::vmf::Kappa::default() -> betula_cluster::clustering::vmf::Kappa
+impl core::fmt::Debug for betula_cluster::clustering::vmf::Kappa
+pub fn betula_cluster::clustering::vmf::Kappa::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for betula_cluster::clustering::vmf::Kappa
+impl core::marker::StructuralPartialEq for betula_cluster::clustering::vmf::Kappa
+impl core::marker::Freeze for betula_cluster::clustering::vmf::Kappa
+impl core::marker::Send for betula_cluster::clustering::vmf::Kappa
+impl core::marker::Sync for betula_cluster::clustering::vmf::Kappa
+impl core::marker::Unpin for betula_cluster::clustering::vmf::Kappa
+impl core::marker::UnsafeUnpin for betula_cluster::clustering::vmf::Kappa
+impl core::panic::unwind_safe::RefUnwindSafe for betula_cluster::clustering::vmf::Kappa
+impl core::panic::unwind_safe::UnwindSafe for betula_cluster::clustering::vmf::Kappa
 pub struct betula_cluster::clustering::dcdist::DcClustering
 pub betula_cluster::clustering::dcdist::DcClustering::centers: alloc::vec::Vec<usize>
 pub betula_cluster::clustering::dcdist::DcClustering::cost: f64
@@ -711,6 +729,27 @@ pub const betula_cluster::clustering::spectral::SPECTRAL_EXACT_NODES: usize
 pub fn betula_cluster::clustering::spectral::spectral<R: betula_cluster::types::Real, C: betula_cluster::feature::ClusterFeature<R>>(&[C], usize, usize, usize, u64) -> betula_cluster::clustering::spectral::Spectral
 pub fn betula_cluster::clustering::spectral::spectral_on<R: betula_cluster::types::Real, C: betula_cluster::feature::ClusterFeature<R>>(&[C], usize, usize, usize, u64, betula_cluster::clustering::community::LeafGraph) -> betula_cluster::clustering::spectral::Spectral
 pub mod betula_cluster::clustering::vmf
+pub enum betula_cluster::clustering::vmf::Kappa
+pub betula_cluster::clustering::vmf::Kappa::Free
+pub betula_cluster::clustering::vmf::Kappa::Shared
+impl core::clone::Clone for betula_cluster::clustering::vmf::Kappa
+pub fn betula_cluster::clustering::vmf::Kappa::clone(&self) -> betula_cluster::clustering::vmf::Kappa
+impl core::cmp::Eq for betula_cluster::clustering::vmf::Kappa
+impl core::cmp::PartialEq for betula_cluster::clustering::vmf::Kappa
+pub fn betula_cluster::clustering::vmf::Kappa::eq(&self, &betula_cluster::clustering::vmf::Kappa) -> bool
+impl core::default::Default for betula_cluster::clustering::vmf::Kappa
+pub fn betula_cluster::clustering::vmf::Kappa::default() -> betula_cluster::clustering::vmf::Kappa
+impl core::fmt::Debug for betula_cluster::clustering::vmf::Kappa
+pub fn betula_cluster::clustering::vmf::Kappa::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for betula_cluster::clustering::vmf::Kappa
+impl core::marker::StructuralPartialEq for betula_cluster::clustering::vmf::Kappa
+impl core::marker::Freeze for betula_cluster::clustering::vmf::Kappa
+impl core::marker::Send for betula_cluster::clustering::vmf::Kappa
+impl core::marker::Sync for betula_cluster::clustering::vmf::Kappa
+impl core::marker::Unpin for betula_cluster::clustering::vmf::Kappa
+impl core::marker::UnsafeUnpin for betula_cluster::clustering::vmf::Kappa
+impl core::panic::unwind_safe::RefUnwindSafe for betula_cluster::clustering::vmf::Kappa
+impl core::panic::unwind_safe::UnwindSafe for betula_cluster::clustering::vmf::Kappa
 pub struct betula_cluster::clustering::vmf::Movmf<R: betula_cluster::types::Real>
 pub betula_cluster::clustering::vmf::Movmf::kappas: alloc::vec::Vec<R>
 pub betula_cluster::clustering::vmf::Movmf::labels: alloc::vec::Vec<usize>
@@ -739,6 +778,8 @@ impl<R> core::panic::unwind_safe::RefUnwindSafe for betula_cluster::clustering::
 impl<R> core::panic::unwind_safe::UnwindSafe for betula_cluster::clustering::vmf::SphericalKMeans<R> where alloc::vec::Vec<alloc::vec::Vec<R>>: core::panic::unwind_safe::UnwindSafe, R: core::panic::unwind_safe::UnwindSafe
 pub fn betula_cluster::clustering::vmf::movmf<R: betula_cluster::types::Real, C: betula_cluster::feature::ClusterFeature<R>>(&[C], usize, usize, u64) -> betula_cluster::clustering::vmf::Movmf<R>
 pub fn betula_cluster::clustering::vmf::movmf_auto<R: betula_cluster::types::Real, C: betula_cluster::feature::ClusterFeature<R>>(&[C], usize, usize, usize, u64) -> betula_cluster::clustering::vmf::Movmf<R>
+pub fn betula_cluster::clustering::vmf::movmf_auto_with<R: betula_cluster::types::Real, C: betula_cluster::feature::ClusterFeature<R>>(&[C], usize, usize, usize, u64, betula_cluster::clustering::vmf::Kappa) -> betula_cluster::clustering::vmf::Movmf<R>
+pub fn betula_cluster::clustering::vmf::movmf_with<R: betula_cluster::types::Real, C: betula_cluster::feature::ClusterFeature<R>>(&[C], usize, usize, u64, betula_cluster::clustering::vmf::Kappa) -> betula_cluster::clustering::vmf::Movmf<R>
 pub fn betula_cluster::clustering::vmf::spherical_kmeans<R: betula_cluster::types::Real, C: betula_cluster::feature::ClusterFeature<R>>(&[C], usize, usize, usize, u64) -> betula_cluster::clustering::vmf::SphericalKMeans<R>
 pub mod betula_cluster::clustering::ward
 pub struct betula_cluster::clustering::ward::WardHac
@@ -1303,6 +1344,8 @@ pub fn betula_cluster::clustering::mfa<R: betula_cluster::types::Real, C: betula
 pub fn betula_cluster::clustering::mfa_auto<R: betula_cluster::types::Real, C: betula_cluster::feature::ClusterFeature<R>>(&[C], usize, usize, usize, usize, u64) -> betula_cluster::clustering::mfa::Mfa<R>
 pub fn betula_cluster::clustering::movmf<R: betula_cluster::types::Real, C: betula_cluster::feature::ClusterFeature<R>>(&[C], usize, usize, u64) -> betula_cluster::clustering::vmf::Movmf<R>
 pub fn betula_cluster::clustering::movmf_auto<R: betula_cluster::types::Real, C: betula_cluster::feature::ClusterFeature<R>>(&[C], usize, usize, usize, u64) -> betula_cluster::clustering::vmf::Movmf<R>
+pub fn betula_cluster::clustering::movmf_auto_with<R: betula_cluster::types::Real, C: betula_cluster::feature::ClusterFeature<R>>(&[C], usize, usize, usize, u64, betula_cluster::clustering::vmf::Kappa) -> betula_cluster::clustering::vmf::Movmf<R>
+pub fn betula_cluster::clustering::movmf_with<R: betula_cluster::types::Real, C: betula_cluster::feature::ClusterFeature<R>>(&[C], usize, usize, u64, betula_cluster::clustering::vmf::Kappa) -> betula_cluster::clustering::vmf::Movmf<R>
 pub fn betula_cluster::clustering::mppca<R: betula_cluster::types::Real, C: betula_cluster::feature::ClusterFeature<R>>(&[C], usize, usize, usize, u64) -> betula_cluster::clustering::mppca::Mppca<R>
 pub fn betula_cluster::clustering::mppca_auto<R: betula_cluster::types::Real, C: betula_cluster::feature::ClusterFeature<R>>(&[C], usize, usize, usize, usize, u64) -> betula_cluster::clustering::mppca::Mppca<R>
 pub fn betula_cluster::clustering::nearest_micro<R: betula_cluster::types::Real>(&[betula_cluster::clustering::kprototypes::MixedCf<R>], &[R], &[usize], &[R], betula_cluster::clustering::kprototypes::BlockWeights<R>) -> usize
