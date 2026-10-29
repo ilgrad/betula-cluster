@@ -637,7 +637,12 @@ Reading it honestly:
   behaves as the exact one: across the 2 048-leaf switch between them there is no step (median of
   seeds 0/1/2: 0.26–0.27 on the exact graph at 1 900–2 000 leaves, 0.28 on the approximate one at
   2 150, `local/scratch/spec271/`). So nothing broke; the older, lower-recall graph scored higher on
-  this dataset than the exact neighbourhoods do. It is recorded as a loss of this edition. The
+  this dataset than the exact neighbourhoods do. It is recorded as a loss of this edition. On the
+  same ~3 800 leaves the exact 10-NN graph reads 0.290; the exact graph at 15 or 20 neighbours reads
+  0.340 / 0.338 — the old graph's misses acted as extra edges. No degree is a better default: at 15
+  and 20 `digits` loses 0.007 / 0.031, covtype stays in its noise, two of the four non-convex
+  fixtures lose at 16, and the approximate builder this budget uses reads 0.258 / 0.310, so an
+  opt-in degree was built, measured and not shipped. The
   covtype cell moved with it, 0.058 → 0.056, inside its spread. The budget dependence is documented
   in [`docs/USAGE.md`](https://github.com/ilgrad/betula-cluster/blob/main/docs/USAGE.md); the opt-in
   `leaf_graph="mass"` (`[Unreleased]`) raised this head's median MNIST ARI by 0.06–0.25 across
