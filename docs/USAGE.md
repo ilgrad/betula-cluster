@@ -229,6 +229,10 @@ Leiden builds its leaf graph by an exact nearest-neighbour scan at every size, `
 count `m`: unlike `spectral`, it has no approximate graph past 2 048 leaves, so doubling
 `max_leaves` quadruples its cost (retired instructions ×4.0–4.2 per doubling from 900 to 7 400
 leaves).
+`scale-space` is quadratic in the leaf count too, `O(scales · iterations · m²·d)`, and its constant is
+the largest of any head: on 16-dimensional data it retired 1.1·10¹¹ instructions at 900 leaves,
+2.1·10¹² at 3 800 and 1.2·10¹³ at 7 400 — the last about 25 minutes on one thread. Keep it at
+`max_leaves` ≤ 2 000 unless the threads are there to spend.
 For a robustness score per point, wrap any partitional head in `consensus` (see below).
 
 ### The leaf feature a covariance head can read
