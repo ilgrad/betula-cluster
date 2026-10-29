@@ -32,6 +32,15 @@ All notable changes to this project are documented here. The format follows
   at 1 and 8 threads); `scripts/thread_determinism.py` gains a `leaf_refit` configuration above the
   cutoff. On eight threads a `kmeans` fit with `leaf_refit=2` at `max_leaves=2000` takes 0.52× the
   time on MNIST-20k and 0.35× on covtype-100k; on one thread it is unchanged (0.98×).
+- **Rows are routed through the tree a block at a time.** `predict` on a head without a point rule
+  (`ward`, the linkages, `spectral`, `leiden`), the final labelling of `hdbscan`, `dc-*`,
+  `scale-space` and the NMF projections, and the `leaf_refit` route at `route_beam=1` now take
+  1 024 rows together and walk them down level by level, sorted by the node they have reached, so
+  each node's children are read once per run of rows instead of once per row. Every row meets the
+  same distance calls in the same order, so labels, centres and saved files are byte-identical
+  (176 digests over 14 heads, f32 and f64, at 1 and 8 threads). `predict` with `method="ward"` takes
+  0.57–0.82× the time on eight threads and 0.64–0.72× on one (MNIST-20k, covtype-100k and 20-d
+  Gaussians, 2 000 and 7 255 leaves); a `leaf_refit=2` fit takes 0.79–0.92×.
 - **Ward's nearest-neighbour chain skips candidates on a staged lower bound from `d ≥ 128`.** Each
   scan evaluates the chain predecessor first, then drops every leaf whose partial distance over the
   highest-variance coordinates already exceeds the incumbent, with a rounding margin that keeps the

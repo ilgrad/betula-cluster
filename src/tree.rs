@@ -110,6 +110,10 @@ const REFIT_REBALANCE_ROUNDS: usize = 1;
 #[cfg(feature = "parallel")]
 const REFIT_PAR_MIN: usize = 4096;
 
+/// Rows per block of [`CFTree::nearest_entries`]: enough that a block puts tens of rows on each leaf
+/// of a 2 000-leaf tree, few enough that 20 000 rows still split across eight threads.
+const ROUTE_BLOCK: usize = 1024;
+
 impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> CFTree<R, C, D, A> {
     /// New empty tree. `branching` = max children per internal node, `leaf_cap` = max entries
     /// per leaf, `threshold` = absorption limit (units of `abs`, squared for euclidean),
@@ -393,7 +397,54 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> CF
 
     /// Index of the leaf entry nearest to `x` (assigns a point to a micro-cluster).
     pub fn nearest_entry(&self, x: &[R]) -> usize {
-        let leaf = self.descend(x);
+        self.nearest_entry_in(self.descend(x), x)
+    }
+
+    /// [`nearest_entry`](Self::nearest_entry) for each of the `n` rows of `flat`, routed a block of
+    /// [`ROUTE_BLOCK`] rows at a time and one level at a time: the rows still descending are sorted
+    /// by the node they have reached, so a node's children are read once for the run of rows at
+    /// that node instead of once per row. Every (row, child) pair still meets the same
+    /// `dist.point` call, in the same child order, under the same strict `<`, so each answer is the
+    /// one `nearest_entry` returns; blocks fork past [`REFIT_PAR_MIN`] rows.
+    pub(crate) fn nearest_entries(&self, flat: &[R], n: usize) -> Vec<usize> {
+        let mut out = vec![0; n];
+        let block = |(b, chunk): (usize, &mut [usize])| {
+            self.route_block(&flat[b * ROUTE_BLOCK * self.dim..], chunk);
+        };
+        #[cfg(feature = "parallel")]
+        if n >= REFIT_PAR_MIN {
+            use rayon::prelude::*;
+            out.par_chunks_mut(ROUTE_BLOCK).enumerate().for_each(block);
+            return out;
+        }
+        out.chunks_mut(ROUTE_BLOCK).enumerate().for_each(block);
+        out
+    }
+
+    /// Route the first `out.len()` rows of `flat` into `out`; see [`nearest_entries`](Self::nearest_entries).
+    fn route_block(&self, flat: &[R], out: &mut [usize]) {
+        let dim = self.dim;
+        let row = |r: usize| &flat[r * dim..(r + 1) * dim];
+        let mut at = vec![self.root; out.len()];
+        let mut order: Vec<usize> = (0..out.len()).collect();
+        loop {
+            order.retain(|&r| !self.nodes[at[r]].leaf);
+            if order.is_empty() {
+                break;
+            }
+            order.sort_unstable_by_key(|&r| at[r]);
+            for &r in &order {
+                at[r] = self.nearest_child(at[r], row(r));
+            }
+        }
+        order.extend(0..out.len());
+        order.sort_unstable_by_key(|&r| at[r]);
+        for &r in &order {
+            out[r] = self.nearest_entry_in(at[r], row(r));
+        }
+    }
+
+    fn nearest_entry_in(&self, leaf: usize, x: &[R]) -> usize {
         let ch = &self.nodes[leaf].children;
         let mut best = ch[0];
         let mut bd = self.dist.point(&self.entries[best], x);
@@ -580,14 +631,20 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> CF
         let dim = self.dim;
         let route = |i: usize| self.nearest_entry_beam(&flat[i * dim..(i + 1) * dim], beam);
         #[cfg(feature = "parallel")]
-        let assign: Vec<usize> = if n >= REFIT_PAR_MIN {
+        let assign: Vec<usize> = if beam <= 1 {
+            self.nearest_entries(flat, n)
+        } else if n >= REFIT_PAR_MIN {
             use rayon::prelude::*;
             (0..n).into_par_iter().map(route).collect()
         } else {
             (0..n).map(route).collect()
         };
         #[cfg(not(feature = "parallel"))]
-        let assign: Vec<usize> = (0..n).map(route).collect();
+        let assign: Vec<usize> = if beam <= 1 {
+            self.nearest_entries(flat, n)
+        } else {
+            (0..n).map(route).collect()
+        };
         let mut fresh: Vec<C> = (0..self.entries.len()).map(|_| C::new(dim)).collect();
         for (i, &e) in assign.iter().enumerate() {
             fresh[e].push(&flat[i * dim..(i + 1) * dim], R::one());
@@ -2550,6 +2607,44 @@ mod tests {
 
     fn dist_to(tree: &BeamTree, x: &[f64], e: usize) -> f64 {
         CentroidEuclidean.point(&tree.leaf_features()[e], x)
+    }
+
+    #[test]
+    fn the_batched_route_answers_every_row_as_the_plain_descent() {
+        // Rows past one block and past the fork cutoff, on a deep tree (branching 4), then on a
+        // grid tree queried at half-integer points, where entries and node centres tie and only
+        // the child order and the strict `<` decide.
+        let (tree, pts) = beam_fixture();
+        let rows: Vec<f64> = pts
+            .iter()
+            .chain(&pseudo(3000, 3))
+            .flatten()
+            .copied()
+            .collect();
+        let n = rows.len() / 3;
+        let want: Vec<usize> = rows.chunks(3).map(|x| tree.nearest_entry(x)).collect();
+        assert_eq!(tree.nearest_entries(&rows, n), want);
+        assert_eq!(
+            tree.nearest_entries(&rows, ROUTE_BLOCK + 1),
+            want[..=ROUTE_BLOCK]
+        );
+        assert!(tree.nearest_entries(&rows, 0).is_empty());
+
+        let mut grid: CFTree<f64, Spherical<f64>, _, _> =
+            CFTree::new(2, 3, 3, 0.0, 200, CentroidEuclidean, CentroidEuclidean);
+        for i in 0..75 {
+            grid.insert(&[(i % 5) as f64, (i / 5 % 5) as f64]);
+        }
+        let rows: Vec<f64> = (0..2000)
+            .flat_map(|i| {
+                [
+                    (i % 11) as f64 * 0.5 - 0.5,
+                    (i / 11 % 11) as f64 * 0.5 - 0.5,
+                ]
+            })
+            .collect();
+        let want: Vec<usize> = rows.chunks(2).map(|x| grid.nearest_entry(x)).collect();
+        assert_eq!(grid.nearest_entries(&rows, 2000), want);
     }
 
     #[test]

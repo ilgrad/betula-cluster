@@ -1880,9 +1880,11 @@ fn cluster<R: Real, C: ClusterFeature<R>>(
                 );
                 match out.rule {
                     Some(rule) => rule.label_rows(flat, n, dim),
-                    None => map_rows(n, |i| {
-                        out.labels[tree.nearest_entry(&flat[i * dim..(i + 1) * dim])]
-                    }),
+                    None => tree
+                        .nearest_entries(flat, n)
+                        .into_iter()
+                        .map(|e| out.labels[e])
+                        .collect(),
                 }
             }
             None => {
@@ -1904,9 +1906,10 @@ fn cluster<R: Real, C: ClusterFeature<R>>(
                 graph_degree,
                 seed,
             );
-            map_rows(n, |i| {
-                res.labels[tree.nearest_entry(&flat[i * dim..(i + 1) * dim])]
-            })
+            tree.nearest_entries(flat, n)
+                .into_iter()
+                .map(|e| res.labels[e])
+                .collect()
         }
         Kind::DcDist {
             objective,
@@ -1921,15 +1924,17 @@ fn cluster<R: Real, C: ClusterFeature<R>>(
                 graph_degree,
                 seed,
             );
-            map_rows(n, |i| {
-                res.labels[tree.nearest_entry(&flat[i * dim..(i + 1) * dim])] as i64
-            })
+            tree.nearest_entries(flat, n)
+                .into_iter()
+                .map(|e| res.labels[e] as i64)
+                .collect()
         }
         Kind::ScaleSpace => {
             let res = scale_space(tree.leaf_features(), 0, max_iter);
-            map_rows(n, |i| {
-                res.labels[tree.nearest_entry(&flat[i * dim..(i + 1) * dim])] as i64
-            })
+            tree.nearest_entries(flat, n)
+                .into_iter()
+                .map(|e| res.labels[e] as i64)
+                .collect()
         }
     };
     (labels, leaves)
@@ -2629,6 +2634,15 @@ impl<R: Real> TreeState<R> {
 
     /// Route `n` rows of `flat` to their nearest leaf and read the cached labels.
     fn route(&self, labels: &[i64], flat: &[R], n: usize, dim: usize, beam: usize) -> Vec<i64> {
+        if beam <= 1 {
+            let entries = match self {
+                TreeState::Spherical(t) => t.nearest_entries(flat, n),
+                TreeState::Diagonal(t) => t.nearest_entries(flat, n),
+                TreeState::Full(t) => t.nearest_entries(flat, n),
+                TreeState::Fd(t) => t.nearest_entries(flat, n),
+            };
+            return entries.into_iter().map(|e| labels[e]).collect();
+        }
         map_rows(n, |i| {
             labels[self.nearest_entry(&flat[i * dim..(i + 1) * dim], beam)]
         })
