@@ -50,6 +50,14 @@ All notable changes to this project are documented here. The format follows
   below `d = 128` the scan is the old one.
 
 ### Notes
+- **The benchmark page is re-measured** (`bench/RESULTS.md`, 2026-10-29): the four quality tables and
+  the speed, memory, full-covtype and sparse tables. Of 139 quality rows only six moved, all
+  `betula-spectral`, all through 1.2.0's doubled k-NN graph (`32aa279`, A/B'd against its parent):
+  the real MNIST cell fell 0.335 → 0.271. Speed rose on both sides under a different machine state
+  (`performance` governor, scikit-learn 1.9.1) and scikit-learn gained more, so the headline ratios
+  narrowed: 9.9× `KMeans` and 33× `Birch` at a million points (were 10.8× and 37×), 89× less memory
+  streaming 10 M points in ~56 MB (were 94× and ~53 MB). README, `docs/MATH.md`, `docs/index.md`
+  and `paper/paper.md` quote the new figures. The win/tie/loss board is unchanged.
 - **Documentation:** USAGE states the Leiden head's leaf-graph cost: an exact `O(m²·d)`
   nearest-neighbour scan at every leaf count, with no approximate graph past 2 048 leaves as
   `spectral` has, so doubling `max_leaves` quadruples it.

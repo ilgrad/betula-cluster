@@ -42,17 +42,17 @@ with peak RSS sampled from `/proc/self/statm`. Full methodology, every metric, a
 > three seeds, so a margin below that is a tie and is written as one here.
 
 - ⚡🪶 **Faster and lighter than scikit-learn at every published size and compression budget.**
-  betula labels **1 M points in 0.22 s**: 10.8× faster than scikit-learn KMeans, 17× vs
-  GaussianMixture, 37× vs Birch — and streams **10 M in a flat ~53 MB** where an in-core KMeans
-  needs **~5.0 GB** (**94× less**, and the gap grows without bound). Two rows are not ours, and both
-  are in the tables: on sparse 20-newsgroups scikit-learn is **3.1× faster** on raw TF-IDF
-  (0.54 s vs 1.67 s) at a better ARI (0.056 vs 0.038), and `fast-hdbscan` recovers the 100 k-point
+  betula labels **1 M points in 0.21 s**: 9.9× faster than scikit-learn KMeans, 16× vs
+  GaussianMixture, 33× vs Birch — and streams **10 M in a flat ~56 MB** where an in-core KMeans
+  needs **~5.0 GB** (**89× less**, and the gap grows without bound). Two rows are not ours, and both
+  are in the tables: on sparse 20-newsgroups scikit-learn is **2.9× faster** on raw TF-IDF
+  (0.56 s vs 1.62 s) at a better ARI (0.056 vs 0.038), and `fast-hdbscan` recovers the 100 k-point
   blobs at **ARI 0.910 against our 0.480** — where we are 10× faster on half the memory. A specialist
   at its own contest is a different claim from a general-purpose library at every size.
 - 🎯 **Parity on the centroid heads, ahead on the structured ones.** betula's k-means ties
   scikit-learn (blobs 0.793 vs 0.794, `digits` 0.467 vs 0.468); full-covariance GMM **beats** it on
   anisotropic data (**0.961 vs 0.902**) and on real 64-D `digits` (**0.575 vs 0.463**, via the
-  high-dimensional covariance floor); betula-ward clusters 1 M in 0.34 s where `O(N²)` sklearn-ward
+  high-dimensional covariance floor); betula-ward clusters 1 M in 0.33 s where `O(N²)` sklearn-ward
   can't run past ~10 k; and on non-convex moons & circles the **spectral** and HDBSCAN heads hit
   **ARI 1.00**. Spectral matches `SpectralClustering`'s quality; the speed ratio is not worth quoting
   — it has read 3–5×, 1.0–1.5× and 2.4–2.5× across editions and the movement is in scikit-learn's arm,
@@ -60,7 +60,7 @@ with peak RSS sampled from `/proc/self/statm`. Full methodology, every metric, a
 - 🌍 **Real data, and two losses stated plainly.** betula's diagonal GMM ties scikit-learn on hard
   `covtype` at adequate leaf resolution (**0.0801 vs 0.0801** at 16 000 leaves — it used to be
   recorded as a win, and the rebuild change made it an exact tie), and it clusters **full covtype
-  (581 k rows) 6.4× faster** at a better ARI (0.087 vs 0.049). But `sklearn-birch` beats **every**
+  (581 k rows) 5.6× faster** at a better ARI (0.087 vs 0.049). But `sklearn-birch` beats **every**
   betula head on both `covtype` (0.131) and MNIST (0.426 vs 0.394). On `covtype` that is a loss on the
   merits — tested in both directions, and the mechanism is the leaf budget's unequal cell *mass*; on
   MNIST Birch simply does not compress (20 000 subclusters for 20 000 points), and at equal
@@ -71,7 +71,7 @@ with peak RSS sampled from `/proc/self/statm`. Full methodology, every metric, a
 
 | ![Fit time vs N](https://raw.githubusercontent.com/ilgrad/betula-cluster/main/bench/plots/scaling_time.png) | ![Peak memory vs N](https://raw.githubusercontent.com/ilgrad/betula-cluster/main/bench/plots/memory_streaming.png) |
 |:--:|:--:|
-| Phase-3 clusters only the ~2 000 leaf microclusters, not the raw points, so every head finishes 1 M points in **under 0.45 s** (k-means in 0.22 s). | The CF-tree is capped by `max_leaves`, so streaming memory stays **flat** — it clusters data larger than RAM. |
+| Phase-3 clusters only the ~2 000 leaf microclusters, not the raw points, so every head finishes 1 M points in **under 0.45 s** (k-means in 0.21 s). | The CF-tree is capped by `max_leaves`, so streaming memory stays **flat** — it clusters data larger than RAM. |
 
 ## Why
 

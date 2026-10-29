@@ -1,3 +1,4 @@
-dataset,method,time_s,rss_mb,n_clusters,ari
-covtype,betula-kmeans,0.7456221069987805,904.900608,7,0.087
-covtype,sklearn-kmeans,4.792691491998994,931.119104,7,0.049
+dataset,method,time_s,rss_mb,n_clusters,ari,error
+covtype,betula-kmeans,0.7062446760010062,896.851968,7.0,0.087,
+covtype,sklearn-kmeans,3.9725196859999414,933.818368,7.0,0.049,
+covtype,sklearn-birch,,,,,OOM
