@@ -1519,6 +1519,21 @@ impl core::marker::Unpin for betula_cluster::distance::CentroidManhattan
 impl core::marker::UnsafeUnpin for betula_cluster::distance::CentroidManhattan
 impl core::panic::unwind_safe::RefUnwindSafe for betula_cluster::distance::CentroidManhattan
 impl core::panic::unwind_safe::UnwindSafe for betula_cluster::distance::CentroidManhattan
+pub struct betula_cluster::distance::LorentzCentroid
+impl core::clone::Clone for betula_cluster::distance::LorentzCentroid
+pub fn betula_cluster::distance::LorentzCentroid::clone(&self) -> Self
+impl core::marker::Copy for betula_cluster::distance::LorentzCentroid
+impl<R: betula_cluster::types::Real, C: betula_cluster::feature::ClusterFeature<R>> betula_cluster::distance::CFDistance<R, C> for betula_cluster::distance::LorentzCentroid
+pub fn betula_cluster::distance::LorentzCentroid::between(&self, &C, &C) -> R
+pub fn betula_cluster::distance::LorentzCentroid::merge_cost(&self, &C, &C) -> R where C: betula_cluster::feature::ClusterFeature<R>
+pub fn betula_cluster::distance::LorentzCentroid::point(&self, &C, &[R]) -> R
+impl core::marker::Freeze for betula_cluster::distance::LorentzCentroid
+impl core::marker::Send for betula_cluster::distance::LorentzCentroid
+impl core::marker::Sync for betula_cluster::distance::LorentzCentroid
+impl core::marker::Unpin for betula_cluster::distance::LorentzCentroid
+impl core::marker::UnsafeUnpin for betula_cluster::distance::LorentzCentroid
+impl core::panic::unwind_safe::RefUnwindSafe for betula_cluster::distance::LorentzCentroid
+impl core::panic::unwind_safe::UnwindSafe for betula_cluster::distance::LorentzCentroid
 pub struct betula_cluster::distance::Mahalanobis
 impl<R: betula_cluster::types::Real> betula_cluster::distance::CFDistance<R, betula_cluster::feature::Full<R>> for betula_cluster::distance::Mahalanobis
 pub fn betula_cluster::distance::Mahalanobis::between(&self, &betula_cluster::feature::Full<R>, &betula_cluster::feature::Full<R>) -> R
@@ -1617,6 +1632,10 @@ impl<R: betula_cluster::types::Real, C: betula_cluster::feature::ClusterFeature<
 pub fn betula_cluster::distance::CentroidManhattan::between(&self, &C, &C) -> R
 pub fn betula_cluster::distance::CentroidManhattan::merge_cost(&self, &C, &C) -> R where C: betula_cluster::feature::ClusterFeature<R>
 pub fn betula_cluster::distance::CentroidManhattan::point(&self, &C, &[R]) -> R
+impl<R: betula_cluster::types::Real, C: betula_cluster::feature::ClusterFeature<R>> betula_cluster::distance::CFDistance<R, C> for betula_cluster::distance::LorentzCentroid
+pub fn betula_cluster::distance::LorentzCentroid::between(&self, &C, &C) -> R
+pub fn betula_cluster::distance::LorentzCentroid::merge_cost(&self, &C, &C) -> R where C: betula_cluster::feature::ClusterFeature<R>
+pub fn betula_cluster::distance::LorentzCentroid::point(&self, &C, &[R]) -> R
 impl<R: betula_cluster::types::Real, C: betula_cluster::feature::ClusterFeature<R>> betula_cluster::distance::CFDistance<R, C> for betula_cluster::distance::MahalanobisChi2<R>
 pub fn betula_cluster::distance::MahalanobisChi2<R>::between(&self, &C, &C) -> R
 pub fn betula_cluster::distance::MahalanobisChi2<R>::merge_cost(&self, &C, &C) -> R where C: betula_cluster::feature::ClusterFeature<R>

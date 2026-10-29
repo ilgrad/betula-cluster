@@ -75,9 +75,9 @@ _Method = Literal[
     "dc-median",
     "scale-space",
 ]
-_Distance = Literal["euclidean", "manhattan", "ward", "average"]
+_Distance = Literal["euclidean", "manhattan", "ward", "average", "lorentz"]
 _Absorb = Literal[
-    "euclidean", "manhattan", "average", "diameter", "ward", "radius", "chi2", "subspace"
+    "euclidean", "manhattan", "average", "diameter", "ward", "radius", "chi2", "subspace", "lorentz"
 ]
 _Lens = Literal["density", "radius", "l2norm", "coordinate", "eccentricity"]
 _Link = Literal["centroid", "bhattacharyya"]

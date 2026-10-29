@@ -38,7 +38,7 @@ use crate::clustering::{DcObjective, Kappa, LeafGraph, TreeNode, dc_clustering, 
 use crate::clustering::{Reachability, optics};
 use crate::distance::{
     AverageIntercluster, AverageIntracluster, CFDistance, CentroidEuclidean, CentroidManhattan,
-    MahalanobisChi2, Radius, SubspaceChi2, VarianceIncrease,
+    LorentzCentroid, MahalanobisChi2, Radius, SubspaceChi2, VarianceIncrease,
 };
 use crate::feature::{ClusterFeature, Diagonal, FdSketch, Full, Spherical};
 use crate::linalg::{cholesky_lower, mahalanobis_sq_from_chol};
@@ -258,6 +258,30 @@ fn require_dimensionwise_feature(feature: &str, kind: Kind, method: &str) -> PyR
          the gmm-toeplitz family, and for method=\"mppca\", whose own isotropic noise term absorbs \
          the addition."
     )))
+}
+
+/// `distance="lorentz"` and `absorb="lorentz"` measure on the hyperboloid sheet, so they need the
+/// rows the hyperbolic head projects onto it, and they need each other: a Lorentz-routed tree that
+/// absorbs by a Euclidean gate (or the reverse) still reads the chart, which is what either one is
+/// for removing.
+fn require_lorentz_pairing(distance: &str, absorb: &str, kind: Kind) -> PyResult<()> {
+    let (route, gate) = (distance == "lorentz", absorb == "lorentz");
+    if !route && !gate {
+        return Ok(());
+    }
+    if route != gate {
+        return Err(PyValueError::new_err(
+            "distance='lorentz' and absorb='lorentz' go together: a tree that routes in one \
+             geometry and absorbs in the other still depends on the chart's origin",
+        ));
+    }
+    if !matches!(kind, Kind::Parametric(Method::Hyperbolic)) {
+        return Err(PyValueError::new_err(
+            "distance='lorentz' needs method='hyperbolic', the only head whose rows are projected \
+             onto the Lorentz sheet",
+        ));
+    }
+    Ok(())
 }
 
 /// The `balance` argument, which is one of three things and must stay one argument.
@@ -1670,6 +1694,7 @@ enum AbsorbKind<R> {
     Radius,
     Chi2(MahalanobisChi2<R>),
     Subspace(SubspaceChi2<R>),
+    Lorentz,
 }
 
 // `inline(always)` on both dispatch impls: each `match` folds every arm's body into one function too
@@ -1688,6 +1713,7 @@ impl<R: Real, C: ClusterFeature<R>> CFDistance<R, C> for AbsorbKind<R> {
             AbsorbKind::Radius => Radius.point(cf, x),
             AbsorbKind::Chi2(m) => m.point(cf, x),
             AbsorbKind::Subspace(m) => m.point(cf, x),
+            AbsorbKind::Lorentz => LorentzCentroid.point(cf, x),
         }
     }
     #[inline(always)]
@@ -1701,6 +1727,15 @@ impl<R: Real, C: ClusterFeature<R>> CFDistance<R, C> for AbsorbKind<R> {
             AbsorbKind::Radius => Radius.between(a, b),
             AbsorbKind::Chi2(m) => m.between(a, b),
             AbsorbKind::Subspace(m) => m.between(a, b),
+            AbsorbKind::Lorentz => LorentzCentroid.between(a, b),
+        }
+    }
+    // Every other criterion prices a rebuild merge by the Euclidean Ward cost, the trait default;
+    // on the sheet that cost reads the chart, so the Lorentz gate brings its own.
+    fn merge_cost(&self, a: &C, b: &C) -> R {
+        match self {
+            AbsorbKind::Lorentz => LorentzCentroid.merge_cost(a, b),
+            _ => VarianceIncrease.merge_cost(a, b),
         }
     }
 }
@@ -1712,6 +1747,7 @@ enum RouteKind {
     Manhattan,
     Ward,
     Average,
+    Lorentz,
 }
 
 impl<R: Real, C: ClusterFeature<R>> CFDistance<R, C> for RouteKind {
@@ -1722,6 +1758,7 @@ impl<R: Real, C: ClusterFeature<R>> CFDistance<R, C> for RouteKind {
             RouteKind::Manhattan => CentroidManhattan.point(cf, x),
             RouteKind::Ward => VarianceIncrease.point(cf, x),
             RouteKind::Average => AverageIntercluster.point(cf, x),
+            RouteKind::Lorentz => LorentzCentroid.point(cf, x),
         }
     }
     #[inline(always)]
@@ -1731,6 +1768,7 @@ impl<R: Real, C: ClusterFeature<R>> CFDistance<R, C> for RouteKind {
             RouteKind::Manhattan => CentroidManhattan.between(a, b),
             RouteKind::Ward => VarianceIncrease.between(a, b),
             RouteKind::Average => AverageIntercluster.between(a, b),
+            RouteKind::Lorentz => LorentzCentroid.between(a, b),
         }
     }
 }
@@ -1743,8 +1781,9 @@ fn parse_route(distance: &str) -> PyResult<RouteKind> {
         "manhattan" => Ok(RouteKind::Manhattan),
         "ward" => Ok(RouteKind::Ward),
         "average" => Ok(RouteKind::Average),
+        "lorentz" => Ok(RouteKind::Lorentz),
         _ => Err(PyValueError::new_err(
-            "distance must be 'euclidean', 'manhattan', 'ward' or 'average'",
+            "distance must be 'euclidean', 'manhattan', 'ward', 'average' or 'lorentz'",
         )),
     }
 }
@@ -2248,6 +2287,7 @@ fn fit_predict<'py>(
     let max_iter = parse_max_iter(max_iter)?;
     check_tree_shape(branching, leaf_cap)?;
     require_dimensionwise_feature(feature, kind, method)?;
+    require_lorentz_pairing(distance, absorb, kind)?;
     let (balance, auto_balance) = parse_balance(balance)?;
     let (labels, leaves) = if let Ok(a) = data.extract::<PyReadonlyArray2<'py, f64>>() {
         run_oneshot::<f64>(
@@ -2326,7 +2366,7 @@ type BetulaTree<R, C> = CFTree<R, C, RouteKind, AbsorbKind<R>>;
 /// The `absorb` values this binding accepts, as one string so the parser and every error message
 /// cannot drift apart.
 const ABSORB_CHOICES: &str = "absorb must be 'euclidean', 'manhattan', 'average', 'diameter', \
-                              'ward', 'radius', 'chi2' or 'subspace'";
+                              'ward', 'radius', 'chi2', 'subspace' or 'lorentz'";
 
 /// Resolve the absorption gate and effective threshold for element type `R` (shared by the one-shot
 /// path and the streaming estimator). χ² uses the user-supplied within-cluster scale `chi2_scale`;
@@ -2348,6 +2388,7 @@ fn resolve_gate<R: Real>(
         "diameter" => Ok((AbsorbKind::Diameter, thr)),
         "ward" => Ok((AbsorbKind::Ward, thr)),
         "radius" => Ok((AbsorbKind::Radius, thr)),
+        "lorentz" => Ok((AbsorbKind::Lorentz, thr)),
         "chi2" => {
             if chi2_scale <= 0.0 {
                 return Err(
@@ -4082,6 +4123,7 @@ impl Betula {
             ));
         }
         require_dimensionwise_feature(feature, kind, method)?;
+        require_lorentz_pairing(distance, absorb, kind)?;
         // The estimator rejects a bad `absorb` at construction, before any data has fixed `dim`, but
         // the accepted names and the χ²-scale rule belong to `resolve_gate`. Ask it with a
         // placeholder `dim` and drop the gate it builds, rather than restating them here where the

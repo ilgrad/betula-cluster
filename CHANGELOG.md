@@ -41,6 +41,20 @@ All notable changes to this project are documented here. The format follows
   0.132 at 300 leaves and from 0.100 to 0.150 at 2 000; centred `digits` moves +0.003 / +0.047.
   `"free"` stays the default and its labels and saved files are unchanged. Rust: `clustering::Kappa`,
   `clustering::movmf_with`, `clustering::movmf_auto_with`.
+- **`distance="lorentz", absorb="lorentz"` for `method="hyperbolic"`.** The head was exactly
+  invariant under a Lorentz boost, but the CF-tree routed and absorbed in the ambient coordinates, so
+  its leaves moved with the chart's origin. The tree now reads the squared Lorentzian distance to each
+  leaf's Lorentzian centroid, and a rebuild prices its merges by the hyperbolic Ward cost. On the
+  three-arm test fixture at 1 000 leaves, the leaf partition after a boost of `φ = 1…3` agrees with
+  the original at ARI 1.000, against 0.17–0.44 for the default tree. On the depth-4 tree fixture, the
+  mean ARI over 15 draws per cell rises by 0.02–0.07 at 500 leaves and by 0.05–0.15 at 2 000. The
+  two keywords go together and only with `method="hyperbolic"`; the default tree is unchanged.
+  Rust: `distance::LorentzCentroid`.
+
+### Fixed
+- **USAGE no longer reads the hyperbolic head's 0.14 ARI drift under a boost as geometry.** At 500
+  and 2 000 leaves, a relative jitter of `1e−12` moves the partition as far as the boost did; over 15
+  draws per cell the default tree reads 0.61–0.65 at every `φ`.
 
 ### Performance
 - **`leaf_refit` routes its rows on the thread pool.** Each refit round re-routed every row serially,

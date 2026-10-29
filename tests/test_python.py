@@ -345,6 +345,44 @@ def test_hyperbolic_refuses_a_projection_and_a_sparse_matrix(lorentz_arms):
         betula_cluster.fit_predict_sparse(csr, 3, method="hyperbolic")
 
 
+def _boosted(x, phi):
+    """A Lorentz boost of rapidity ``phi`` along the first spatial axis: an isometry of ``H^2``."""
+    out = x.copy()
+    out[:, 0] = np.cosh(phi) * x[:, 0] + np.sinh(phi) * x[:, 1]
+    out[:, 1] = np.sinh(phi) * x[:, 0] + np.cosh(phi) * x[:, 1]
+    return out
+
+
+@pytest.mark.parametrize("phi", [1.0, 3.0])
+def test_a_lorentz_tree_builds_the_same_leaves_after_a_boost(lorentz_arms, phi):
+    # A boost moves every row and keeps every hyperbolic distance. The Euclidean tree routes by the
+    # chart and re-partitions the rows; the Lorentz tree reads only Minkowski products and does not.
+    x, _ = lorentz_arms
+
+    def leaves(rows, **kw):
+        est = betula_cluster.Betula(
+            n_clusters=3, method="hyperbolic", threshold=0.0, max_leaves=1000, seed=1, **kw
+        ).fit(rows)
+        return est.assign_microclusters(rows)
+
+    lorentz = dict(distance="lorentz", absorb="lorentz")
+    assert ari(leaves(x, **lorentz), leaves(_boosted(x, phi), **lorentz)) > 0.999
+    assert ari(leaves(x), leaves(_boosted(x, phi))) < 0.5
+
+
+def test_lorentz_routing_refuses_half_a_pair_and_every_other_head(lorentz_arms):
+    x, _ = lorentz_arms
+    for kw, match in [
+        (dict(method="hyperbolic", distance="lorentz"), "go together"),
+        (dict(method="hyperbolic", absorb="lorentz"), "go together"),
+        (dict(method="kmeans", distance="lorentz", absorb="lorentz"), "needs method='hyperbolic'"),
+    ]:
+        with pytest.raises(ValueError, match=match):
+            betula_cluster.fit_predict(x, 3, **kw)
+        with pytest.raises(ValueError, match=match):
+            betula_cluster.Betula(n_clusters=3, **kw).fit(x)
+
+
 @pytest.fixture(scope="module")
 def ar_windows():
     """Three AR components distinguishable ONLY by autocovariance (unit marginal variance)."""

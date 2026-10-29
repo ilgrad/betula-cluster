@@ -5,6 +5,7 @@
 //! path). All forms are derived from `(n, μ, S)` and were verified algebraically against the
 //! classic BIRCH forms in `math_improove/02-distance-equivalence` (local-only working notes).
 
+use crate::clustering::hyperbolic::{lorentz_dot, lorentz_norm};
 use crate::feature::{ClusterFeature, Full, SecondMoment};
 use crate::kernels;
 use crate::linalg;
@@ -339,6 +340,71 @@ impl<R: Real, C: ClusterFeature<R>> CFDistance<R, C> for SubspaceChi2<R> {
     }
     fn between(&self, a: &C, b: &C) -> R {
         self.point(a, b.mean())
+    }
+}
+
+/// Squared Lorentzian distance (Law, Liao, Snavely & Dhillon, ICML 2019) between Lorentzian
+/// centroids, for rows on the hyperboloid sheet `−x₀² + Σ xᵢ² = −1` — `method="hyperbolic"`'s
+/// geometry carried into the tree.
+///
+/// A feature's mean `m = R/n` of sheet points is a future-directed timelike vector inside the
+/// sheet; its Lorentzian centroid is `μ = m/|m|_L`. Both values read only `⟨·,·⟩_L`, which a Lorentz
+/// boost preserves, so routing and absorption under this measure do not move when the embedding's
+/// origin does — the Euclidean measures route by the chart and do. `merge_cost` is the increase of
+/// `Σ d_L²(x, μ) = 2(|R|_L − n)`, the hyperbolic Ward cost, `2(|R_a + R_b|_L − |R_a|_L − |R_b|_L)`;
+/// it is non-negative by the reverse triangle inequality for timelike vectors.
+///
+/// Rows that are not on the sheet make `|m|_L` meaningless; the Python boundary pairs this measure
+/// with the sheet projection and refuses it for every other head.
+#[derive(Clone, Copy)]
+#[cfg_attr(feature = "persistence", derive(serde::Serialize, serde::Deserialize))]
+pub struct LorentzCentroid;
+
+impl LorentzCentroid {
+    /// `⟨u, v⟩_L / (|u|_L |v|_L)`, with a vector of zero norm read as the sheet's origin
+    /// `(1, 0, …, 0)` — the empty feature's zero mean is the only way to reach that branch.
+    fn normalized_dot<R: Real>(u: &[R], v: &[R]) -> R {
+        let (nu, nv) = (lorentz_norm(u), lorentz_norm(v));
+        match (nu > R::zero(), nv > R::zero()) {
+            (true, true) => lorentz_dot(u, v) / (nu * nv),
+            (true, false) => -u[0] / nu,
+            (false, true) => -v[0] / nv,
+            (false, false) => -R::one(),
+        }
+    }
+}
+
+impl<R: Real, C: ClusterFeature<R>> CFDistance<R, C> for LorentzCentroid {
+    #[inline]
+    fn point(&self, cf: &C, x: &[R]) -> R {
+        let two = R::one() + R::one();
+        let m = cf.mean();
+        let nm = lorentz_norm(m);
+        let dot = if nm > R::zero() {
+            lorentz_dot(x, m) / nm
+        } else {
+            -x[0]
+        };
+        (-two - two * dot).max(R::zero())
+    }
+    #[inline]
+    fn between(&self, a: &C, b: &C) -> R {
+        let two = R::one() + R::one();
+        (-two - two * Self::normalized_dot(a.mean(), b.mean())).max(R::zero())
+    }
+    fn merge_cost(&self, a: &C, b: &C) -> R
+    where
+        C: ClusterFeature<R>,
+    {
+        let (na, nb) = (a.weight(), b.weight());
+        let (ma, mb) = (a.mean(), b.mean());
+        let (qa, qb) = (-lorentz_dot(ma, ma), -lorentz_dot(mb, mb));
+        let joint = na * na * qa + nb * nb * qb - (na + na) * nb * lorentz_dot(ma, mb);
+        let two = R::one() + R::one();
+        let gain = joint.max(R::zero()).sqrt()
+            - na * qa.max(R::zero()).sqrt()
+            - nb * qb.max(R::zero()).sqrt();
+        (two * gain).max(R::zero())
     }
 }
 
@@ -703,5 +769,104 @@ mod tests {
             sub.point(&fd, &along),
             sub.point(&fd, &across),
         );
+    }
+
+    /// A point of `H²` at hyperbolic radius `r` and angle `a`, in Lorentz coordinates.
+    fn sheet(r: f64, a: f64) -> Vec<f64> {
+        vec![r.cosh(), r.sinh() * a.cos(), r.sinh() * a.sin()]
+    }
+
+    fn boosted(x: &[f64], phi: f64) -> Vec<f64> {
+        let (ch, sh) = (phi.cosh(), phi.sinh());
+        vec![ch * x[0] + sh * x[1], sh * x[0] + ch * x[1], x[2]]
+    }
+
+    fn lorentz_pair() -> (Vec<Vec<f64>>, Vec<Vec<f64>>) {
+        let a = vec![sheet(1.0, 0.2), sheet(1.3, 0.5), sheet(0.8, 0.1)];
+        let b = vec![sheet(2.0, 2.4), sheet(1.7, 2.9)];
+        (a, b)
+    }
+
+    fn feature_of(pts: &[Vec<f64>]) -> Spherical<f64> {
+        let refs: Vec<&[f64]> = pts.iter().map(Vec::as_slice).collect();
+        build(3, &refs)
+    }
+
+    #[test]
+    fn lorentz_centroid_reads_the_same_under_a_boost() {
+        let (a, b) = lorentz_pair();
+        let x = sheet(1.1, -0.7);
+        let (fa, fb) = (feature_of(&a), feature_of(&b));
+        let phi = 2.0;
+        let ba: Vec<Vec<f64>> = a.iter().map(|p| boosted(p, phi)).collect();
+        let bb: Vec<Vec<f64>> = b.iter().map(|p| boosted(p, phi)).collect();
+        let (ga, gb) = (feature_of(&ba), feature_of(&bb));
+        let bx = boosted(&x, phi);
+        let rel = |u: f64, v: f64| (u - v).abs() / u.abs().max(1.0);
+        assert!(
+            rel(
+                LorentzCentroid.point(&fa, &x),
+                LorentzCentroid.point(&ga, &bx)
+            ) < 1e-12
+        );
+        assert!(
+            rel(
+                LorentzCentroid.between(&fa, &fb),
+                LorentzCentroid.between(&ga, &gb)
+            ) < 1e-12
+        );
+        assert!(
+            rel(
+                LorentzCentroid.merge_cost(&fa, &fb),
+                LorentzCentroid.merge_cost(&ga, &gb)
+            ) < 1e-10
+        );
+        // the Euclidean centroid distance is what moves
+        let e0 = CentroidEuclidean.point(&fa, &x);
+        assert!(rel(e0, CentroidEuclidean.point(&ga, &bx)) > 0.1);
+    }
+
+    #[test]
+    fn lorentz_centroid_of_one_point_is_the_squared_lorentzian_distance() {
+        let (y, x) = (sheet(1.5, 0.3), sheet(0.4, 2.0));
+        let fy = feature_of(std::slice::from_ref(&y));
+        let want = -2.0 - 2.0 * lorentz_dot(&x, &y);
+        assert!(close(LorentzCentroid.point(&fy, &x), want));
+        assert!(close(LorentzCentroid.between(&fy, &feature_of(&[x])), want));
+    }
+
+    #[test]
+    fn lorentz_merge_cost_is_the_increase_of_the_summed_lorentzian_cost() {
+        let (a, b) = lorentz_pair();
+        // Σ d_L²(x, μ) over the rows, μ the Lorentzian centroid, by brute force
+        let cost = |pts: &[Vec<f64>]| {
+            let mut r = vec![0.0; 3];
+            for p in pts {
+                r.iter_mut().zip(p).for_each(|(s, v)| *s += v);
+            }
+            let n = lorentz_norm(&r);
+            let mu: Vec<f64> = r.iter().map(|v| v / n).collect();
+            pts.iter()
+                .map(|p| -2.0 - 2.0 * lorentz_dot(p, &mu))
+                .sum::<f64>()
+        };
+        let both: Vec<Vec<f64>> = a.iter().chain(&b).cloned().collect();
+        let want = cost(&both) - cost(&a) - cost(&b);
+        let got = LorentzCentroid.merge_cost(&feature_of(&a), &feature_of(&b));
+        assert!(want > 0.1, "the fixture has to merge two separated groups");
+        assert!((got - want).abs() < 1e-9 * want.max(1.0), "{got} vs {want}");
+    }
+
+    #[test]
+    fn lorentz_centroid_reads_an_empty_feature_as_the_sheet_origin() {
+        let empty = Spherical::<f64>::new(3);
+        let x = sheet(1.2, 0.4);
+        let origin = [1.0, 0.0, 0.0];
+        let want = -2.0 - 2.0 * lorentz_dot(&x, &origin);
+        assert!(close(LorentzCentroid.point(&empty, &x), want));
+        assert!(close(
+            LorentzCentroid.between(&empty, &feature_of(&[x])),
+            want
+        ));
     }
 }

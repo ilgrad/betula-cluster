@@ -20,8 +20,8 @@ labels = betula_cluster.fit_predict(X, method="hdbscan", min_samples=10, min_clu
 ```
 
 Keyword args: `feature ∈ {spherical, diagonal, full, fd}`, `method ∈ {kmeans, xmeans, kmedoids, fuzzy-cmeans, gmm, gmm-full, mppca, mfa, ward, average, weighted, centroid, median, spectral, leiden, leiden-cpm, spherical-kmeans, vmf, watson, hyperbolic, gmm-toeplitz, gmm-toeplitz-full, gmm-toeplitz-gs, hdbscan, dc-center, dc-median, scale-space}`,
-`distance ∈ {euclidean, manhattan, ward, average}` (routing measure),
-`absorb ∈ {euclidean, manhattan, average, diameter, ward, radius, chi2, subspace}` (see *Absorption criteria*
+`distance ∈ {euclidean, manhattan, ward, average, lorentz}` (routing measure),
+`absorb ∈ {euclidean, manhattan, average, diameter, ward, radius, chi2, subspace, lorentz}` (see *Absorption criteria*
 below; `chi2` = mass-invariant Mahalanobis gate at level `chi2_p` with `chi2_scale` = within-cluster
 variance; fixes the BIRCH size-imbalance bug), `decay` (EWMA factor
 for streaming concept drift), `normalize` (L2-normalize rows → cluster by *direction*; on the unit
@@ -126,6 +126,7 @@ choice that shapes the whole summary. The full BIRCH grid is available, plus thi
 | `radius` | R | mean squared radius of the merged cell | squared |
 | `chi2` | — | Mahalanobis-χ² with a variance prior | χ²`dim` quantile via `chi2_p` |
 | `subspace` | — | the same gate read on the leaf's own low-rank basis | χ²`dim` quantile via `chi2_p` |
+| `lorentz` | — | squared Lorentzian distance to the leaf's Lorentzian centroid; `method="hyperbolic"` only, with `distance="lorentz"` — see *Clustering in the hyperbolic plane* | `d_L²` |
 
 `threshold` is read in the chosen criterion's own units, so a value tuned for one does **not**
 transfer to another — retune when you switch. `D2`, `D3` and `R` read the leaves' second moments, so
@@ -832,26 +833,49 @@ under it was answering about the chart. Boosting the fixture by rapidity `φ` al
 | 2.0 | **0.614** | 0.478 | 0.513 | 0.523 |
 | 3.0 | **0.596** | 0.348 | 0.311 | 0.375 |
 
-The ball route loses 0.51 of its ARI and the head loses 0.14. **The head is the one whose answer is a
-property of the data rather than of where the embedding put its origin** — and if you do not know
-that your embedding is centred, which for a learned embedding you do not, the `φ = 0` column is the
-one you cannot count on.
+The ball route loses 0.51 of its ARI. The `hyperbolic` column moves too, by up to 0.14, but that
+movement is not geometry. At 500 and 2000 leaves the tree build is chaotic: a relative jitter of
+`1e−12` on the rows moves the partition as far as a boost does (ARI 0.52–0.81 against the clean
+run). Over 15 draws per cell — seeds 0/1/2, five jitters each — the
+head on the default tree reads a mean ARI of 0.61–0.65 at every `φ`. **The head is the one whose
+answer is a property of the data rather than of where the embedding put its origin** — and if you
+do not know that your embedding is centred, which for a learned embedding you do not, the `φ = 0`
+column is the one you cannot count on.
 
-**And the residual 0.14 is not the head's.** Both Lloyd steps read only `(n_i, R_i)` and `Λ` is
-linear with `|ΛR|_L = |R|_L`, so the partition over a *fixed* leaf set is exactly boost-invariant
-(asserted in `tests/equivariance.rs`). What moves is the CF-tree, which routes and absorbs in the
-ambient Euclidean coordinates. Raise the budget until every point is its own leaf and the drift
-disappears entirely:
+**The head is exactly invariant; the default tree is not.** Both Lloyd steps read only
+`(n_i, R_i)` and `Λ` is linear with `|ΛR|_L = |R|_L`, so the partition over a *fixed* leaf set is
+exactly boost-invariant (asserted in `tests/equivariance.rs`). The default CF-tree routes and absorbs
+in the ambient coordinates, so its leaves move: on the three-arm fixture of the test suite at
+`max_leaves=1000`, the leaf partition after a boost of `φ = 1…3` agrees with the original at ARI
+0.17–0.44. With one leaf per point there is no tree left to move, and all three `φ` read 0.772.
 
-| `max_leaves` | `φ=0` | `φ=1` | `φ=3` |
+**`distance="lorentz", absorb="lorentz"` builds the tree in the head's geometry.** Routing and
+absorption read the squared Lorentzian distance to each leaf's Lorentzian centroid `μ = m/|m|_L`,
+and a rebuild prices its merges by the hyperbolic Ward cost `2(|R_a + R_b|_L − |R_a|_L − |R_b|_L)`.
+All three read Minkowski products only, so the same fixture's leaf partition is identical (ARI
+1.000) after every boost and under the jitter. The two keywords go together, and only with
+`method="hyperbolic"`; it is opt-in because it changes the leaves, and with them the labels.
+
+```python
+labels = betula_cluster.fit_predict(X_lorentz, n_clusters=16, method="hyperbolic",
+                                    distance="lorentz", absorb="lorentz")
+```
+
+Mean ARI over the same 15 draws per cell, `threshold=0`:
+
+| `max_leaves` | `φ` | default tree | Lorentz tree |
 |---|---|---|---|
-| 500 | 0.634 | 0.569 | 0.576 |
-| 2000 | 0.731 | 0.675 | 0.596 |
-| 8000 | 0.809 | 0.583 | 0.696 |
-| 20000 (one leaf per point) | **0.772** | **0.772** | **0.772** |
+| 500 | 0 | 0.614 | **0.638** |
+| 500 | 1 | 0.629 | **0.645** |
+| 500 | 3 | 0.607 | **0.672** |
+| 2000 | 0 | 0.632 | **0.687** |
+| 2000 | 1 | 0.651 | **0.719** |
+| 2000 | 3 | 0.616 | **0.766** |
 
-That is the honest boundary of the feature: **the head is hyperbolic, the tree is not.** A
-Lorentz-aware routing distance would close it and is not built.
+The standard deviation is 0.04–0.06 for the default tree and 0.06–0.12 for the Lorentz tree, so the
+Lorentz column's spread across `φ` is the draw noise of 15 runs, not a dependence on the chart. At
+8000 leaves the build stops being chaotic — the jitter moves nothing — and the Lorentz tree reads
+0.699 at every `φ` while the default tree reads 0.577–0.776 depending on it.
 
 **No automatic `k`.** `Σ_c 2(|R_c|_L − W_c)` falls monotonically in `k`, exactly as total deviation
 does for `kmedoids`, so this head's own objective cannot select the count. `n_clusters=0` yields a

@@ -146,7 +146,7 @@ pub(crate) fn lorentz_dot<R: Real>(a: &[R], b: &[R]) -> R {
 
 /// `|v|_L = √(−⟨v,v⟩_L)` for a future-directed timelike `v`, floored at zero.
 #[inline]
-fn lorentz_norm<R: Real>(v: &[R]) -> R {
+pub(crate) fn lorentz_norm<R: Real>(v: &[R]) -> R {
     (-lorentz_dot(v, v)).max(R::zero()).sqrt()
 }
 
