@@ -1024,6 +1024,32 @@ def test_a_shared_vmf_kappa_is_opt_in_and_survives_a_round_trip(blobs, tmp_path)
         np.testing.assert_array_equal(restored.predict(x), est.predict(x))
 
 
+def test_hartigan_moves_are_opt_in_and_survive_a_round_trip(tmp_path):
+    """Off is the k-means head of every earlier release; on, the head ends on single-leaf moves
+    that lower the inertia, read the same way by both entry points and kept through a save."""
+    import pickle
+
+    rng = np.random.default_rng(0)
+    x = rng.uniform(0, 10, (3000, 2))
+    kw = dict(method="kmeans", max_leaves=400, seed=1)
+    plain = betula_cluster.fit_predict(x, 40, **kw)
+    np.testing.assert_array_equal(betula_cluster.fit_predict(x, 40, hartigan=False, **kw), plain)
+    est = betula_cluster.Betula(n_clusters=40, hartigan=True, **kw)
+    labels = est.fit_predict(x)
+    assert est.get_params()["hartigan"] is True
+    np.testing.assert_array_equal(betula_cluster.fit_predict(x, 40, hartigan=True, **kw), labels)
+
+    def sse(lab):
+        return sum(((x[lab == c] - x[lab == c].mean(0)) ** 2).sum() for c in np.unique(lab))
+
+    assert sse(labels) < sse(plain)
+    path = tmp_path / "model.betula"
+    est.save(str(path))
+    for restored in (pickle.loads(pickle.dumps(est)), betula_cluster.Betula.load(str(path))):
+        assert restored.get_params()["hartigan"] is True
+        np.testing.assert_array_equal(restored.predict(x), est.predict(x))
+
+
 def test_an_unknown_kappa_is_refused_at_both_entry_points(blobs):
     x, _ = blobs
     with pytest.raises(ValueError, match="kappa must be 'free' or 'shared', got 'tied'"):
@@ -4075,6 +4101,7 @@ _HEAD_KEYWORDS = [
     ("n_iterations", 2, "leiden", "kmeans"),
     ("leaf_graph", "mass", "leiden", "kmeans"),
     ("kappa", "shared", "vmf", "kmeans"),
+    ("hartigan", True, "kmeans", "ward"),
     ("rank", 1, "mppca", "ward"),
     ("fuzzifier", 1.5, "fuzzy-cmeans", "kmeans"),
 ]

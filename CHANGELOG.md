@@ -29,6 +29,11 @@ All notable changes to this project are documented here. The format follows
   input columns and `predict(X)` labels by the tree alone. Against the `kmeans` head at 2 000 leaves
   the tree's point SSE is ×1.10 on covtype, ×1.15 on ALOI-27 and ×1.22–1.25 on digits. Labels of
   every head are unchanged. Rust: `clustering::imm`, `ThresholdTree`, `TreeNode`.
+- **`hartigan=True` for `method="kmeans"`.** After the restarts the head runs Hartigan's
+  single-leaf moves (Telgarsky & Vattani 2010), which lower the inertia where Lloyd's nearest-centre
+  rule is already stable, then ends on Lloyd. Exact on leaves. Point SSE falls by 0.7–1.7 % on ALOI
+  at `k` = 100 and 1 000 and by nothing measurable at `k` ≤ 10; ARI is unchanged. Off by default.
+  Rust: `clustering::hartigan`.
 - **`kappa="shared"` for `method="vmf"`.** One concentration for every component, from the pooled
   resultant length (Hornik & Grün 2014, §3.2; exact on leaves). With a free `κ` per component, one
   low-`κ` component absorbs several topics on text and is still the likelier fit, so neither BIC nor

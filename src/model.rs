@@ -4,7 +4,7 @@ use crate::clustering::{
     Gmm, GmmFull, GmmToeplitz, KMEANS_N_INIT, Kappa, LeafGraph, Linkage, Mfa, Movmf, Mppca,
     Objective, Watson, agglomerative, agglomerative_auto, dyn_msc, fuzzy_cmeans, fuzzy_cmeans_auto,
     gmm_diagonal, gmm_diagonal_auto, gmm_full, gmm_full_auto, gmm_toeplitz, gmm_toeplitz_auto,
-    gmm_toeplitz_full, gmm_toeplitz_full_auto, gmm_toeplitz_gs, gmm_toeplitz_gs_auto,
+    gmm_toeplitz_full, gmm_toeplitz_full_auto, gmm_toeplitz_gs, gmm_toeplitz_gs_auto, hartigan,
     hyperbolic_kmeans, kmeans, kmeans_auto, kmedoids, leiden_on, mfa, mfa_auto, movmf_auto,
     movmf_auto_with, movmf_with, mppca, mppca_auto, project_to_sheet, spectral_on,
     spherical_kmeans, ward_hac, ward_hac_auto, watson, watson_auto, xmeans,
@@ -628,20 +628,24 @@ pub(crate) fn auto_k_ceiling(method: Method, n_leaves: usize, auto_k_max: usize)
 }
 
 /// Head settings that [`Method`] cannot carry: up to `passes` Leiden passes over the leaf graph
-/// `graph` names (`graph` also selects the spectral operator), and the vMF concentration model.
+/// `graph` names (`graph` also selects the spectral operator), the vMF concentration model, and
+/// whether k-means ends on Hartigan leaf moves ([`hartigan`]).
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct HeadOptions {
     pub(crate) passes: usize,
     pub(crate) graph: LeafGraph,
     pub(crate) kappa: Kappa,
+    pub(crate) hartigan: bool,
 }
 
 impl HeadOptions {
-    /// One Leiden pass over the unit leaf graph and a free κ per vMF component: the heads of 1.0.
+    /// One Leiden pass over the unit leaf graph, a free κ per vMF component and plain Lloyd for
+    /// k-means: the heads of 1.0.
     pub(crate) const DEFAULT: Self = Self {
         passes: 1,
         graph: LeafGraph::Unit,
         kappa: Kappa::Free,
+        hartigan: false,
     };
 }
 
@@ -683,10 +687,19 @@ pub(crate) fn fit_head<R: Real, C: ClusterFeature<R>>(
     let hi = auto_k_ceiling(method, nlv, auto_k_max);
     let kk = k.min(nlv).max(1);
     match method {
-        Method::KMeans if k == 0 => {
-            HeadFit::hard(kmeans_auto(features, 1, hi, max_iter, n_init, seed).labels)
+        Method::KMeans => {
+            let fit = if k == 0 {
+                kmeans_auto(features, 1, hi, max_iter, n_init, seed)
+            } else {
+                kmeans(features, kk, max_iter, n_init, seed)
+            };
+            let fit = if opts.hartigan {
+                hartigan(features, fit, max_iter)
+            } else {
+                fit
+            };
+            HeadFit::hard(fit.labels)
         }
-        Method::KMeans => HeadFit::hard(kmeans(features, kk, max_iter, n_init, seed).labels),
         // `k == 0` has no meaning for total deviation, which falls monotonically in `k`. The medoid
         // silhouette can choose, so the automatic arm is DynMSC — a different objective, and the
         // head's docs say so rather than pretending the sweep is free.

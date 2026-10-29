@@ -206,6 +206,7 @@ def fit_predict(
     n_iterations: int = ...,
     leaf_graph: Literal["unit", "mass"] = ...,
     kappa: Literal["free", "shared"] = ...,
+    hartigan: bool = ...,
 ) -> NDArray[np.int64]:
     """Cluster ``data`` in one shot and return per-point integer labels (``-1`` = noise)."""
 
@@ -278,6 +279,7 @@ class Betula:
         n_iterations: int = ...,
         leaf_graph: Literal["unit", "mass"] = ...,
         kappa: Literal["free", "shared"] = ...,
+        hartigan: bool = ...,
         memory_budget_mb: float | None = ...,
     ) -> None: ...
     def get_params(self, deep: bool = ...) -> dict[str, Any]: ...

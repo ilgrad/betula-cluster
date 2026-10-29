@@ -620,6 +620,7 @@ impl<R> core::panic::unwind_safe::RefUnwindSafe for betula_cluster::clustering::
 impl<R> core::panic::unwind_safe::UnwindSafe for betula_cluster::clustering::kmeans::KMeans<R> where alloc::vec::Vec<alloc::vec::Vec<R>>: core::panic::unwind_safe::UnwindSafe, R: core::panic::unwind_safe::UnwindSafe
 pub const betula_cluster::clustering::kmeans::KMEANS_N_INIT: usize
 pub fn betula_cluster::clustering::kmeans::cop_kmeans<R: betula_cluster::types::Real, C: betula_cluster::feature::ClusterFeature<R>>(&[C], usize, &[(usize, usize)], &[(usize, usize)], usize, usize, u64) -> core::result::Result<alloc::vec::Vec<usize>, betula_cluster::clustering::kmeans::ConstraintError>
+pub fn betula_cluster::clustering::kmeans::hartigan<R: betula_cluster::types::Real, C: betula_cluster::feature::ClusterFeature<R>>(&[C], betula_cluster::clustering::kmeans::KMeans<R>, usize) -> betula_cluster::clustering::kmeans::KMeans<R>
 pub fn betula_cluster::clustering::kmeans::kmeans<R: betula_cluster::types::Real, C: betula_cluster::feature::ClusterFeature<R>>(&[C], usize, usize, usize, u64) -> betula_cluster::clustering::kmeans::KMeans<R>
 pub fn betula_cluster::clustering::kmeans::kmeans_auto<R: betula_cluster::types::Real, C: betula_cluster::feature::ClusterFeature<R>>(&[C], usize, usize, usize, usize, u64) -> betula_cluster::clustering::kmeans::KMeans<R>
 pub mod betula_cluster::clustering::kprototypes
@@ -1411,6 +1412,7 @@ pub fn betula_cluster::clustering::gmm_toeplitz_full<R, C>(&[C], usize, usize, u
 pub fn betula_cluster::clustering::gmm_toeplitz_full_auto<R, C>(&[C], usize, usize, usize, u64) -> betula_cluster::clustering::gmm_toeplitz::GmmToeplitz<R> where R: betula_cluster::types::Real, C: betula_cluster::feature::ClusterFeature<R>
 pub fn betula_cluster::clustering::gmm_toeplitz_gs<R, C>(&[C], usize, usize, u64) -> betula_cluster::clustering::gmm_toeplitz::GmmToeplitz<R> where R: betula_cluster::types::Real, C: betula_cluster::feature::ClusterFeature<R>
 pub fn betula_cluster::clustering::gmm_toeplitz_gs_auto<R, C>(&[C], usize, usize, usize, u64) -> betula_cluster::clustering::gmm_toeplitz::GmmToeplitz<R> where R: betula_cluster::types::Real, C: betula_cluster::feature::ClusterFeature<R>
+pub fn betula_cluster::clustering::hartigan<R: betula_cluster::types::Real, C: betula_cluster::feature::ClusterFeature<R>>(&[C], betula_cluster::clustering::kmeans::KMeans<R>, usize) -> betula_cluster::clustering::kmeans::KMeans<R>
 pub fn betula_cluster::clustering::hdbscan<R: betula_cluster::types::Real, C: betula_cluster::feature::ClusterFeature<R>>(&[C], usize, usize) -> betula_cluster::clustering::hdbscan::Hdbscan
 pub fn betula_cluster::clustering::hdbscan_selected<R: betula_cluster::types::Real, C: betula_cluster::feature::ClusterFeature<R>>(&[C], usize, betula_cluster::clustering::hdbscan::Selection, usize, u64) -> betula_cluster::clustering::hdbscan::Hdbscan
 pub fn betula_cluster::clustering::hyperbolic_kmeans<R: betula_cluster::types::Real, C: betula_cluster::feature::ClusterFeature<R>>(&[C], usize, usize, u64) -> betula_cluster::clustering::hyperbolic::HyperbolicKMeans<R>

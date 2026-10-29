@@ -51,7 +51,9 @@ pub use hdbscan::{
 pub use hyperbolic::{
     HyperbolicKMeans, f64_working_radius, hyperbolic_kmeans, merge_increase, project_to_sheet,
 };
-pub use kmeans::{ConstraintError, KMEANS_N_INIT, KMeans, cop_kmeans, kmeans, kmeans_auto};
+pub use kmeans::{
+    ConstraintError, KMEANS_N_INIT, KMeans, cop_kmeans, hartigan, kmeans, kmeans_auto,
+};
 pub use kprototypes::{
     BlockWeights, MixedCf, MixedRows, MixedSchema, kprototypes, nearest_micro, summarize_mixed,
 };

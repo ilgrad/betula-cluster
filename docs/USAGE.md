@@ -74,7 +74,8 @@ MNIST-20k it lifts the median ARI at every budget from 400 to 3 200 leaves, by 0
 and 0.06–0.25 for spectral; it costs up to 0.035 on digits and 0.035 on covtype, whose ARI is near 0
 either way — see *Mass-weighted leaf graphs* in [MATH.md](MATH.md)), `kappa` (the concentration model of
 `method="vmf"`: `"free"`, the default, fits one `κ` per cluster; `"shared"` fits one for all — see
-*A concentration per cluster, and where it costs* below), `rank` (subspace rank `q` for `method="mppca"` and `method="mfa"`, clamped to at
+*A concentration per cluster, and where it costs* below), `hartigan` (end `method="kmeans"` on
+single-leaf moves that lower the inertia — see *Moves Lloyd cannot see* below), `rank` (subspace rank `q` for `method="mppca"` and `method="mfa"`, clamped to at
 most `dim - 1`; `0` makes every `mppca` component spherical and every `mfa` component diagonal), `fuzzifier` (the exponent `m > 1` of
 `method="fuzzy-cmeans"`, default `2.0`; `m → 1⁺` is k-means, `m → ∞` sends every membership to
 `1/k`), `projection` / `projection_dim` / `projection_max_iter` (reduce the leaf centroids to
@@ -88,7 +89,7 @@ k-means/GMM, dendrogram cut for Ward). `threshold="auto"` (dense only) drops the
 often have to guess: a subsample pilot estimates a warm-start absorption radius, so the full fit
 starts near-converged instead of growing the threshold from zero.
 
-**A head-specific keyword handed to a head that does not read it raises.** Twelve of the keywords above
+**A head-specific keyword handed to a head that does not read it raises.** Thirteen of the keywords above
 belong to one family of heads and configure nothing anywhere else, so `rank=8` with `method="ward"`
 is a request the fit was never going to honour:
 
@@ -99,6 +100,7 @@ is a request the fit was never going to honour:
 | `resolution`, `covariance_weight`, `tangent_weight`, `tangent_rank`, `n_iterations` | `leiden`, `leiden-cpm` |
 | `leaf_graph` | `leiden`, `leiden-cpm`, `spectral` |
 | `kappa` | `vmf` |
+| `hartigan` | `kmeans` |
 | `rank` | `mppca`, `mfa` |
 | `fuzzifier` | `fuzzy-cmeans` |
 
@@ -318,6 +320,31 @@ Only the heads whose labels come from an inertia-selected k-means take it — `"
 `fit_constrained`. The EM heads restart too, but they select by likelihood, and moving their count
 1 → 25 was measured to be non-monotone on all three datasets (`bench/RESULTS.md`), so `n_init` on a
 head that would ignore it raises a `ValueError` rather than passing silently.
+
+### Moves Lloyd cannot see — `hartigan=True`
+
+Lloyd stops when every leaf sits with its nearest centre. That is not the same as "no leaf can
+move and lower the inertia": moving a leaf of mass `n` from cluster `A` to `B` also moves both
+centres, and pays off whenever `n·W_B/(W_B+n)·‖μ − c_B‖² < n·W_A/(W_A−n)·‖μ − c_A‖²`. `hartigan=True`
+runs those single-leaf moves after the restarts, until a sweep moves nothing (at most `max_iter`
+sweeps), then ends on Lloyd so `predict`'s nearest-centre rule still holds. The move is exact on a
+summary — a leaf's own spread cancels — and every Hartigan-stable partition is Lloyd-stable, so it
+can only lower the inertia it starts from (Telgarsky & Vattani, AISTATS 2010).
+
+It is a quantiser's option, not a label-recovery one. Point-level SSE gain at `max_leaves=4000`,
+seeds 0/1/2:
+
+| data | `k` | SSE gain | ARI |
+|---|---|---|---|
+| ALOI-27, 110 250 rows | 100 | +0.69 … +1.56 % | unchanged |
+| ALOI-27 | 1 000 | +1.25 … +1.69 % | unchanged |
+| ALOI-64 | 100 | +0.83 … +1.62 % | unchanged |
+| MNIST-20k | 10 | −0.01 … +0.02 % | ±0.006 |
+| covtype-100k | 7 | ±0.00 % | unchanged |
+
+A sweep costs about one unpruned Lloyd pass over the leaves; the fit times above moved within the
+noise of an unquieted machine. Reach for it when the centres are the product — a codebook, IVF
+centroids — at large `k`.
 
 ### Where `xmeans` refuses to split — `method="xmeans"`
 

@@ -576,6 +576,79 @@ fn lloyd_hamerly<R: Real>(
     }
 }
 
+/// Hartigan single-leaf moves from a finished k-means: move leaf `i` from cluster `A` to `B`
+/// whenever that lowers the inertia, until a sweep moves nothing or `max_sweeps` sweeps have run,
+/// then end on Lloyd so the labels are again the nearest centres `predict` reads.
+///
+/// Moving a leaf of mass `n` at mean `μ` changes the inertia by
+/// `n·W_B/(W_B+n)·‖μ − c_B‖² − n·W_A/(W_A−n)·‖μ − c_A‖²` (`W` the cluster masses); the leaf's own
+/// spread cancels, so the move is exact on a summary. Every Hartigan-stable partition is
+/// Lloyd-stable and not the converse (Telgarsky & Vattani 2010), so this can only lower the
+/// inertia of the result it starts from. A leaf that is its cluster's only member never moves.
+pub fn hartigan<R: Real, C: ClusterFeature<R>>(
+    features: &[C],
+    start: KMeans<R>,
+    max_sweeps: usize,
+) -> KMeans<R> {
+    let dim = features[0].dim();
+    let means: Vec<Vec<R>> = features.iter().map(|f| f.mean().to_vec()).collect();
+    let weights: Vec<R> = features.iter().map(|f| f.weight()).collect();
+    let ssd: Vec<R> = features.iter().map(|f| f.ssd()).collect();
+    let KMeans {
+        mut labels,
+        mut centers,
+        ..
+    } = start;
+    let k = centers.len();
+    let mut mass = vec![R::zero(); k];
+    for (i, &l) in labels.iter().enumerate() {
+        mass[l] = mass[l] + weights[i];
+    }
+    for _ in 0..max_sweeps {
+        let mut moved = false;
+        for i in 0..means.len() {
+            let (a, n) = (labels[i], weights[i]);
+            if mass[a] <= n || n <= R::zero() {
+                continue;
+            }
+            let out = n * mass[a] / (mass[a] - n) * sq_euclidean(&means[i], &centers[a]);
+            let mut best = (out, a);
+            for (b, c) in centers.iter().enumerate() {
+                if b == a {
+                    continue;
+                }
+                let cost = n * mass[b] / (mass[b] + n) * sq_euclidean(&means[i], c);
+                if cost < best.0 {
+                    best = (cost, b);
+                }
+            }
+            let (gain_floor, b) = (out - best.0, best.1);
+            // A strict floor relative to the larger cost stops two leaves trading places on
+            // round-off forever.
+            if b == a || gain_floor <= R::epsilon() * R::from_f64(64.0).unwrap() * out {
+                continue;
+            }
+            let (wa, wb) = (mass[a], mass[b]);
+            for d in 0..dim {
+                let x = means[i][d];
+                centers[a][d] = (wa * centers[a][d] - n * x) / (wa - n);
+                centers[b][d] = (wb * centers[b][d] + n * x) / (wb + n);
+            }
+            mass[a] = wa - n;
+            mass[b] = wb + n;
+            labels[i] = b;
+            moved = true;
+        }
+        // The running centres drift from the exact means by round-off; one exact recompute per sweep
+        // keeps the next sweep's gains honest.
+        update_centers(&mut centers, &means, &weights, &labels, dim);
+        if !moved {
+            break;
+        }
+    }
+    lloyd_hamerly(&means, &weights, &ssd, centers, max_sweeps.max(1), dim)
+}
+
 /// Refine `centers` in place of re-seeding: Lloyd from a caller-supplied initialisation, with no
 /// k-means++ draw and no restarts. [`super::xmeans`]'s Improve-Params step needs exactly this —
 /// restarting from a fresh draw would discard the centres the split test just produced.
@@ -1338,5 +1411,58 @@ mod tests {
             (got[0] == got[1], got[2] == got[3], got[0] == got[2]),
             "the weightless feature moved the others: {want:?} vs {got:?}"
         );
+    }
+
+    #[test]
+    fn after_hartigan_no_single_leaf_move_lowers_the_point_sse() {
+        // Uniform points over a square at large k: Lloyd stops at a partition that single moves
+        // can still improve, which is the case the moves exist for. Brute force re-scores every
+        // move of every leaf on the point-level SSE, with the leaf's own spread included.
+        let mut moved_somewhere = false;
+        for seed in 0..6u64 {
+            let mut rng = SplitMix64::new(seed);
+            let pts: Vec<Vec<f64>> = (0..900)
+                .map(|_| vec![10.0 * rng.next_f64(), 10.0 * rng.next_f64()])
+                .collect();
+            let (feats, _) = grid_micros(&pts, 0.4);
+            let lloyd: KMeans<f64> = kmeans(&feats, 25, 100, 1, seed);
+            let before = reference_sse(&feats, &lloyd.labels);
+            let got = hartigan(&feats, lloyd, 100);
+            let after = reference_sse(&feats, &got.labels);
+            assert!(
+                after <= before * (1.0 + 1e-12),
+                "seed {seed}: {before} -> {after}"
+            );
+            assert!(
+                (got.inertia - after).abs() <= 1e-9 * after,
+                "seed {seed}: inertia"
+            );
+            moved_somewhere |= after < before * (1.0 - 1e-9);
+            let mut members = [0usize; 25];
+            got.labels.iter().for_each(|&l| members[l] += 1);
+            for i in 0..feats.len() {
+                if members[got.labels[i]] == 1 {
+                    continue;
+                }
+                for b in 0..25 {
+                    let mut moved = got.labels.clone();
+                    moved[i] = b;
+                    let s = reference_sse(&feats, &moved);
+                    assert!(
+                        s >= after * (1.0 - 1e-9),
+                        "seed {seed}: moving leaf {i} to {b} gives {s} < {after}"
+                    );
+                }
+            }
+            // ...and the labels are the nearest centres, which is what `predict` reads.
+            for (i, f) in feats.iter().enumerate() {
+                let (a, _, _) = nearest_two(f.mean(), &got.centers);
+                assert_eq!(
+                    a, got.labels[i],
+                    "seed {seed}: leaf {i} is not with its nearest centre"
+                );
+            }
+        }
+        assert!(moved_somewhere, "no seed gave Hartigan a move to make");
     }
 }

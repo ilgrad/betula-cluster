@@ -379,6 +379,7 @@ const HEAD_KEYWORDS: &[(&str, &[&str])] = &[
     ("n_iterations", &["leiden", "leiden-cpm"]),
     ("leaf_graph", &["leiden", "leiden-cpm", "spectral"]),
     ("kappa", &["vmf"]),
+    ("hartigan", &["kmeans"]),
     ("rank", &["mppca", "mfa"]),
     ("fuzzifier", &["fuzzy-cmeans"]),
 ];
@@ -550,18 +551,20 @@ fn parse_n_iterations(method: &str, n_iterations: i64) -> PyResult<usize> {
 /// The head settings [`Method`] does not carry: the Leiden pass cap `n_iterations` asks for, the
 /// leaf graph `leaf_graph` names — `"unit"`, one node per leaf as in 1.x, or `"mass"`, the point
 /// graph's quotient (see [`LeafGraph`]) — and the vMF concentration model `kappa` names, `"free"`
-/// as in 1.x or `"shared"` (see [`Kappa`]).
+/// as in 1.x or `"shared"` (see [`Kappa`]) — and whether k-means ends on Hartigan leaf moves.
 fn parse_head_options(
     method: &str,
     n_iterations: i64,
     leaf_graph: &str,
     kappa: &str,
+    hartigan: bool,
 ) -> PyResult<HeadOptions> {
     require_head_reads_its_keywords(
         method,
         &[
             ("leaf_graph", leaf_graph != "unit"),
             ("kappa", kappa != "free"),
+            ("hartigan", hartigan),
         ],
     )?;
     let graph = match leaf_graph {
@@ -586,6 +589,7 @@ fn parse_head_options(
         passes: parse_n_iterations(method, n_iterations)?,
         graph,
         kappa,
+        hartigan,
     })
 }
 
@@ -2168,7 +2172,7 @@ fn run_oneshot<R: Real + Element>(
     resolution = DEFAULT_RESOLUTION, covariance_weight = DEFAULT_COVARIANCE_WEIGHT, tangent_weight = DEFAULT_TANGENT_WEIGHT, tangent_rank = DEFAULT_TANGENT_RANK,
     projection = "none", projection_dim = 64, projection_max_iter = 100, refine = 0, rank = DEFAULT_RANK,
     graph_degree = 0, balance = None, auto_k_max = 0, fuzzifier = DEFAULT_FUZZIFIER, leaf_refit = 0,
-    canonical_order = false, n_iterations = DEFAULT_N_ITERATIONS, leaf_graph = "unit", kappa = "free"
+    canonical_order = false, n_iterations = DEFAULT_N_ITERATIONS, leaf_graph = "unit", kappa = "free", hartigan = false
 ))]
 #[allow(clippy::too_many_arguments)]
 fn fit_predict<'py>(
@@ -2210,6 +2214,7 @@ fn fit_predict<'py>(
     n_iterations: i64,
     leaf_graph: &str,
     kappa: &str,
+    hartigan: bool,
 ) -> PyResult<Bound<'py, PyArray1<i64>>> {
     // Two mutually exclusive ways to set one count: reject the pair instead of picking a winner.
     // Quietly ignoring the argument is how the old `n_jobs` came to read as a thread count.
@@ -2237,7 +2242,7 @@ fn fit_predict<'py>(
         graph_degree,
         fuzzifier,
     )?;
-    let opts = parse_head_options(method, n_iterations, leaf_graph, kappa)?;
+    let opts = parse_head_options(method, n_iterations, leaf_graph, kappa, hartigan)?;
     let nmf_dim = parse_projection(projection, projection_dim, projection_max_iter)?;
     let n_init = parse_n_init(n_init, kind, method)?;
     let max_iter = parse_max_iter(max_iter)?;
@@ -3216,6 +3221,10 @@ struct Betula {
     /// file at its default, like `leaf_graph`, and a model saved before it existed loads as `"free"`.
     #[serde(default = "default_kappa", skip_serializing_if = "is_free_kappa")]
     kappa: String,
+    /// Whether k-means ends on Hartigan leaf moves; absent from the file when off, and a model saved
+    /// before it existed loads as off.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    hartigan: bool,
     /// The point an `f32` tree is built around: every row enters as `f32(x − origin)`, and every
     /// location the estimator reports has it added back. An `f32` leaf mean stops moving once its
     /// weight passes `~2^24·σ/|μ|`, so data far from zero — raw coordinates, kelvin — stalled it
@@ -3757,6 +3766,7 @@ impl Betula {
             self.n_iterations,
             &self.leaf_graph,
             &self.kappa,
+            self.hartigan,
         )?;
         let result = if let Some(t) = &self.state64 {
             Some(t.label_proba(kind, k, mi, ni, seed, akm, passes, nmf))
@@ -3996,7 +4006,8 @@ impl Betula {
         tangent_weight = DEFAULT_TANGENT_WEIGHT, tangent_rank = DEFAULT_TANGENT_RANK, projection = "none", projection_dim = 64,
         projection_max_iter = 100, refine = 0, rank = DEFAULT_RANK, graph_degree = 0, balance = None,
         auto_k_max = 0, fuzzifier = DEFAULT_FUZZIFIER, leaf_refit = 0, canonical_order = false,
-        route_beam = 1, n_iterations = DEFAULT_N_ITERATIONS, leaf_graph = "unit", kappa = "free"
+        route_beam = 1, n_iterations = DEFAULT_N_ITERATIONS, leaf_graph = "unit", kappa = "free",
+        hartigan = false
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -4038,6 +4049,7 @@ impl Betula {
         n_iterations: i64,
         leaf_graph: &str,
         kappa: &str,
+        hartigan: bool,
     ) -> PyResult<Self> {
         let min_samples = parse_min_samples(min_samples)?;
         let kind = parse_method(
@@ -4085,7 +4097,7 @@ impl Betula {
         }
         let (balance, balance_auto) = parse_balance(balance)?;
         parse_n_init(n_init, kind, method)?; // validated here, lowered to the sentinel at use
-        parse_head_options(method, n_iterations, leaf_graph, kappa)?; // lowered at finalize
+        parse_head_options(method, n_iterations, leaf_graph, kappa, hartigan)?; // lowered at finalize
         parse_max_iter(max_iter)?;
         check_tree_shape(branching, leaf_cap)?;
         Ok(Self {
@@ -4139,6 +4151,7 @@ impl Betula {
             n_iterations,
             leaf_graph: leaf_graph.to_owned(),
             kappa: kappa.to_owned(),
+            hartigan,
             origin: None,
         })
     }
@@ -4896,6 +4909,7 @@ impl Betula {
         d.set_item("n_iterations", self.n_iterations)?;
         d.set_item("leaf_graph", &self.leaf_graph)?;
         d.set_item("kappa", &self.kappa)?;
+        d.set_item("hartigan", self.hartigan)?;
         // The projection is stored decomposed — rank, solver flags, sweeps — because the wire format
         // predates the sum type, so reporting it means inverting `projection_spec`. Omitting it is
         // not harmless: `Betula.load` rebuilds the wrapper with `cls(**core.get_params())`, so a

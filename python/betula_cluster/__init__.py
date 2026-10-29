@@ -751,6 +751,7 @@ _DEFAULTS = {
     "n_iterations": 1,
     "leaf_graph": "unit",
     "kappa": "free",
+    "hartigan": False,
     "memory_budget_mb": None,
 }
 _PARAM_NAMES = tuple(_DEFAULTS)
@@ -819,6 +820,7 @@ class Betula:
         n_iterations=1,
         leaf_graph="unit",
         kappa="free",
+        hartigan=False,
         memory_budget_mb=None,
     ):
         self.n_clusters = n_clusters
@@ -935,6 +937,11 @@ class Betula:
         # fit, so neither BIC nor ICL can choose "shared" for you. It changes labels, so it is
         # opt-in. Ignored by every other head.
         self.kappa = kappa
+        # End the k-means head (method="kmeans") on Hartigan single-leaf moves: a leaf moves to
+        # another cluster whenever that lowers the inertia, which Lloyd's nearest-centre rule cannot
+        # see. A lower inertia, not better labels — it pays at large k (codebooks, IVF centroids).
+        # Off by default. Ignored by every other head.
+        self.hartigan = hartigan
         # Subspace rank q of the two subspace heads: each component's covariance is W Wᵀ + σ²I
         # (method="mppca") or W Wᵀ + diag(ψ) (method="mfa") with W of rank q, clamped to at most
         # dim - 1. Ignored by every other head.
