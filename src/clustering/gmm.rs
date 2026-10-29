@@ -1936,4 +1936,126 @@ mod tests {
         // identity fallback that would catch it returns a unit diagonal, not this one.
         assert!(d0 > 1.0 && d1 > 1.0, "the fallback was taken: {lb:?}");
     }
+
+    /// QL-4 / DE-9: does ICL (BIC plus twice the leaf-tied classification entropy) pick a better `k`
+    /// than BIC? Median over seeds 0–4 of the chosen `k` and of the point ARI at that `k`.
+    ///
+    /// `cargo test --release --lib clustering::gmm::tests::measure_icl_against_bic -- --ignored --nocapture`
+    #[test]
+    #[ignore = "measurement harness, not a check"]
+    fn measure_icl_against_bic() {
+        use crate::clustering::testutil::two_moons;
+        type Fixture = fn(&mut SplitMix64) -> (Vec<Vec<f64>>, Vec<usize>, usize);
+        fn squares(rng: &mut SplitMix64) -> (Vec<Vec<f64>>, Vec<usize>, usize) {
+            let mut xs = Vec::new();
+            let mut ys = Vec::new();
+            for (c, (ox, oy)) in [(0.0, 0.0), (3.0, 0.0), (0.0, 3.0)].into_iter().enumerate() {
+                for _ in 0..400 {
+                    xs.push(vec![ox + 2.0 * rng.next_f64(), oy + 2.0 * rng.next_f64()]);
+                    ys.push(c);
+                }
+            }
+            (xs, ys, 3)
+        }
+        let cases: [(&str, Fixture); 6] = [
+            ("3 blobs sep 1.5", |r| {
+                let (x, y) = blobs(r, 300, &[[0.0, 0.0], [1.5, 0.0], [0.0, 1.5]], 0.6);
+                (x, y, 3)
+            }),
+            ("3 blobs sep 3", |r| {
+                let (x, y) = blobs(r, 300, &[[0.0, 0.0], [3.0, 0.0], [0.0, 3.0]], 0.6);
+                (x, y, 3)
+            }),
+            ("5 blobs sep 2", |r| {
+                let c = [[0.0, 0.0], [2.0, 0.0], [0.0, 2.0], [2.0, 2.0], [4.0, 1.0]];
+                let (x, y) = blobs(r, 250, &c, 0.6);
+                (x, y, 5)
+            }),
+            ("3 stretched blobs", |r| {
+                let (mut x, y) = blobs(r, 300, &[[0.0, 0.0], [0.0, 2.5], [0.0, 5.0]], 0.5);
+                for p in &mut x {
+                    p[0] *= 5.0;
+                }
+                (x, y, 3)
+            }),
+            ("3 uniform squares", squares),
+            ("two moons", |r| {
+                let (x, y) = two_moons(r, 400, 0.08);
+                (x, y, 2)
+            }),
+        ];
+        println!(
+            "\n{:>20} {:>5} {:>5} {:>9} {:>9} {:>8} {:>8}",
+            "fixture", "full", "k*", "k BIC", "k ICL", "ARI BIC", "ARI ICL"
+        );
+        for (name, build) in cases {
+            for full in [false, true] {
+                let (mut kb, mut ki, mut ab, mut ai) = (vec![], vec![], vec![], vec![]);
+                let mut k_true = 0;
+                for seed in 0u64..5 {
+                    let mut rng = SplitMix64::new(seed);
+                    let (pts, truth, kt) = build(&mut rng);
+                    k_true = kt;
+                    let (micros, assign) = grid_micros(&pts, 0.25);
+                    let (d, ntot) = (micros[0].dim(), total_weight(&micros));
+                    let mass: Vec<f64> = micros.iter().map(|f| f.weight()).collect();
+                    let mut best_b = (f64::INFINITY, 0usize, vec![]);
+                    let mut best_i = (f64::INFINITY, 0usize, vec![]);
+                    for k in 1..=8usize {
+                        let (ll, resp, labels, p) = if full {
+                            let g = gmm_full(&micros, k, 200, seed);
+                            (
+                                g.loglik,
+                                g.resp,
+                                g.labels,
+                                k * d + k * d * (d + 1) / 2 + (k - 1),
+                            )
+                        } else {
+                            let g = gmm_diagonal(&micros, k, 200, seed);
+                            (g.loglik, g.resp, g.labels, 2 * k * d + (k - 1))
+                        };
+                        let b = bic(ll, p, ntot);
+                        let entropy: f64 = resp
+                            .iter()
+                            .zip(&mass)
+                            .map(|(r, &n)| {
+                                -n * r
+                                    .iter()
+                                    .filter(|&&t| t > 0.0)
+                                    .map(|&t| t * t.ln())
+                                    .sum::<f64>()
+                            })
+                            .sum();
+                        let i = b + 2.0 * entropy;
+                        let per_point: Vec<usize> = assign.iter().map(|&m| labels[m]).collect();
+                        if b < best_b.0 {
+                            best_b = (b, k, per_point.clone());
+                        }
+                        if i < best_i.0 {
+                            best_i = (i, k, per_point);
+                        }
+                    }
+                    kb.push(best_b.1);
+                    ki.push(best_i.1);
+                    ab.push(ari(&best_b.2, &truth));
+                    ai.push(ari(&best_i.2, &truth));
+                }
+                let med_u = |v: &mut Vec<usize>| {
+                    v.sort();
+                    v[2]
+                };
+                let med = |v: &mut Vec<f64>| {
+                    v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                    v[2]
+                };
+                println!(
+                    "{name:>20} {full:>5} {k_true:>5} {:>9} {:>9} {:>8.3} {:>8.3}   BIC k {kb:?} ICL k {ki:?}",
+                    med_u(&mut kb.clone()),
+                    med_u(&mut ki.clone()),
+                    med(&mut ab),
+                    med(&mut ai)
+                );
+            }
+        }
+    }
 }
