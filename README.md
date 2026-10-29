@@ -211,6 +211,9 @@ assert (labels_a == labels_b[np.argsort(perm)]).all()   # equal element for elem
 It buys reproducibility, not accuracy — the median quality change is −0.002 ARI, and the realised
 leaf count stops varying too. Numbers, costs and the two cells where it loses:
 [`bench/RESULTS.md`](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md#the-cure--canonical_ordertrue).
+The guarantee holds on one CPU architecture. The distance kernels sum in a different order on
+x86-64 with AVX2, on aarch64 (NEON) and on the scalar fallback, so a leaf can move by the rounding
+of one sum, and labels across architectures are not promised bit-identical.
 
 Robustness — with the default arrival order, `consensus` clusters several random permutations and
 votes, returning a consensus labelling **plus** a per-point stability score (any partitional head —
