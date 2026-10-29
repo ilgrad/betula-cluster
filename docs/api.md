@@ -45,6 +45,8 @@ The complete typed public surface. Everything below is re-exported from the top-
 
 ::: betula_cluster.ReachabilityPlot
 
+::: betula_cluster.ThresholdTree
+
 ::: betula_cluster.TuneResult
 
 ::: betula_cluster.ConsensusResult

@@ -362,6 +362,76 @@ impl core::marker::UnsafeUnpin for betula_cluster::clustering::dcdist::DcCluster
 impl core::panic::unwind_safe::RefUnwindSafe for betula_cluster::clustering::dcdist::DcClustering
 impl core::panic::unwind_safe::UnwindSafe for betula_cluster::clustering::dcdist::DcClustering
 pub fn betula_cluster::clustering::dcdist::dc_clustering<R: betula_cluster::types::Real, C: betula_cluster::feature::ClusterFeature<R>>(&[C], usize, betula_cluster::clustering::dcdist::DcObjective, usize, usize, u64) -> betula_cluster::clustering::dcdist::DcClustering
+pub mod betula_cluster::clustering::explain
+pub enum betula_cluster::clustering::explain::TreeNode
+pub betula_cluster::clustering::explain::TreeNode::Cut
+pub betula_cluster::clustering::explain::TreeNode::Cut::feature: usize
+pub betula_cluster::clustering::explain::TreeNode::Cut::left: usize
+pub betula_cluster::clustering::explain::TreeNode::Cut::right: usize
+pub betula_cluster::clustering::explain::TreeNode::Cut::threshold: f64
+pub betula_cluster::clustering::explain::TreeNode::Leaf
+pub betula_cluster::clustering::explain::TreeNode::Leaf::cluster: usize
+impl core::clone::Clone for betula_cluster::clustering::explain::TreeNode
+pub fn betula_cluster::clustering::explain::TreeNode::clone(&self) -> betula_cluster::clustering::explain::TreeNode
+impl core::cmp::PartialEq for betula_cluster::clustering::explain::TreeNode
+pub fn betula_cluster::clustering::explain::TreeNode::eq(&self, &betula_cluster::clustering::explain::TreeNode) -> bool
+impl core::fmt::Debug for betula_cluster::clustering::explain::TreeNode
+pub fn betula_cluster::clustering::explain::TreeNode::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for betula_cluster::clustering::explain::TreeNode
+impl core::marker::Freeze for betula_cluster::clustering::explain::TreeNode
+impl core::marker::Send for betula_cluster::clustering::explain::TreeNode
+impl core::marker::Sync for betula_cluster::clustering::explain::TreeNode
+impl core::marker::Unpin for betula_cluster::clustering::explain::TreeNode
+impl core::marker::UnsafeUnpin for betula_cluster::clustering::explain::TreeNode
+impl core::panic::unwind_safe::RefUnwindSafe for betula_cluster::clustering::explain::TreeNode
+impl core::panic::unwind_safe::UnwindSafe for betula_cluster::clustering::explain::TreeNode
+pub fn betula_cluster::clustering::explain::TreeNode::clone(&self) -> betula_cluster::clustering::explain::TreeNode
+impl core::cmp::PartialEq for betula_cluster::clustering::explain::TreeNode
+pub fn betula_cluster::clustering::explain::TreeNode::eq(&self, &betula_cluster::clustering::explain::TreeNode) -> bool
+impl core::fmt::Debug for betula_cluster::clustering::explain::TreeNode
+pub fn betula_cluster::clustering::explain::TreeNode::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for betula_cluster::clustering::explain::TreeNode
+impl core::marker::Freeze for betula_cluster::clustering::explain::TreeNode
+impl core::marker::Send for betula_cluster::clustering::explain::TreeNode
+impl core::marker::Sync for betula_cluster::clustering::explain::TreeNode
+impl core::marker::Unpin for betula_cluster::clustering::explain::TreeNode
+impl core::marker::UnsafeUnpin for betula_cluster::clustering::explain::TreeNode
+impl core::panic::unwind_safe::RefUnwindSafe for betula_cluster::clustering::explain::TreeNode
+impl core::panic::unwind_safe::UnwindSafe for betula_cluster::clustering::explain::TreeNode
+pub struct betula_cluster::clustering::explain::ThresholdTree
+pub betula_cluster::clustering::explain::ThresholdTree::nodes: alloc::vec::Vec<betula_cluster::clustering::explain::TreeNode>
+impl betula_cluster::clustering::explain::ThresholdTree
+pub fn betula_cluster::clustering::explain::ThresholdTree::predict(&self, &[f64]) -> usize
+impl core::clone::Clone for betula_cluster::clustering::explain::ThresholdTree
+pub fn betula_cluster::clustering::explain::ThresholdTree::clone(&self) -> betula_cluster::clustering::explain::ThresholdTree
+impl core::cmp::PartialEq for betula_cluster::clustering::explain::ThresholdTree
+pub fn betula_cluster::clustering::explain::ThresholdTree::eq(&self, &betula_cluster::clustering::explain::ThresholdTree) -> bool
+impl core::fmt::Debug for betula_cluster::clustering::explain::ThresholdTree
+pub fn betula_cluster::clustering::explain::ThresholdTree::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for betula_cluster::clustering::explain::ThresholdTree
+impl core::marker::Freeze for betula_cluster::clustering::explain::ThresholdTree
+impl core::marker::Send for betula_cluster::clustering::explain::ThresholdTree
+impl core::marker::Sync for betula_cluster::clustering::explain::ThresholdTree
+impl core::marker::Unpin for betula_cluster::clustering::explain::ThresholdTree
+impl core::marker::UnsafeUnpin for betula_cluster::clustering::explain::ThresholdTree
+impl core::panic::unwind_safe::RefUnwindSafe for betula_cluster::clustering::explain::ThresholdTree
+impl core::panic::unwind_safe::UnwindSafe for betula_cluster::clustering::explain::ThresholdTree
+pub fn betula_cluster::clustering::explain::ThresholdTree::predict(&self, &[f64]) -> usize
+impl core::clone::Clone for betula_cluster::clustering::explain::ThresholdTree
+pub fn betula_cluster::clustering::explain::ThresholdTree::clone(&self) -> betula_cluster::clustering::explain::ThresholdTree
+impl core::cmp::PartialEq for betula_cluster::clustering::explain::ThresholdTree
+pub fn betula_cluster::clustering::explain::ThresholdTree::eq(&self, &betula_cluster::clustering::explain::ThresholdTree) -> bool
+impl core::fmt::Debug for betula_cluster::clustering::explain::ThresholdTree
+pub fn betula_cluster::clustering::explain::ThresholdTree::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for betula_cluster::clustering::explain::ThresholdTree
+impl core::marker::Freeze for betula_cluster::clustering::explain::ThresholdTree
+impl core::marker::Send for betula_cluster::clustering::explain::ThresholdTree
+impl core::marker::Sync for betula_cluster::clustering::explain::ThresholdTree
+impl core::marker::Unpin for betula_cluster::clustering::explain::ThresholdTree
+impl core::marker::UnsafeUnpin for betula_cluster::clustering::explain::ThresholdTree
+impl core::panic::unwind_safe::RefUnwindSafe for betula_cluster::clustering::explain::ThresholdTree
+impl core::panic::unwind_safe::UnwindSafe for betula_cluster::clustering::explain::ThresholdTree
+pub fn betula_cluster::clustering::explain::imm(&[f64], &[f64], &[usize], &[f64], usize) -> betula_cluster::clustering::explain::ThresholdTree
 pub mod betula_cluster::clustering::fuzzy
 pub struct betula_cluster::clustering::fuzzy::FuzzyCMeans<R: betula_cluster::types::Real>
 pub betula_cluster::clustering::fuzzy::FuzzyCMeans::centers: alloc::vec::Vec<alloc::vec::Vec<R>>
@@ -475,6 +545,15 @@ impl core::marker::Unpin for betula_cluster::clustering::hdbscan::Selection
 impl core::marker::UnsafeUnpin for betula_cluster::clustering::hdbscan::Selection
 impl core::panic::unwind_safe::RefUnwindSafe for betula_cluster::clustering::hdbscan::Selection
 impl core::panic::unwind_safe::UnwindSafe for betula_cluster::clustering::hdbscan::Selection
+pub enum betula_cluster::clustering::TreeNode
+pub betula_cluster::clustering::TreeNode::Cut
+pub betula_cluster::clustering::TreeNode::Cut::feature: usize
+pub betula_cluster::clustering::TreeNode::Cut::left: usize
+pub betula_cluster::clustering::TreeNode::Cut::right: usize
+pub betula_cluster::clustering::TreeNode::Cut::threshold: f64
+pub betula_cluster::clustering::TreeNode::Leaf
+pub betula_cluster::clustering::TreeNode::Leaf::cluster: usize
+impl core::clone::Clone for betula_cluster::clustering::explain::TreeNode
 pub struct betula_cluster::clustering::hdbscan::Hdbscan
 pub betula_cluster::clustering::hdbscan::Hdbscan::labels: alloc::vec::Vec<i64>
 pub betula_cluster::clustering::hdbscan::Hdbscan::n_clusters: usize
@@ -776,6 +855,9 @@ impl<R> core::marker::Unpin for betula_cluster::clustering::vmf::SphericalKMeans
 impl<R> core::marker::UnsafeUnpin for betula_cluster::clustering::vmf::SphericalKMeans<R> where alloc::vec::Vec<alloc::vec::Vec<R>>: core::marker::UnsafeUnpin, R: core::marker::UnsafeUnpin
 impl<R> core::panic::unwind_safe::RefUnwindSafe for betula_cluster::clustering::vmf::SphericalKMeans<R> where alloc::vec::Vec<alloc::vec::Vec<R>>: core::panic::unwind_safe::RefUnwindSafe, R: core::panic::unwind_safe::RefUnwindSafe
 impl<R> core::panic::unwind_safe::UnwindSafe for betula_cluster::clustering::vmf::SphericalKMeans<R> where alloc::vec::Vec<alloc::vec::Vec<R>>: core::panic::unwind_safe::UnwindSafe, R: core::panic::unwind_safe::UnwindSafe
+pub struct betula_cluster::clustering::ThresholdTree
+pub betula_cluster::clustering::ThresholdTree::nodes: alloc::vec::Vec<betula_cluster::clustering::explain::TreeNode>
+impl betula_cluster::clustering::explain::ThresholdTree
 pub fn betula_cluster::clustering::vmf::movmf<R: betula_cluster::types::Real, C: betula_cluster::feature::ClusterFeature<R>>(&[C], usize, usize, u64) -> betula_cluster::clustering::vmf::Movmf<R>
 pub fn betula_cluster::clustering::vmf::movmf_auto<R: betula_cluster::types::Real, C: betula_cluster::feature::ClusterFeature<R>>(&[C], usize, usize, usize, u64) -> betula_cluster::clustering::vmf::Movmf<R>
 pub fn betula_cluster::clustering::vmf::movmf_auto_with<R: betula_cluster::types::Real, C: betula_cluster::feature::ClusterFeature<R>>(&[C], usize, usize, usize, u64, betula_cluster::clustering::vmf::Kappa) -> betula_cluster::clustering::vmf::Movmf<R>
@@ -1332,6 +1414,7 @@ pub fn betula_cluster::clustering::gmm_toeplitz_gs_auto<R, C>(&[C], usize, usize
 pub fn betula_cluster::clustering::hdbscan<R: betula_cluster::types::Real, C: betula_cluster::feature::ClusterFeature<R>>(&[C], usize, usize) -> betula_cluster::clustering::hdbscan::Hdbscan
 pub fn betula_cluster::clustering::hdbscan_selected<R: betula_cluster::types::Real, C: betula_cluster::feature::ClusterFeature<R>>(&[C], usize, betula_cluster::clustering::hdbscan::Selection, usize, u64) -> betula_cluster::clustering::hdbscan::Hdbscan
 pub fn betula_cluster::clustering::hyperbolic_kmeans<R: betula_cluster::types::Real, C: betula_cluster::feature::ClusterFeature<R>>(&[C], usize, usize, u64) -> betula_cluster::clustering::hyperbolic::HyperbolicKMeans<R>
+pub fn betula_cluster::clustering::imm(&[f64], &[f64], &[usize], &[f64], usize) -> betula_cluster::clustering::explain::ThresholdTree
 pub fn betula_cluster::clustering::kmeans<R: betula_cluster::types::Real, C: betula_cluster::feature::ClusterFeature<R>>(&[C], usize, usize, usize, u64) -> betula_cluster::clustering::kmeans::KMeans<R>
 pub fn betula_cluster::clustering::kmeans_auto<R: betula_cluster::types::Real, C: betula_cluster::feature::ClusterFeature<R>>(&[C], usize, usize, usize, usize, u64) -> betula_cluster::clustering::kmeans::KMeans<R>
 pub fn betula_cluster::clustering::kmedoids<R: betula_cluster::types::Real, C: betula_cluster::feature::ClusterFeature<R>>(&[C], usize, usize, u64) -> betula_cluster::clustering::medoid::Pam

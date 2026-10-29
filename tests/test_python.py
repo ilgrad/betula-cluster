@@ -6184,3 +6184,37 @@ def test_a_leaf_budget_too_small_for_k_still_warns_on_the_ultrametric_heads(blob
         betula_cluster.Betula(
             n_clusters=40, method="dc-median", threshold=0.0, max_leaves=50, seed=0
         ).fit(x)
+
+
+@pytest.mark.parametrize("dtype", [np.float64, np.float32])
+def test_explain_tree_reproduces_separable_clusters_in_the_callers_coordinates(blobs, dtype):
+    """Four blobs on a grid need two cuts; the tree then labels every row as the head does. The
+    float32 arm sits far from zero, so a threshold left in the tree's shifted frame would miss."""
+    x, _ = blobs
+    x = (x + 1e4).astype(dtype)
+    est = betula_cluster.Betula(n_clusters=4, method="kmeans", seed=0, max_leaves=200).fit(x)
+    tree = est.explain_tree()
+    np.testing.assert_array_equal(tree.predict(x), est.predict(x))
+    assert sorted(tree.cluster[tree.cluster >= 0]) == [0, 1, 2, 3]
+    assert np.isnan(tree.threshold[tree.cluster >= 0]).all()
+    rules = tree.rules(["east", "north"])
+    assert sorted(rules) == [0, 1, 2, 3]
+    assert all(1 <= len(path) <= 3 for path in rules.values())
+    assert all(cond.split()[0] in ("east", "north") for path in rules.values() for cond in path)
+    assert tree.rules()[0][0].startswith("x")
+
+
+def test_explain_tree_leaves_noise_out(blobs_with_stragglers):
+    x, _ = blobs_with_stragglers
+    est = betula_cluster.Betula(method="hdbscan", seed=0)
+    labels = est.fit_predict(x)
+    assert (labels < 0).any(), "the fixture must leave some leaves as noise"
+    assert set(est.explain_tree().rules()) == set(np.unique(labels[labels >= 0]))
+
+
+@pytest.mark.parametrize("kw", [dict(method="kmeans", normalize=True), dict(method="vmf")])
+def test_explain_tree_refuses_a_tree_built_on_rescaled_rows(blobs, kw):
+    x, _ = blobs
+    est = betula_cluster.Betula(n_clusters=4, **kw).fit(x)
+    with pytest.raises(ValueError, match="rescaled rows"):
+        est.explain_tree()

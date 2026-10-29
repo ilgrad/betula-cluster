@@ -1724,6 +1724,38 @@ does not make the number useless, it makes it a hint. What it is genuinely good 
 comparison: a tree that settled *above twice* the sampled estimate is absorbing points from more
 than one cluster, and `tree_report(X)` says so in `diagnosis`.
 
+## Why is this row in cluster 3? — `explain_tree()`
+
+`explain_tree()` fits an axis-aligned threshold tree with one leaf per cluster to a finished
+clustering: Iterative Mistake Minimization (Moshkovitz, Dasgupta, Rashtchian & Frost, ICML 2020).
+Each cut separates the remaining `cluster_centers_` on one input column, at the threshold that
+sends the least point mass away from its own cluster; those rows are dropped and the cut recurses
+until each side holds one centre. It runs on the leaf microclusters weighed by their mass, so it
+costs `O(k · d · m log m)` in the leaf count `m`, not in `N`, and works for any head with labels:
+noise leaves are left out.
+
+```python
+est = Betula(n_clusters=4, method="kmeans").fit(X)
+tree = est.explain_tree()
+tree.rules(["age", "income", "tenure"])   # {2: ["income > …", "age <= …"], ...}
+tree.predict(X)                           # labels by the tree alone
+```
+
+The tree is a simpler model than the head, not a description of it, and it pays for that. Against
+the `kmeans` head it explains, at `max_leaves=2000`, seeds 0/1/2:
+
+| data | `k` | point SSE, tree / head | rows where the two agree |
+|---|---|---|---|
+| covtype, 10 numeric columns, 50 000 rows, standardised | 7 | 1.099–1.104 | 0.774–0.801 |
+| ALOI-27, 110 250 rows | 20 | 1.142–1.150 | 0.798–0.834 |
+| digits, 1 797 rows | 10 | 1.219–1.251 | 0.647–0.718 |
+
+On digits the head's ARI of 0.66–0.67 falls to 0.32–0.40 under the tree: 64 pixel columns make a
+poor vocabulary for a digit, which is the method's limit and not the summary's. Built on the leaves
+instead of the rows, the same IMM costs +0.0 to +2.2 % more SSE than on every point with the same
+centres. `normalize=True` and the directional and hyperbolic heads raise: their tree is built on
+rescaled rows, so a cut would not be a condition on your columns.
+
 ## A coreset with a guarantee — `export_coreset(size=…)`
 
 `export_coreset()` with no arguments is the streaming summary it always was: every leaf, at its own

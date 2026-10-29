@@ -28,6 +28,7 @@ __all__ = [
     "MapperGraph",
     "ReachabilityPlot",
     "ThresholdEstimate",
+    "ThresholdTree",
     "TuneResult",
     "WindowStream",
     "__version__",
@@ -120,6 +121,18 @@ def consensus(
     vary: Literal["order", "seed", "both"] = ...,
     **fit_kwargs: object,
 ) -> ConsensusResult: ...
+
+@dataclass(frozen=True)
+class ThresholdTree:
+    """An axis-aligned threshold tree with one leaf per cluster."""
+
+    feature: NDArray[np.int64]
+    threshold: NDArray[np.float64]
+    left: NDArray[np.int64]
+    right: NDArray[np.int64]
+    cluster: NDArray[np.int64]
+    def predict(self, X: _FloatArray) -> NDArray[np.int64]: ...
+    def rules(self, feature_names: Sequence[object] | None = ...) -> dict[int, list[str]]: ...
 
 @dataclass(frozen=True)
 class ReachabilityPlot:
@@ -310,6 +323,7 @@ class Betula:
     @property
     def cluster_sizes_(self) -> NDArray[np.float64]: ...
     def assign_microclusters(self, X: _FloatArray) -> NDArray[np.int64]: ...
+    def explain_tree(self) -> ThresholdTree: ...
     def outlier_scores(
         self, X: _FloatArray, metric: _OutlierMetric = ...
     ) -> NDArray[np.float64]: ...

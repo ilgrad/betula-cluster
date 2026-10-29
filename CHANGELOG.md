@@ -23,6 +23,12 @@ All notable changes to this project are documented here. The format follows
   (seeds 0/1/2, 400–3 200 leaves) the median ARI rises by 0.06–0.25 in every cell; digits moves
   −0.022 to +0.019, covtype −0.035 to −0.004 around an ARI near 0, and two moons / two circles stay
   at 1.000. Rust: `clustering::spectral_on`.
+- **`Betula.explain_tree()` → `ThresholdTree`.** An axis-aligned threshold tree with one leaf per
+  cluster, fitted to any finished head by Iterative Mistake Minimization (Moshkovitz et al., ICML
+  2020) over the leaf microclusters, weighed by mass. `rules()` gives each cluster's conditions on the
+  input columns and `predict(X)` labels by the tree alone. Against the `kmeans` head at 2 000 leaves
+  the tree's point SSE is ×1.10 on covtype, ×1.15 on ALOI-27 and ×1.22–1.25 on digits. Labels of
+  every head are unchanged. Rust: `clustering::imm`, `ThresholdTree`, `TreeNode`.
 - **`kappa="shared"` for `method="vmf"`.** One concentration for every component, from the pooled
   resultant length (Hornik & Grün 2014, §3.2; exact on leaves). With a free `κ` per component, one
   low-`κ` component absorbs several topics on text and is still the likelier fit, so neither BIC nor

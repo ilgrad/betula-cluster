@@ -34,7 +34,7 @@ use crate::clustering::{
     auto_min_samples, bregman_agglomerative, bregman_em, bregman_kmeans, cop_kmeans, kprototypes,
     nearest_micro, project_to_sheet, summarize_mixed,
 };
-use crate::clustering::{DcObjective, Kappa, LeafGraph, dc_clustering};
+use crate::clustering::{DcObjective, Kappa, LeafGraph, TreeNode, dc_clustering, imm};
 use crate::clustering::{Reachability, optics};
 use crate::distance::{
     AverageIntercluster, AverageIntracluster, CFDistance, CentroidEuclidean, CentroidManhattan,
@@ -3583,14 +3583,18 @@ impl Betula {
     /// hyperbolic heads read where the origin is, and so do unit rows and an NMF projection, which
     /// needs the rows non-negative. `tests/equivariance.rs` holds the table this follows.
     fn origin_applies(&self) -> bool {
-        let directional = matches!(
+        let nmf = self.nmf_dim.is_some() && !self.projection_svd;
+        self.row_prep() == RowPrep::None && !self.directional() && !nmf
+    }
+
+    /// Whether the head reads rows on the sphere or the Lorentz sheet, whatever `normalize` says.
+    fn directional(&self) -> bool {
+        matches!(
             self.kind,
             Kind::Parametric(
                 Method::SphericalKMeans | Method::Movmf | Method::Watson | Method::Hyperbolic
             )
-        );
-        let nmf = self.nmf_dim.is_some() && !self.projection_svd;
-        self.row_prep() == RowPrep::None && !directional && !nmf
+        )
     }
 
     /// The rows of `data` as this estimator's tree sees them: prepared, and shifted by the origin
@@ -4456,6 +4460,63 @@ impl Betula {
         Ok(Array2::from_shape_vec((rows, dim), centers)
             .expect("centers length is rows*dim")
             .into_pyarray(py))
+    }
+
+    /// The IMM threshold tree ([`imm`]) over the leaf means, weighed by mass, with the leaves'
+    /// labels and `cluster_centers_` as the reference. Node arrays `(feature, threshold, left,
+    /// right, cluster)`, `-1` / `NaN` where a field does not apply; node 0 is the root.
+    #[allow(clippy::type_complexity)]
+    fn _explain_tree(&self) -> PyResult<(Vec<i64>, Vec<f64>, Vec<i64>, Vec<i64>, Vec<i64>)> {
+        if self.row_prep() != RowPrep::None || self.directional() {
+            return Err(PyValueError::new_err(
+                "explain_tree cuts the coordinates the tree was built on, and this configuration \
+                 builds it on rescaled rows (normalize=True, or a directional or hyperbolic head), \
+                 not on yours",
+            ));
+        }
+        let F64Stats {
+            mut centers, dim, ..
+        } = self.cluster_stats_any()?;
+        let F64Stats {
+            centers: mut means,
+            weights,
+            ..
+        } = self.leaf_stats_any()?;
+        self.to_data_frame(&mut centers);
+        self.to_data_frame(&mut means);
+        let labels = self.labels.as_ref().expect("cluster_stats_any checked it");
+        let (mut pts, mut w, mut y) = (Vec::new(), Vec::new(), Vec::new());
+        for (j, &l) in labels.iter().enumerate() {
+            if l >= 0 {
+                pts.extend_from_slice(&means[j * dim..(j + 1) * dim]);
+                w.push(weights[j]);
+                y.push(l as usize);
+            }
+        }
+        if centers.is_empty() {
+            return Err(PyValueError::new_err(
+                "every leaf is noise, so there is no cluster to explain",
+            ));
+        }
+        let tree = imm(&pts, &w, &y, &centers, dim);
+        let mut out = (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        for node in &tree.nodes {
+            let (f, t, l, r, c) = match *node {
+                TreeNode::Cut {
+                    feature,
+                    threshold,
+                    left,
+                    right,
+                } => (feature as i64, threshold, left as i64, right as i64, -1),
+                TreeNode::Leaf { cluster } => (-1, f64::NAN, -1, -1, cluster as i64),
+            };
+            out.0.push(f);
+            out.1.push(t);
+            out.2.push(l);
+            out.3.push(r);
+            out.4.push(c);
+        }
+        Ok(out)
     }
 
     /// Macro-cluster RMS radius — `(n_clusters,)`; requires a finalized clustering.

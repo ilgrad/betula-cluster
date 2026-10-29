@@ -48,6 +48,7 @@ __all__ = [
     "MapperGraph",
     "ReachabilityPlot",
     "ThresholdEstimate",
+    "ThresholdTree",
     "TuneResult",
     "WindowStream",
     "__version__",
@@ -242,6 +243,49 @@ class Coreset:
             return 0.0
         rho = max(alpha * self.offset / self.reference_cost, 0.0)
         return 4.0 * rho**0.5 + 4.0 * rho
+
+
+@dataclass(frozen=True)
+class ThresholdTree:
+    """An axis-aligned threshold tree with one leaf per cluster — :meth:`Betula.explain_tree`.
+
+    Node ``0`` is the root. A cut node sends a row with ``X[:, feature] <= threshold`` to ``left``
+    and every other row to ``right``; a leaf node assigns ``cluster``. Fields that do not apply to a
+    node are ``-1`` (``NaN`` for ``threshold``).
+    """
+
+    feature: np.ndarray  # (n_nodes,) int64
+    threshold: np.ndarray  # (n_nodes,) float64
+    left: np.ndarray  # (n_nodes,) int64
+    right: np.ndarray  # (n_nodes,) int64
+    cluster: np.ndarray  # (n_nodes,) int64
+
+    def predict(self, X) -> np.ndarray:
+        """The cluster of the leaf each row of ``X`` reaches."""
+        x = np.asarray(X, dtype=np.float64)
+        node = np.zeros(len(x), dtype=np.int64)
+        active = self.cluster[node] < 0
+        while active.any():
+            at = node[active]
+            go_left = x[active, self.feature[at]] <= self.threshold[at]
+            node[active] = np.where(go_left, self.left[at], self.right[at])
+            active = self.cluster[node] < 0
+        return self.cluster[node]
+
+    def rules(self, feature_names=None) -> dict[int, list[str]]:
+        """Each cluster's path from the root as conditions, e.g. ``{2: ["x3 > 0.41", ...]}``."""
+        name = (lambda f: f"x{f}") if feature_names is None else (lambda f: str(feature_names[f]))
+        out: dict[int, list[str]] = {}
+        stack: list[tuple[int, list[str]]] = [(0, [])]
+        while stack:
+            node, path = stack.pop()
+            if self.cluster[node] >= 0:
+                out[int(self.cluster[node])] = path
+                continue
+            f, t = name(int(self.feature[node])), float(self.threshold[node])
+            stack.append((int(self.left[node]), [*path, f"{f} <= {t:.6g}"]))
+            stack.append((int(self.right[node]), [*path, f"{f} > {t:.6g}"]))
+        return out
 
 
 @dataclass(frozen=True)
@@ -1233,6 +1277,21 @@ class Betula:
     def cluster_centers_(self):
         """Macro-cluster centroids — ``(n_clusters, dim)``; requires a finalized clustering."""
         return self._require_fit().cluster_centers_
+
+    def explain_tree(self) -> ThresholdTree:
+        """An axis-aligned threshold tree that explains this clustering, one leaf per cluster.
+
+        Iterative Mistake Minimization (Moshkovitz, Dasgupta, Rashtchian & Frost, ICML 2020) over
+        the leaf microclusters: each cut separates the remaining ``cluster_centers_`` on one input
+        coordinate and sends the least point mass away from its own cluster. ``tree.predict(X)``
+        labels rows by the tree alone and ``tree.rules()`` gives each cluster's conditions; where
+        the two disagree with ``predict``, the tree is the simpler model, not the fitted one.
+        Noise leaves are left out. Raises for ``normalize=True`` and the directional and hyperbolic
+        heads, whose tree is built on rescaled rows.
+        """
+        return ThresholdTree(
+            *(np.asarray(a) for a in self._require_fit()._explain_tree())  # type: ignore[arg-type]
+        )
 
     @property
     def cluster_radii_(self):

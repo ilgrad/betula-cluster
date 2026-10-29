@@ -280,6 +280,13 @@ A capability-by-capability reference. For runnable code see [`USAGE.md`](USAGE.m
   weight, so on a summary, where an outlier is a low-mass leaf, it spends its budget isolating strays
   (`[6297, 2, 1, 0]` rows at `k = 6` on the noise fixture). Tables in
   [`docs/USAGE.md`](https://github.com/ilgrad/betula-cluster/blob/main/docs/USAGE.md).
+- **Explainable clustering** (`explain_tree()` → `ThresholdTree`) — an axis-aligned threshold tree
+  with one leaf per cluster, fitted to any finished head by Iterative Mistake Minimization
+  (Moshkovitz et al., ICML 2020) over the leaf microclusters, mass-weighted. `rules()` gives each
+  cluster's conditions on the input columns; `predict(X)` labels by the tree alone. Against the
+  `kmeans` head it explains, at 2 000 leaves, seeds 0/1/2: point SSE ×1.10 (covtype, 10 numeric
+  columns, k = 7), ×1.14–1.15 (ALOI-27, k = 20), ×1.22–1.25 (digits, k = 10); the tree agrees with
+  the head on 0.77–0.80, 0.80–0.83 and 0.65–0.72 of the rows.
 - **OPTICS reachability plot** (`reachability()` → `ReachabilityPlot`) — the density *diagnostic*
   over the microclusters: one sweep position per leaf, with `core_distances` and per-leaf `weights`
   alongside, and `labels_at(ε)` for the DBSCAN\* cut. It is not an approximation of the HDBSCAN head
