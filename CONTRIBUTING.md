@@ -61,6 +61,16 @@ Floating-point addition does not associate, so a work-stealing fold makes the an
 how the threads interleaved. It is invisible at one thread, which is why `cargo test` cannot see it,
 and it shipped once in `nmf.rs`. CI runs this as the `threads` job.
 
+When a PR adds a regression test, check that it fails without the fix:
+
+```bash
+python scripts/revert_check.py src/file.rs "<fixed text>" "<broken text>" -- cargo test --lib <filter>
+```
+
+A test that passes both before and after a fix guards nothing. The script refuses unless the old
+text occurs exactly once, restores the file whatever the command does, and exits 1 when the test
+still passes under the mutation.
+
 When a PR adds or edits a hard-coded reference table (`watson.rs` `GOLDEN`, the `vmf.rs` asymptotic
 fixture, `stats.rs` `CDF_TABLE` / `QUANTILE_TABLE`):
 
