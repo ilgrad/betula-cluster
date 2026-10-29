@@ -633,8 +633,11 @@ Reading it honestly:
   0.335 on 2026-09-10. **It reads 0.271 now** (seeds 0.223 / 0.301 / 0.271), and the whole move is
   `32aa279`, which builds the approximate k-NN graph at twice its degree and cuts it back: an A/B of
   that commit against its parent reproduces both medians seed for seed. The change raised the graph's
-  recall of the true 10 nearest neighbours on MNIST leaves, and the cell went down. Why a more
-  accurate graph scores lower here is not measured; it is recorded as a loss of this edition. The
+  recall of the true 10 nearest neighbours on MNIST leaves, and the cell went down. The new graph
+  behaves as the exact one: across the 2 048-leaf switch between them there is no step (median of
+  seeds 0/1/2: 0.26–0.27 on the exact graph at 1 900–2 000 leaves, 0.28 on the approximate one at
+  2 150, `local/scratch/spec271/`). So nothing broke; the older, lower-recall graph scored higher on
+  this dataset than the exact neighbourhoods do. It is recorded as a loss of this edition. The
   covtype cell moved with it, 0.058 → 0.056, inside its spread. The budget dependence is documented
   in [`docs/USAGE.md`](https://github.com/ilgrad/betula-cluster/blob/main/docs/USAGE.md); the opt-in
   `leaf_graph="mass"` (`[Unreleased]`) raised this head's median MNIST ARI by 0.06–0.25 across
