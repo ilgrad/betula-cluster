@@ -2562,6 +2562,16 @@ impl<R: Real> TreeState<R> {
         }
     }
 
+    /// [`CFTree::scatter_residual`] for whichever feature model this state holds.
+    fn scatter_residual(&self) -> Option<f64> {
+        match self {
+            TreeState::Spherical(t) => t.scatter_residual(),
+            TreeState::Diagonal(t) => t.scatter_residual(),
+            TreeState::Full(t) => t.scatter_residual(),
+            TreeState::Fd(t) => t.scatter_residual(),
+        }
+    }
+
     fn threshold(&self) -> f64 {
         match self {
             TreeState::Spherical(t) => t.threshold().to_f64().unwrap(),
@@ -4484,6 +4494,18 @@ impl Betula {
             .map(|t| t.threshold())
             .or_else(|| self.state32.as_ref().map(|t| t.threshold()))
             .unwrap_or(0.0)
+    }
+
+    /// How far the leaf summaries have drifted from the rows they summarise, in units of the
+    /// scatter they hold ([`CFTree::scatter_residual`]). `None` before a fit, and for a tree loaded
+    /// from a file written before the row moments were kept.
+    #[getter]
+    fn scatter_residual_(&self) -> Option<f64> {
+        match (&self.state64, &self.state32) {
+            (Some(t), _) => t.scatter_residual(),
+            (_, Some(t)) => t.scatter_residual(),
+            (None, None) => None,
+        }
     }
 
     /// Microcluster (leaf) centroids — `(n_microclusters, dim)`.

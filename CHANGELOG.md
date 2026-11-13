@@ -62,6 +62,17 @@ All notable changes to this project are documented here. The format follows
   mean ARI over 15 draws per cell rises by 0.02–0.07 at 500 leaves and by 0.05–0.15 at 2 000. The
   two keywords go together and only with `method="hyperbolic"`; the default tree is unchanged.
   Rust: `distance::LorentzCentroid`.
+- **`tree_report()["scatter_residual"]`, a check on the leaves' arithmetic.** The CF-tree now keeps
+  the mean `x̄` and total scatter `T` of the rows it was given in `float64`, and the report reads the
+  leaves against them: `(Σⱼ[Sⱼ + nⱼ‖μⱼ − x̄‖²] − T) / ΣⱼSⱼ`, zero for any exact summary
+  (König–Huygens). It finds a `float32` leaf mean that has stopped moving. 1.5.0 removed the global
+  offset, but a leaf far from the median still stalls past `~2²⁴·σ/|μ − o|` rows. Healthy trees read
+  ≤ 3.6·10⁻⁶ (`float32`) and ≤ 3.1·10⁻¹⁰ (`float64`) on digits, covtype-50k and MNIST-10k. Stalled
+  leaves read 0.86 and up, and `diagnosis` reports a value above 0.01. The tree keeps `d + 2` more
+  floats and updates them once per row: on a single-threaded k-means fit that retires 1.1 % more
+  instructions at `d = 2` (10⁶ rows) and 3.0 % more at `d = 50` (2·10⁵ rows). Labels are unchanged
+  in all three cases, `float32` included. Model files carry the moments, and older files load and
+  read `None`. Rust: `CFTree::scatter_residual`.
 
 ### Fixed
 - **USAGE no longer reads the hyperbolic head's 0.14 ARI drift under a boost as geometry.** At 500

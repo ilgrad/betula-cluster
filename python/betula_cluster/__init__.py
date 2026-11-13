@@ -1370,6 +1370,13 @@ class Betula:
         estimate is **advisory**: it assumes well-separated, near-spherical clusters of comparable
         size, and ``diagnosis`` names every one of those assumptions the data breaks. ``max_leaves``
         remains the knob that binds — the threshold is what the rebuild derives from it.
+
+        ``scatter_residual`` checks the leaves' arithmetic rather than their layout. The tree keeps
+        the mean and total scatter of the rows it was given in float64, and the leaves must add up
+        to them (König–Huygens). The value is the gap, in units of the scatter inside the leaves:
+        zero to rounding when the summary is exact, far from zero when float32 leaf means stopped
+        moving. It is ``None`` for a model saved before the rows were tracked, and when no leaf
+        holds any scatter (every leaf a single distinct row).
         """
         est = self._require_fit()
         weights = np.asarray(est.microcluster_weights_, dtype=np.float64)
@@ -1430,6 +1437,20 @@ class Betula:
             report["diagnosis"].append(
                 "half the leaves hold a single point and the budget is under half spent: the "
                 "threshold is too small to compress anything, so the summary is the data."
+            )
+        residual = est.scatter_residual_
+        report["scatter_residual"] = residual
+        # Healthy trees read at most 3.6e-6 (float32) and 3.1e-10 (float64) on digits, covtype-50k
+        # and mnist-10k, raw and standardized, at 300 and 2000 leaves, in both insertion orders, and
+        # 1.1e-4 (float32) on blobs whose leaves sit 120 leaf widths apart; stalled float32 leaves
+        # read 0.86 and up, and 0.10-4.7 on raw GPS rows before 1.5.0 built float32 trees around
+        # the data's median.
+        if residual is not None and abs(residual) > 0.01:
+            report["diagnosis"].append(
+                f"the leaves account for {abs(residual):.3g}x their own within-leaf scatter "
+                f"{'more' if residual > 0 else 'less'} than the rows hold: float32 leaf means "
+                "stop moving once a leaf passes ~2^24·σ/|μ| rows, and these have. Fit on float64 "
+                "input."
             )
         if X is not None:
             estimate = estimate_threshold(X, **estimate_kwargs)

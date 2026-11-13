@@ -28,6 +28,54 @@ struct Node<C> {
     parent: Option<usize>,
 }
 
+/// Weight, mean and total scatter of a set of rows, accumulated in `f64` whatever the tree's `R`.
+#[derive(Clone, Debug)]
+#[cfg_attr(feature = "persistence", derive(serde::Serialize, serde::Deserialize))]
+struct RowMoments {
+    weight: f64,
+    mean: Vec<f64>,
+    scatter: f64,
+}
+
+impl RowMoments {
+    fn new(dim: usize) -> Self {
+        Self {
+            weight: 0.0,
+            mean: vec![0.0; dim],
+            scatter: 0.0,
+        }
+    }
+
+    /// Welford's update for one unit-weight row.
+    fn push<R: Real>(&mut self, x: &[R]) {
+        self.weight += 1.0;
+        let w = self.weight;
+        for (m, &xi) in self.mean.iter_mut().zip(x) {
+            let xi = xi.to_f64().unwrap_or(f64::NAN);
+            let d = xi - *m;
+            *m += d / w;
+            self.scatter += d * (xi - *m);
+        }
+    }
+
+    /// Absorb a summary of weight `w` (Chan, Golub & LeVeque's pairwise update).
+    fn merge<R: Real>(&mut self, w: f64, mean: &[R], scatter: f64) {
+        if w <= 0.0 {
+            return;
+        }
+        let total = self.weight + w;
+        let share = w / total;
+        let mut d2 = 0.0;
+        for (m, &o) in self.mean.iter_mut().zip(mean) {
+            let d = o.to_f64().unwrap_or(f64::NAN) - *m;
+            d2 += d * d;
+            *m += d * share;
+        }
+        self.scatter += scatter + d2 * self.weight * share;
+        self.weight = total;
+    }
+}
+
 /// A CF-tree parameterised by feature model `C`, routing distance `D`, and absorption `A`.
 #[cfg_attr(feature = "persistence", derive(serde::Serialize, serde::Deserialize))]
 pub struct CFTree<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> {
@@ -63,6 +111,11 @@ pub struct CFTree<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDista
     /// Inserts since the automatic cap last looked at the mass distribution.
     #[cfg_attr(feature = "persistence", serde(default))]
     inserts_since_auto_check: usize,
+    /// The rows the leaves summarise, accumulated beside them in `f64`: the reference
+    /// [`Self::scatter_residual`] reads the leaves against. `None` on a tree loaded from a file
+    /// written before it existed — the rows are gone, and nothing can rebuild it.
+    #[cfg_attr(feature = "persistence", serde(default))]
+    inserted: Option<RowMoments>,
 }
 
 /// Share of the total mass in a single leaf above which the automatic cap arms.
@@ -154,6 +207,7 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> CF
             balance: None,
             auto_balance: false,
             inserts_since_auto_check: 0,
+            inserted: Some(RowMoments::new(dim)),
         }
     }
 
@@ -281,6 +335,11 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> CF
         for e in &mut self.entries {
             e.decay(factor);
         }
+        if let Some(m) = self.inserted.as_mut() {
+            let f = factor.to_f64().unwrap_or(f64::NAN);
+            m.weight *= f;
+            m.scatter *= f;
+        }
     }
 
     /// Build a tree from `n` row-major points in `flat` as `shards` independent sub-trees over
@@ -365,11 +424,16 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> CF
         let mut tree = Self::new(dim, branching, leaf_cap, threshold, max_leaves, dist, abs);
         tree.set_balance(balance);
         tree.set_auto_balance(auto_balance);
+        let mut seen = RowMoments::new(dim);
         for sub in &subtrees {
+            if let Some(m) = &sub.inserted {
+                seen.merge(m.weight, &m.mean, m.scatter);
+            }
             for cf in sub.leaf_features() {
-                tree.insert_cf(cf.clone());
+                tree.reinsert_cf(cf.clone());
             }
         }
+        tree.inserted = Some(seen);
         tree
     }
 
@@ -383,6 +447,47 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> CF
     /// than a progress indicator.
     pub fn summary(&self) -> &C {
         &self.nodes[self.root].cf
+    }
+
+    /// How far the leaves' own arithmetic has carried them from the rows they summarise:
+    /// `(Σⱼ[Sⱼ + nⱼ‖μⱼ − x̄‖²] − T) / Σⱼ Sⱼ`, where `x̄` and `T` are the mean and total scatter of
+    /// those rows, accumulated beside the tree in `f64`.
+    ///
+    /// The numerator is König–Huygens' identity, zero for *any* partition whose leaf moments are
+    /// exact, so this reads the error of the summary and not its coarseness. At `0.01` the leaves
+    /// account for more scatter than the rows hold by 1 % of the scatter inside them.
+    ///
+    /// An `f32` leaf mean stops moving once its weight passes `~2²⁴·σ/|μ|`, and a tree with such
+    /// leaves reads `0.86` and up in the tests here. A healthy tree reads at rounding level, but
+    /// the level depends on the layout: the identity weighs each leaf mean's error by the leaf's
+    /// distance from `x̄`, so the floor grows as `u·(R/σ)²`, with `R` the spread of the leaf means
+    /// and `σ` a leaf's width. Measured on real data, it is ≤ 3.6e-6 for `f32` and ≤ 3.1e-10 for
+    /// `f64`; on four 3-D blobs 120 leaf widths across, it is 1e-4 for `f32`.
+    ///
+    /// Zero is necessary, not sufficient: errors of opposite sign can cancel. The rows are the
+    /// ones the leaves were given — after a robust insert's clip, and the rows of the last
+    /// [`Self::refit_leaves`] once one has run.
+    ///
+    /// `None` when there is nothing to read against: a tree loaded from a file written before the
+    /// accumulator existed, or one whose leaves hold no scatter at all.
+    pub fn scatter_residual(&self) -> Option<f64> {
+        let rows = self.inserted.as_ref()?;
+        let (mut within, mut between) = (0.0f64, 0.0f64);
+        for e in &self.entries {
+            let w = e.weight().to_f64()?;
+            let d2: f64 = e
+                .mean()
+                .iter()
+                .zip(&rows.mean)
+                .map(|(&m, &c)| {
+                    let d = m.to_f64().unwrap_or(f64::NAN) - c;
+                    d * d
+                })
+                .sum();
+            within += e.ssd().to_f64()?;
+            between += w * d2;
+        }
+        (within > 0.0).then(|| (within + between - rows.scatter) / within)
     }
 
     /// Number of times the tree has been rebuilt (threshold-grown) under the leaf bound.
@@ -601,6 +706,13 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> CF
         if self.entries.is_empty() || n == 0 || self.dim == 0 {
             return;
         }
+        // The pass replaces every entry with the exact statistic of the rows in `flat`, so those
+        // rows, and not the ones inserted, are what the leaves now summarise.
+        let mut seen = RowMoments::new(self.dim);
+        for row in flat[..n * self.dim].chunks_exact(self.dim) {
+            seen.push(row);
+        }
+        self.inserted = Some(seen);
         let mut rebalances = 0usize;
         loop {
             let alive = self.reaccumulate(flat, n, beam);
@@ -656,6 +768,15 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> CF
 
     /// Insert an existing feature (used when rebuilding with a larger threshold).
     pub fn insert_cf(&mut self, cf: C) {
+        if let Some(m) = self.inserted.as_mut() {
+            let w = cf.weight().to_f64().unwrap_or(f64::NAN);
+            m.merge(w, cf.mean(), cf.ssd().to_f64().unwrap_or(f64::NAN));
+        }
+        self.reinsert_cf(cf);
+    }
+
+    /// [`Self::insert_cf`] for a feature whose rows [`Self::scatter_residual`] has already counted.
+    fn reinsert_cf(&mut self, cf: C) {
         let leaf = self.descend_cf(&cf);
         let mut cur = Some(leaf);
         while let Some(n) = cur {
@@ -1101,6 +1222,13 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> CF
         {
             return Err(format!("{name} is not a finite non-negative number"));
         }
+        if let Some(m) = self.inserted.as_ref().filter(|m| m.mean.len() != self.dim) {
+            return Err(format!(
+                "the row moments have {} coordinates in a tree of dimension {}",
+                m.mean.len(),
+                self.dim
+            ));
+        }
         for (i, node) in self.nodes.iter().enumerate() {
             match node.parent {
                 Some(p) if p >= self.nodes.len() => {
@@ -1206,6 +1334,9 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> CF
             self.insert_robust(x, k);
             return;
         }
+        if let Some(m) = self.inserted.as_mut() {
+            m.push(x);
+        }
         let leaf = self.descend(x);
         // Fold the point into every node on the leaf→root path incrementally: a CF push is exact and
         // associative, so each ancestor's CF stays equal to the merge of its subtree — `O(d)` per
@@ -1243,6 +1374,10 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> CF
             .filter(|&e| self.entries[e].weight() >= min_w)
             .map(|e| self.clip_point(x, e, k));
         let xc: &[R] = clipped.as_deref().unwrap_or(x);
+        // The clipped row is the one the leaves see, so it is the one they are read against.
+        if let Some(m) = self.inserted.as_mut() {
+            m.push(xc);
+        }
 
         let mut cur = Some(leaf);
         while let Some(n) = cur {
@@ -2741,6 +2876,189 @@ mod tests {
             "exact total weight"
         );
         assert!(par.num_leaves() >= 1 && par.num_leaves() <= 200);
+    }
+
+    /// The residual reads the leaves against the rows, so through every path that changes what
+    /// the leaves hold an `f64` tree has to read at rounding level.
+    fn assert_exact(residual: Option<f64>) {
+        let r = residual.expect("a tree holding scatter has a residual");
+        assert!(r.abs() < 1e-9, "residual {r}");
+    }
+
+    #[test]
+    fn the_scatter_residual_of_an_f64_tree_survives_rebuilds() {
+        let mut tree: CFTree<f64, Spherical<f64>, _, _> =
+            CFTree::new(3, 8, 8, 0.0, 60, CentroidEuclidean, CentroidEuclidean);
+        for p in pseudo(3000, 3) {
+            tree.insert(&p);
+        }
+        assert!(tree.rebuilds() > 0);
+        assert_exact(tree.scatter_residual());
+    }
+
+    /// A clipped row is what the leaves absorb, so it is what they must be read against: the raw
+    /// row would put the outliers' scatter in `T` and nowhere in the leaves.
+    #[test]
+    fn the_scatter_residual_reads_a_robust_tree_against_the_clipped_rows() {
+        let mut tree: CFTree<f64, Spherical<f64>, _, _> =
+            CFTree::new(3, 8, 8, 1.0, 60, CentroidEuclidean, CentroidEuclidean);
+        tree.set_huber_k(Some(1.0));
+        for (i, mut p) in pseudo(3000, 3).into_iter().enumerate() {
+            if i % 50 == 49 {
+                p[0] += 500.0;
+            }
+            tree.insert(&p);
+        }
+        assert_exact(tree.scatter_residual());
+    }
+
+    #[test]
+    fn the_scatter_residual_decays_with_the_leaves() {
+        let mut tree: CFTree<f64, Spherical<f64>, _, _> =
+            CFTree::new(3, 8, 8, 0.0, 60, CentroidEuclidean, CentroidEuclidean);
+        let pts = pseudo(3000, 3);
+        for p in &pts[..1500] {
+            tree.insert(p);
+        }
+        tree.decay(0.25);
+        for p in &pts[1500..] {
+            tree.insert(&p.iter().map(|v| v + 3.0).collect::<Vec<_>>());
+        }
+        assert_exact(tree.scatter_residual());
+    }
+
+    #[test]
+    fn the_scatter_residual_of_a_sharded_build_counts_every_shard() {
+        let pts = pseudo(3000, 3);
+        let flat: Vec<f64> = pts.iter().flatten().copied().collect();
+        let tree = CFTree::<f64, Spherical<f64>, _, _>::build_sharded(
+            3,
+            16,
+            16,
+            0.0,
+            200,
+            CentroidEuclidean,
+            CentroidEuclidean,
+            &flat,
+            pts.len(),
+            4,
+            None,
+            false,
+            None,
+        );
+        assert_exact(tree.scatter_residual());
+    }
+
+    #[test]
+    fn the_scatter_residual_counts_an_inserted_feature() {
+        let pts = pseudo(3000, 3);
+        let mut tree: CFTree<f64, Spherical<f64>, _, _> =
+            CFTree::new(3, 8, 8, 0.0, 60, CentroidEuclidean, CentroidEuclidean);
+        for p in &pts[..1000] {
+            tree.insert(p);
+        }
+        let mut cf: Spherical<f64> = Spherical::new(3);
+        for p in &pts[1000..] {
+            cf.push(&p.iter().map(|v| v - 20.0).collect::<Vec<_>>(), 1.0);
+        }
+        tree.insert_cf(cf);
+        assert_exact(tree.scatter_residual());
+    }
+
+    /// A refit replaces every entry with the statistic of the rows it is given, so those rows are
+    /// the reference from then on, whatever was inserted before.
+    #[test]
+    fn the_scatter_residual_follows_a_refit_to_its_rows() {
+        let pts = pseudo(3000, 3);
+        let mut tree: CFTree<f64, Spherical<f64>, _, _> =
+            CFTree::new(3, 8, 8, 0.0, 60, CentroidEuclidean, CentroidEuclidean);
+        for p in &pts {
+            tree.insert(p);
+        }
+        let half: Vec<f64> = pts[..1500].iter().flatten().copied().collect();
+        tree.refit_leaves(&half, 1500);
+        assert_exact(tree.scatter_residual());
+    }
+
+    /// An `f32` mean stops moving once `(x − μ)/W` is under half an ulp of `μ`, past `~2²⁴·σ/|μ|`
+    /// rows. Ascending rows, the order `canonical_order` produces along a sorted axis, stall it at
+    /// the first row, `√3·σ` from the truth: the residual reads `1.5` there, and `0.86` over two
+    /// shards that each stall at their own first row. The same rows near zero never stall and must
+    /// read clean.
+    ///
+    /// The sharded build is the case an `f64` tree cannot test: a reference merged from the
+    /// shards' stalled leaves instead of their rows would agree with the leaves and read zero.
+    #[test]
+    fn the_scatter_residual_sees_an_f32_leaf_mean_that_stopped_moving() {
+        let n = 20_000;
+        let residual = |offset: f32, shards: usize| {
+            let rows: Vec<f32> = (0..n)
+                .map(|i| offset + (i as f32 / n as f32 - 0.5) * 12f32.sqrt())
+                .collect();
+            let tree = if shards == 1 {
+                let mut tree: CFTree<f32, Spherical<f32>, _, _> =
+                    CFTree::new(1, 8, 8, 1e9, 10, CentroidEuclidean, CentroidEuclidean);
+                for x in rows.chunks_exact(1) {
+                    tree.insert(x);
+                }
+                tree
+            } else {
+                CFTree::<f32, Spherical<f32>, _, _>::build_sharded(
+                    1,
+                    8,
+                    8,
+                    1e9,
+                    10,
+                    CentroidEuclidean,
+                    CentroidEuclidean,
+                    &rows,
+                    n,
+                    shards,
+                    None,
+                    false,
+                    None,
+                )
+            };
+            assert_eq!(tree.num_leaves(), 1);
+            tree.scatter_residual().unwrap()
+        };
+        for shards in [1, 2] {
+            let far = residual(1.0e4, shards);
+            let near = residual(0.0, shards);
+            assert!(far > 0.5, "{shards} shard(s): a stalled mean read {far}");
+            assert!(
+                near.abs() < 1e-4,
+                "{shards} shard(s): a moving mean read {near}"
+            );
+        }
+    }
+
+    /// A model file written before the accumulator existed has no rows to read against, and has
+    /// to say so rather than read the leaves against an empty set.
+    #[cfg(feature = "persistence")]
+    #[test]
+    fn a_tree_saved_without_row_moments_has_no_scatter_residual() {
+        let mut tree: CFTree<f64, Spherical<f64>, CentroidEuclidean, CentroidEuclidean> =
+            CFTree::new(3, 8, 8, 0.0, 60, CentroidEuclidean, CentroidEuclidean);
+        for p in pseudo(500, 3) {
+            tree.insert(&p);
+        }
+        let mut bytes = Vec::new();
+        ciborium::into_writer(&tree, &mut bytes).unwrap();
+        let back: CFTree<f64, Spherical<f64>, CentroidEuclidean, CentroidEuclidean> =
+            ciborium::from_reader(bytes.as_slice()).unwrap();
+        assert_eq!(back.scatter_residual(), tree.scatter_residual());
+        back.validate().unwrap();
+
+        let mut value: ciborium::Value = ciborium::from_reader(bytes.as_slice()).unwrap();
+        let fields = value.as_map_mut().unwrap();
+        let before = fields.len();
+        fields.retain(|(k, _)| k.as_text() != Some("inserted"));
+        assert_eq!(fields.len(), before - 1);
+        let old: CFTree<f64, Spherical<f64>, CentroidEuclidean, CentroidEuclidean> =
+            value.deserialized().unwrap();
+        old.validate().unwrap();
+        assert_eq!(old.scatter_residual(), None);
     }
 
     /// Sharding splits *ranks*, not rows, so which shard a row lands in is a function of the data.

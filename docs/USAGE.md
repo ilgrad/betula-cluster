@@ -1553,6 +1553,21 @@ What is left is the leaf's distance from the median rather than from zero, `|μ 
 with the number of leaves in low dimension: standardized 2-D data at 4 000 leaves reaches `W*` near
 9·10⁴ rows per leaf. Past that, pass `float64`.
 
+**To check a fitted tree, read `tree_report()["scatter_residual"]`.** The tree keeps the mean `x̄`
+and total scatter `T` of the rows it was given in `float64`, and the leaves must add up to them:
+
+```text
+ρ = (Σⱼ [Sⱼ + nⱼ‖μⱼ − x̄‖²] − T) / Σⱼ Sⱼ
+```
+
+is zero for any exact summary (König–Huygens), whatever the partition. On digits, covtype-50k and
+MNIST-10k, raw and standardized, at 300 and 2 000 leaves, it reads at most 3.6·10⁻⁶ for a `float32`
+tree and 3.1·10⁻¹⁰ for a `float64` one. Stalled leaf means read 0.86 and up. Above 0.01,
+`diagnosis` says so. The identity weighs each leaf mean's rounding by the leaf's distance from `x̄`,
+so leaves spread over many widths of a leaf read higher without stalling: 1.1·10⁻⁴ for `float32`
+on blobs 120 leaf widths apart. A model saved before 1.6 has no row moments and reads `None`. Rust:
+`CFTree::scatter_residual`.
+
 Only a head whose partition ignores a translation of the data gets an origin. The directional heads
 (`spherical-kmeans`, `vmf`, `watson`), `hyperbolic`, `normalize=True` and the NMF projections read
 where zero is, so their `float32` trees keep `o = 0` and the bound above as it stands; so do sparse

@@ -2149,6 +2149,43 @@ def test_tree_report_adds_the_abirch_estimate_when_given_the_data():
     assert "leaves are absorbing points from more than one cluster" in " ".join(report["diagnosis"])
 
 
+@pytest.mark.parametrize(("dtype", "floor"), [(np.float32, 1e-3), (np.float64, 1e-9)])
+def test_tree_report_reads_a_healthy_tree_at_rounding_level(dtype, floor):
+    # The float32 floor is 1.1e-4 here, not the 4e-6 of real data: the identity weighs a leaf
+    # mean's rounding by its distance from the grand mean, and these leaves sit 120 widths apart.
+    rows = _spaced_blobs(n=400).astype(dtype)
+    report = betula_cluster.Betula(n_clusters=4, max_leaves=40, seed=0).fit(rows).tree_report()
+    assert abs(report["scatter_residual"]) < floor
+    assert "stop moving" not in " ".join(report["diagnosis"])
+
+
+def _stalling_rows():
+    # One cluster at zero, where the float32 origin lands (the lower median), and one 1e4 away fed
+    # in ascending order, so its leaf means stall at their first rows instead of near their truth.
+    rng = np.random.default_rng(0)
+    near = rng.normal(0.0, 1.0, (5000, 1))
+    far = np.sort(rng.normal(0.0, 1.0, (5000, 1)), axis=0) + 1.0e4
+    return np.vstack([near, far])
+
+
+def test_tree_report_flags_float32_leaf_means_that_stopped_moving():
+    rows = _stalling_rows()
+    stalled = betula_cluster.Betula(n_clusters=2, max_leaves=8, seed=0).fit(rows.astype(np.float32))
+    exact = betula_cluster.Betula(n_clusters=2, max_leaves=8, seed=0).fit(rows)
+    assert abs(stalled.tree_report()["scatter_residual"]) > 1.0
+    assert "stop moving" in " ".join(stalled.tree_report()["diagnosis"])
+    assert abs(exact.tree_report()["scatter_residual"]) < 1e-4
+
+
+def test_scatter_residual_survives_save_and_load(tmp_path):
+    rows = _stalling_rows().astype(np.float32)
+    est = betula_cluster.Betula(n_clusters=2, max_leaves=8, seed=0).fit(rows)
+    path = str(tmp_path / "m.betula")
+    est.save(path)
+    back = betula_cluster.Betula.load(path)
+    assert back.tree_report()["scatter_residual"] == est.tree_report()["scatter_residual"]
+
+
 def _gap_fixture(kind, seed=0):
     rng = np.random.default_rng(seed)
     if kind == "blobs":
