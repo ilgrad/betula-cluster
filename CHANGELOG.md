@@ -73,6 +73,16 @@ All notable changes to this project are documented here. The format follows
   instructions at `d = 2` (10⁶ rows) and 3.0 % more at `d = 50` (2·10⁵ rows). Labels are unchanged
   in all three cases, `float32` included. Model files carry the moments, and older files load and
   read `None`. Rust: `CFTree::scatter_residual`.
+- **`graph_degree` for `method="leiden"` / `"leiden-cpm"`.** Leiden built its leaf graph by an exact
+  scan, `O(m²·d)` work and `O(m²)` memory at every leaf count. `graph_degree > 0` finds the
+  neighbours by the beam-search index `spectral` switches to past 2 048 leaves, at no fewer than the
+  exact graph keeps. On MNIST-20k the fit retires 2.9× fewer instructions at 3 966 leaves, 5.9× at
+  7 826 and 10.8× at 14 937, where its peak memory falls from 2.4 GB to 471 MB. The partition moves
+  about as far as another Leiden seed moves it: exact against indexed agree at ARI 0.36–0.66 on
+  MNIST-20k, exact against itself under another seed at 0.41–0.69. The median ARI against the labels
+  moves −0.017 to −0.022 on MNIST-20k (924–7 505 leaves), +0.002 / +0.006 on digits and at most
+  0.001 on covtype-20k (seeds 0/1/2). `0` stays the default, and its labels are unchanged (12
+  digests, spectral's past-2 048 graph included).
 
 ### Fixed
 - **USAGE no longer reads the hyperbolic head's 0.14 ARI drift under a boost as geometry.** At 500

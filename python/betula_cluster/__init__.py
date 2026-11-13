@@ -964,7 +964,9 @@ class Betula:
         # Out-degree of the proximity graph the hdbscan head takes its MST over. 0 (default) uses
         # the exact complete graph, which is O(m²) in the leaf count and is what makes a large
         # max_leaves unaffordable there. Any positive value is a floor: the head raises it to
-        # whatever degree min_samples needs in leaves. Ignored by every other head.
+        # whatever degree min_samples needs in leaves. For leiden / leiden-cpm a positive value
+        # finds the leaf graph's neighbours by the same index instead of an exact O(m²) scan, at no
+        # fewer than the exact graph keeps. Ignored by every other head.
         self.graph_degree = graph_degree
         # Ceiling the n_clusters=0 search is bounded by; 0 keeps the per-head default. The sweeps
         # refit at every candidate k, so their cost is quadratic in it and the default stays at 20;

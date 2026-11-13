@@ -56,7 +56,9 @@ distance at 0 and HDBSCAN\* degenerates to single linkage; `scikit-learn-contrib
 implementation that excludes the point, where the same number means one neighbour more),
 `min_cluster_size`, `graph_degree` (for `method="hdbscan"`, the out-degree of the proximity graph the
 density head runs on; `0` = the exact complete graph, a positive value is a **floor** the head raises
-to whatever `min_samples` needs — see *Graph-indexing the density head* below), `resolution` (Leiden γ — granularity for `method="leiden"` / `"leiden-cpm"`, higher
+to whatever `min_samples` needs — see *Graph-indexing the density head* below; for `"leiden"` /
+`"leiden-cpm"`, a positive value builds the leaf graph on the same index instead of by an exact scan),
+`resolution` (Leiden γ — granularity for `method="leiden"` / `"leiden-cpm"`, higher
 ⇒ more communities), `covariance_weight` (Leiden β — a log-Euclidean covariance/shape term in the
 affinity, `feature="full"`; `0` = off, the centroid-only default), `tangent_weight` / `tangent_rank`
 (Leiden γ — a Grassmann tangent-subspace term of rank `tangent_rank` for manifold-aware communities,
@@ -96,7 +98,8 @@ is a request the fit was never going to honour:
 
 | keyword | read by |
 |---|---|
-| `min_samples`, `graph_degree` | `hdbscan`, `dc-center`, `dc-median` |
+| `min_samples` | `hdbscan`, `dc-center`, `dc-median` |
+| `graph_degree` | `hdbscan`, `dc-center`, `dc-median`, `leiden`, `leiden-cpm` |
 | `min_cluster_size` | `hdbscan` |
 | `resolution`, `covariance_weight`, `tangent_weight`, `tangent_rank`, `n_iterations` | `leiden`, `leiden-cpm` |
 | `leaf_graph` | `leiden`, `leiden-cpm`, `spectral` |
@@ -228,10 +231,19 @@ answer.
 
 `n_clusters=0` auto-selects `k` for the parametric heads; `leiden` / `hdbscan` always discover it
 (`leiden` reads the count off the graph — tune granularity with `resolution` γ, higher ⇒ more).
-Leiden builds its leaf graph by an exact nearest-neighbour scan at every size, `O(m²·d)` in the leaf
-count `m`: unlike `spectral`, it has no approximate graph past 2 048 leaves, so doubling
-`max_leaves` quadruples its cost (retired instructions ×4.0–4.2 per doubling from 900 to 7 400
-leaves).
+Leiden builds its leaf graph by an exact nearest-neighbour scan by default, `O(m²·d)` in the leaf
+count `m` and `O(m²)` in memory, so doubling `max_leaves` quadruples its cost (retired instructions
+×4.0–4.2 per doubling from 900 to 7 400 leaves). `graph_degree > 0` finds the neighbours by the
+beam-search index `spectral` switches to past 2 048 leaves, at no fewer than the exact graph keeps
+(10 per leaf past 100 leaves), so `graph_degree=1` asks for the exact graph's degree. On MNIST-20k the
+fit then retires 5.1·10⁹ instead of 1.5·10¹⁰ instructions at 3 966 leaves, 8.9·10⁹ instead of
+5.2·10¹⁰ at 7 826 and 1.7·10¹⁰ instead of 1.8·10¹¹ at 14 937, and peaks at 471 MB instead of
+2.4 GB there. A beam search can miss a true neighbour, so the partition moves, about as far as
+another Leiden seed moves it. Over seeds 0/1/2 the exact partition agrees with the indexed one at
+ARI 0.36 / 0.66 / 0.63 on MNIST-20k at 924 / 3 847 / 7 505 leaves, and with itself under another
+seed at 0.41 / 0.66 / 0.69. The median ARI against the digit labels moves 0.255 → 0.238,
+0.468 → 0.446 and 0.492 → 0.472. On digits it moves +0.002 / +0.006, and on covtype-20k by at
+most 0.001. It is opt-in until 2.0 for that reason.
 `scale-space` is quadratic in the leaf count too, `O(scales · iterations · m²·d)`, and its constant is
 the largest of any head: on 16-dimensional data it retired 1.1·10¹¹ instructions at 900 leaves,
 2.1·10¹² at 3 800 and 1.2·10¹³ at 7 400 — the last about 25 minutes on one thread. Keep it at

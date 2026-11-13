@@ -1550,6 +1550,29 @@ def test_hdbscan_graph_degree_is_a_floor_not_a_ceiling(blobs):
     assert ari(wide, y) > 0.99  # and a wide one recovers what the exact complete graph finds
 
 
+def test_leiden_graph_degree_tracks_the_exact_partition(blobs):
+    """`graph_degree > 0` finds the Leiden leaf graph's neighbours by the beam-search index. Where
+    the neighbours are unambiguous the index finds the same ones, so the partition stays put."""
+    x, _ = blobs
+    kwargs = dict(method="leiden", threshold=0.0, max_leaves=300, seed=1)
+    exact = betula_cluster.Betula(**kwargs).fit_predict(x)
+    graph = betula_cluster.Betula(graph_degree=1, **kwargs).fit_predict(x)
+    assert n_labels(graph) == n_labels(exact)
+    assert ari(graph, exact) > 0.99
+
+
+def test_leiden_graph_degree_is_a_floor_not_a_ceiling(blobs):
+    """The index never keeps fewer neighbours than the exact graph does (10 here), so two requests
+    under that land on one graph, and a wider one is honoured."""
+    x, _ = blobs
+    kwargs = dict(method="leiden", threshold=0.0, max_leaves=300, seed=1)
+    one = betula_cluster.fit_predict(x, graph_degree=1, **kwargs)
+    two = betula_cluster.fit_predict(x, graph_degree=2, **kwargs)
+    wide = betula_cluster.fit_predict(x, graph_degree=64, **kwargs)
+    assert np.array_equal(one, two)
+    assert not np.array_equal(one, wide)
+
+
 def test_hdbscan_graph_degree_roundtrips_through_get_params():
     est = betula_cluster.Betula(method="hdbscan", graph_degree=24)
     assert est.get_params()["graph_degree"] == 24

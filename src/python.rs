@@ -395,7 +395,10 @@ const UNTIL_STABLE_PASSES: usize = 100;
 const HEAD_KEYWORDS: &[(&str, &[&str])] = &[
     ("min_samples", &["hdbscan", "dc-center", "dc-median"]),
     ("min_cluster_size", &["hdbscan"]),
-    ("graph_degree", &["hdbscan", "dc-center", "dc-median"]),
+    (
+        "graph_degree",
+        &["hdbscan", "dc-center", "dc-median", "leiden", "leiden-cpm"],
+    ),
     ("resolution", &["leiden", "leiden-cpm"]),
     ("covariance_weight", &["leiden", "leiden-cpm"]),
     ("tangent_weight", &["leiden", "leiden-cpm"]),
@@ -585,6 +588,7 @@ fn parse_head_options(
     kappa: &str,
     hartigan: bool,
     equal_size: bool,
+    graph_degree: usize,
 ) -> PyResult<HeadOptions> {
     require_head_reads_its_keywords(
         method,
@@ -625,6 +629,7 @@ fn parse_head_options(
         kappa,
         hartigan,
         equal_size,
+        graph_degree,
     })
 }
 
@@ -2322,6 +2327,7 @@ fn fit_predict<'py>(
         kappa,
         hartigan,
         equal_size,
+        graph_degree,
     )?;
     require_equal_size_alone(equal_size, refine, projection)?;
     let nmf_dim = parse_projection(projection, projection_dim, projection_max_iter)?;
@@ -3864,6 +3870,7 @@ impl Betula {
             &self.kappa,
             self.hartigan,
             self.equal_size,
+            self.graph_degree,
         )?;
         let result = if let Some(t) = &self.state64 {
             Some(t.label_proba(kind, k, mi, ni, seed, akm, passes, nmf))
@@ -4203,6 +4210,7 @@ impl Betula {
             kappa,
             hartigan,
             equal_size,
+            graph_degree,
         )?; // lowered at finalize
         require_equal_size_alone(equal_size, refine, projection)?;
         parse_max_iter(max_iter)?;

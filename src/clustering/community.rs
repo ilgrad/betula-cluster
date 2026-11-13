@@ -16,7 +16,10 @@
 //! limit) and **CPM** (Constant Potts Model — resolution-limit-free, but `γ` is an absolute density
 //! threshold on the edge-weight scale). Pure Rust, no eigensolver.
 
-use crate::clustering::graph::{knn_affinity, knn_affinity_geo, log_covariances, tangent_bases};
+use crate::clustering::graph::{
+    knn_affinity, knn_affinity_geo, knn_affinity_geo_approx, knn_degree, log_covariances,
+    tangent_bases,
+};
 use crate::clustering::rng::SplitMix64;
 use crate::feature::ClusterFeature;
 use crate::types::Real;
@@ -178,11 +181,47 @@ pub fn leiden_on<R: Real, C: ClusterFeature<R>>(
     max_passes: usize,
     graph: LeafGraph,
 ) -> Community {
+    leiden_on_degree(
+        features,
+        resolution,
+        objective,
+        seed,
+        cov_weight,
+        tangent_weight,
+        tangent_rank,
+        max_passes,
+        graph,
+        0,
+    )
+}
+
+/// [`leiden_on`] with the leaf graph's neighbour lists found by the bounded-degree beam-search
+/// index when `degree > 0`, at `degree` neighbours or the exact graph's own count, whichever is
+/// larger. `0` is the exact graph and [`leiden_on`] itself.
+///
+/// The exact graph sorts an `m × m` distance matrix: `O(m²·d)` work and `O(m²)` memory, 512 MB of
+/// distances alone at 8 000 leaves. The index takes `O(m·log m)` distance evaluations and builds the
+/// graph the spectral head switches to past 2 048 leaves. A beam search can miss a true neighbour,
+/// so the partition moves; that is why it is asked for, not switched on by size.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn leiden_on_degree<R: Real, C: ClusterFeature<R>>(
+    features: &[C],
+    resolution: f64,
+    objective: Objective,
+    seed: u64,
+    cov_weight: f64,
+    tangent_weight: f64,
+    tangent_rank: usize,
+    max_passes: usize,
+    graph: LeafGraph,
+    degree: usize,
+) -> Community {
     let n = features.len();
     if n <= 1 {
         return Community { labels: vec![0; n] };
     }
-    let mut base = affinity(features, cov_weight, tangent_weight, tangent_rank);
+    let index = (degree > 0).then(|| (degree.max(knn_degree(n)), seed));
+    let mut base = affinity(features, cov_weight, tangent_weight, tangent_rank, index);
     let sizes = match graph {
         LeafGraph::Unit => None,
         LeafGraph::Mass => {
@@ -208,12 +247,13 @@ pub fn leiden_on<R: Real, C: ClusterFeature<R>>(
 }
 
 /// The self-tuning kNN affinity graph over the leaf means, with the geometry terms whose weights
-/// are positive.
+/// are positive. `index` is `(degree, seed)` for the approximate graph, `None` for the exact one.
 fn affinity<R: Real, C: ClusterFeature<R>>(
     features: &[C],
     cov_weight: f64,
     tangent_weight: f64,
     tangent_rank: usize,
+    index: Option<(usize, u64)>,
 ) -> Vec<Vec<(usize, f64)>> {
     let centers: Vec<Vec<f64>> = features
         .iter()
@@ -222,6 +262,15 @@ fn affinity<R: Real, C: ClusterFeature<R>>(
     let log_covs = (cov_weight > 0.0).then(|| to_f64_tensors(log_covariances(features)));
     let tangents =
         (tangent_weight > 0.0).then(|| to_f64_tensors(tangent_bases(features, tangent_rank)));
+    if let Some((degree, seed)) = index {
+        return knn_affinity_geo_approx::<f64>(
+            &centers,
+            log_covs.as_deref().map(|lc| (lc, cov_weight)),
+            tangents.as_deref().map(|t| (t, tangent_weight)),
+            degree,
+            seed,
+        );
+    }
     if log_covs.is_some() || tangents.is_some() {
         knn_affinity_geo::<f64>(
             &centers,
@@ -608,6 +657,50 @@ mod tests {
         assert_eq!(n_distinct(&labels), 3);
         let pred: Vec<usize> = p2m.iter().map(|&m| labels[m]).collect();
         assert!(ari(&pred, &truth) > 0.95);
+    }
+
+    /// A positive degree is the index graph, not the exact one: the index keeps random shortcut
+    /// edges, which between blobs 12 apart no exact k-NN list would hold. Leiden still finds the
+    /// blobs on it, and the shape term riding the same index lands where the exact graph does.
+    #[test]
+    fn leiden_on_the_index_graph_discovers_separated_blobs() {
+        let mut rng = SplitMix64::new(4);
+        let centers = [[0.0, 0.0], [12.0, 0.0], [0.0, 12.0]];
+        let (pts, truth) = blobs(&mut rng, 300, &centers, 0.5);
+        let (micros, p2m) = grid_micros(&pts, 1.0);
+        let far = |g: &[Vec<(usize, f64)>]| {
+            g.iter()
+                .enumerate()
+                .flat_map(|(i, list)| list.iter().map(move |&(j, _)| (i, j)))
+                .filter(|&(i, j)| {
+                    let (a, b) = (micros[i].mean(), micros[j].mean());
+                    (a[0] - b[0]).hypot(a[1] - b[1]) > 6.0
+                })
+                .count()
+        };
+        let index = Some((knn_degree(micros.len()), 1));
+        assert_eq!(far(&affinity(&micros, 0.0, 0.0, 2, None)), 0);
+        assert!(far(&affinity(&micros, 0.0, 0.0, 2, index)) > 0);
+        let rows = |cov_weight: f64, degree: usize| -> Vec<usize> {
+            let labels = leiden_on_degree(
+                &micros,
+                1.0,
+                Objective::Modularity,
+                1,
+                cov_weight,
+                0.0,
+                2,
+                1,
+                LeafGraph::Unit,
+                degree,
+            )
+            .labels;
+            p2m.iter().map(|&m| labels[m]).collect()
+        };
+        assert!(ari(&rows(0.0, 1), &truth) > 0.95);
+        // The shape term splits one blob on this fixture whichever graph carries it (four
+        // communities, ARI 0.992 exact), so the index is held to the exact partition instead.
+        assert!(ari(&rows(0.5, 1), &rows(0.5, 0)) > 0.999);
     }
 
     #[test]

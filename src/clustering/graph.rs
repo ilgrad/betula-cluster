@@ -48,11 +48,24 @@ pub fn knn_affinity<R: Real>(centers: &[Vec<R>]) -> Vec<Vec<(usize, R)>> {
 /// `exp(−d²/σ_iσ_j)` makes them numerically negligible, and they are what stops the graph from
 /// fragmenting into components the Laplacian would then report as clusters.
 pub(crate) fn knn_affinity_approx<R: Real>(centers: &[Vec<R>], seed: u64) -> Vec<Vec<(usize, R)>> {
+    knn_affinity_geo_approx(centers, None, None, knn_degree(centers.len()), seed)
+}
+
+/// [`knn_affinity_approx`] under [`knn_affinity_geo`]'s distance, at `degree` neighbours or
+/// `LOCAL_SCALE_NN`, whichever is larger. The shape and tangent terms add to the squared centroid
+/// distance, so the beam search walks the same metric the exact builder sorts by.
+pub(crate) fn knn_affinity_geo_approx<R: Real>(
+    centers: &[Vec<R>],
+    cov: Option<(&[Vec<Vec<R>>], R)>,
+    tangent: Option<(&[Vec<Vec<R>>], R)>,
+    degree: usize,
+    seed: u64,
+) -> Vec<Vec<(usize, R)>> {
     let n = centers.len();
     let tiny = R::from_f64(1e-12).unwrap();
-    let degree = knn_degree(n).max(LOCAL_SCALE_NN).min(n - 1);
+    let degree = degree.max(LOCAL_SCALE_NN).min(n - 1);
     let dist = |i: usize, j: usize| -> f64 {
-        sq_euclidean(&centers[i], &centers[j])
+        geo_sq(centers, cov, tangent, i, j)
             .to_f64()
             .unwrap_or(f64::MAX)
             .sqrt()
@@ -193,6 +206,29 @@ pub fn log_covariances<R: Real, C: ClusterFeature<R>>(features: &[C]) -> Vec<Vec
         .collect()
 }
 
+/// Squared distance between nodes `i` and `j`: the centroid term plus the shape and tangent terms
+/// whose weights are given.
+fn geo_sq<R: Real>(
+    centers: &[Vec<R>],
+    cov: Option<(&[Vec<Vec<R>>], R)>,
+    tangent: Option<(&[Vec<Vec<R>>], R)>,
+    i: usize,
+    j: usize,
+) -> R {
+    let mut v = sq_euclidean(&centers[i], &centers[j]);
+    if let Some((lc, beta)) = cov {
+        v = v + beta * frobenius_sq_diff(&lc[i], &lc[j]);
+    }
+    if let Some((ub, gamma)) = tangent {
+        v = v + gamma * grassmann_sq(&ub[i], &ub[j]);
+    }
+    v
+}
+
+#[expect(
+    clippy::needless_range_loop,
+    reason = "the upper triangle is filled into both d2[i][j] and d2[j][i]"
+)]
 fn knn_affinity_impl<R: Real>(
     centers: &[Vec<R>],
     cov: Option<(&[Vec<Vec<R>>], R)>,
@@ -206,13 +242,7 @@ fn knn_affinity_impl<R: Real>(
     let mut d2 = vec![vec![R::zero(); n]; n];
     for i in 0..n {
         for j in (i + 1)..n {
-            let mut v = sq_euclidean(&centers[i], &centers[j]);
-            if let Some((lc, beta)) = cov {
-                v = v + beta * frobenius_sq_diff(&lc[i], &lc[j]);
-            }
-            if let Some((ub, gamma)) = tangent {
-                v = v + gamma * grassmann_sq(&ub[i], &ub[j]);
-            }
+            let v = geo_sq(centers, cov, tangent, i, j);
             d2[i][j] = v;
             d2[j][i] = v;
         }

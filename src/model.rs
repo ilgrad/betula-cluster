@@ -1,12 +1,13 @@
 //! End-to-end model: build a CF-tree, cluster its leaves (Phase 3), and label points.
 
+use crate::clustering::community::leiden_on_degree;
 use crate::clustering::{
     Gmm, GmmFull, GmmToeplitz, KMEANS_N_INIT, Kappa, LeafGraph, Linkage, Mfa, Movmf, Mppca,
     Objective, Watson, agglomerative, agglomerative_auto, dyn_msc, equal_size, fuzzy_cmeans,
     fuzzy_cmeans_auto, gmm_diagonal, gmm_diagonal_auto, gmm_full, gmm_full_auto, gmm_toeplitz,
     gmm_toeplitz_auto, gmm_toeplitz_full, gmm_toeplitz_full_auto, gmm_toeplitz_gs,
-    gmm_toeplitz_gs_auto, hartigan, hyperbolic_kmeans, kmeans, kmeans_auto, kmedoids, leiden_on,
-    mfa, mfa_auto, movmf_auto, movmf_auto_with, movmf_with, mppca, mppca_auto, project_to_sheet,
+    gmm_toeplitz_gs_auto, hartigan, hyperbolic_kmeans, kmeans, kmeans_auto, kmedoids, mfa,
+    mfa_auto, movmf_auto, movmf_auto_with, movmf_with, mppca, mppca_auto, project_to_sheet,
     spectral_on, spherical_kmeans, ward_hac, ward_hac_auto, watson, watson_auto, xmeans,
 };
 use crate::distance::CFDistance;
@@ -648,6 +649,8 @@ pub(crate) struct HeadOptions {
     pub(crate) kappa: Kappa,
     pub(crate) hartigan: bool,
     pub(crate) equal_size: bool,
+    /// Neighbours per leaf of the Leiden head's approximate leaf graph; `0` is the exact graph.
+    pub(crate) graph_degree: usize,
 }
 
 impl HeadOptions {
@@ -659,6 +662,7 @@ impl HeadOptions {
         kappa: Kappa::Free,
         hartigan: false,
         equal_size: false,
+        graph_degree: 0,
     };
 }
 
@@ -674,8 +678,9 @@ impl HeadOptions {
 /// EM heads keep their own restart constants: their restarts are selected by likelihood, and the
 /// curve measured for `bench/RESULTS.md` shows that buys no direction in the labels.
 ///
-/// `opts` caps the passes of the Leiden head, names the leaf graph it partitions (see
-/// [`leiden_on`]) and picks the vMF concentration model ([`Kappa`]); every other head ignores it.
+/// `opts` caps the passes of the Leiden head, names the leaf graph it partitions and how that graph
+/// finds its neighbours (see [`leiden_on_degree`]) and picks the vMF concentration model
+/// ([`Kappa`]); every other head ignores it.
 /// [`Method`] is frozen under semver, so these travel beside it rather than inside its variants,
 /// and [`HeadOptions::DEFAULT`] is the head of 1.0.
 #[allow(clippy::too_many_arguments)]
@@ -781,7 +786,7 @@ pub(crate) fn fit_head<R: Real, C: ClusterFeature<R>>(
                 Objective::Modularity
             };
             HeadFit::hard(
-                leiden_on(
+                leiden_on_degree(
                     features,
                     resolution,
                     obj,
@@ -791,6 +796,7 @@ pub(crate) fn fit_head<R: Real, C: ClusterFeature<R>>(
                     tangent_rank,
                     opts.passes,
                     opts.graph,
+                    opts.graph_degree,
                 )
                 .labels,
             )
