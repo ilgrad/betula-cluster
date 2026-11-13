@@ -110,6 +110,12 @@ All notable changes to this project are documented here. The format follows
   narrowed: 9.9× `KMeans` and 33× `Birch` at a million points (were 10.8× and 37×), 89× less memory
   streaming 10 M points in ~56 MB (were 94× and ~53 MB). README, `docs/MATH.md`, `docs/index.md`
   and `paper/paper.md` quote the new figures. The win/tie/loss board is unchanged.
+- **Past-window queries are measured** (`bench/window_queries.py`). Against 1.4.0, 1.5.0's frame
+  merging cuts the mass a `WindowStream` answer carries from outside its window from 0.69–7.0× to
+  0.04–0.60× of the window's own in five of six cells; the sixth, the newest 500 rows at
+  `capacity=64`, goes from exact to 0.04×. A window that ends on a +50 jump still reads ARI
+  0.56–0.59 against 1.000 for k-means on its own rows: 4 % of far rows from across the edge take a
+  centre.
 - **Documentation:** USAGE states the Leiden head's leaf-graph cost: an exact `O(m²·d)`
   nearest-neighbour scan at every leaf count, with no approximate graph past 2 048 leaves as
   `spectral` has, so doubling `max_leaves` quadruples it.

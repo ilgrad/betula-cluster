@@ -14,11 +14,10 @@ Two numbers per chunk of a 4000-point stream: the ARI of the labels the model gi
 points, and the wall time to learn it. The stream is stationary for 2000 points and then changes, so
 the ARI curve shows both the settled quality and the recovery.
 
-**What this cannot measure, and the row that is a loss by construction.** CluStream's contribution is
-the pyramidal time frame: snapshots that let a caller ask, after the fact, for the clustering of an
-arbitrary past window. Nothing in this library does that — a `partial_fit` tree carries one summary
-at the current time and cannot be rewound — so the retrospective-query row is not a number we lose,
-it is a capability we do not have. It is written down here rather than left out of the table.
+**What this does not measure.** CluStream's contribution is the pyramidal time frame: snapshots that
+let a caller ask, after the fact, for the clustering of an arbitrary past window. The `partial_fit`
+heads timed here carry one summary at the current time and cannot be rewound. `WindowStream` answers
+past windows by summing per-frame summaries; `bench/window_queries.py` measures it.
 
 Writes `bench/results_stream.csv`.
 """

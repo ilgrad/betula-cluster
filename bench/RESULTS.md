@@ -3455,6 +3455,35 @@ rather than subtracting snapshots (`docs/USAGE.md`, *Windowed stream queries*); 
 merging keeps a boundary at age `A` within `ε·A` (the table there). It is not in this table, which
 times the single-summary heads.
 
+**Past windows, measured** (`bench/window_queries.py`, `results_window.csv`). The same 4 000-point
+stream, timestamped by row index into frames of width 10, so 400 frames pass through an index of
+`capacity` frames. After the whole stream, three windows are asked for: the settled prefix
+`[0, 1999]`, everything since the change `[2000, 3999]`, and the last 500 points. Each window's rows
+take the nearest centre `cluster_window` returns, at `k` = the components among them; k-means on
+exactly the window's rows scores 1.000 in every cell. *Excess* is the mass the answer carries from
+outside the window, as a fraction of the window's own. 1.4.0 merged the oldest frame on every
+overflow; 1.5.0 merges the adjacent pair narrowest relative to its age. Seeds 0/1/2, which give the
+same excess:
+
+| window | `capacity` | excess, 1.4.0 → 1.5.0 | ARI after a +50 jump, 1.4.0 → 1.5.0 |
+|---|---:|---|---|
+| before the change | 16 | 0.93 → 0.28 | 0.56–0.59 → 0.56–0.59 |
+| before the change | 64 | 0.69 → 0.04 | 0.58–0.59 → 0.58–0.59 |
+| since the change | 16 | 1.00 → 0.04 | 0.00–0.59 → 0.56–0.59 |
+| since the change | 64 | 1.00 → 0.04 | 0.00 → 0.57–0.59 |
+| last 500 points | 16 | 7.00 → 0.60 | 0.00–0.59 → 1.000 |
+| last 500 points | 64 | 0.00 → 0.04 | 1.000 → 1.000 |
+
+On the stationary and split streams every cell reads ARI ≥ 0.989 under both rules: extra mass drawn
+from the same clusters moves no centre. The new rule fixed the mass — 1.4.0 answered the last 500
+points with 8× their mass at `capacity=16`, and the window since the change with twice its own — but
+not the two jump windows that end on the change. There 4 % excess is 80 rows 50 units away, and
+k-means spends a centre on them and merges two real clusters. That is the documented resolution, a
+boundary at age `A` to within `ε·A` (`ε` = 0.21 at `capacity=64` over 400 frames), priced by an
+objective in which a few far rows weigh more than a whole cluster's spread. The rule also costs the
+newest frames something: at `capacity=64` the last 500 points come back with 4 % excess, which 1.4.0
+answered exactly.
+
 ## Conclusions
 
 - **Use betula** when data is large or streaming, memory is bounded, or you want one numerically
