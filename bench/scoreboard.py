@@ -264,14 +264,36 @@ def _external():
     return cells
 
 
+NO_STRUCTURE = 0.01
+
+# A reference that stands for one head is answered by that head, not by betula's best arm: FasterPAM
+# says how good `kmedoids` is, and a k-means win over it would say nothing about that.
+HEAD_OF_REFERENCE = {
+    "kmedoids (fasterpam)": "betula-kmedoids",
+    "skfuzzy-cmeans": "betula-fuzzy-cmeans",
+    "sklearn-kmeans": "betula-kmeans",
+    "sklearn-bisecting-kmeans": "betula-kmeans",
+    "kmodes-kprototypes": "betula-kprototypes",
+}
+
+
 def _rivals(table):
     """`bench/results_rivals.csv` and `bench/results_head_refs.csv`: betula's best head against
     **each** rival, one cell per rival.
 
-    The champion is betula's best arm in the same class — told the cluster count, or choosing it —
-    because a method that is given `k` and one that has to find it answer different questions. Values
-    are medians over the seeds, and the seed range is the spread. Wall time enters only when the run
-    recorded `timing_valid` (the machine passed `bench-ready.sh`); a DNF arm gives no cell.
+    The champion is betula's best arm in the same class (or, for a head reference, the head it
+    stands for: `HEAD_OF_REFERENCE`) — told the cluster count, or choosing it —
+    because a method that is given `k` and one that has to find it answer different questions. It
+    is chosen on quality alone, and the memory and speed cells are that arm's: the lightest arm is
+    often one whose labels no one would use, and a memory win it scored would be no claim at all.
+    Values are medians over the seeds, and the seed range is the spread. Wall time enters only when
+    the run recorded `timing_valid` (the machine passed `bench-ready.sh`); a DNF arm gives no cell.
+
+    A rival that recovers no structure on a slice (median ARI under `NO_STRUCTURE`) gives no cell
+    there either. At its documented defaults CLASSIX, DenMune and OPTICS return one cluster on the
+    standardised fixtures: that measures a default against data it was not set for, not the
+    method, and a win over it would be no claim. The rule can only remove betula's wins — a slice
+    where betula reads 0 and the rival does not is still scored.
     """
     df = _read(table)
     if df is None:
@@ -289,13 +311,15 @@ def _rivals(table):
         theirs = [a for a in arms if not a.startswith("betula")]
         if not ours:
             continue
+        # Champion by its worst seed, as in `_best_of_breed`; judged on the median.
+        best = max(ours, key=lambda a: stats["ari"].loc[a, "min"])
         for axis, column, higher in axes:
             col = stats[column]
-            # Champion by its worst seed, as in `_best_of_breed`; judged on the median.
-            bm = (max if higher else min)(
-                ours, key=lambda a: col.loc[a, "min" if higher else "max"]
-            )
             for rm in theirs:
+                if stats["ari"].loc[rm, "median"] < NO_STRUCTURE:
+                    continue
+                paired = HEAD_OF_REFERENCE.get(rm) if table == "results_head_refs" else None
+                bm = paired if paired in ours else best
                 cells.append(
                     Cell(
                         axis,
@@ -356,8 +380,8 @@ UNITS = {"quality": ("ARI", "{:.3f}"), "speed": ("s", "{:.2f}"), "memory": ("MB"
 def claims(cells):
     """The comparison as sentences, grouped by rival: every win, tie and loss, with both values.
 
-    `bench/RESULTS.md` and the README carry this block verbatim between `<!-- claims:begin -->`
-    and `<!-- claims:end -->`; `--claims-check` fails when the committed block differs from what the
+    `bench/RESULTS.md` carries this block verbatim between `<!-- claims:begin -->` and
+    `<!-- claims:end -->` (the README points to it: the block is 300 lines); `--claims-check` fails when the committed block differs from what the
     CSVs produce, so a hand-written claim cannot drift from the numbers behind it.
     """
     by_rival = {}

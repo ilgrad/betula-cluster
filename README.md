@@ -68,6 +68,12 @@ with peak RSS sampled from `/proc/self/statm`. Full methodology, every metric, a
   density.
   [`bench/RESULTS.md`](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md) reports
   both rather than hiding them.
+- 🧭 **Against the rest of the field, not only scikit-learn.** The bench page's *census* runs UMAP,
+  PaCMAP and openTSNE pipelines, EVoC, BERTopic's defaults, kNN + Leiden, PhenoGraph, the density and
+  hierarchy specialists and one outside reference per head on the same rows. It lists every win,
+  tie and loss by rival, generated from the CSVs. The losses include MNIST-70k without a cluster
+  count (`leiden` 0.769 against UMAP + HDBSCAN 0.920 and EVoC 0.899) and sentence embeddings (0.382
+  against UMAP + k-means 0.451).
 
 | ![Fit time vs N](https://raw.githubusercontent.com/ilgrad/betula-cluster/main/bench/plots/scaling_time.png) | ![Peak memory vs N](https://raw.githubusercontent.com/ilgrad/betula-cluster/main/bench/plots/memory_streaming.png) |
 |:--:|:--:|
