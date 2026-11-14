@@ -632,6 +632,48 @@ def _budget_max_leaves(budget_mb: float, dim: int, feature: str, branching: int)
     return max(branching + 1, min(derived, 10_000_000))
 
 
+def _dense_rows(X, owner: str, n_features: int | None = None) -> np.ndarray:
+    """The dense input boundary: a 2-D float32 / float64 array, or a ``ValueError`` saying why not.
+
+    float32 and float64 pass through unchanged (the dtype decides the tree's precision); any other
+    real dtype — integers, booleans, numeric objects — becomes float64. The messages follow
+    scikit-learn's ``check_array`` wording, which its estimator checks match on. ``n_features`` is
+    the width the fitted model expects.
+    """
+    a = np.asarray(X)
+    if np.iscomplexobj(a):
+        raise ValueError("Complex data not supported")
+    if a.ndim != 2:
+        raise ValueError(
+            f"Expected a 2-D array, got a {a.ndim}-D array instead. Reshape your data either "
+            "using array.reshape(-1, 1) if it has a single feature or array.reshape(1, -1) if it "
+            "contains a single sample."
+        )
+    if a.shape[1] == 0:
+        raise ValueError(f"0 feature(s) (shape={a.shape}) while a minimum of 1 is required.")
+    if a.dtype not in (np.float32, np.float64):
+        a = a.astype(np.float64)
+    if n_features is not None and a.shape[1] != n_features:
+        raise ValueError(
+            f"X has {a.shape[1]} features, but {owner} is expecting {n_features} features as input."
+        )
+    return a
+
+
+def _not_fitted(owner: str) -> ValueError:
+    """scikit-learn's ``NotFittedError`` when scikit-learn is installed, else a ``ValueError``.
+
+    ``NotFittedError`` subclasses ``ValueError``, so callers catching ``ValueError`` see no change.
+    """
+    import importlib
+
+    message = f"This {owner} instance is not fitted yet; call 'fit' first."
+    try:
+        return importlib.import_module("sklearn.exceptions").NotFittedError(message)
+    except ImportError:
+        return ValueError(message)
+
+
 def _to_csr(X):
     """If ``X`` is a scipy sparse matrix, return its CSR arrays as
     ``(data_f64, indices_i64, indptr_i64, n_features)`` (the dense matrix is never materialized);
@@ -759,8 +801,11 @@ _DEFAULTS = {
     "hartigan": False,
     "equal_size": False,
     "memory_budget_mb": None,
+    "compute_labels": False,
 }
 _PARAM_NAMES = tuple(_DEFAULTS)
+# Parameters the wrapper consumes itself; the engine never sees them.
+_WRAPPER_ONLY = ("memory_budget_mb", "compute_labels")
 
 # Directional heads (`spherical-kmeans` / `vmf` / `watson`) cluster points on the unit sphere, so
 # the engine is always built with ``normalize=True`` for them. ``self.normalize`` is left as the
@@ -856,6 +901,7 @@ class Betula(_Clusterer):
         hartigan=False,
         equal_size=False,
         memory_budget_mb=None,
+        compute_labels=False,
     ):
         self.n_clusters = n_clusters
         self.feature = feature
@@ -1006,6 +1052,10 @@ class Betula(_Clusterer):
         # When set, max_leaves is derived from this budget (+ dim + feature) at fit time: a target
         # for the CF-tree resident size (MiB), not total RSS. Most useful for streaming.
         self.memory_budget_mb = memory_budget_mb
+        # Keep the training rows' labels as `labels_` after `fit`, as scikit-learn's `Birch` and
+        # `MiniBatchKMeans` do: `fit` then labels every row, which `fit_predict` does anyway.
+        # Off by default in 1.x so that `fit` costs what it always cost.
+        self.compute_labels = compute_labels
         self._est = None
         self._effective_max_leaves = max_leaves
         # Cache for the pilot-estimated threshold when `threshold="auto"`; reset on `set_params`.
@@ -1039,7 +1089,7 @@ class Betula(_Clusterer):
         return _absolute_max_leaves(self.max_leaves, n_rows)
 
     def _build(self, dim=None, threshold_override=None, n_rows=None):
-        params = {k: getattr(self, k) for k in _PARAM_NAMES if k != "memory_budget_mb"}
+        params = {k: getattr(self, k) for k in _PARAM_NAMES if k not in _WRAPPER_ONLY}
         params["max_leaves"] = self._resolve_max_leaves(dim, n_rows)
         # `threshold="auto"` is resolved to a float by the caller (see `_resolve_auto`); the engine
         # only ever receives a concrete threshold.
@@ -1086,7 +1136,7 @@ class Betula(_Clusterer):
             # costs nothing and stays as it was.
             rng = np.random.default_rng(self.seed)
             sub = X[rng.choice(n, cap, replace=False)]
-        params = {k: getattr(self, k) for k in _PARAM_NAMES if k != "memory_budget_mb"}
+        params = {k: getattr(self, k) for k in _PARAM_NAMES if k not in _WRAPPER_ONLY}
         params["threshold"] = 0.0
         params["max_leaves"] = max_leaves
         if self.method in _DIRECTIONAL_METHODS:
@@ -1128,42 +1178,44 @@ class Betula(_Clusterer):
                 the run to semi-supervised COP-KMeans (``method="kmeans"``, dense input only).
         """
         if must_link is not None or cannot_link is not None:
-            return self._fit_constrained(X, must_link, cannot_link)
-        csr = _to_csr(X)
-        self._check_hyperbolic()
-        self._check_projection_input(X, csr)
-        override = self._resolve_auto(X, csr)
-        rows = _rows_of(X, csr)
-        if csr is not None:
-            est = self._build(csr[3], override, rows)
-            est.fit_csr(*csr)
-        else:
-            est = self._build(_dim_of(X), override, rows)
-            est.fit(X)
-        self._est = est
+            self._fit_constrained(X, must_link, cannot_link)
+            if self.compute_labels:
+                self.labels_ = np.asarray(self.predict(X))
+            return self
+        self._fit(X, labels=self.compute_labels)
         return self
 
     def fit_predict(self, X, y=None, must_link=None, cannot_link=None):
         """Fit on ``X``; return one ``int64`` label per row (``-1`` = noise, HDBSCAN head).
 
-        Takes the same ``X`` / ``must_link`` / ``cannot_link`` as :meth:`fit`.
+        Takes the same ``X`` / ``must_link`` / ``cannot_link`` as :meth:`fit`. The labels are also
+        kept as ``labels_``.
         """
         if must_link is not None or cannot_link is not None:
             self._fit_constrained(X, must_link, cannot_link)
-            return np.asarray(self.predict(X))
+            self.labels_ = np.asarray(self.predict(X))
+            return self.labels_
+        return self._fit(X, labels=True)
+
+    def _fit(self, X, labels: bool):
         csr = _to_csr(X)
+        if csr is None:
+            X = _dense_rows(X, "Betula")
         self._check_hyperbolic()
         self._check_projection_input(X, csr)
         override = self._resolve_auto(X, csr)
         rows = _rows_of(X, csr)
         if csr is not None:
             est = self._build(csr[3], override, rows)
-            labels = est.fit_predict_csr(*csr)
+            out = est.fit_predict_csr(*csr) if labels else est.fit_csr(*csr)
         else:
             est = self._build(_dim_of(X), override, rows)
-            labels = est.fit_predict(X)
+            out = est.fit_predict(X) if labels else est.fit(X)
         self._est = est
-        return labels
+        if labels:
+            self.labels_ = np.asarray(out)
+            return self.labels_
+        return None
 
     def _fit_constrained(self, X, must_link, cannot_link):
         # Semi-supervised COP-KMeans. Constraints are row-index pairs into X, honoured at the
@@ -1175,6 +1227,7 @@ class Betula(_Clusterer):
             raise ValueError("constrained clustering requires a dense array, not a sparse matrix")
         ml = _constraint_pairs(must_link)
         cl = _constraint_pairs(cannot_link)
+        X = _dense_rows(X, "Betula")
         override = self._resolve_auto(X, None)
         est = self._build(_dim_of(X), override, _rows_of(X, None))
         est.fit_constrained(X, ml, cl)
@@ -1184,6 +1237,9 @@ class Betula(_Clusterer):
     def partial_fit(self, X=None, y=None):
         self._check_hyperbolic()
         csr = None if X is None else _to_csr(X)
+        expected = None if self._est is None else self._est.n_features_in_
+        if X is not None and csr is None:
+            X = _dense_rows(X, "Betula", expected)
         override = self._resolve_auto(X, csr) if self._est is None else None
         if csr is not None:
             if self._est is None:
@@ -1197,11 +1253,16 @@ class Betula(_Clusterer):
 
     def predict(self, X):
         if self._est is None:
-            raise ValueError("This Betula instance is not fitted yet; call 'fit' first.")
+            raise _not_fitted("Betula")
         csr = _to_csr(X)
         if csr is not None:
+            if csr[3] != self.n_features_in_:
+                raise ValueError(
+                    f"X has {csr[3]} features, but Betula is expecting {self.n_features_in_} "
+                    "features as input."
+                )
             return self._est.predict_csr(*csr)
-        return self._est.predict(X)
+        return self._est.predict(_dense_rows(X, "Betula", self.n_features_in_))
 
     # ── fitted attributes ────────────────────────────────────────────────────────────────────
     @property
@@ -1209,6 +1270,13 @@ class Betula(_Clusterer):
         if self._est is None:
             raise AttributeError("This Betula instance is not fitted yet.")
         return self._est.n_clusters_
+
+    @property
+    def n_features_in_(self):
+        """Width of the rows the model was fitted on (scikit-learn's ``n_features_in_``)."""
+        if self._est is None or self._est.n_features_in_ is None:
+            raise AttributeError("This Betula instance is not fitted yet.")
+        return self._est.n_features_in_
 
     @property
     def n_leaves_(self):
@@ -1912,7 +1980,15 @@ class Betula(_Clusterer):
                 "predict_proba is not defined for method='hyperbolic': the Euclidean proxy would "
                 "disagree with the head's own Lorentzian assignment"
             )
-        est = self._require_fit()
+        if self._est is None:
+            raise _not_fitted("Betula")
+        est = self._est
+        if _to_csr(X) is not None:
+            raise TypeError(
+                "predict_proba takes a dense array; sparse input is not supported here "
+                "(predict takes CSR)"
+            )
+        X = _dense_rows(X, "Betula", self.n_features_in_)
         if self.method in (
             "gmm",
             "gmm-full",
@@ -1928,6 +2004,8 @@ class Betula(_Clusterer):
             return est.predict_proba(X)
         centers = np.asarray(est.cluster_centers_, dtype=np.float64)
         rows = np.asarray(X, dtype=np.float64)
+        if len(centers) == 0:  # a density head that found no cluster: every row is noise
+            return np.empty((len(rows), 0))
         d2 = (
             (rows * rows).sum(1)[:, None]
             + (centers * centers).sum(1)[None, :]

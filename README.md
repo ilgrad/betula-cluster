@@ -25,7 +25,7 @@
 pip install betula-cluster
 ```
 
-**Verified:** a **640-case** Python suite at **100% wrapper coverage** + **1074** Rust tests,
+**Verified:** a **648-case** Python suite at **100% wrapper coverage** + **1074** Rust tests,
 `clippy -D warnings` + `fmt` clean across all feature sets, CI on CPython 3.11–3.15 (one abi3 wheel)
 plus free-threaded 3.14t and 3.15t.
 
@@ -246,8 +246,9 @@ snapshots / active-learning batches, the Rust API, and the CLI — all in the
   Mises–Fisher mixtures for L2-normalized embeddings (cosine geometry), all over the numerically
   stable BETULA CF-tree.
 - **Streaming** — `partial_fit` at bounded memory (`max_leaves` / `memory_budget_mb`), EWMA `decay`.
-- **scikit-learn API** — `fit` / `predict` / `fit_predict`, `get_params` / `set_params` (works with
-  `Pipeline` / `clone` / `GridSearchCV`); typed abi3 wheel, `save` / `load` + pickle, reusable Rust core.
+- **scikit-learn API** — passes `check_estimator`; `fit` / `predict` / `fit_predict`,
+  `get_params` / `set_params`, `labels_` (with `compute_labels=True`) and `n_features_in_`, so it
+  works with `Pipeline` / `clone` / `GridSearchCV` and in slots that expect a clusterer; typed abi3 wheel, `save` / `load` + pickle, reusable Rust core.
 - **Inspection & robustness** — `predict_proba`, coresets, microcluster/cluster geometry, outliers,
   near-duplicates, representatives, diagnostics, and `consensus` (per-point stability across
   insertion-order permutations).
@@ -391,7 +392,7 @@ And six **end-to-end use cases** (each scored against ground truth):
 - [**Benchmarks**](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md) — methodology, every metric, all tables, honest wins & losses.
 - [**Design**](https://github.com/ilgrad/betula-cluster/blob/main/DESIGN.md) — internal design, invariants, and testing strategy.
 
-Verified: **1074** Rust tests (library, equivariance, integration and CLI) + a **640-case**
+Verified: **1074** Rust tests (library, equivariance, integration and CLI) + a **648-case**
 Python suite at **100%** wrapper coverage (Rust ≥95%, CI-enforced), `clippy -D warnings` + `fmt`
 clean across all feature sets, on Python 3.11–3.15 (single abi3 wheel) and free-threaded
 3.14t and 3.15t.

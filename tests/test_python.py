@@ -3292,10 +3292,11 @@ def test_the_engine_reports_every_parameter_the_wrapper_carries():
     `get_params` is a hand-maintained mirror of the struct with nothing tying the two together,
     which is how `route_beam` and the three `projection` keys each went missing; this is the tie.
 
-    `memory_budget_mb` is the one legitimate exception: the wrapper resolves it into `max_leaves`
-    before the engine is built, and `load` recovers the already-resolved cap."""
+    The wrapper-only parameters are the exceptions: the wrapper resolves `memory_budget_mb` into
+    `max_leaves` before the engine is built, and `load` recovers the already-resolved cap;
+    `compute_labels` decides only what `fit` keeps on the wrapper, and no labels are saved."""
     core = set(betula_cluster._core.Betula(n_clusters=4).get_params())
-    missing = set(betula_cluster._PARAM_NAMES) - core - {"memory_budget_mb"}
+    missing = set(betula_cluster._PARAM_NAMES) - core - set(betula_cluster._WRAPPER_ONLY)
     assert not missing, f"engine get_params omits {sorted(missing)}"
 
 
@@ -3442,6 +3443,92 @@ def test_sklearn_tags_name_every_estimator_a_clusterer(cls, kwargs, sparse):
     assert utils.get_tags(est).input_tags.sparse is sparse
     with pytest.raises(exceptions.NotFittedError):
         validation.check_is_fitted(est)
+
+
+@pytest.mark.parametrize("method", ["kmeans", "hdbscan"])
+def test_betula_passes_sklearn_check_estimator(method):
+    # `hdbscan` also covers a head that can find no cluster on the checks' tiny inputs.
+    checks = pytest.importorskip("sklearn.utils.estimator_checks")
+    with (
+        pytest.warns(UserWarning, match="does not inherit from `sklearn.base.BaseEstimator`"),
+        pytest.warns(UserWarning, match="SCIPY_ARRAY_API is not set"),
+    ):
+        results = checks.check_estimator(
+            betula_cluster.Betula(n_clusters=3, method=method), on_fail=None
+        )
+    failed = [
+        (r["check_name"], str(r["exception"])[:120]) for r in results if r["status"] == "failed"
+    ]
+    assert failed == []
+
+
+def test_labels_kept_only_when_compute_labels_is_set(blobs):
+    x, _ = blobs
+    plain = betula_cluster.Betula(n_clusters=4, method="kmeans", max_leaves=300).fit(x)
+    assert not hasattr(plain, "labels_")
+    kept = betula_cluster.Betula(
+        n_clusters=4, method="kmeans", max_leaves=300, compute_labels=True
+    ).fit(x)
+    np.testing.assert_array_equal(kept.labels_, kept.fit_predict(x))
+    assert kept.n_features_in_ == 2
+
+
+def test_constrained_fit_keeps_labels_when_asked(blobs):
+    x, _ = blobs
+    est = betula_cluster.Betula(
+        n_clusters=4, method="kmeans", max_leaves=300, compute_labels=True
+    ).fit(x, must_link=[[0, 1]])
+    assert est.labels_.shape == (len(x),)
+    np.testing.assert_array_equal(est.fit_predict(x, must_link=[[0, 1]]), est.labels_)
+
+
+def test_input_boundary_converts_integers_and_names_the_width(blobs):
+    x, _ = blobs
+    est = betula_cluster.Betula(n_clusters=4, method="kmeans", max_leaves=300)
+    est.fit(np.rint(x * 10).astype(np.int64))  # integers become float64
+    with pytest.raises(ValueError, match="X has 3 features, but Betula is expecting 2"):
+        est.predict(np.zeros((2, 3)))
+    with pytest.raises(ValueError, match="X has 3 features, but Betula is expecting 2"):
+        est.partial_fit(np.zeros((2, 3)))
+    est.partial_fit(x[:10])
+    assert est.n_features_in_ == 2
+
+
+def test_sparse_input_is_checked_against_the_fitted_width():
+    sp = pytest.importorskip("scipy.sparse")
+    x = sp.random(60, 5, density=0.4, format="csr", random_state=0)
+    est = betula_cluster.Betula(n_clusters=2, method="kmeans").fit(x)
+    with pytest.raises(ValueError, match="X has 4 features"):
+        est.predict(sp.random(3, 4, density=0.5, format="csr", random_state=1))
+    with pytest.raises(TypeError, match="sparse input is not supported"):
+        est.predict_proba(x)
+
+
+def test_unfitted_error_is_a_value_error_without_sklearn(monkeypatch):
+    import importlib
+
+    real = importlib.import_module
+
+    def no_sklearn(name, *args):
+        if name.startswith("sklearn"):
+            raise ImportError(name)
+        return real(name, *args)
+
+    monkeypatch.setattr(importlib, "import_module", no_sklearn)
+    with pytest.raises(ValueError, match="not fitted yet"):
+        betula_cluster.Betula().predict(np.zeros((2, 2)))
+
+
+def test_betula_fills_bertopics_cluster_slot(blobs):
+    # BERTopic's `hdbscan_model=` slot calls `fit(X, y=None)`, reads `labels_`, and `transform`
+    # calls `predict` on new rows (bertopic/_bertopic.py, `_cluster_embeddings`). No BERTopic here:
+    # this is the contract its source relies on.
+    x, y = blobs
+    slot = betula_cluster.Betula(n_clusters=4, method="kmeans", max_leaves=300, compute_labels=True)
+    assert slot.fit(x, y=None) is slot
+    labels = np.asarray(slot.labels_)
+    assert labels.shape == (len(x),) and ari(labels, y) > 0.9
+    np.testing.assert_array_equal(slot.predict(x[:50]), labels[:50])
 
 
 def test_sklearn_is_fitted_after_fit(blobs):

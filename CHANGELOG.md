@@ -7,6 +7,15 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **`Betula` passes scikit-learn's `check_estimator`** (all 40 checks, on the `kmeans`, `gmm`,
+  `ward`, `hdbscan`, `leiden`, `spectral`, `vmf`, `scale-space` and `dc-median` heads).
+  `compute_labels=True` keeps the training rows' labels as `labels_` after `fit`, as scikit-learn's
+  `Birch` and `MiniBatchKMeans` do; it is off by default, so `fit` costs what it did. `fit_predict`
+  always sets `labels_`. `n_features_in_` reports the fitted width, and `predict`, `partial_fit` and
+  `predict_proba` refuse rows of another width with scikit-learn's message. Integer and boolean
+  arrays are now accepted and converted to `float64`; they used to raise. Calling `predict` before
+  `fit` raises scikit-learn's `NotFittedError` when scikit-learn is installed (a `ValueError`
+  subclass, so existing handlers still catch it).
 - **`leaf_graph="mass"` for `method="leiden"` / `"leiden-cpm"`.** The Leiden head made every leaf one
   node of size 1, so its objective was that of no point graph: a singleton leaf counted as much as a
   leaf of a thousand points. `"mass"` partitions the quotient of the point graph instead (Traag,
@@ -85,6 +94,9 @@ All notable changes to this project are documented here. The format follows
   digests, spectral's past-2 048 graph included).
 
 ### Fixed
+- **`Betula.predict_proba` no longer raises when a density head found no cluster.** `hdbscan`
+  and the other noise-reporting heads can label every row noise on small inputs; the
+  centroid-softmax proxy then took a maximum over zero centres. It now returns an `(n, 0)` array.
 - **`Pipeline.predict`, `GridSearchCV` and `is_clusterer` work again on scikit-learn ≥ 1.6.**
   scikit-learn now reads an estimator's capabilities from `__sklearn_tags__`, and without it these
   three raised `AttributeError` for every estimator here, although the README said they worked.

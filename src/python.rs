@@ -4473,6 +4473,12 @@ impl Betula {
         }
     }
 
+    /// Width of the rows the tree was fitted on; `None` before the first fit.
+    #[getter]
+    fn n_features_in_(&self) -> Option<usize> {
+        (self.dim > 0).then_some(self.dim)
+    }
+
     /// Number of leaf micro-clusters currently in the tree.
     #[getter]
     fn n_leaves_(&self) -> usize {
