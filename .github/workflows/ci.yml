@@ -292,7 +292,9 @@ jobs:
     # the one job here that costs real runner minutes, and a PR cannot change the timing without
     # changing the kernels, which the `rust` job already tests on every event.
     name: kernels (arm64 timing smoke)
-    runs-on: macos-14
+    # `macos-latest`, not a pinned image: GitHub retired `macos-14` in November 2026 and every run
+    # of this job was cancelled before it started ("macos-14-arm64-us-default is not supported").
+    runs-on: macos-latest
     if: github.event_name == 'push'
     steps:
       - uses: actions/checkout@v7
@@ -318,3 +320,7 @@ jobs:
       - uses: astral-sh/setup-uv@v10.3.1
       - name: scoreboard --check (no cell may regress)
         run: uv run --with pandas python bench/scoreboard.py --check
+      # The win / tie / loss sentences in bench/RESULTS.md are generated; a hand edit, or a CSV
+      # change committed without regenerating them, would publish a claim its numbers do not back.
+      - name: scoreboard --claims-check (the published claims match the CSVs)
+        run: uv run --with pandas python bench/scoreboard.py --claims-check bench/RESULTS.md

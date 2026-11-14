@@ -22,11 +22,13 @@ jobs:
         platform:
           - { runner: ubuntu-latest, target: x86_64 }
           - { runner: ubuntu-latest, target: aarch64 }
-          # macOS x86_64 is cross-built on the arm64 macos-14 runner: dedicated Intel (macos-13)
+          # macOS x86_64 is cross-built on the arm64 macos-latest runner: dedicated Intel (macos-13)
           # runners are scarce/deprecated and queue for tens of minutes. abi3 needs no interpreter at
           # build time, so cross-compiling x86_64-apple-darwin here is sound.
-          - { runner: macos-14, target: x86_64 }
-          - { runner: macos-14, target: aarch64 }
+          # `macos-latest`, not a pinned image: `macos-14` was retired in November 2026, and a job on
+          # it is cancelled before it starts. maturin sets the wheels' minimum macOS itself.
+          - { runner: macos-latest, target: x86_64 }
+          - { runner: macos-latest, target: aarch64 }
           - { runner: windows-latest, target: x64 }
     steps:
       - uses: actions/checkout@v7
@@ -75,10 +77,10 @@ jobs:
         platform:
           - { runner: ubuntu-latest, target: x86_64 }
           - { runner: ubuntu-latest, target: aarch64 }
-          # No macOS x86_64 here. The abi3 arm above cross-builds it on macos-14 precisely because
+          # No macOS x86_64 here. The abi3 arm above cross-builds it on macos-latest precisely because
           # abi3 needs no interpreter at build time; a version-specific build does, and there is no
           # x86_64 free-threaded interpreter to point `--interpreter` at on an arm64 runner.
-          - { runner: macos-14, target: aarch64 }
+          - { runner: macos-latest, target: aarch64 }
           - { runner: windows-latest, target: x64 }
     steps:
       - uses: actions/checkout@v7
