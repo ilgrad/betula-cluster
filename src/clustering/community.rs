@@ -432,7 +432,7 @@ fn leaf_neighbours<R: Real, C: ClusterFeature<R>>(
         };
         return super::knn::build(m, k.max(degree), seed, dist)
             .into_iter()
-            .map(|list| list.into_iter().take(k).map(|(j, _)| j).collect())
+            .map(|list| list.iter().take(k).map(|&(j, _)| j).collect())
             .collect();
     }
     let one = |i: usize| -> Vec<usize> {
@@ -450,7 +450,8 @@ fn leaf_neighbours<R: Real, C: ClusterFeature<R>>(
             d.truncate(k);
         }
         d.sort_by(by);
-        d.into_iter().map(|(_, j)| j).collect()
+        // Collected by reference: `into_iter().collect()` reuses the scan's `m − 1` buffer.
+        d.iter().map(|&(_, j)| j).collect()
     };
     #[cfg(feature = "parallel")]
     {
@@ -2197,6 +2198,22 @@ mod tests {
             assert!(row.windows(2).all(|w| d(w[0]) <= d(w[1])));
             // Its own grid cell holds it, so nothing is nearer than the first leaf named.
             assert!(d(row[0]) <= d(p2m[r]));
+        }
+    }
+
+    /// Each neighbour list holds `k` entries, not the `m − 1` the scan ranked: the lists live for
+    /// the whole row pass, and at 4 000 leaves an unreleased scan buffer each is 256 MB.
+    #[test]
+    fn a_leaf_neighbour_list_keeps_no_more_than_k_entries() {
+        let mut rng = SplitMix64::new(3);
+        let (pts, _) = blobs(&mut rng, 200, &[[0.0, 0.0], [6.0, 0.0]], 1.0);
+        let (micros, _) = grid_micros(&pts, 0.4);
+        assert!(micros.len() > 40);
+        for degree in [0, 8] {
+            for list in leaf_neighbours(&micros, 5, degree, 1) {
+                assert_eq!(list.len(), 5);
+                assert!(list.capacity() <= 8, "capacity {}", list.capacity());
+            }
         }
     }
 
