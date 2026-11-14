@@ -8,8 +8,12 @@ pick when the number of clusters is unknown, or when clusters are not convex, ha
 |---|---|
 | density, count chosen | `hdbscan` (scikit-learn-contrib), `fast_hdbscan`, scikit-learn `OPTICS`, CLASSIX, DenMune, FINCH |
 | hierarchy, count given | genieclust (`Genie`), lumbermark |
+| count chosen under a bound | scikit-learn `BayesianGaussianMixture` |
 
-against `hdbscan`, `scale-space` (count chosen) and `dc-median`, `ward` (count given). The fixtures
+against `hdbscan`, `scale-space`, `leiden` (count chosen), `xmeans` and the `gmm` BIC sweep (count
+chosen under a bound) and `dc-median`, `ward` (count given). A method that takes an upper bound on
+the count gets `K_BOUND` = 20, the same for all, and never the true count; the board files it with
+the methods that choose the count. The fixtures
 are the main bench's quality fixtures at 30 000 rows (standardised; `blobs`, `aniso`, `varied`,
 `moons`, `circles`, `highdim`) and `digits`. Every method runs at its documented defaults, except
 that a minimum cluster size, where a method has one, is the same for all: `min_points(n)`, as in
@@ -43,6 +47,7 @@ from _worker import Peak, cap_memory
 from rivals import score
 
 SEEDS = (0, 1, 2)
+K_BOUND = 20
 TIMEOUT = 1800.0
 N = 30_000
 DATASETS = ("blobs", "aniso", "varied", "moons", "circles", "highdim", "digits")
@@ -71,6 +76,18 @@ def _betula(x, k, seed, **kw):
     return bc.Betula(n_clusters=k, threshold=0.0, seed=seed, **kw).fit_predict(x)
 
 
+def _betula_bounded(x, seed, **kw):
+    import betula_cluster as bc
+
+    return bc.Betula(threshold=0.0, seed=seed, **kw).fit_predict(x)
+
+
+def _bgmm(x, seed):
+    from sklearn.mixture import BayesianGaussianMixture
+
+    return BayesianGaussianMixture(n_components=K_BOUND, random_state=seed).fit_predict(x)
+
+
 def _classix(x):
     from classix import CLASSIX
 
@@ -96,7 +113,9 @@ def _denmune(x):
 def _finch(x):
     from finch import FINCH
 
-    c, _, _ = FINCH(x, verbose=False)
+    # FINCH's default metric is cosine ("recommended for real-world data"); its own toy-data
+    # example passes `distance="euclidean"`, which is the geometry of every fixture here.
+    c, _, _ = FINCH(x, distance="euclidean", verbose=False)
     return c[:, -1]  # the coarsest partition FINCH proposes
 
 
@@ -119,6 +138,13 @@ ARMS = {
         lambda x, k, s: _betula(x, k, s, method="hdbscan", min_cluster_size=min_points(len(x))),
     ),
     "betula-scale-space": (False, lambda x, k, s: _betula(x, k, s, method="scale-space")),
+    "betula-leiden": (False, lambda x, k, s: _betula_bounded(x, s, method="leiden")),
+    "betula-xmeans": (
+        False,
+        lambda x, k, s: _betula_bounded(x, s, method="xmeans", n_clusters=K_BOUND),
+    ),
+    # `n_clusters=0` is the BIC sweep, whose default ceiling `auto_k_max` is K_BOUND.
+    "betula-gmm-bic": (False, lambda x, k, s: _betula_bounded(x, s, method="gmm", n_clusters=0)),
     "betula-dc-median": (True, lambda x, k, s: _betula(x, k, s, method="dc-median")),
     "betula-ward": (True, lambda x, k, s: _betula(x, k, s, method="ward")),
     "hdbscan": (
@@ -141,12 +167,16 @@ ARMS = {
             .fit_predict(x)
         ),
     ),
+    "sklearn-bgmm": (False, lambda x, k, s: _bgmm(x, s)),
     "classix": (False, lambda x, k, s: _classix(x)),
     "denmune": (False, lambda x, k, s: _denmune(x)),
     "finch": (False, lambda x, k, s: _finch(x)),
     "genieclust-genie": (True, lambda x, k, s: _genie(x, k)),
     "lumbermark": (True, lambda x, k, s: _lumbermark(x, k)),
 }
+
+
+SEEDED = {"sklearn-bgmm"}  # rivals with a random state, run on every seed
 
 
 def one(arm: str, dataset: str, seed: int) -> dict:
@@ -184,7 +214,7 @@ def main(argv: list[str]) -> int:
             if only and arm not in only:
                 continue
             # A deterministic rival gives the same labels on every seed; one run says it all.
-            for seed in SEEDS if arm.startswith("betula") else SEEDS[:1]:
+            for seed in SEEDS if arm.startswith("betula") or arm in SEEDED else SEEDS[:1]:
                 cmd = [sys.executable, str(Path(__file__)), "--one", arm, dataset, str(seed)]
                 try:
                     out = subprocess.run(cmd, capture_output=True, text=True, timeout=TIMEOUT)

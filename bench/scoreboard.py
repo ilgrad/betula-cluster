@@ -277,13 +277,37 @@ HEAD_OF_REFERENCE = {
 }
 
 
+# What one contest is, per census table: the slices over which a user would pick one method. The
+# density fixtures are one kind of data; MNIST and the news embeddings are two.
+CONTEST = {
+    "results_rivals": ("dataset", "told_k"),
+    "results_head_refs": ("dataset", "told_k"),
+    "results_density_rivals": ("told_k",),
+}
+
+
+def _contest_champions(df, by):
+    """betula's arm per contest: present on every slice, best mean of its worst-seed ARI."""
+    out = {}
+    for key, grp in df[df["arm"].str.startswith("betula")].groupby(list(by), sort=True):
+        worst = grp.groupby(["arm", "dataset", "n"])["ari"].min().unstack(["dataset", "n"])
+        worst = worst.dropna()  # an arm missing from a slice cannot be the contest's one choice
+        out[key if isinstance(key, tuple) else (key,)] = worst.mean(axis=1).idxmax()
+    return out
+
+
 def _rivals(table):
     """`bench/results_rivals.csv` and `bench/results_head_refs.csv`: betula's best head against
     **each** rival, one cell per rival.
 
     The champion is betula's best arm in the same class (or, for a head reference, the head it
     stands for: `HEAD_OF_REFERENCE`) — told the cluster count, or choosing it —
-    because a method that is given `k` and one that has to find it answer different questions. It
+    because a method that is given `k` and one that has to find it answer different questions.
+    It is chosen **once per contest** (`CONTEST`), as a user picks one method for a kind of data,
+    and then meets every rival on every slice of that contest: picking the best of a dozen heads
+    afresh on each slice, with the labels in hand, is a choice no user can make, and it turned
+    every density slice into a betula win while hdbscan led on the mean. The choice is the arm with
+    the best mean, over the contest's slices, of its worst-seed ARI. It
     is chosen on quality alone, and the memory and speed cells are that arm's: the lightest arm is
     often one whose labels no one would use, and a memory win it scored would be no claim at all.
     Values are medians over the seeds, and the seed range is the spread. Wall time enters only when
@@ -300,6 +324,7 @@ def _rivals(table):
         return []
     if "dnf" in df.columns:
         df = df[df["dnf"].isna()]
+    champion = _contest_champions(df, CONTEST[table])
     axes = [("quality", "ari", True), ("memory", "rss_mb", False)]
     if "timing_valid" in df.columns and bool(df["timing_valid"].all()):
         axes.append(("speed", "time_s", False))
@@ -311,8 +336,8 @@ def _rivals(table):
         theirs = [a for a in arms if not a.startswith("betula")]
         if not ours:
             continue
-        # Champion by its worst seed, as in `_best_of_breed`; judged on the median.
-        best = max(ours, key=lambda a: stats["ari"].loc[a, "min"])
+        key = tuple({"dataset": dataset, "told_k": told}[c] for c in CONTEST[table])
+        best = champion[key]
         for axis, column, higher in axes:
             col = stats[column]
             for rm in theirs:
