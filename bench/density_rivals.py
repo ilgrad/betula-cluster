@@ -1,0 +1,201 @@
+"""betula's density and hierarchy heads against the specialists people use for the same job.
+
+`bench/comprehensive.py` pairs `hdbscan` with scikit-learn's HDBSCAN, and
+`bench/external_baselines.py` adds `fast_hdbscan` on one blobs fixture. The other methods users
+pick when the number of clusters is unknown, or when clusters are not convex, had no row:
+
+| family | rivals |
+|---|---|
+| density, count chosen | `hdbscan` (scikit-learn-contrib), `fast_hdbscan`, scikit-learn `OPTICS`, CLASSIX, DenMune, FINCH |
+| hierarchy, count given | genieclust (`Genie`), lumbermark |
+
+against `hdbscan`, `scale-space` (count chosen) and `dc-median`, `ward` (count given). The fixtures
+are the main bench's quality fixtures at 30 000 rows (standardised; `blobs`, `aniso`, `varied`,
+`moons`, `circles`, `highdim`) and `digits`. Every method runs at its documented defaults, except
+that a minimum cluster size, where a method has one, is the same for all: `min_points(n)`, as in
+`bench/external_baselines.py`. Scores are over all rows with noise as one more label; the noise
+share is recorded beside them.
+
+None of the rivals is a project dependency:
+
+    uv run --no-sync --with scikit-learn --with pandas --with hdbscan --with fast-hdbscan \\
+        --with classixclustering --with denmune --with finch-clust --with genieclust \\
+        --with lumbermark --with pynndescent python bench/density_rivals.py
+
+Writes `bench/results_density_rivals.csv` (schema of `bench/rivals.py`).
+"""
+
+from __future__ import annotations
+
+import json
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+import numpy as np
+
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+
+from _worker import Peak, cap_memory
+from rivals import score
+
+SEEDS = (0, 1, 2)
+TIMEOUT = 1800.0
+N = 30_000
+DATASETS = ("blobs", "aniso", "varied", "moons", "circles", "highdim", "digits")
+
+
+def min_points(n: int) -> int:
+    return max(20, n // 400)
+
+
+def load(dataset: str):
+    if dataset == "digits":
+        from _fixtures import fetch
+
+        x, y, k = fetch("digits")
+        from sklearn.preprocessing import StandardScaler
+
+        return StandardScaler().fit_transform(x), y, k
+    from comprehensive import gen_dataset
+
+    return gen_dataset(dataset, N, seed=0)
+
+
+def _betula(x, k, seed, **kw):
+    import betula_cluster as bc
+
+    return bc.Betula(n_clusters=k, threshold=0.0, seed=seed, **kw).fit_predict(x)
+
+
+def _classix(x):
+    from classix import CLASSIX
+
+    return CLASSIX(minPts=min_points(len(x)), verbose=0).fit(x).labels_
+
+
+def _denmune(x):
+    from denmune import DenMune
+
+    labels, _ = DenMune(train_data=x, k_nearest=39).fit_predict(
+        show_analyzer=False, show_noise=True
+    )
+    return np.asarray(labels["train"])
+
+
+def _finch(x):
+    from finch import FINCH
+
+    c, _, _ = FINCH(x, verbose=False)
+    return c[:, -1]  # the coarsest partition FINCH proposes
+
+
+def _genie(x, k):
+    import genieclust
+
+    return genieclust.Genie(n_clusters=k).fit_predict(x)
+
+
+def _lumbermark(x, k):
+    import lumbermark
+
+    return lumbermark.Lumbermark(n_clusters=k).fit_predict(x)
+
+
+# name → (told_k, fit(x, k, seed) → labels)
+ARMS = {
+    "betula-hdbscan": (
+        False,
+        lambda x, k, s: _betula(x, k, s, method="hdbscan", min_cluster_size=min_points(len(x))),
+    ),
+    "betula-scale-space": (False, lambda x, k, s: _betula(x, k, s, method="scale-space")),
+    "betula-dc-median": (True, lambda x, k, s: _betula(x, k, s, method="dc-median")),
+    "betula-ward": (True, lambda x, k, s: _betula(x, k, s, method="ward")),
+    "hdbscan": (
+        False,
+        lambda x, k, s: (
+            __import__("hdbscan").HDBSCAN(min_cluster_size=min_points(len(x))).fit_predict(x)
+        ),
+    ),
+    "fast-hdbscan": (
+        False,
+        lambda x, k, s: (
+            __import__("fast_hdbscan").HDBSCAN(min_cluster_size=min_points(len(x))).fit_predict(x)
+        ),
+    ),
+    "sklearn-optics": (
+        False,
+        lambda x, k, s: (
+            __import__("sklearn.cluster", fromlist=["OPTICS"])
+            .OPTICS(min_samples=min_points(len(x)))
+            .fit_predict(x)
+        ),
+    ),
+    "classix": (False, lambda x, k, s: _classix(x)),
+    "denmune": (False, lambda x, k, s: _denmune(x)),
+    "finch": (False, lambda x, k, s: _finch(x)),
+    "genieclust-genie": (True, lambda x, k, s: _genie(x, k)),
+    "lumbermark": (True, lambda x, k, s: _lumbermark(x, k)),
+}
+
+
+def one(arm: str, dataset: str, seed: int) -> dict:
+    cap_memory()
+    x, y, k = load(dataset)
+    x = np.ascontiguousarray(x, dtype=np.float64)
+    peak = Peak()
+    t0 = time.perf_counter()
+    labels = ARMS[arm][1](x, k, seed)
+    dt = time.perf_counter() - t0
+    return {"time_s": dt, "rss_mb": peak.mb(), **score(np.asarray(y), labels)}
+
+
+def main() -> int:
+    import pandas as pd
+
+    ready = (
+        subprocess.run(
+            ["bash", str(Path.home() / ".claude/scripts/bench-ready.sh")], capture_output=True
+        ).returncode
+        == 0
+    )
+    rows = []
+    for dataset in DATASETS:
+        n = len(load(dataset)[0])
+        for arm, (told_k, _) in ARMS.items():
+            # A deterministic rival gives the same labels on every seed; one run says it all.
+            for seed in SEEDS if arm.startswith("betula") else SEEDS[:1]:
+                cmd = [sys.executable, str(Path(__file__)), "--one", arm, dataset, str(seed)]
+                try:
+                    out = subprocess.run(cmd, capture_output=True, text=True, timeout=TIMEOUT)
+                    tail = out.stdout.strip().splitlines()
+                    res = (
+                        json.loads(tail[-1])
+                        if out.returncode == 0 and tail
+                        else {"error": (out.stderr.strip().splitlines() or ["no output"])[-1][:160]}
+                    )
+                except subprocess.TimeoutExpired:
+                    res = {"error": f"timeout {TIMEOUT:.0f} s"}
+                timed_out = res.get("error", "").startswith("timeout")
+                row = {"dataset": dataset, "n": n, "arm": arm, "told_k": told_k, "seed": seed}
+                row |= {"dnf": res["error"]} if "error" in res else res
+                row["timing_valid"] = ready
+                rows.append(row)
+                shown = res.get("error") or (
+                    f"ARI {res['ari']:.3f}  k={res['n_clusters']:<4} noise {res['noise_share']:.2f}"
+                    f"  {res['time_s']:7.2f} s  {res['rss_mb']:6.0f} MB"
+                )
+                print(f"{dataset:8s} {arm:20s} seed={seed}  {shown}", flush=True)
+                pd.DataFrame(rows).to_csv(HERE / "results_density_rivals.csv", index=False)
+                if timed_out:
+                    break  # the other seeds would time out too; the DNF row stands for them
+    return 0
+
+
+if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "--one":
+        print(json.dumps(one(sys.argv[2], sys.argv[3], int(sys.argv[4]))))
+    else:
+        sys.exit(main())

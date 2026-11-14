@@ -6,7 +6,7 @@ claims of the 0.2.0 era survived a month. This reads the canonical `results_*.cs
 verdict per cell under the tie rule `bench/RESULTS.md` already states: **a difference smaller than
 the wider of the two cells' three-seed spreads is not a result**.
 
-Three pairings, because "did we win" has three different meanings:
+Four pairings, because "did we win" has four different meanings:
 
 - `vs-same` — betula's k-means against scikit-learn's k-means, and so on down. The like-for-like
   question, and the one the README's parity claims rest on.
@@ -16,6 +16,10 @@ Three pairings, because "did we win" has three different meanings:
 - `vs-external` — against `bench/results_external.csv` if it exists, i.e. the strongest specialist
   per axis rather than scikit-learn's general-purpose implementation. Produce it with
   `bench/external_baselines.py`; absent, these cells simply do not appear.
+- `vs-rival` — betula's best head against **each** rival of the census harnesses
+  (`bench/rivals.py`, `bench/head_references.py`, `bench/density_rivals.py`), one cell per rival,
+  told-k and no-k kept apart. `--claims` renders these and the other named pairings as sentences
+  for `bench/RESULTS.md`, and `--claims-check` fails when a committed block has drifted.
 
 `bench/scoreboard.json` records the verdicts as of the last accepted run. `--check` re-derives them
 and exits non-zero if any cell got worse (win → tie/loss, tie → loss) or vanished; `--update`
@@ -102,6 +106,8 @@ class Cell:
         # ("betula-svd is now our fastest sparse head") indistinguishable from a vanished result.
         self.contenders = contenders
         self.slack = self._slack(spreads)
+        # The two methods behind the numbers, for the claims block. Never part of `name()`.
+        self.champion, _, self.rival = contenders.partition("-vs-") if contenders else ("", "", "")
 
     def _slack(self, spreads):
         """The margin below which this comparison is not a result."""
@@ -174,6 +180,7 @@ def _same_algorithm(table, keys, column, axis, higher):
                 values[rkey],
                 (spread.get(key), spread.get(rkey)),
                 higher,
+                f"{key[at]}-vs-{rival}",
             )
         )
     return cells
@@ -257,6 +264,57 @@ def _external():
     return cells
 
 
+def _rivals(table):
+    """`bench/results_rivals.csv` and `bench/results_head_refs.csv`: betula's best head against
+    **each** rival, one cell per rival.
+
+    The champion is betula's best arm in the same class — told the cluster count, or choosing it —
+    because a method that is given `k` and one that has to find it answer different questions. Values
+    are medians over the seeds, and the seed range is the spread. Wall time enters only when the run
+    recorded `timing_valid` (the machine passed `bench-ready.sh`); a DNF arm gives no cell.
+    """
+    df = _read(table)
+    if df is None:
+        return []
+    if "dnf" in df.columns:
+        df = df[df["dnf"].isna()]
+    axes = [("quality", "ari", True), ("memory", "rss_mb", False)]
+    if "timing_valid" in df.columns and bool(df["timing_valid"].all()):
+        axes.append(("speed", "time_s", False))
+    cells = []
+    for (dataset, n, told), grp in df.groupby(["dataset", "n", "told_k"], sort=True):
+        stats = grp.groupby("arm")[["ari", "rss_mb", "time_s"]].agg(["median", "min", "max"])
+        arms = list(stats.index)
+        ours = [a for a in arms if a.startswith("betula")]
+        theirs = [a for a in arms if not a.startswith("betula")]
+        if not ours:
+            continue
+        for axis, column, higher in axes:
+            col = stats[column]
+            # Champion by its worst seed, as in `_best_of_breed`; judged on the median.
+            bm = (max if higher else min)(
+                ours, key=lambda a: col.loc[a, "min" if higher else "max"]
+            )
+            for rm in theirs:
+                cells.append(
+                    Cell(
+                        axis,
+                        "vs-rival",
+                        table,
+                        f"{dataset}/{n}/{'told-k' if told else 'no-k'}/{rm}",
+                        float(col.loc[bm, "median"]),
+                        float(col.loc[rm, "median"]),
+                        (
+                            float(col.loc[bm, "max"] - col.loc[bm, "min"]),
+                            float(col.loc[rm, "max"] - col.loc[rm, "min"]),
+                        ),
+                        higher,
+                        f"{bm}-vs-{rm}",
+                    )
+                )
+    return cells
+
+
 def collect():
     """Every comparison the committed CSVs support, ordered quality → speed → memory."""
     cells = []
@@ -268,6 +326,8 @@ def collect():
             cells += _same_algorithm(table, keys, column, axis, False)
             cells += _best_of_breed(table, keys, column, axis, False)
     cells += _external()
+    for table in ("results_rivals", "results_head_refs", "results_density_rivals"):
+        cells += _rivals(table)
     return cells
 
 
@@ -288,6 +348,58 @@ def render(cells):
                 f"  {mark} {c.name():<72} {c.ours:>11.4f} vs {c.theirs:>11.4f}"
                 f"  margin {c.margin:+.4f}  slack {c.slack:.4f}{who}"
             )
+
+
+UNITS = {"quality": ("ARI", "{:.3f}"), "speed": ("s", "{:.2f}"), "memory": ("MB", "{:.0f}")}
+
+
+def claims(cells):
+    """The comparison as sentences, grouped by rival: every win, tie and loss, with both values.
+
+    `bench/RESULTS.md` and the README carry this block verbatim between `<!-- claims:begin -->`
+    and `<!-- claims:end -->`; `--claims-check` fails when the committed block differs from what the
+    CSVs produce, so a hand-written claim cannot drift from the numbers behind it.
+    """
+    by_rival = {}
+    for c in cells:
+        if c.rival:
+            by_rival.setdefault(c.rival, []).append(c)
+    lines = []
+    for rival in sorted(by_rival):
+        group = sorted(by_rival[rival], key=lambda c: (ORDER[c.verdict], c.axis, c.name()))
+        tally = {v: sum(c.verdict == v for c in group) for v in ORDER}
+        lines.append(
+            f"- **{rival}** — {tally['win']} win · {tally['tie']} tie · {tally['loss']} loss"
+        )
+        for c in group:
+            unit, fmt = UNITS[c.axis]
+            where = c.label.removesuffix(f"/{rival}")
+            lines.append(
+                f"  - {c.verdict}, {c.axis}, `{where}` ({c.table.removeprefix('results_')}): "
+                f"betula {fmt.format(c.ours)} {unit} (`{c.champion}`) against "
+                f"{fmt.format(c.theirs)} {unit}"
+            )
+    return "\n".join(lines) + "\n"
+
+
+def claims_check(cells, paths):
+    """Exit non-zero when a file's claims block differs from the one the CSVs produce."""
+    want = claims(cells)
+    bad = 0
+    for path in paths:
+        text = Path(path).read_text()
+        begin, end = "<!-- claims:begin -->\n", "<!-- claims:end -->"
+        if begin not in text or end not in text:
+            print(f"{path}: no claims block")
+            bad = 1
+            continue
+        have = text.split(begin, 1)[1].split(end, 1)[0]
+        if have != want:
+            print(f"{path}: the claims block is stale; regenerate it with --claims")
+            bad = 1
+    if not bad:
+        print(f"claims: {len(paths)} file(s) match the CSVs")
+    return bad
 
 
 def check(cells):
@@ -320,6 +432,10 @@ def main():
     )
     ap.add_argument("--check", action="store_true", help="exit non-zero on any regression")
     ap.add_argument("--update", action="store_true", help="accept the current board")
+    ap.add_argument("--claims", action="store_true", help="print the claims block (markdown)")
+    ap.add_argument(
+        "--claims-check", nargs="+", metavar="FILE", help="fail if a file's claims block is stale"
+    )
     args = ap.parse_args()
 
     cells = collect()
@@ -328,6 +444,11 @@ def main():
         return 1
     if args.check:
         return check(cells)
+    if args.claims:
+        print(claims(cells), end="")
+        return 0
+    if args.claims_check:
+        return claims_check(cells, args.claims_check)
     render(cells)
     if args.update:
         BOARD.write_text(
