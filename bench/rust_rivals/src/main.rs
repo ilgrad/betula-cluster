@@ -2,10 +2,11 @@
 //! API against linfa-clustering, clump and the `hdbscan` crate, each at its documented defaults.
 //!
 //! Usage: `rust-rivals <arm> <rows.csv> <k> <seed> <min_cluster_size>`; prints one label per row,
-//! `-1` for noise.
+//! `-1` for noise, then on stderr the seconds the fit took (CSV parsing excluded) and the peak RSS.
 
 use std::error::Error;
 use std::fs;
+use std::time::Instant;
 
 use betula_cluster::distance::CentroidEuclidean;
 use betula_cluster::feature::Spherical;
@@ -103,6 +104,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         .map(|line| line.split(',').map(str::parse).collect())
         .collect::<Result<_, _>>()?;
 
+    let start = Instant::now();
     let labels = match arm {
         "betula-kmeans" => betula(&rows, k, seed, Method::KMeans)?,
         "betula-gmm" => betula(&rows, k, seed, Method::Gmm)?,
@@ -131,6 +133,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
         other => return Err(format!("unknown arm {other}").into()),
     };
+    let fit_s = start.elapsed().as_secs_f64();
     let out: Vec<String> = labels.iter().map(i64::to_string).collect();
     println!("{}", out.join("\n"));
     // This process's own peak: `exec` gave it a fresh address space, whereas the `ru_maxrss` a
@@ -140,6 +143,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         .lines()
         .find_map(|l| l.strip_prefix("VmHWM:"))
         .ok_or("no VmHWM in /proc/self/status")?;
+    eprintln!("fit_s {fit_s}");
     eprintln!("VmHWM {}", hwm.trim());
     Ok(())
 }

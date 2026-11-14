@@ -1363,7 +1363,9 @@ scikit-fuzzy 0.5.0, kmodes 0.12.2, tslearn 0.10.0, numba 0.68.1.
 
 - **Quality and peak RSS only.** The runs shared the machine with other work, so every row records
   `timing_valid = False`, and no wall time from them is quoted here. Timing waits for a quiet
-  machine.
+  machine: `bench/timings.py` re-times every arm of these harnesses and of the four below, in
+  rounds of shuffled order with a control workload after each case, and keeps the first fit (with
+  imports, JIT compilation and device set-up) apart from the second.
 - **Peak RSS is the whole process**, the method's own import stack included (numba, for
   instance). A betula process starts at about 165 MB. A memory cell is what a user's
   process pays, not what the algorithm's data structures hold.

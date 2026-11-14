@@ -93,8 +93,10 @@ def run(arm: str, rows: Path, k: int, seed: int, mcs: int) -> dict:
         out.seek(0)
         labels = np.loadtxt(out, dtype=np.int64)
     assert child.stderr is not None
-    hwm = child.stderr.read().decode().split("VmHWM")[-1].split()
-    return {"time_s": elapsed, "rss_mb": int(hwm[0]) / 1024, "labels": labels}
+    lines = child.stderr.read().decode().splitlines()
+    report = {k: v for k, _, v in (ln.partition(" ") for ln in lines) if k in ("fit_s", "VmHWM")}
+    rss_mb = int(report["VmHWM"].split()[0]) / 1024
+    return {"time_s": elapsed, "fit_s": float(report["fit_s"]), "rss_mb": rss_mb, "labels": labels}
 
 
 def main(argv: list[str]) -> int:
