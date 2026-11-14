@@ -258,6 +258,20 @@ the largest of any head: on 16-dimensional data it retired 1.1·10¹¹ instructi
 `max_leaves` ≤ 2 000 unless the threads are there to spend.
 For a robustness score per point, wrap any partitional head in `consensus` (see below).
 
+**Do not standardise pixels.** `StandardScaler` gives a near-constant border pixel the same weight
+as a stroke pixel, and that costs every method, point-level ones included. On 20 000 MNIST rows
+(seeds 0, 1, 2, about 3 850 leaves), raw pixels / 255 against the same rows standardised:
+
+| arm | raw | standardised |
+|---|---|---|
+| `leiden`, `leaf_graph="rows"` | 0.746 | 0.535 |
+| `leiden`, until stable | 0.684 | 0.467 |
+| kNN-15 + Jaccard + Leiden on all rows (the scanpy recipe, not betula) | 0.709 | 0.464 |
+| leaf purity, the best any head could read | 0.954 | 0.911 |
+
+Standardise columns that are in different units (a feature table). Leave columns in one unit, such
+as pixels or spectra, as they are. Embeddings were not measured standardised.
+
 ### The leaf feature a covariance head can read
 
 `feature="spherical"` keeps one scalar of within-leaf scatter per leaf. `gmm`, `gmm-full` and `mfa`
@@ -2481,6 +2495,50 @@ onto it, so the split scores as agreement while the merge it forces at fixed `k`
 a split/merge fixture that reads 0.750 where the bijection reads 0.625, and +0.03…+0.13 over random
 disagreements. **Scores from 0.8.0 and earlier are therefore not comparable with these**; they were
 too high.
+
+## scikit-learn pipelines and BERTopic
+
+`Betula` passes scikit-learn's `check_estimator` and declares the clusterer tags, so `Pipeline`,
+`GridSearchCV` and `clone` take it as they take `KMeans`. One difference from `KMeans`: `fit`
+keeps `labels_` only when `compute_labels=True`. The default is off in 1.x, so that `fit` costs
+what it always cost; `fit_predict` keeps them always.
+
+```python
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import Normalizer
+
+pipe = make_pipeline(Normalizer(), betula_cluster.Betula(n_clusters=20, method="spherical-kmeans"))
+labels = pipe.fit(X).predict(X_new)
+```
+
+**BERTopic.** BERTopic's `hdbscan_model=` slot takes any object with `fit`, `labels_` and
+`predict`. Give BERTopic the embeddings and skip its UMAP step, because the leaf summary is the
+reduction:
+
+```python
+from bertopic import BERTopic
+from bertopic.dimensionality import BaseDimensionalityReduction
+
+cluster = betula_cluster.Betula(method="vmf", kappa="shared", n_clusters=20, compute_labels=True)
+topic_model = BERTopic(umap_model=BaseDimensionalityReduction(), hdbscan_model=cluster)
+topics, _ = topic_model.fit_transform(docs, embeddings)
+```
+
+On 20 newsgroups as all-MiniLM-L6-v2 embeddings (17 901 posts, the bench's `news-minilm` set,
+`max_leaves=4000`, seeds 0, 1, 2), this reads ARI 0.382 (0.374–0.386) with 20 topics and no post
+marked as an outlier. BERTopic's default pipeline (UMAP, then HDBSCAN with `min_cluster_size=10`)
+reads 0.086 on the same rows, with 37 % of the posts marked as outliers and 218 topics. `transform`
+on new posts calls `predict`, and puts each training post back in its own topic.
+
+Three limits:
+
+- **No online mode.** BERTopic's `partial_fit` reads `labels_` after each batch, and
+  `Betula.partial_fit` does not label the batch. Use `fit`.
+- **No topic probabilities.** `Betula` has no `probabilities_`, so BERTopic returns `None` for them
+  even with `calculate_probabilities=True`.
+- **You give the topic count.** BERTopic's default finds the count; `vmf` does not. When the count is
+  unknown, `method="leiden"` with `leaf_graph="rows"` finds one, at a lower ARI on this set (0.330).
+  The bench page lists where each choice wins.
 
 ## Rust
 
