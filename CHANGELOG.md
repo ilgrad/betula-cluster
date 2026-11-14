@@ -85,6 +85,14 @@ All notable changes to this project are documented here. The format follows
   digests, spectral's past-2 048 graph included).
 
 ### Fixed
+- **`Pipeline.predict`, `GridSearchCV` and `is_clusterer` work again on scikit-learn ≥ 1.6.**
+  scikit-learn now reads an estimator's capabilities from `__sklearn_tags__`, and without it these
+  three raised `AttributeError` for every estimator here, although the README said they worked.
+  `Betula`, `DenStream`, `DbStream`, `KPrototypes` and `BregmanBetula` now declare themselves
+  clusterers (`Betula` also takes sparse input) and answer `check_is_fitted`. scikit-learn stays
+  optional: it is imported only when scikit-learn asks for the tags.
+- **The `persistence` feature no longer pulls in `flate2`.** Only the Python bindings compress a
+  saved model, so `flate2` moves to the `python` feature.
 - **USAGE no longer reads the hyperbolic head's 0.14 ARI drift under a boost as geometry.** At 500
   and 2 000 leaves, a relative jitter of `1e−12` moves the partition as far as the boost did; over 15
   draws per cell the default tree reads 0.61–0.65 at every `φ`.

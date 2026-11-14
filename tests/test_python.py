@@ -3396,6 +3396,60 @@ def test_sklearn_pipeline_smoke(blobs):
     pipe.set_params(cluster__n_clusters=4)  # nested param access via the estimator's get/set_params
 
 
+def test_sklearn_pipeline_predict_and_grid_search(blobs):
+    # scikit-learn >= 1.6 reads `__sklearn_tags__` before `Pipeline.predict` and inside
+    # `GridSearchCV`; without it both raise although `get_params` / `set_params` work.
+    pipeline = pytest.importorskip("sklearn.pipeline")
+    pre = pytest.importorskip("sklearn.preprocessing")
+    selection = pytest.importorskip("sklearn.model_selection")
+    x, y = blobs
+    pipe = pipeline.make_pipeline(
+        pre.StandardScaler(), betula_cluster.Betula(n_clusters=4, max_leaves=300, seed=1)
+    )
+    assert ari(pipe.fit(x).predict(x), y) > 0.9
+
+    def distinct_labels(est, data, _y=None):
+        return float(np.unique(est.predict(data)).size)
+
+    grid = selection.GridSearchCV(
+        betula_cluster.Betula(max_leaves=300, seed=1),
+        {"n_clusters": [2, 4]},
+        cv=selection.KFold(
+            2, shuffle=True, random_state=0
+        ),  # the fixture's rows are sorted by blob
+        scoring=distinct_labels,
+    ).fit(x)
+    assert grid.best_params_ == {"n_clusters": 4}
+
+
+@pytest.mark.parametrize(
+    ("cls", "kwargs", "sparse"),
+    [
+        (betula_cluster.Betula, {}, True),
+        (betula_cluster.DenStream, {}, False),
+        (betula_cluster.DbStream, {}, False),
+        (betula_cluster.KPrototypes, {"categorical": (0,)}, False),
+        (betula_cluster.BregmanBetula, {}, False),
+    ],
+)
+def test_sklearn_tags_name_every_estimator_a_clusterer(cls, kwargs, sparse):
+    base = pytest.importorskip("sklearn.base")
+    utils = pytest.importorskip("sklearn.utils")
+    validation = pytest.importorskip("sklearn.utils.validation")
+    exceptions = pytest.importorskip("sklearn.exceptions")
+    est = cls(**kwargs)
+    assert base.is_clusterer(est)
+    assert utils.get_tags(est).input_tags.sparse is sparse
+    with pytest.raises(exceptions.NotFittedError):
+        validation.check_is_fitted(est)
+
+
+def test_sklearn_is_fitted_after_fit(blobs):
+    validation = pytest.importorskip("sklearn.utils.validation")
+    x, _ = blobs
+    validation.check_is_fitted(betula_cluster.Betula(n_clusters=4, max_leaves=300).fit(x))
+
+
 def test_sklearn_clone_roundtrip(blobs):
     base = pytest.importorskip("sklearn.base")
     x, y = blobs

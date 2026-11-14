@@ -12,6 +12,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError, version
+from typing import Any
 
 import numpy as np
 
@@ -774,7 +775,34 @@ _AUTO_PILOT_CAP_FACTOR = 8
 _AUTO_PILOT_MIN = 4000
 
 
-class Betula:
+class _Clusterer:
+    """scikit-learn's estimator contract for the clusterers below, without importing scikit-learn.
+
+    scikit-learn ≥ 1.6 reads an estimator's capabilities from ``__sklearn_tags__``; without it
+    ``Pipeline.predict``, ``GridSearchCV`` and ``is_clusterer`` raise. scikit-learn is optional, and
+    only scikit-learn calls this method, so the import happens there.
+    """
+
+    _sparse_input = False
+    _est: Any  # the compiled engine (untyped extension object), or None before `fit`
+
+    def __sklearn_tags__(self):
+        import importlib
+
+        utils = importlib.import_module(
+            "sklearn.utils"
+        )  # optional, and only scikit-learn calls this
+        return utils.Tags(
+            estimator_type="clusterer",
+            target_tags=utils.TargetTags(required=False),
+            input_tags=utils.InputTags(sparse=self._sparse_input),
+        )
+
+    def __sklearn_is_fitted__(self):
+        return self._est is not None
+
+
+class Betula(_Clusterer):
     """Streaming, scikit-learn-style BETULA estimator.
 
     Parameters are validated lazily — when the engine is built at ``fit`` / ``partial_fit`` time —
@@ -982,6 +1010,8 @@ class Betula:
         self._effective_max_leaves = max_leaves
         # Cache for the pilot-estimated threshold when `threshold="auto"`; reset on `set_params`.
         self._auto_threshold = None
+
+    _sparse_input = True  # `fit` / `predict` take a scipy.sparse CSR matrix as-is
 
     # ── scikit-learn parameter protocol ──────────────────────────────────────────────────────
     def get_params(self, deep=True):
@@ -2180,7 +2210,7 @@ class WindowStream:
         return f"WindowStream(frame_width={self.frame_width}, capacity={self.capacity})"
 
 
-class DenStream:
+class DenStream(_Clusterer):
     """Streaming **DenStream** density clusterer (Cao et al., SDM 2006) over fading micro-clusters.
 
     For evolving streams where old data should fade: feed chunks with :meth:`partial_fit`, then
@@ -2308,7 +2338,7 @@ class DenStream:
 _DBSTREAM_PARAMS = ("r", "decay", "alpha", "min_weight")
 
 
-class DbStream:
+class DbStream(_Clusterer):
     """Streaming **DBSTREAM** density clusterer (Hahsler & Bolaños, 2016) over fading micros.
 
     Like :class:`DenStream` it fades old data and marks ``-1`` as noise, but it connects
@@ -2449,7 +2479,7 @@ _KPROTOTYPES_PARAMS = (
 )
 
 
-class KPrototypes:
+class KPrototypes(_Clusterer):
     """k-prototypes clustering of **mixed numeric + categorical + directional** data.
 
     Huang's k-prototypes (1997) with a third block. ``categorical`` lists the integer-coded
@@ -2594,7 +2624,7 @@ _BREGMAN_DOMAIN = {
 }
 
 
-class BregmanBetula:
+class BregmanBetula(_Clusterer):
     """CF-tree clustering in a **Bregman geometry** rather than squared Euclidean.
 
     A second estimator rather than a ``divergence=`` keyword on :class:`Betula`, because the two

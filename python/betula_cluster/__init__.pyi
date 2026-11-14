@@ -237,7 +237,11 @@ def mixture_w2(
 ) -> float:
     """Mixture-Wasserstein MW2 between two fitted Gaussian mixtures; lower is closer."""
 
-class Betula:
+class _Clusterer:
+    def __sklearn_tags__(self) -> Any: ...
+    def __sklearn_is_fitted__(self) -> bool: ...
+
+class Betula(_Clusterer):
     """Streaming, scikit-learn-style BETULA estimator."""
 
     def __init__(
@@ -418,7 +422,7 @@ class WindowStream:
         self, t0: float, t1: float, k: int, max_iter: int = ...
     ) -> tuple[NDArray[np.float64], NDArray[np.float64], float] | None: ...
 
-class DenStream:
+class DenStream(_Clusterer):
     """Streaming DenStream density clusterer over fading micro-clusters."""
 
     def __init__(
@@ -444,7 +448,7 @@ class DenStream:
     @property
     def microcluster_radii_(self) -> NDArray[np.float64]: ...
 
-class DbStream:
+class DbStream(_Clusterer):
     """Streaming DBSTREAM density clusterer (shared-density connectivity)."""
 
     def __init__(
@@ -470,7 +474,7 @@ class DbStream:
     @property
     def microcluster_radii_(self) -> NDArray[np.float64]: ...
 
-class BregmanBetula:
+class BregmanBetula(_Clusterer):
     """CF-tree clustering in a Bregman geometry rather than squared Euclidean."""
 
     def __init__(
@@ -496,7 +500,7 @@ class BregmanBetula:
     @property
     def n_leaves_(self) -> int: ...
 
-class KPrototypes:
+class KPrototypes(_Clusterer):
     """k-prototypes clustering of mixed numeric + categorical data (Huang, 1997)."""
 
     def __init__(
