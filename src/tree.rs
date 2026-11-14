@@ -3687,10 +3687,10 @@ mod tests {
         assert!(t.nodes.len() > 1, "tree never split");
         // Every entry survives the split exactly once, and no group is left empty.
         assert_eq!(t.entries.len(), 5);
-        for id in 0..t.nodes.len() {
-            if !t.nodes[id].children.is_empty() {
+        for (id, node) in t.nodes.iter().enumerate() {
+            if !node.children.is_empty() {
                 assert!(
-                    !t.nodes[id].children.is_empty(),
+                    !node.children.is_empty(),
                     "node {id} was left with no children"
                 );
             }

@@ -1016,9 +1016,9 @@ mod tests {
         let mut pooled = 0.0;
         for c in 0..3 {
             let mut r = [0.0; 10];
-            for i in 0..mu.len() {
-                for (a, &x) in r.iter_mut().zip(&mu[i]) {
-                    *a += n[i] * res.resp[i][c] * x;
+            for ((row, &ni), resp) in mu.iter().zip(&n).zip(&res.resp) {
+                for (a, &x) in r.iter_mut().zip(row) {
+                    *a += ni * resp[c] * x;
                 }
             }
             pooled += norm(&r);

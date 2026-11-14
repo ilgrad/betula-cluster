@@ -597,8 +597,8 @@ impl<R: Real, C: ClusterFeature<R>> DbStream<R, C> {
         // distance the drift statistic needs.
         let mut neigh: Vec<usize> = Vec::new();
         let mut near: Option<f64> = None;
-        for i in 0..self.micros.len() {
-            let d2 = sq_euclidean(self.micros[i].cf.mean(), x).to_f64().unwrap();
+        for (i, m) in self.micros.iter().enumerate() {
+            let d2 = sq_euclidean(m.cf.mean(), x).to_f64().unwrap();
             near = Some(near.map_or(d2, |b: f64| b.min(d2)));
             if d2 <= r2 {
                 neigh.push(i);

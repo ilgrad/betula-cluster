@@ -225,10 +225,6 @@ fn geo_sq<R: Real>(
     v
 }
 
-#[expect(
-    clippy::needless_range_loop,
-    reason = "the upper triangle is filled into both d2[i][j] and d2[j][i]"
-)]
 fn knn_affinity_impl<R: Real>(
     centers: &[Vec<R>],
     cov: Option<(&[Vec<Vec<R>>], R)>,
@@ -241,10 +237,13 @@ fn knn_affinity_impl<R: Real>(
     // Pairwise squared distances: centroid term + optional log-Euclidean shape + optional tangent.
     let mut d2 = vec![vec![R::zero(); n]; n];
     for i in 0..n {
-        for j in (i + 1)..n {
+        let (head, tail) = d2.split_at_mut(i + 1);
+        let row_i = &mut head[i];
+        for (k, row_j) in tail.iter_mut().enumerate() {
+            let j = i + 1 + k;
             let v = geo_sq(centers, cov, tangent, i, j);
-            d2[i][j] = v;
-            d2[j][i] = v;
+            row_i[j] = v;
+            row_j[i] = v;
         }
     }
 

@@ -70,8 +70,8 @@ harness = false
 [features]
 default = ["parallel"]
 parallel = ["dep:rayon"]
-persistence = ["dep:serde", "dep:ciborium", "dep:flate2"]
-python = ["dep:pyo3", "dep:numpy", "persistence"]
+persistence = ["dep:serde", "dep:ciborium"]
+python = ["dep:pyo3", "dep:numpy", "dep:flate2", "persistence"]
 cli = []
 
 [profile.release]
