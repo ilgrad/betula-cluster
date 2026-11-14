@@ -186,7 +186,7 @@ pub fn leiden_on<R: Real, C: ClusterFeature<R>>(
 ) -> Community {
     leiden_on_degree(
         features,
-        resolution,
+        Gamma::Fixed(resolution),
         objective,
         seed,
         cov_weight,
@@ -196,6 +196,61 @@ pub fn leiden_on<R: Real, C: ClusterFeature<R>>(
         graph,
         0,
     )
+}
+
+/// The resolution the Leiden head runs at: as given, or the one found for a requested number of
+/// communities ([`for_k`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Gamma {
+    Fixed(f64),
+    /// `k` communities, each holding at least [`COUNTED_SHARE`] of the mass.
+    ForK(usize),
+}
+
+/// Share of the total mass a community must hold to count toward a requested number of
+/// communities. Modularity at a resolution high enough for `k` large communities also leaves
+/// small ones, a handful of leaves each; counting those would stop the search short of `k`.
+const COUNTED_SHARE: f64 = 0.005;
+
+/// Communities of `labels` holding at least [`COUNTED_SHARE`] of `mass`.
+fn counted_communities(labels: &[usize], mass: &[f64]) -> usize {
+    let mut held = vec![0.0; labels.iter().max().map_or(0, |&l| l + 1)];
+    for (&l, &w) in labels.iter().zip(mass) {
+        held[l] += w;
+    }
+    let floor = COUNTED_SHARE * mass.iter().sum::<f64>();
+    held.iter().filter(|&&h| h >= floor).count()
+}
+
+/// The partition `run(γ)` returns at the resolution whose [`counted_communities`] is `k`, found by
+/// bisection on `log γ` over `[1e-4, 1]`, the upper end raised fourfold up to 64 while it gives
+/// fewer than `k`. The count is not monotone in `γ`, so the search is bounded at 14 halvings and
+/// returns the partition whose count came nearest `k`, the first found on a tie.
+fn for_k(k: usize, mass: &[f64], run: impl Fn(f64) -> Vec<usize>) -> Vec<usize> {
+    let (mut lo, mut hi) = (1e-4_f64, 1.0_f64);
+    let mut labels = run(hi);
+    while counted_communities(&labels, mass) < k && hi < 64.0 {
+        hi *= 4.0;
+        labels = run(hi);
+    }
+    let mut best = (counted_communities(&labels, mass).abs_diff(k), labels);
+    for _ in 0..14 {
+        if best.0 == 0 {
+            break;
+        }
+        let mid = (lo * hi).sqrt();
+        let labels = run(mid);
+        let got = counted_communities(&labels, mass);
+        if got.abs_diff(k) < best.0 {
+            best = (got.abs_diff(k), labels);
+        }
+        if got < k {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    best.1
 }
 
 /// [`leiden_on`] with the leaf graph's neighbour lists found by the bounded-degree beam-search
@@ -209,7 +264,7 @@ pub fn leiden_on<R: Real, C: ClusterFeature<R>>(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn leiden_on_degree<R: Real, C: ClusterFeature<R>>(
     features: &[C],
-    resolution: f64,
+    resolution: Gamma,
     objective: Objective,
     seed: u64,
     cov_weight: f64,
@@ -228,25 +283,26 @@ pub(crate) fn leiden_on_degree<R: Real, C: ClusterFeature<R>>(
     let sizes = match graph {
         LeafGraph::Unit => None,
         LeafGraph::Mass => {
-            let mass: Vec<f64> = features
-                .iter()
-                .map(|f| f.weight().to_f64().unwrap())
-                .collect();
+            let mass = leaf_mass(features);
             mass_quotient(&mut base, &mass);
             Some(mass)
         }
     };
-    Community {
-        labels: detect_passes_sized(
-            &base,
-            sizes.as_deref(),
-            resolution,
-            objective,
-            seed,
-            max_passes,
-        )
-        .0,
-    }
+    let run = |gamma: f64| {
+        detect_passes_sized(&base, sizes.as_deref(), gamma, objective, seed, max_passes).0
+    };
+    let labels = match resolution {
+        Gamma::Fixed(gamma) => run(gamma),
+        Gamma::ForK(k) => for_k(k, &leaf_mass(features), run),
+    };
+    Community { labels }
+}
+
+fn leaf_mass<R: Real, C: ClusterFeature<R>>(features: &[C]) -> Vec<f64> {
+    features
+        .iter()
+        .map(|f| f.weight().to_f64().unwrap_or(0.0))
+        .collect()
 }
 
 /// Leaves each row names in the rows graph. Of 3, 5 and 8, five was the one that gained on every
@@ -420,7 +476,7 @@ fn leaf_neighbours<R: Real, C: ClusterFeature<R>>(
 pub(crate) fn leiden_rows<R: Real, C: ClusterFeature<R>>(
     features: &[C],
     graph: &RowGraph,
-    resolution: f64,
+    resolution: Gamma,
     seed: u64,
     max_passes: usize,
 ) -> Community {
@@ -429,14 +485,31 @@ pub(crate) fn leiden_rows<R: Real, C: ClusterFeature<R>>(
         return Community { labels: vec![0; m] };
     }
     let s = graph.per_row.max(2) as f64;
-    let (mut labels, _) = detect_passes_sized(
-        &graph.adj,
-        None,
-        resolution * s / (s - 1.0),
-        Objective::Modularity,
-        seed,
-        max_passes,
-    );
+    let run = |gamma: f64| {
+        let (labels, _) = detect_passes_sized(
+            &graph.adj,
+            None,
+            gamma * s / (s - 1.0),
+            Objective::Modularity,
+            seed,
+            max_passes,
+        );
+        adopt_unnamed(features, graph, labels)
+    };
+    let labels = match resolution {
+        Gamma::Fixed(gamma) => run(gamma),
+        Gamma::ForK(k) => for_k(k, &leaf_mass(features), run),
+    };
+    Community { labels }
+}
+
+/// Give each leaf no row names the community of its nearest named leaf.
+fn adopt_unnamed<R: Real, C: ClusterFeature<R>>(
+    features: &[C],
+    graph: &RowGraph,
+    mut labels: Vec<usize>,
+) -> Vec<usize> {
+    let m = labels.len();
     let unnamed: Vec<usize> = (0..m).filter(|&i| graph.mass[i] == 0.0).collect();
     if !unnamed.is_empty() && unnamed.len() < m {
         for &i in &unnamed {
@@ -454,7 +527,7 @@ pub(crate) fn leiden_rows<R: Real, C: ClusterFeature<R>>(
         }
         labels = relabel(&labels);
     }
-    Community { labels }
+    labels
 }
 
 /// The self-tuning kNN affinity graph over the leaf means, with the geometry terms whose weights
@@ -895,7 +968,7 @@ mod tests {
         let rows = |cov_weight: f64, degree: usize| -> Vec<usize> {
             let labels = leiden_on_degree(
                 &micros,
-                1.0,
+                Gamma::Fixed(1.0),
                 Objective::Modularity,
                 1,
                 cov_weight,
@@ -2101,7 +2174,7 @@ mod tests {
             let top = row_top_leaves(&micros, &flat, &p2m, s, degree, 1);
             assert_eq!(top.len(), pts.len() * s);
             let graph = RowGraph::from_top(&top, s, micros.len());
-            let labels = leiden_rows(&micros, &graph, 1.0, 1, 1).labels;
+            let labels = leiden_rows(&micros, &graph, Gamma::Fixed(1.0), 1, 1).labels;
             let pred: Vec<usize> = p2m.iter().map(|&m| labels[m]).collect();
             assert!(ari(&pred, &truth) > 0.95, "degree {degree}");
         }
@@ -2141,7 +2214,7 @@ mod tests {
         let s = ROW_GRAPH_LEAVES;
         let top = row_top_leaves(&micros[..micros.len() - 1], &flat, &p2m, s, 0, 1);
         let graph = RowGraph::from_top(&top, s, micros.len());
-        let labels = leiden_rows(&micros, &graph, 1.0, 1, 1).labels;
+        let labels = leiden_rows(&micros, &graph, Gamma::Fixed(1.0), 1, 1).labels;
         let last = micros.len() - 1;
         let nearest = (0..last)
             .min_by(|&a, &b| {
@@ -2151,5 +2224,59 @@ mod tests {
             .unwrap();
         assert_eq!(labels[last], labels[nearest]);
         assert_eq!(n_distinct(&labels), n_distinct(&labels[..last]));
+    }
+
+    /// A community counts toward a requested number only at 0.5 % of the mass or more.
+    #[test]
+    fn a_community_under_half_a_percent_of_the_mass_is_not_counted() {
+        let mass = [100.0, 100.0, 0.9, 99.1];
+        assert_eq!(counted_communities(&[0, 1, 2, 2], &mass), 3);
+        // 0.9 of 300 is 0.3 %: a community of that leaf alone does not count.
+        assert_eq!(counted_communities(&[0, 1, 2, 1], &mass), 2);
+        assert_eq!(counted_communities(&[0, 0, 0, 0], &mass), 1);
+    }
+
+    /// Six touching blobs, so both graphs are connected: asked for fewer communities than γ = 1
+    /// finds, or more, the search returns that many on both graph kinds. (On a disconnected graph
+    /// no resolution merges two components, and the nearest count is the answer.)
+    #[test]
+    fn the_resolution_search_returns_the_requested_number_of_communities() {
+        let mut rng = SplitMix64::new(4);
+        let centers = [
+            [0.0, 0.0],
+            [4.0, 0.0],
+            [0.0, 4.0],
+            [4.0, 4.0],
+            [8.0, 0.0],
+            [8.0, 4.0],
+        ];
+        let (pts, _) = blobs(&mut rng, 200, &centers, 1.0);
+        let (micros, p2m) = grid_micros(&pts, 0.8);
+        let flat: Vec<f64> = pts.iter().flatten().copied().collect();
+        let mass = leaf_mass(&micros);
+        let s = ROW_GRAPH_LEAVES;
+        let graph = RowGraph::from_top(
+            &row_top_leaves(&micros, &flat, &p2m, s, 0, 1),
+            s,
+            micros.len(),
+        );
+        for k in [2, 4, 6, 9] {
+            let unit = leiden_on_degree(
+                &micros,
+                Gamma::ForK(k),
+                Objective::Modularity,
+                1,
+                0.0,
+                0.0,
+                2,
+                1,
+                LeafGraph::Unit,
+                0,
+            )
+            .labels;
+            assert_eq!(counted_communities(&unit, &mass), k, "unit graph, k = {k}");
+            let rows = leiden_rows(&micros, &graph, Gamma::ForK(k), 1, 1).labels;
+            assert_eq!(counted_communities(&rows, &mass), k, "rows graph, k = {k}");
+        }
     }
 }

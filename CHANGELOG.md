@@ -7,6 +7,14 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **`resolution="auto"` for `method="leiden"`.** Leiden ignored `n_clusters`; with
+  `resolution="auto"` it searches the modularity resolution for `n_clusters` communities of at least
+  0.5 % of the rows each (bisection on `log γ`, at most 14 halvings, the nearest count when `k`
+  cannot be reached — a graph with more components than `k` cannot be). Median ARI over five row
+  orders × seeds 0/1/2, against the best leaf graph at `γ = 1`: six blobs 0.623 → 0.983, two noisy
+  rings 0.144 → 1.000, covtype 0.039 → 0.111, 20 newsgroups 0.345 → 0.381, digits 0.810 → 0.810;
+  on MNIST, where `γ = 1` already finds 10–12 communities, it costs 0.02 (0.746 → 0.727). A float
+  keeps its meaning, and `1.0` stays the default. `leiden-cpm` refuses `"auto"`.
 - **`leaf_graph="rows"` for `method="leiden"`.** The leaf graph counted from the training rows:
   each row names its 5 nearest leaves, and every pair of leaves one row names gains an edge (the
   object–representative graph of U-SPEC, folded onto the leaves). A row takes the community of its

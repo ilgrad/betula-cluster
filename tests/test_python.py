@@ -1084,6 +1084,48 @@ def test_the_rows_leaf_graph_refuses_a_fit_with_no_dense_rows_to_count(blobs):
             betula_cluster.fit_predict(x, 3, method=method, leaf_graph="rows")
 
 
+@pytest.mark.parametrize("leaf_graph", ["unit", "mass", "rows"])
+def test_an_auto_resolution_finds_n_clusters_communities_and_survives_a_round_trip(
+    blobs, leaf_graph, tmp_path
+):
+    """``resolution="auto"`` searches the modularity resolution for ``n_clusters`` communities:
+    on the four separated blobs it splits them into six when asked, and returns the four when
+    asked for four; both entry points agree, and a saved model keeps the spelling. (Fewer than four
+    cannot be had: the blobs' leaf graph has four components, and Leiden never joins two.)"""
+    import pickle
+
+    x, y = blobs
+    kw = dict(method="leiden", threshold=0.0, max_leaves=400, seed=1, leaf_graph=leaf_graph)
+    for k in (6, 4):
+        est = betula_cluster.Betula(n_clusters=k, resolution="auto", **kw)
+        labels = est.fit_predict(x)
+        assert est.get_params()["resolution"] == "auto"
+        counts = np.bincount(labels)
+        assert (counts >= 0.005 * len(x)).sum() == k
+        np.testing.assert_array_equal(
+            betula_cluster.fit_predict(x, k, resolution="auto", **kw), labels
+        )
+    assert ari(labels, y) > 0.95
+    path = tmp_path / "model.betula"
+    est.save(str(path))
+    for restored in (pickle.loads(pickle.dumps(est)), betula_cluster.Betula.load(str(path))):
+        assert restored.get_params()["resolution"] == "auto"
+        np.testing.assert_array_equal(restored.predict(x), est.predict(x))
+
+
+def test_an_auto_resolution_is_refused_where_it_has_no_meaning(blobs):
+    x, _ = blobs
+    for method in ("leiden-cpm", "kmeans"):
+        with pytest.raises(ValueError, match=f"read only by 'leiden', not by method='{method}'"):
+            betula_cluster.fit_predict(x, 3, method=method, resolution="auto")
+        with pytest.raises(ValueError, match=f"read only by 'leiden', not by method='{method}'"):
+            betula_cluster.Betula(n_clusters=3, method=method, resolution="auto").fit(x)
+    with pytest.raises(ValueError, match="n_clusters must be at least 1"):
+        betula_cluster.Betula(n_clusters=0, method="leiden", resolution="auto").fit(x)
+    with pytest.raises(ValueError, match="resolution must be a number or 'auto', got 'high'"):
+        betula_cluster.fit_predict(x, 3, method="leiden", resolution="high")
+
+
 def test_the_rows_leaf_graph_refuses_sparse_rows(blobs):
     sparse = pytest.importorskip("scipy.sparse")
     x, _ = blobs

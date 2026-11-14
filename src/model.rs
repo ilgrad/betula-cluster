@@ -1,6 +1,6 @@
 //! End-to-end model: build a CF-tree, cluster its leaves (Phase 3), and label points.
 
-use crate::clustering::community::{RowGraph, leiden_on_degree, leiden_rows};
+use crate::clustering::community::{Gamma, RowGraph, leiden_on_degree, leiden_rows};
 use crate::clustering::{
     Gmm, GmmFull, GmmToeplitz, KMEANS_N_INIT, Kappa, LeafGraph, Linkage, Mfa, Movmf, Mppca,
     Objective, Watson, agglomerative, agglomerative_auto, dyn_msc, equal_size, fuzzy_cmeans,
@@ -657,6 +657,9 @@ pub(crate) struct HeadOptions<'a> {
     pub(crate) graph_degree: usize,
     /// The leaf graph counted from the training rows, which replaces `graph` for the Leiden head.
     pub(crate) rows: RowEdges<'a>,
+    /// Run the modularity Leiden head at the resolution that gives `k` communities instead of at
+    /// the one [`Method::Leiden`] names (`resolution="auto"`).
+    pub(crate) resolution_for_k: bool,
 }
 
 /// Whether the Leiden head partitions the leaf graph counted from the rows ([`RowGraph`]). Only a
@@ -682,6 +685,7 @@ impl HeadOptions<'_> {
         equal_size: false,
         graph_degree: 0,
         rows: RowEdges::Off,
+        resolution_for_k: false,
     };
 }
 
@@ -791,7 +795,8 @@ pub(crate) fn fit_head<R: Real, C: ClusterFeature<R>>(
         Method::Spectral => {
             HeadFit::hard(spectral_on(features, k, max_iter, n_init, seed, opts.graph).labels)
         }
-        // Leiden discovers the community count from the graph; `k` is ignored (like HDBSCAN).
+        // Leiden discovers the community count from the graph and ignores `k` (like HDBSCAN),
+        // unless `resolution_for_k` asks for the resolution that gives `k` communities.
         Method::Leiden {
             resolution,
             cpm,
@@ -804,13 +809,19 @@ pub(crate) fn fit_head<R: Real, C: ClusterFeature<R>>(
             } else {
                 Objective::Modularity
             };
+            let gamma = if opts.resolution_for_k {
+                debug_assert!(!cpm && kk >= 1, "refused at the boundary");
+                Gamma::ForK(kk)
+            } else {
+                Gamma::Fixed(resolution)
+            };
             match opts.rows {
                 RowEdges::Off => {}
                 // Every leaf is a centre carrying its community, so a row is labelled by its
                 // nearest leaf exactly, as the graph counted it, and not by the tree descent.
                 RowEdges::Counted(rows) => {
                     debug_assert!(!cpm, "the rows graph is refused for CPM at the boundary");
-                    let labels = leiden_rows(features, rows, resolution, seed, opts.passes).labels;
+                    let labels = leiden_rows(features, rows, gamma, seed, opts.passes).labels;
                     let centers = labels
                         .iter()
                         .zip(features)
@@ -825,7 +836,7 @@ pub(crate) fn fit_head<R: Real, C: ClusterFeature<R>>(
             HeadFit::hard(
                 leiden_on_degree(
                     features,
-                    resolution,
+                    gamma,
                     obj,
                     seed,
                     cov_weight,

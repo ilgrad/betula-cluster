@@ -59,7 +59,8 @@ density head runs on; `0` = the exact complete graph, a positive value is a **fl
 to whatever `min_samples` needs — see *Graph-indexing the density head* below; for `"leiden"` /
 `"leiden-cpm"`, a positive value builds the leaf graph on the same index instead of by an exact scan),
 `resolution` (Leiden γ — granularity for `method="leiden"` / `"leiden-cpm"`, higher
-⇒ more communities), `covariance_weight` (Leiden β — a log-Euclidean covariance/shape term in the
+⇒ more communities; `"auto"`, for `leiden` only, searches γ for `n_clusters` communities of at
+least 0.5 % of the rows each — see *Telling Leiden the count* in [MATH.md](MATH.md)), `covariance_weight` (Leiden β — a log-Euclidean covariance/shape term in the
 affinity, `feature="full"`; `0` = off, the centroid-only default), `tangent_weight` / `tangent_rank`
 (Leiden γ — a Grassmann tangent-subspace term of rank `tangent_rank` for manifold-aware communities,
 `feature="full"`; `0` = off), `n_iterations` (Leiden passes: each pass after the first starts from
@@ -227,6 +228,7 @@ answer.
 | a cluster *hierarchy* / merge structure | `ward` | yes (or `0` = dendrogram cut) |
 | **non-convex / manifold** shapes (moons, rings, spirals) | `spectral` | yes (pair with a **small** `threshold`) |
 | **community / graph structure**, unknown count | `leiden` (or `leiden-cpm`) | **no** — count is discovered; tune `resolution` |
+| community / graph structure, **known** count | `leiden` with `resolution="auto"` | yes — γ is searched for `n_clusters` communities |
 | variable-density clusters **+ noise**, unknown count | `hdbscan` | no |
 | the same density structure, but you know `k` and want a partition rather than noise | `dc-median` | yes — read *Naming `k` on the density hierarchy*; `dc-center` is the other objective and is **mass-blind** |
 | **density peaks**, arbitrary count, no `k` *or* bandwidth to pick | `scale-space` | **no** — scale chosen by mode persistence |
@@ -234,8 +236,9 @@ answer.
 | ordered signals with structure **beyond a low-order AR** (long-lag echo, narrowband) | `gmm-toeplitz-full` (any lag) or `gmm-toeplitz-gs` (likelihood-optimal precision, ≤ order 16) | yes (or `0` = BIC) |
 | topological skeleton / #components / loops | [`mapper()`](FEATURES.md) | no |
 
-`n_clusters=0` auto-selects `k` for the parametric heads; `leiden` / `hdbscan` always discover it
-(`leiden` reads the count off the graph — tune granularity with `resolution` γ, higher ⇒ more).
+`n_clusters=0` auto-selects `k` for the parametric heads; `leiden` / `hdbscan` discover it
+(`leiden` reads the count off the graph — tune granularity with `resolution` γ, higher ⇒ more, or
+pass `resolution="auto"` to have it searched for `n_clusters`).
 Leiden builds its leaf graph by an exact nearest-neighbour scan by default, `O(m²·d)` in the leaf
 count `m` and `O(m²)` in memory, so doubling `max_leaves` quadruples its cost (retired instructions
 ×4.0–4.2 per doubling from 900 to 7 400 leaves). `graph_degree > 0` finds the neighbours by the

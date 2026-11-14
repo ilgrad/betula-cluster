@@ -737,6 +737,37 @@ synthetic ones: on well-separated blobs the mass graph is better, and on noisy r
 graph over-segments at $\gamma = 1$, by 0.02. Python-igraph's Leiden on the same counted graph reads
 within 0.015 of these rows on MNIST, so the optimiser is not what limits them.
 
+**Telling Leiden the count.** Leiden reads its count off the graph at the resolution it is given,
+and at $\gamma = 1$ that count is often not the one wanted: six blobs read as 12–17 communities,
+two rings as 13–19, the seven covtype classes as 51–63, and the twenty newsgroups as 9–14. `resolution="auto"` searches $\gamma$ for `n_clusters` communities, each
+holding at least 0.5 % of the rows. Modularity at a resolution high enough for $k$ large communities
+also leaves a few small ones, and counting those would stop the search short of $k$. The search
+is bisection on $\log\gamma$ over $[10^{-4}, 1]$, the upper end raised fourfold up to 64 while it gives
+fewer than $k$. The count is not monotone in $\gamma$, so the search stops after 14 halvings and
+returns the partition nearest $k$. Leiden never joins two components of a graph, so on a graph
+with more components than $k$, no resolution reaches $k$; the nearest count is returned.
+`the_resolution_search_returns_the_requested_number_of_communities` checks both graph kinds.
+
+Median ARI (min–max), five row orders × seeds 0/1/2, told the true count; the left column is the
+best of the three graphs at $\gamma = 1$ (table above):
+
+| data, $k$ | best at $\gamma = 1$ | `unit`, `"auto"` | `mass`, `"auto"` | `rows`, `"auto"` |
+|---|---|---|---|---|
+| blobs-20k, 6 | 0.623 (`mass`) | 0.980 (0.969–0.982) | **0.983** (0.980–0.984) | 0.982 (0.979–0.983) |
+| rings, noise 0.04, 2 | 0.144 (`mass`) | **1.000** | **1.000** | **1.000** |
+| covtype-20k, 7 | 0.039 (`unit`) | 0.077 (0.075–0.078) | 0.060 | **0.111** (0.111–0.113) |
+| 20 newsgroups, MiniLM, 20 | 0.345 (`rows`) | 0.375 (0.365–0.388) | 0.379 (0.364–0.392) | **0.381** (0.373–0.407) |
+| digits, 10 | **0.810** (`rows`) | 0.774 (0.714–0.794) | 0.778 (0.772–0.788) | **0.810** (0.757–0.822) |
+| MNIST-20k, raw, 10 | **0.746** (`rows`) | 0.685 (0.673–0.711) | 0.634 (0.582–0.671) | 0.727 (0.713–0.779) |
+| MNIST-20k, standardised, 10 | **0.535** (`rows`) | 0.480 (0.389–0.532) | 0.498 (0.453–0.538) | 0.517 (0.491–0.528) |
+
+Where $\gamma = 1$ finds a count far from $k$, in either direction, the search is worth up to 0.86.
+Where it already finds about $k$ (MNIST reads 10–12 communities, median 11), forcing exactly $k$
+merges two of them and costs 0.02;
+it narrows the spread over seeds there instead (MNIST `rows`: 0.713–0.779 against 0.680–0.776). On
+MNIST-70k at 8 000 leaves (`bench/rivals.py`, seeds 0/1/2), `rows` reads 0.757–0.815 at
+$\gamma = 1$ and 0.781–0.789 told 10.
+
 Two moons and two circles at 20 000 points read 1.000 on both graphs at every budget; one seed of
 three falls to 0.55 on the moons at 3 200 leaves with `mass`.
 

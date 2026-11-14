@@ -316,6 +316,40 @@ fn parse_balance(value: Option<&Bound<'_, PyAny>>) -> PyResult<(Option<f64>, boo
     Ok((Some(b), false))
 }
 
+/// `resolution` as a caller writes it: a number, or `"auto"`.
+#[derive(FromPyObject)]
+enum ResolutionArg {
+    Value(f64),
+    Name(String),
+}
+
+/// The Leiden resolution and whether it is to be found from `n_clusters` (`"auto"`), refusing
+/// `"auto"` where it has no meaning: CPM's resolution is a density, not a count, and no other head
+/// reads a resolution at all.
+fn parse_resolution(arg: &ResolutionArg, method: &str, n_clusters: usize) -> PyResult<(f64, bool)> {
+    match arg {
+        ResolutionArg::Value(v) => Ok((*v, false)),
+        ResolutionArg::Name(name) if name == "auto" => {
+            if method != "leiden" {
+                return Err(PyValueError::new_err(format!(
+                    "resolution='auto' is read only by 'leiden', not by method='{method}': it \
+                     searches the modularity resolution for n_clusters communities"
+                )));
+            }
+            if n_clusters == 0 {
+                return Err(PyValueError::new_err(
+                    "resolution='auto' searches for n_clusters communities, so n_clusters must be \
+                     at least 1; a resolution of 1.0 is the leiden head's own count",
+                ));
+            }
+            Ok((DEFAULT_RESOLUTION, true))
+        }
+        ResolutionArg::Name(name) => Err(PyValueError::new_err(format!(
+            "resolution must be a number or 'auto', got '{name}'"
+        ))),
+    }
+}
+
 /// Reject `max_iter = 0` at the boundary that takes it from a caller.
 ///
 /// A zero-iteration EM or Lloyd returns its own initialisation: for the GMM heads that is a
@@ -644,6 +678,7 @@ fn parse_head_options(
         } else {
             RowEdges::Off
         },
+        resolution_for_k: false,
     })
 }
 
@@ -2302,7 +2337,7 @@ fn run_oneshot<R: Real + Element>(
     branching = 32, leaf_cap = 32, max_leaves = 2000, max_iter = 100, n_init = None,
     min_samples = None, min_cluster_size = DEFAULT_MIN_CLUSTER_SIZE, seed = 0, distance = "euclidean",
     absorb = "euclidean", chi2_p = 0.95, chi2_scale = 0.0, n_shards = None, normalize = false,
-    resolution = DEFAULT_RESOLUTION, covariance_weight = DEFAULT_COVARIANCE_WEIGHT, tangent_weight = DEFAULT_TANGENT_WEIGHT, tangent_rank = DEFAULT_TANGENT_RANK,
+    resolution = ResolutionArg::Value(DEFAULT_RESOLUTION), covariance_weight = DEFAULT_COVARIANCE_WEIGHT, tangent_weight = DEFAULT_TANGENT_WEIGHT, tangent_rank = DEFAULT_TANGENT_RANK,
     projection = "none", projection_dim = 64, projection_max_iter = 100, refine = 0, rank = DEFAULT_RANK,
     graph_degree = 0, balance = None, auto_k_max = 0, fuzzifier = DEFAULT_FUZZIFIER, leaf_refit = 0,
     canonical_order = false, n_iterations = DEFAULT_N_ITERATIONS, leaf_graph = "unit", kappa = "free", hartigan = false,
@@ -2330,7 +2365,7 @@ fn fit_predict<'py>(
     chi2_scale: f64,
     n_shards: Option<usize>,
     normalize: bool,
-    resolution: f64,
+    resolution: ResolutionArg,
     covariance_weight: f64,
     tangent_weight: f64,
     tangent_rank: usize,
@@ -2365,6 +2400,7 @@ fn fit_predict<'py>(
         return Err(PyValueError::new_err("n_shards must be at least 1"));
     }
     let min_samples = parse_min_samples(min_samples)?;
+    let (resolution, resolution_for_k) = parse_resolution(&resolution, method, n_clusters)?;
     let kind = parse_method(
         method,
         min_samples,
@@ -2377,15 +2413,18 @@ fn fit_predict<'py>(
         graph_degree,
         fuzzifier,
     )?;
-    let opts = parse_head_options(
-        method,
-        n_iterations,
-        leaf_graph,
-        kappa,
-        hartigan,
-        equal_size,
-        graph_degree,
-    )?;
+    let opts = HeadOptions {
+        resolution_for_k,
+        ..parse_head_options(
+            method,
+            n_iterations,
+            leaf_graph,
+            kappa,
+            hartigan,
+            equal_size,
+            graph_degree,
+        )?
+    };
     require_equal_size_alone(equal_size, refine, projection)?;
     require_rows_graph_unprojected(leaf_graph, projection)?;
     let nmf_dim = parse_projection(projection, projection_dim, projection_max_iter)?;
@@ -3323,6 +3362,10 @@ struct Betula {
     /// Leiden resolution `γ` (only used by `method="leiden"` / `"leiden-cpm"`); kept for `get_params`.
     #[serde(default = "default_resolution")]
     resolution: f64,
+    /// The resolution was requested as `"auto"`: the one that gives `n_clusters` communities. Not
+    /// written when off, so a file saved without it is byte-identical to one from 1.5.0.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    resolution_auto: bool,
     /// Covariance-aware Leiden weight `β` (log-Euclidean shape term, `method="leiden"` / `"leiden-cpm"`
     /// with `feature="full"`); kept for `get_params`.
     #[serde(default = "default_covariance_weight")]
@@ -3955,15 +3998,18 @@ impl Betula {
             self.auto_k_max,
             self.projection_spec(),
         );
-        let passes = parse_head_options(
-            &self.method,
-            self.n_iterations,
-            &self.leaf_graph,
-            &self.kappa,
-            self.hartigan,
-            self.equal_size,
-            self.graph_degree,
-        )?;
+        let passes = HeadOptions {
+            resolution_for_k: self.resolution_auto,
+            ..parse_head_options(
+                &self.method,
+                self.n_iterations,
+                &self.leaf_graph,
+                &self.kappa,
+                self.hartigan,
+                self.equal_size,
+                self.graph_degree,
+            )?
+        };
         let counted = match passes.rows {
             RowEdges::Requested => Some(self.count_row_graph(py, rows)?),
             _ => None,
@@ -4237,7 +4283,7 @@ impl Betula {
         branching = 32, leaf_cap = 32, max_leaves = 2000, max_iter = 100, n_init = None,
         min_samples = None, min_cluster_size = DEFAULT_MIN_CLUSTER_SIZE, seed = 0,
         distance = "euclidean", absorb = "euclidean", chi2_p = 0.95, chi2_scale = 0.0, decay = 1.0,
-        normalize = false, huber_k = None, resolution = DEFAULT_RESOLUTION, covariance_weight = DEFAULT_COVARIANCE_WEIGHT,
+        normalize = false, huber_k = None, resolution = ResolutionArg::Value(DEFAULT_RESOLUTION), covariance_weight = DEFAULT_COVARIANCE_WEIGHT,
         tangent_weight = DEFAULT_TANGENT_WEIGHT, tangent_rank = DEFAULT_TANGENT_RANK, projection = "none", projection_dim = 64,
         projection_max_iter = 100, refine = 0, rank = DEFAULT_RANK, graph_degree = 0, balance = None,
         auto_k_max = 0, fuzzifier = DEFAULT_FUZZIFIER, leaf_refit = 0, canonical_order = false,
@@ -4265,7 +4311,7 @@ impl Betula {
         decay: f64,
         normalize: bool,
         huber_k: Option<f64>,
-        resolution: f64,
+        resolution: ResolutionArg,
         covariance_weight: f64,
         tangent_weight: f64,
         tangent_rank: usize,
@@ -4288,6 +4334,7 @@ impl Betula {
         equal_size: bool,
     ) -> PyResult<Self> {
         let min_samples = parse_min_samples(min_samples)?;
+        let (resolution, resolution_auto) = parse_resolution(&resolution, method, n_clusters)?;
         let kind = parse_method(
             method,
             min_samples,
@@ -4372,6 +4419,7 @@ impl Betula {
             huber_k,
             balance,
             resolution,
+            resolution_auto,
             covariance_weight,
             tangent_weight,
             tangent_rank,
@@ -5182,7 +5230,11 @@ impl Betula {
         } else {
             d.set_item("balance", self.balance)?;
         }
-        d.set_item("resolution", self.resolution)?;
+        if self.resolution_auto {
+            d.set_item("resolution", "auto")?;
+        } else {
+            d.set_item("resolution", self.resolution)?;
+        }
         d.set_item("covariance_weight", self.covariance_weight)?;
         d.set_item("tangent_weight", self.tangent_weight)?;
         d.set_item("tangent_rank", self.tangent_rank)?;
