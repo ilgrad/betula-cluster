@@ -1347,9 +1347,11 @@ GPL ones (leidenalg, python-igraph) included:
 | `bench/head_references.py` | one outside implementation per betula head that had none: k-medoids, fuzzy c-means, k-prototypes, the Toeplitz mixture | `results_head_refs.csv` |
 | `bench/density_rivals.py` | density and hierarchy heads against `hdbscan`, `fast_hdbscan`, OPTICS, CLASSIX, DenMune, FINCH, genieclust, lumbermark, on the quality fixtures at 30 000 rows and `digits` | `results_density_rivals.csv` |
 
-Two more stand apart and enter no board total: `bench/gpu_rivals.py` runs cuML on the GPU (a
-different hardware budget), and `bench/clustbench_suite.py` runs the told-k heads on Gagolewski's
-benchmark suite with its own data, metric and published results. Both are at the end of this section.
+Four more stand apart and enter no board total, at the end of this section: `bench/gpu_rivals.py`
+runs cuML on the GPU (a different hardware budget); `bench/clustbench_suite.py` runs the told-k
+heads on Gagolewski's benchmark suite with its own data, metric and published results;
+`bench/stream_vs_refit.py` measures a stream against refits; `bench/rust_rivals.py` runs the
+Rust crates.
 
 Versions, as `--with` resolved them on 2026-11-14: scikit-learn 1.9.1, umap-learn 0.6.0,
 hdbscan 0.8.44, fast_hdbscan 0.3.4, EVoC 0.3.2, leidenalg 0.12.0, python-igraph 1.0.0,
@@ -2236,6 +2238,51 @@ over seeds, then the median (min–max) over the five orders. Quality only.
   43 to 214 and its ARI falls from 0.186 to 0.089. betula is ahead of it, and of EVoC, at every
   checkpoint. scikit-learn's k-means is level with betula at four checkpoints and behind it at 40 %
   (0.376 against 0.398).
+
+### Rust crates — linfa-clustering, clump, `hdbscan` (`results_rust_rivals.csv`)
+
+A user who calls betula from Rust compares it with the Rust crates, not with scikit-learn.
+`bench/rust_rivals/` is a crate of its own, outside betula-cluster's manifest, so none of the rivals
+enters its dependency tree; `bench/rust_rivals.py` drives it, one process per run, on the density
+fixtures above (30 000 rows, standardised, and `digits`). betula is built as the Rust section of
+`docs/USAGE.md` builds it (branching 32, threshold 0, 2 000 leaves, `Model::fit`); each crate runs
+at its documented defaults, with the shared minimum cluster size where it takes one. Versions:
+linfa-clustering 0.8.1, clump 0.7.2, `hdbscan` 0.12.0. Peak RSS is each process's own `VmHWM`,
+the rows included. Seeded arms run on seeds 0, 1, 2; a single value means all three agree.
+
+**Told k**
+
+| arm | blobs | aniso | varied | moons | circles | highdim | digits | mean | peak RSS MB |
+|---|---|---|---|---|---|---|---|---|---|
+| **betula `kmeans`** | 0.861 | 0.545 | 0.541 | 0.485 | 0.000 | 1.000 | 0.467 (0.443–0.571) | 0.557 | 7–23 |
+| linfa `KMeans` | 0.862 | 0.545 | 0.539 | 0.485 | 0.000 | 1.000 | 0.555 (0.526–0.570) | 0.569 | 7–23 |
+| clump `Kmeans` | 0.861 | 0.545 | 0.539 (0.536–0.539) | 0.485 | 0.000 | 1.000 (0.835–1.000) | 0.495 (0.399–0.564) | 0.561 | 6–23 |
+| **betula `gmm-full`** | 0.863 | 0.902 | 0.757 | 0.504 | 0.000 | 1.000 | 0.575 | 0.657 | 10–259 |
+| linfa `GaussianMixtureModel` (full) | 0.864 | 0.902 | 0.752 | 0.507 | 0.000 | 1.000 | 0.421 (0.378–0.613) | 0.635 | 10–35 |
+| **betula `gmm`** (diagonal) | 0.865 | 0.540 | 0.756 | 0.519 | 0.000 | 1.000 | 0.461 | 0.592 | 10–23 |
+
+**k not given**
+
+| arm | blobs | aniso | varied | moons | circles | highdim | digits | mean | peak RSS MB |
+|---|---|---|---|---|---|---|---|---|---|
+| `hdbscan` crate | 0.434 | 0.449 | 0.507 | 1.000 | 1.000 | 1.000 | 0.091 | 0.640 | 6–23 |
+| clump `Hdbscan` | 0.000 | 0.000 | 0.000 | 1.000 | 1.000 | 1.000 | 0.000 | 0.429 | 12–24 |
+| **betula `hdbscan`** (the table above, Python) | 0.376 | 0.469 | 0.302 | 1.000 | 1.000 | 1.000 | 0.164 | 0.616 | — |
+
+- **k-means is a three-way tie.** The three implementations agree to the third digit on six
+  fixtures; on `digits` all three spread over seeds and overlap.
+- **Full-covariance GMM: a tie on quality, a loss on memory.** betula's `gmm-full` and linfa's
+  mixture match on six fixtures. On `digits` betula reads 0.575 on every seed and linfa 0.378–0.613,
+  a tie by the rule. betula's process peaks at 259 MB there against linfa's 10 MB. The full head
+  keeps a 64 × 64 matrix per leaf for each restart that runs at once: the peak is 74 MB at
+  `RAYON_NUM_THREADS=1`, 137 MB at 2 and 265 MB at 8.
+- **No count given, the `hdbscan` crate is ahead on the mean** (0.640 against betula's 0.616): it
+  wins blobs and `varied`, betula wins aniso and `digits`. clump's `Hdbscan` returns one cluster on
+  four fixtures at its defaults, so by the rule above it is not scored there.
+- betula's `hdbscan` head has no one-call Rust function, so its row is the Python table's; its
+  memory is not comparable with a Rust process's and is not shown.
+- Not run: linfa's `Dbscan` and clump's `Dbscan` take a radius with no default, and linfa's `Optics`
+  returns a reachability ordering, not labels. These tables are not on the board.
 
 ## Where the leaf budget goes — geometry, not mass (tasks #70 and #77)
 
