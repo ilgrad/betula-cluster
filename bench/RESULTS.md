@@ -2169,9 +2169,9 @@ heads.
 
 **genieclust 1.3.0 cannot score this suite as published.** Its NCA raises when the predicted vector
 holds fewer labels than the reference, which a K-partition restricted to non-noise points can, and
-`clustbench.get_score` then fails on every battery with noise points. genieclust 1.1.6 and 1.2.0
-return a value; the harness passes 1.3.0 a square confusion matrix, which gives the 1.2.0 value
-exactly (300 random cases, largest difference 0.0).
+`clustbench.get_score` then raises on 1 313 of the 27 020 published vectors (13 datasets in five
+batteries). genieclust 1.1.6 and 1.2.0 return a value; the harness passes 1.3.0 a square confusion
+matrix, which gives the 1.2.0 value exactly (300 random cases, largest difference 0.0).
 
 | rank of 213 | configuration | suite mean NCA | fcps | graves | mnist | other | sipu | uci | wut |
 |---|---|---|---|---|---|---|---|---|---|
