@@ -57,6 +57,7 @@ nav:
   - Home: index.md
   - Usage guide: USAGE.md
   - Features: FEATURES.md
+  - Comparison with other libraries: COMPARISON.md
   - The math: MATH.md
   - API reference: api.md
   - Design decisions:

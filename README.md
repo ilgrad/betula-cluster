@@ -78,6 +78,8 @@ with peak RSS sampled from `/proc/self/statm`. Full methodology, every metric, a
   against UMAP + k-means 0.451). On Gagolewski's clustering benchmark suite (81 datasets, given the
   count) `leiden` with `resolution="auto"` is level with the best of 387 published configurations
   (mean accuracy 0.782 against 0.786), not ahead of them. cuML's GPU pipelines sit in a separate table.
+  The [comparison page](https://github.com/ilgrad/betula-cluster/blob/main/docs/COMPARISON.md) names,
+  task by task, the method to use, betula's or the rival's.
 
 | ![Fit time vs N](https://raw.githubusercontent.com/ilgrad/betula-cluster/main/bench/plots/scaling_time.png) | ![Peak memory vs N](https://raw.githubusercontent.com/ilgrad/betula-cluster/main/bench/plots/memory_streaming.png) |
 |:--:|:--:|

@@ -1459,6 +1459,9 @@ lumbermark and EVoC publish no numeric output, so they have no row; read theirs 
   `resolution="auto"` is level with the best of 387 published configurations, and loses its
   `graves`, `other` and MNIST batteries to GIc, Lumbermark and ITM. For a K it cannot reach, use
   `spectral` (rank 21, misses K on 2 dataset-K pairs against `leiden`'s 10).
+- **A stream of embeddings.** `partial_fit` reads what a refit reads at every checkpoint, with no
+  refit; UMAP + k-means refitted at each checkpoint wins from 60 % of the stream on (0.448 against
+  0.383 at the end), and UMAP + HDBSCAN degrades as the stream grows (*A stream against refits*).
 
 ### The tables
 
@@ -1766,6 +1769,7 @@ bench/RESULTS.md` fails when this block differs from what the CSVs produce, so n
 written by hand. A win names its rival, slice and axis; a loss is written the same way. The betula
 side of every cell is the one head its contest chose (see the rules above).
 
+<!-- --8<-- [start:claims] -->
 <!-- claims:begin -->
 - **bertopic default (umap+hdbscan mcs=10)** — 2 win · 0 tie · 0 loss
   - win, memory, `news-minilm/17901/no-k` (rivals): betula 256 MB (`betula-leiden-rows`) against 640 MB
@@ -2109,6 +2113,7 @@ side of every cell is the one head its contest chose (see the rules above).
   - tie, quality, `mnist/70000/told-k` (rivals): betula 0.788 ARI (`betula-leiden-rows-auto`) against 0.804 ARI
   - loss, quality, `news-minilm/17901/told-k` (rivals): betula 0.382 ARI (`betula-vmf-shared`) against 0.430 ARI
 <!-- claims:end -->
+<!-- --8<-- [end:claims] -->
 
 ### GPU rivals — a different hardware budget (`results_gpu_rivals.csv`)
 
@@ -2204,6 +2209,33 @@ matrix, which gives the 1.2.0 value exactly (300 random cases, largest differenc
   `ward` (0.628, rank 107) sit with scikit-learn's `KMeans` (0.630, rank 105) and fastcluster's Ward
   (0.636, rank 97). On the `uci` battery `gmm` is level with scikit-learn's `GaussianMixture`, the
   best published configuration there (0.525 against 0.515).
+
+### A stream against refits — 20 newsgroups in arrival order (`results_stream_refit.csv`)
+
+`bench/stream_vs_refit.py` feeds the MiniLM embeddings of 20 newsgroups in five random orders. At
+20, 40, 60, 80 and 100 % of the stream every arm labels the rows seen so far: betula's `vmf`
+(`kappa="shared"`, 20 clusters, 4 000 leaves) by `partial_fit` on the new chunk and no refit, and
+the rivals, none of which streams, refitted from scratch. Seeds 0, 1, 2; each cell is the median
+over seeds, then the median (min–max) over the five orders. Quality only.
+
+| arm | 20 % (3 580) | 40 % | 60 % | 80 % | 100 % (17 901) | clusters | noise |
+|---|---|---|---|---|---|---|---|
+| **betula, `partial_fit`** | 0.391 (0.370–0.409) | 0.398 (0.388–0.398) | 0.392 (0.385–0.401) | 0.390 (0.382–0.406) | 0.383 (0.371–0.394) | 20 | 0.00 |
+| **betula, refitted** | 0.391 (0.370–0.409) | 0.398 (0.388–0.398) | 0.392 (0.385–0.401) | 0.390 (0.382–0.406) | 0.383 (0.371–0.394) | 20 | 0.00 |
+| UMAP + k-means, refitted | 0.410 (0.390–0.418) | 0.417 (0.394–0.438) | 0.431 (0.415–0.443) | 0.429 (0.417–0.439) | 0.448 (0.425–0.452) | 20 | 0.00 |
+| scikit-learn k-means, refitted | 0.364 (0.331–0.375) | 0.376 (0.368–0.384) | 0.372 (0.346–0.384) | 0.376 (0.371–0.378) | 0.369 (0.359–0.380) | 20 | 0.00 |
+| UMAP + HDBSCAN, refitted | 0.186 (0.020–0.207) | 0.136 (0.117–0.138) | 0.120 (0.080–0.155) | 0.085 (0.082–0.106) | 0.089 (0.082–0.090) | 43 → 214 | 0.29–0.36 |
+| EVoC, refitted | 0.215 (0.193–0.234) | 0.197 (0.173–0.265) | 0.184 (0.156–0.202) | 0.208 (0.187–0.222) | 0.202 (0.163–0.212) | 9–17 | 0.27–0.33 |
+
+- **Streaming costs nothing in quality here.** At all 75 checkpoints (five orders, three seeds,
+  five fractions) `partial_fit` gives the same ARI as a refit on every row seen, to the last digit:
+  the tree receives the rows in the same order either way. What the stream saves is the refit.
+- **UMAP + k-means wins from 60 % of the stream on**, by 0.039–0.065, and is level before that. It
+  pays a full refit, layout included, at each checkpoint.
+- **UMAP + HDBSCAN, BERTopic's cluster step, gets worse as posts arrive**: its topic count grows from
+  43 to 214 and its ARI falls from 0.186 to 0.089. betula is ahead of it, and of EVoC, at every
+  checkpoint. scikit-learn's k-means is level with betula at four checkpoints and behind it at 40 %
+  (0.376 against 0.398).
 
 ## Where the leaf budget goes — geometry, not mass (tasks #70 and #77)
 

@@ -42,3 +42,5 @@ labels = betula_cluster.fit_predict(X, n_clusters=10, method="kmeans")
 
 Benchmarks (speed, memory, quality — wins *and* losses) are reproducible from `bench/comprehensive.py`
 and written up in [`bench/RESULTS.md`](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md).
+Which method to use for which task, betula's or another library's, is on the
+[comparison page](COMPARISON.md).
