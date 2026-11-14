@@ -147,6 +147,12 @@ losses** are reported below.
   step; BERTopic's default pipeline on news (0.330 against 0.086); the AR mixture against tslearn's
   k-Shape (0.764 against 0.057). MNIST-20k is a tie with every manifold pipeline. Peak RSS is below
   every manifold and graph rival's in each MNIST and news contest.
+- **On Gagolewski's clustering benchmark suite (81 datasets, told k), level with the best, not ahead.**
+  `leiden` with `resolution="auto"` ranks 3rd of 213 configurations scored in every battery (suite
+  mean NCA 0.782 against Lumbermark's 0.786 and GIc's 0.784; paired, ahead on 19 datasets and behind
+  on 20–23), ahead of Genie at its default, ITM and scikit-learn's k-means and GMM, and it cannot
+  hit K on 6 of the 81. On a GPU, cuML's UMAP + k-means and UMAP + HDBSCAN are a separate table that
+  enters no total: the k-means pipelines find what their CPU versions find.
 - **A capability no mainstream library ships:** `method="gmm-toeplitz"` — an AR/Toeplitz-structured
   covariance GMM for ordered stationary signals — recovers a mixture of AR processes that differ *only*
   in autocovariance (ARI **1.00** at long windows) exactly where both diagonal (blind) and full
@@ -1341,6 +1347,10 @@ GPL ones (leidenalg, python-igraph) included:
 | `bench/head_references.py` | one outside implementation per betula head that had none: k-medoids, fuzzy c-means, k-prototypes, the Toeplitz mixture | `results_head_refs.csv` |
 | `bench/density_rivals.py` | density and hierarchy heads against `hdbscan`, `fast_hdbscan`, OPTICS, CLASSIX, DenMune, FINCH, genieclust, lumbermark, on the quality fixtures at 30 000 rows and `digits` | `results_density_rivals.csv` |
 
+Two more stand apart and enter no board total: `bench/gpu_rivals.py` runs cuML on the GPU (a
+different hardware budget), and `bench/clustbench_suite.py` runs the told-k heads on Gagolewski's
+benchmark suite with its own data, metric and published results. Both are at the end of this section.
+
 Versions, as `--with` resolved them on 2026-11-14: scikit-learn 1.9.1, umap-learn 0.6.0,
 hdbscan 0.8.44, fast_hdbscan 0.3.4, EVoC 0.3.2, leidenalg 0.12.0, python-igraph 1.0.0,
 pynndescent 0.7.0, PaCMAP 0.9.1, openTSNE 1.0.4, PhenoGraph 1.5.7, BERTopic 0.17.4,
@@ -1445,6 +1455,10 @@ lumbermark and EVoC publish no numeric output, so they have no row; read theirs 
   ties kmodes' Huang implementation on mixed covtype (0.028 against 0.022, both near 0).
   `gmm-toeplitz` recovers the AR mixture (0.764) where tslearn's k-Shape (0.057) and a diagonal GMM
   (0.018) do not.
+- **Told k on small and medium benchmark sets.** On Gagolewski's suite `leiden` with
+  `resolution="auto"` is level with the best of 387 published configurations, and loses its
+  `graves`, `other` and MNIST batteries to GIc, Lumbermark and ITM. For a K it cannot reach, use
+  `spectral` (rank 21, misses K on 2 dataset-K pairs against `leiden`'s 10).
 
 ### The tables
 
@@ -2095,6 +2109,101 @@ side of every cell is the one head its contest chose (see the rules above).
   - tie, quality, `mnist/70000/told-k` (rivals): betula 0.788 ARI (`betula-leiden-rows-auto`) against 0.804 ARI
   - loss, quality, `news-minilm/17901/told-k` (rivals): betula 0.382 ARI (`betula-vmf-shared`) against 0.430 ARI
 <!-- claims:end -->
+
+### GPU rivals — a different hardware budget (`results_gpu_rivals.csv`)
+
+`bench/gpu_rivals.py` runs RAPIDS cuML's k-means, UMAP + k-means and UMAP + HDBSCAN on an RTX 3080
+Laptop GPU (8 GB, driver 620.70.06; cuML 26.10.0, CuPy 14.2.0, CPython 3.14.8), on the rows, seeds
+and scoring of `bench/rivals.py`, with the CPU table's UMAP and HDBSCAN settings. cuML lives in a
+scratch environment, not in any dependency list. Before any row the harness reproduces the
+`cuml.KMeans` docstring example (labels `[0, 0, 1, 1]`, centres (1, 1.5) and (3.5, 2.5)); it does.
+
+A GPU arm is never paired with a CPU cell and never enters the board's totals: a user with this
+card answers a different question. The quality columns compare across the two tables, since the
+rows, seeds and metric are the same. **Device MB** is the peak `nvidia-smi` reading above the one
+taken before the arm starts, CUDA context included; **peak RSS** is the host process, measured as
+the CPU table measures it. Wall times are recorded with `timing_valid = False` and not quoted.
+
+| contest | cuML arm | ARI median (min–max) | clusters | noise | peak RSS MB | device MB | the same method on the CPU | betula's head in the contest |
+|---|---|---|---|---|---|---|---|---|
+| mnist 20 000, told k | k-means | 0.365 (0.362–0.397) | 10 | 0.00 | 1 022 | 232 | scikit-learn 0.359 | — |
+| mnist 20 000, told k | UMAP + k-means | 0.720 (0.715–0.768) | 10 | 0.00 | 1 307 | 340 | umap-learn 0.5 / 0.6: 0.734 / 0.731 | **0.762** (0.718–0.766), tie |
+| mnist 20 000, k not given | UMAP + HDBSCAN | 0.638 (0.638–0.640) | 7 | 0.00 | 1 327 | 340 | umap-learn + hdbscan 0.536 | **0.762** (0.680–0.766), betula ahead |
+| mnist 70 000, told k | k-means | 0.363 (0.323–0.367) | 10 | 0.00 | 1 381 | 384 | scikit-learn 0.367 | — |
+| mnist 70 000, told k | UMAP + k-means | 0.768 (0.728–0.778) | 10 | 0.00 | 1 727 | 546 | umap-learn 0.5 / 0.6: 0.769 / 0.804 | **0.788** (0.781–0.789), tie |
+| mnist 70 000, k not given | UMAP + HDBSCAN | 0.841 (0.654–0.913) | 9 | 0.01 | 1 731 | 546 | umap-learn + hdbscan 0.920 | **0.769** (0.757–0.815), tie |
+| news 17 901, told k | k-means | 0.389 (0.388–0.399) | 20 | 0.00 | 953 | 200 | scikit-learn 0.389 | — |
+| news 17 901, told k | UMAP + k-means | 0.455 (0.432–0.463) | 20 | 0.00 | 1 240 | 292 | umap-learn 0.5 / 0.6: 0.451 / 0.430 | **0.382** (0.374–0.386), **cuML ahead** |
+| news 17 901, k not given | UMAP + HDBSCAN | 0.100 (0.089–0.106) | 164 | 0.36 | 1 254 | 330 | BERTopic's default 0.086 | **0.330** (0.321–0.340), betula ahead |
+
+- **Moving k-means or UMAP + k-means to the GPU does not change what it finds.** Every cuML k-means
+  and UMAP + k-means median ties the CPU implementation's by the tie rule above.
+- **cuML's UMAP + HDBSCAN is not umap-learn + hdbscan.** On MNIST-20k it merges less (7 clusters,
+  0.638, against 6 and 0.536); at 70 000 rows its seeds spread from 0.654 to 0.913, where the CPU
+  pipeline's spread from 0.850 to 0.926. betula's head, the rows graph, is ahead of it at 20 000 rows
+  and level with it at 70 000.
+- **On the news embeddings told k, cuML's UMAP + k-means wins**, as umap-learn's does on the CPU.
+- A cuML process holds 0.95–1.73 GB of host memory and 0.20–0.55 GB on the device, against
+  betula's 366 MB (MNIST-20k) and 752 MB (MNIST-70k) on the CPU.
+
+### Gagolewski's clustering benchmark suite — told k, 81 datasets (`results_clustbench.csv`)
+
+The suite (Gagolewski, *A framework for benchmarking clustering algorithms*, SoftwareX 20, 2022,
+https://doi.org/10.1016/j.softx.2022.101270; data v1.2.0,
+https://doi.org/10.5281/zenodo.23563578) publishes reference partitions for 81 datasets in seven
+batteries (`wut`, `fcps`, `graves`, `uci`, `mnist`, `sipu`, `other`) and the label vectors of
+387 method configurations on them. `bench/clustbench_suite.py` runs six betula heads on the same
+data and scores them and the published vectors with the suite's own rules: data preprocessed as
+the framework prescribes, every K a reference names, normalised clustering accuracy (NCA) over
+non-noise points, the best of the alternative references. The data and the published results are
+AGPL-3.0 and are not copied here; the harness reads a local clone of each, and the CSV holds
+betula's own rows.
+
+**Read with these rules.** One run per method at seed 0, as the published vectors are one run; no
+seed range, so a gap under 0.02 NCA is not read as a ranking. A method that returns another count
+than K is absent for that K, the framework's rule for every method. One configuration per method
+for the whole suite: the mean over the seven batteries of each battery's mean, for the 213
+configurations (betula's six included) scored in all seven. The published side takes the best of each family's
+configurations by the same rule (Lumbermark has 56, Genie 54), and the betula side the best of six
+heads.
+
+**genieclust 1.3.0 cannot score this suite as published.** Its NCA raises when the predicted vector
+holds fewer labels than the reference, which a K-partition restricted to non-noise points can, and
+`clustbench.get_score` then fails on every battery with noise points. genieclust 1.1.6 and 1.2.0
+return a value; the harness passes 1.3.0 a square confusion matrix, which gives the 1.2.0 value
+exactly (300 random cases, largest difference 0.0).
+
+| rank of 213 | configuration | suite mean NCA | fcps | graves | mnist | other | sipu | uci | wut |
+|---|---|---|---|---|---|---|---|---|---|
+| 1 | Lumbermark_f0.5_M0 | 0.786 | 0.981 | 0.889 | 0.629 | 0.854 | 0.876 | 0.459 | 0.811 |
+| 2 | GIc | 0.784 | 0.990 | 0.960 | 0.586 | 0.858 | 0.860 | 0.421 | 0.813 |
+| 3 | **betula `leiden`, `resolution="auto"`** | **0.782** | 0.990 | 0.900 | 0.588 | 0.793 | 0.903 | 0.448 | 0.849 |
+| 4 | Lumbermark_f0.5_M1 | 0.782 | 0.977 | 0.889 | 0.637 | 0.853 | 0.870 | 0.435 | 0.809 |
+| 7 | Genie_G0.1_M3 | 0.770 | 0.990 | 0.933 | 0.590 | 0.774 | 0.840 | 0.455 | 0.810 |
+| 18 | ITM | 0.750 | 0.983 | 0.890 | 0.686 | 0.743 | 0.740 | 0.455 | 0.753 |
+| 21 | **betula `spectral`** | **0.747** | 0.968 | 0.920 | 0.499 | 0.770 | 0.816 | 0.434 | 0.826 |
+| 57 | **betula `dc-median`** | **0.692** | 0.967 | 0.928 | 0.398 | 0.769 | 0.825 | 0.187 | 0.768 |
+| 82 | **betula `gmm`** | **0.661** | 0.947 | 0.559 | 0.426 | 0.669 | 0.824 | 0.525 | 0.675 |
+| 107 | **betula `ward`** | **0.628** | 0.782 | 0.599 | 0.523 | 0.718 | 0.759 | 0.378 | 0.639 |
+| 116 | **betula `kmeans`** | **0.621** | 0.791 | 0.570 | 0.475 | 0.644 | 0.805 | 0.417 | 0.643 |
+
+- **`leiden` with `resolution="auto"` is level with the best configurations, not ahead of them.**
+  Paired on the 75 datasets both scored, it averages 0.819 against Lumbermark_f0.5_M0's 0.812 and
+  GIc's 0.811, and is ahead on 19 datasets and behind on 23 and 20. It is ahead of Genie at
+  genieclust's default `gini_threshold=0.3` (0.789; ahead on 21, behind on 18), ITM (0.757),
+  scikit-learn's `GaussianMixture` (0.710) and `KMeans` (0.657), and Ward linkage (0.656).
+- **It misses K more often than the other heads.** On 10 dataset-K pairs its resolution search ends
+  on another count, and on 6 datasets (`sipu`'s a1, birch1, birch2, worms_2 and worms_64, `fcps`'s
+  target) on every K. Those are absent from its means, which flatters it on `sipu` and `fcps`.
+  `gmm`, `ward` and `dc-median` miss 3 pairs each, `spectral` 2, `kmeans` none.
+- **Where it loses:** `graves` (0.900 against GIc's 0.960), `other` (0.793 against 0.858) and the
+  suite's `mnist` battery (0.588 against ITM's 0.686). **Where it is level with the best:** `wut`
+  (0.849 against Genie_G0.3_M3's 0.848) and `sipu`, on the 15 datasets it splits into K (0.903
+  against the best configuration's 0.910 on the same 15).
+- **The centroid heads rank where centroid methods rank.** betula's `kmeans` (0.621, rank 116) and
+  `ward` (0.628, rank 107) sit with scikit-learn's `KMeans` (0.630, rank 105) and fastcluster's Ward
+  (0.636, rank 97). On the `uci` battery `gmm` is level with scikit-learn's `GaussianMixture`, the
+  best published configuration there (0.525 against 0.515).
 
 ## Where the leaf budget goes — geometry, not mass (tasks #70 and #77)
 

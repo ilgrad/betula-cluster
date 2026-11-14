@@ -75,7 +75,9 @@ with peak RSS sampled from `/proc/self/statm`. Full methodology, every metric, a
   losses than wins on quality: density clustering without a count (`hdbscan` 0.652 mean ARI against
   0.616), a hierarchy given the count (Genie 0.839 against 0.734), MNIST-70k without a count
   (`leiden` 0.769 against UMAP + HDBSCAN 0.920 and EVoC 0.899) and sentence embeddings (0.382
-  against UMAP + k-means 0.451).
+  against UMAP + k-means 0.451). On Gagolewski's clustering benchmark suite (81 datasets, given the
+  count) `leiden` with `resolution="auto"` is level with the best of 387 published configurations
+  (mean accuracy 0.782 against 0.786), not ahead of them. cuML's GPU pipelines sit in a separate table.
 
 | ![Fit time vs N](https://raw.githubusercontent.com/ilgrad/betula-cluster/main/bench/plots/scaling_time.png) | ![Peak memory vs N](https://raw.githubusercontent.com/ilgrad/betula-cluster/main/bench/plots/memory_streaming.png) |
 |:--:|:--:|
