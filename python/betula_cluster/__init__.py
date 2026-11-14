@@ -1009,7 +1009,11 @@ class Betula(_Clusterer):
         # one point. "mass" is the quotient of the point graph: an edge between two leaves weighs
         # n_i·n_j times their affinity and a node counts n_i points, so a singleton leaf no longer
         # counts as much as a leaf of a thousand. It changes labels, which is why it is opt-in
-        # until 2.0.
+        # until 2.0. "rows" (method="leiden" only) counts the graph from the training rows: each
+        # row names its 5 nearest leaves, and every pair of leaves one row names gains an edge
+        # count. A row, in training and in predict, takes the community of its nearest leaf by
+        # exact scan rather than by the tree descent. It needs the rows when the head runs, so
+        # partial_fit(None) and sparse input refuse it.
         self.leaf_graph = leaf_graph
         # Concentration model of the vMF head (method="vmf"). "free" (default) fits one κ per
         # component, as every earlier release did. "shared" fits one κ for all of them: on text the

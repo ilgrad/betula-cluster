@@ -25,6 +25,7 @@ use crate::bregman::{
     BregmanCentroid, BregmanCf, BregmanDivergence, BregmanIncrease, ItakuraSaito, KullbackLeibler,
     Logistic, SquaredEuclidean,
 };
+use crate::clustering::community::{ROW_GRAPH_LEAVES, RowGraph, row_top_leaves};
 use crate::clustering::hdbscan::hdbscan_with;
 use crate::clustering::hyperbolic::lorentz_dot;
 use crate::clustering::nmf::{Projection, ProjectionKind, ProjectionSpec};
@@ -44,8 +45,8 @@ use crate::feature::{ClusterFeature, Diagonal, FdSketch, Full, Spherical};
 use crate::linalg::{cholesky_lower, mahalanobis_sq_from_chol};
 use crate::mixture::{Mixture, SparseAssigner};
 use crate::model::{
-    HeadOptions, Method, Model, Rule, assignment_rule, auto_k_ceiling, fit_head, refinable,
-    refine_centers,
+    HeadOptions, Method, Model, RowEdges, Rule, assignment_rule, auto_k_ceiling, fit_head,
+    refinable, refine_centers,
 };
 use crate::order::{canonical_permutation, canonical_permutation_csr, canonical_shards};
 use crate::sparse::{SparseCentroids, normalize_csr_rows, summarize_sparse};
@@ -589,7 +590,7 @@ fn parse_head_options(
     hartigan: bool,
     equal_size: bool,
     graph_degree: usize,
-) -> PyResult<HeadOptions> {
+) -> PyResult<HeadOptions<'static>> {
     require_head_reads_its_keywords(
         method,
         &[
@@ -606,14 +607,22 @@ fn parse_head_options(
         ));
     }
     let graph = match leaf_graph {
-        "unit" => LeafGraph::Unit,
+        "unit" | ROWS_GRAPH => LeafGraph::Unit,
         "mass" => LeafGraph::Mass,
         other => {
             return Err(PyValueError::new_err(format!(
-                "leaf_graph must be 'unit' or 'mass', got '{other}'"
+                "leaf_graph must be 'unit', 'mass' or 'rows', got '{other}'"
             )));
         }
     };
+    if leaf_graph == ROWS_GRAPH && method != "leiden" {
+        return Err(PyValueError::new_err(format!(
+            "leaf_graph='rows' is read only by 'leiden', not by method='{method}': the spectral \
+             head's operator is built on the leaf means, and CPM's resolution is an absolute \
+             density, while the density of the rows graph falls with the row count, so no \
+             resolution would mean the same at two sizes. Both take 'unit' or 'mass'"
+        )));
+    }
     let kappa = match kappa {
         "free" => Kappa::Free,
         "shared" => Kappa::Shared,
@@ -630,7 +639,42 @@ fn parse_head_options(
         hartigan,
         equal_size,
         graph_degree,
+        rows: if leaf_graph == ROWS_GRAPH {
+            RowEdges::Requested
+        } else {
+            RowEdges::Off
+        },
     })
+}
+
+/// The `leaf_graph` value that counts the Leiden graph from the training rows ([`RowGraph`]).
+const ROWS_GRAPH: &str = "rows";
+
+/// The rows graph of `tree` over the `n` rows of `flat`, each row starting from its leaf
+/// `entries[r]` — the leaf `predict` labels it by, so a training row's label is its leaf's
+/// community.
+fn row_graph<R: Real, C: ClusterFeature<R>>(
+    features: &[C],
+    flat: &[R],
+    entries: &[usize],
+    graph_degree: usize,
+    seed: u64,
+) -> RowGraph {
+    let per_row = ROW_GRAPH_LEAVES.min(features.len());
+    let top = row_top_leaves(features, flat, entries, per_row, graph_degree, seed);
+    RowGraph::from_top(&top, per_row, features.len())
+}
+
+/// The rows graph is counted in the rows' own space, and a projection replaces the space the head
+/// clusters, so the leaves the rows name would not be the nodes the head partitions.
+fn require_rows_graph_unprojected(leaf_graph: &str, projection: &str) -> PyResult<()> {
+    if leaf_graph == ROWS_GRAPH && projection != "none" {
+        return Err(PyValueError::new_err(
+            "leaf_graph='rows' cannot be combined with a projection: the graph is counted from \
+             the rows in their own space, and the projection replaces the space the head clusters",
+        ));
+    }
+    Ok(())
 }
 
 /// Equal-size k-means labels each row by its leaf, so the keywords that relabel rows from a centre
@@ -1989,6 +2033,19 @@ fn cluster<R: Real, C: ClusterFeature<R>>(
                 }
             }
             None => {
+                let counted;
+                let opts = match opts.rows {
+                    RowEdges::Requested => {
+                        let entries = tree.nearest_entries(flat, n);
+                        let degree = opts.graph_degree;
+                        counted = row_graph(tree.leaf_features(), flat, &entries, degree, seed);
+                        HeadOptions {
+                            rows: RowEdges::Counted(&counted),
+                            ..opts
+                        }
+                    }
+                    _ => opts,
+                };
                 let mut model =
                     Model::fit_passes(tree, k, method, max_iter, n_init, seed, auto_k_max, opts);
                 model.refine(flat, n, dim, refine);
@@ -2330,6 +2387,7 @@ fn fit_predict<'py>(
         graph_degree,
     )?;
     require_equal_size_alone(equal_size, refine, projection)?;
+    require_rows_graph_unprojected(leaf_graph, projection)?;
     let nmf_dim = parse_projection(projection, projection_dim, projection_max_iter)?;
     let n_init = parse_n_init(n_init, kind, method)?;
     let max_iter = parse_max_iter(max_iter)?;
@@ -2760,18 +2818,49 @@ impl<R: Real> TreeState<R> {
 
     /// Route `n` rows of `flat` to their nearest leaf and read the cached labels.
     fn route(&self, labels: &[i64], flat: &[R], n: usize, dim: usize, beam: usize) -> Vec<i64> {
+        self.entries(flat, n, dim, beam)
+            .into_iter()
+            .map(|e| labels[e])
+            .collect()
+    }
+
+    /// The leaf entry each row of `flat` descends to at beam width `beam` — the leaf [`route`]
+    /// labels it by.
+    ///
+    /// [`route`]: Self::route
+    fn entries(&self, flat: &[R], n: usize, dim: usize, beam: usize) -> Vec<usize> {
         if beam <= 1 {
-            let entries = match self {
+            return match self {
                 TreeState::Spherical(t) => t.nearest_entries(flat, n),
                 TreeState::Diagonal(t) => t.nearest_entries(flat, n),
                 TreeState::Full(t) => t.nearest_entries(flat, n),
                 TreeState::Fd(t) => t.nearest_entries(flat, n),
             };
-            return entries.into_iter().map(|e| labels[e]).collect();
         }
         map_rows(n, |i| {
-            labels[self.nearest_entry(&flat[i * dim..(i + 1) * dim], beam)]
+            self.nearest_entry(&flat[i * dim..(i + 1) * dim], beam)
         })
+    }
+
+    /// The rows graph of this tree over the rows of `flat`, each row starting from the leaf
+    /// [`route`](Self::route) gives it.
+    #[allow(clippy::too_many_arguments)]
+    fn row_graph(
+        &self,
+        flat: &[R],
+        n: usize,
+        dim: usize,
+        beam: usize,
+        degree: usize,
+        seed: u64,
+    ) -> RowGraph {
+        let entries = self.entries(flat, n, dim, beam);
+        match self {
+            TreeState::Spherical(t) => row_graph(t.leaf_features(), flat, &entries, degree, seed),
+            TreeState::Diagonal(t) => row_graph(t.leaf_features(), flat, &entries, degree, seed),
+            TreeState::Full(t) => row_graph(t.leaf_features(), flat, &entries, degree, seed),
+            TreeState::Fd(t) => row_graph(t.leaf_features(), flat, &entries, degree, seed),
+        }
     }
 
     /// Stream CSR rows into the tree by expanding each into a reused dense buffer (so the dense
@@ -3853,7 +3942,10 @@ impl Betula {
     /// Takes `py` only to raise the leaf-budget warning: this is the one place every estimator
     /// entry point (`fit`, `fit_predict`, `partial_fit(None)`, and both CSR paths) funnels through,
     /// so the rule lives here rather than being repeated at each of them.
-    fn finalize(&mut self, py: Python<'_>) -> PyResult<()> {
+    ///
+    /// `rows` is the data the tree was just built from, or `None` where the caller has no dense
+    /// rows to give (`partial_fit(None)`, the CSR paths); only the rows graph reads it.
+    fn finalize(&mut self, py: Python<'_>, rows: Option<&Bound<'_, PyAny>>) -> PyResult<()> {
         let (kind, k, mi, ni, seed, akm, nmf) = (
             self.kind,
             self.n_clusters,
@@ -3872,6 +3964,17 @@ impl Betula {
             self.equal_size,
             self.graph_degree,
         )?;
+        let counted = match passes.rows {
+            RowEdges::Requested => Some(self.count_row_graph(py, rows)?),
+            _ => None,
+        };
+        let passes = match &counted {
+            Some(g) => HeadOptions {
+                rows: RowEdges::Counted(g),
+                ..passes
+            },
+            None => passes,
+        };
         let result = if let Some(t) = &self.state64 {
             Some(t.label_proba(kind, k, mi, ni, seed, akm, passes, nmf))
         } else {
@@ -3906,6 +4009,34 @@ impl Betula {
             warn_auto_k_saturated(py, kind, k, seen.len(), self.n_leaves_(), akm)?;
         }
         Ok(())
+    }
+
+    /// Count the rows graph (`leaf_graph="rows"`) of the fitted tree over `rows`, or refuse when the
+    /// caller has none to give.
+    fn count_row_graph(
+        &self,
+        py: Python<'_>,
+        rows: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<RowGraph> {
+        let Some(data) = rows else {
+            return Err(PyValueError::new_err(
+                "leaf_graph='rows' counts the Leiden graph from the training rows, and this call has \
+                 none to count: partial_fit(None) sees only the leaves the stream left, and a sparse \
+                 fit is not supported. Call fit() or fit_predict() on dense rows",
+            ));
+        };
+        let (beam, degree, seed) = (self.route_beam, self.graph_degree, self.seed);
+        if let Some(t) = &self.state64 {
+            let (src, n, dim) = self.rows_of::<f64>(data)?;
+            let flat = src.as_slice();
+            Ok(py.detach(|| t.row_graph(flat, n, dim, beam, degree, seed)))
+        } else if let Some(t) = &self.state32 {
+            let (src, n, dim) = self.rows_of::<f32>(data)?;
+            let flat = src.as_slice();
+            Ok(py.detach(|| t.row_graph(flat, n, dim, beam, degree, seed)))
+        } else {
+            Err(PyValueError::new_err("no data was fitted"))
+        }
     }
 
     /// Cluster the leaves under pairwise constraints (COP-KMeans). `data` is the just-streamed array,
@@ -4213,6 +4344,7 @@ impl Betula {
             graph_degree,
         )?; // lowered at finalize
         require_equal_size_alone(equal_size, refine, projection)?;
+        require_rows_graph_unprojected(leaf_graph, projection)?;
         parse_max_iter(max_iter)?;
         check_tree_shape(branching, leaf_cap)?;
         Ok(Self {
@@ -4289,7 +4421,7 @@ impl Betula {
                     ));
                 }
                 let py = slf.py();
-                slf.finalize(py)?;
+                slf.finalize(py, None)?;
             }
         }
         Ok(slf)
@@ -4304,7 +4436,7 @@ impl Betula {
         slf.stream(data, Arrival::Whole)?;
         let py = slf.py();
         slf.refit_tree(py, data)?;
-        slf.finalize(py)?;
+        slf.finalize(py, Some(data))?;
         slf.refine_rule(py, data)?;
         Ok(slf)
     }
@@ -4357,7 +4489,7 @@ impl Betula {
         self.reset();
         self.stream(data, Arrival::Whole)?;
         self.refit_tree(py, data)?;
-        self.finalize(py)?;
+        self.finalize(py, Some(data))?;
         self.refine_rule(py, data)?;
         self.route_data(py, data)
     }
@@ -4422,7 +4554,7 @@ impl Betula {
             n_features,
             Arrival::Whole,
         )?;
-        self.finalize(py)
+        self.finalize(py, None)
     }
 
     fn fit_predict_csr<'py>(
@@ -4436,7 +4568,7 @@ impl Betula {
         let (d, idx, ip) = (data.as_slice()?, indices.as_slice()?, indptr.as_slice()?);
         self.reset();
         self.stream_csr(d, idx, ip, n_features, Arrival::Whole)?;
-        self.finalize(py)?;
+        self.finalize(py, None)?;
         Ok(self
             .route_csr_labels(d, idx, ip, n_features)?
             .into_pyarray(py))

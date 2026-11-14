@@ -1,6 +1,6 @@
 //! End-to-end model: build a CF-tree, cluster its leaves (Phase 3), and label points.
 
-use crate::clustering::community::leiden_on_degree;
+use crate::clustering::community::{RowGraph, leiden_on_degree, leiden_rows};
 use crate::clustering::{
     Gmm, GmmFull, GmmToeplitz, KMEANS_N_INIT, Kappa, LeafGraph, Linkage, Mfa, Movmf, Mppca,
     Objective, Watson, agglomerative, agglomerative_auto, dyn_msc, equal_size, fuzzy_cmeans,
@@ -130,6 +130,9 @@ pub(crate) enum Rule {
 pub(crate) fn head_rule(method: Method, opts: HeadOptions) -> Rule {
     match method {
         Method::KMeans if opts.equal_size => Rule::Microcluster,
+        Method::Leiden { .. } if !matches!(opts.rows, RowEdges::Off) => {
+            Rule::Centroid { unit: false }
+        }
         _ => assignment_rule(method),
     }
 }
@@ -200,11 +203,12 @@ fn cluster_centroids<R: Real, C: ClusterFeature<R>>(
 /// A Lloyd sweep replaces each centre with the mean of the rows nearest it. For `kmeans` and its
 /// variants that *is* the head's own update, so the sweep refines the objective it optimised. For
 /// `kmedoids` it destroys that objective: the centre stops being one of the data's own
-/// microclusters, which is the only reason to have asked for a medoid.
+/// microclusters, which is the only reason to have asked for a medoid. A Leiden centre is a leaf
+/// standing for its community, and moving it would move the community's border.
 pub(crate) fn refinable(method: Method) -> bool {
     !matches!(
         method,
-        Method::KMedoids | Method::FuzzyCMeans { .. } | Method::Hyperbolic
+        Method::KMedoids | Method::FuzzyCMeans { .. } | Method::Hyperbolic | Method::Leiden { .. }
     )
 }
 
@@ -642,8 +646,8 @@ pub(crate) fn auto_k_ceiling(method: Method, n_leaves: usize, auto_k_max: usize)
 /// `graph` names (`graph` also selects the spectral operator), the vMF concentration model, and
 /// whether k-means ends on Hartigan leaf moves ([`hartigan`]) or on equal-size clusters
 /// ([`equal_size`]).
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct HeadOptions {
+#[derive(Clone, Copy)]
+pub(crate) struct HeadOptions<'a> {
     pub(crate) passes: usize,
     pub(crate) graph: LeafGraph,
     pub(crate) kappa: Kappa,
@@ -651,9 +655,23 @@ pub(crate) struct HeadOptions {
     pub(crate) equal_size: bool,
     /// Neighbours per leaf of the Leiden head's approximate leaf graph; `0` is the exact graph.
     pub(crate) graph_degree: usize,
+    /// The leaf graph counted from the training rows, which replaces `graph` for the Leiden head.
+    pub(crate) rows: RowEdges<'a>,
 }
 
-impl HeadOptions {
+/// Whether the Leiden head partitions the leaf graph counted from the rows ([`RowGraph`]). Only a
+/// caller holding the training rows can count it: the option parser says the graph is
+/// [`Requested`](RowEdges::Requested), and that caller swaps in the [`Counted`](RowEdges::Counted)
+/// graph or refuses the fit.
+#[derive(Clone, Copy)]
+#[cfg_attr(not(feature = "python"), allow(dead_code))] // only the Python boundary holds the rows
+pub(crate) enum RowEdges<'a> {
+    Off,
+    Requested,
+    Counted(&'a RowGraph),
+}
+
+impl HeadOptions<'_> {
     /// One Leiden pass over the unit leaf graph, a free κ per vMF component and plain Lloyd for
     /// k-means: the heads of 1.0.
     pub(crate) const DEFAULT: Self = Self {
@@ -663,6 +681,7 @@ impl HeadOptions {
         hartigan: false,
         equal_size: false,
         graph_degree: 0,
+        rows: RowEdges::Off,
     };
 }
 
@@ -785,6 +804,24 @@ pub(crate) fn fit_head<R: Real, C: ClusterFeature<R>>(
             } else {
                 Objective::Modularity
             };
+            match opts.rows {
+                RowEdges::Off => {}
+                // Every leaf is a centre carrying its community, so a row is labelled by its
+                // nearest leaf exactly, as the graph counted it, and not by the tree descent.
+                RowEdges::Counted(rows) => {
+                    debug_assert!(!cpm, "the rows graph is refused for CPM at the boundary");
+                    let labels = leiden_rows(features, rows, resolution, seed, opts.passes).labels;
+                    let centers = labels
+                        .iter()
+                        .zip(features)
+                        .map(|(&l, f)| (l, f.mean().to_vec()))
+                        .collect();
+                    return HeadFit::centred(labels, centers);
+                }
+                RowEdges::Requested => {
+                    unreachable!("the caller holding the rows counts the graph or refuses the fit")
+                }
+            }
             HeadFit::hard(
                 leiden_on_degree(
                     features,

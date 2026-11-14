@@ -16,13 +16,16 @@
 //! limit) and **CPM** (Constant Potts Model — resolution-limit-free, but `γ` is an absolute density
 //! threshold on the edge-weight scale). Pure Rust, no eigensolver.
 
+use crate::assign::AssignPlan;
 use crate::clustering::graph::{
     knn_affinity, knn_affinity_geo, knn_affinity_geo_approx, knn_degree, log_covariances,
     tangent_bases,
 };
 use crate::clustering::rng::SplitMix64;
 use crate::feature::ClusterFeature;
+use crate::kernels::sq_euclidean;
 use crate::types::Real;
+use std::cmp::Ordering;
 use std::collections::HashMap;
 
 /// Quality function optimized by [`leiden`].
@@ -244,6 +247,214 @@ pub(crate) fn leiden_on_degree<R: Real, C: ClusterFeature<R>>(
         )
         .0,
     }
+}
+
+/// Leaves each row names in the rows graph. Of 3, 5 and 8, five was the one that gained on every
+/// real fixture (digits, MNIST raw and standardised, news, covtype within 0.01) under the QL-1
+/// protocol; it loses to the mass graph on well-separated blobs and on noisy rings.
+#[cfg_attr(not(feature = "python"), allow(dead_code))] // only the Python boundary holds the rows
+pub(crate) const ROW_GRAPH_LEAVES: usize = 5;
+
+/// Candidate leaves per row: the row's nearest leaf and this many of that leaf's nearest leaves. At
+/// four times [`ROW_GRAPH_LEAVES`] the candidates hold 0.99 of the exact top five on digits and 0.91
+/// on MNIST, and the partition matches the exact scan's within the seed spread, at `n·20` distances
+/// instead of `n·m`.
+#[cfg_attr(not(feature = "python"), allow(dead_code))] // only the Python boundary holds the rows
+const ROW_GRAPH_CANDIDATES: usize = 4 * ROW_GRAPH_LEAVES;
+
+/// The leaf graph counted from the rows (Leiden's `leaf_graph="rows"`).
+///
+/// Each row names its `per_row` nearest leaves, and every pair of leaves one row names gains one
+/// count. With `B` the `n × m` matrix that puts `1/per_row` on a row's leaves, the edge weights are
+/// the off-diagonal of `BᵀB`: a bipartite row–leaf graph folded onto the leaves, as U-SPEC does. A
+/// leaf's mass is the row share it carries, `Σ_r B_ri`. Counts are integers, so the graph does not
+/// depend on the order the rows are counted in.
+pub(crate) struct RowGraph {
+    adj: Vec<Vec<(usize, f64)>>,
+    mass: Vec<f64>,
+    per_row: usize,
+}
+
+#[cfg_attr(not(feature = "python"), allow(dead_code))] // only the Python boundary holds the rows
+impl RowGraph {
+    /// `top` lists, row after row, the `per_row` distinct leaves each row names, each below `m`.
+    pub(crate) fn from_top(top: &[usize], per_row: usize, m: usize) -> Self {
+        let mut named = vec![0u64; m];
+        let mut pairs: Vec<(usize, usize)> = Vec::new();
+        for row in top.chunks_exact(per_row.max(1)) {
+            for (x, &a) in row.iter().enumerate() {
+                named[a] += 1;
+                for &b in &row[x + 1..] {
+                    pairs.push((a.min(b), a.max(b)));
+                }
+            }
+        }
+        pairs.sort_unstable();
+        let unit = 1.0 / (per_row * per_row) as f64;
+        let mut adj = vec![Vec::new(); m];
+        for run in pairs.chunk_by(|x, y| x == y) {
+            let (a, b) = run[0];
+            let w = run.len() as f64 * unit;
+            adj[a].push((b, w));
+            adj[b].push((a, w));
+        }
+        let mass = named.iter().map(|&c| c as f64 / per_row as f64).collect();
+        Self { adj, mass, per_row }
+    }
+}
+
+/// The `per_row` leaves nearest each row of `flat`, row after row, nearest first, among the row's
+/// nearest leaf and that leaf's [`ROW_GRAPH_CANDIDATES`] nearest leaves. `hints` holds one leaf
+/// per row to start the exact nearest-leaf search from (the tree descent's answer). The descent
+/// alone is not enough: at `d = 784` it reaches the nearest leaf for 69 % of MNIST rows, and
+/// starting from it cost 0.04 ARI. The leaf neighbour lists are exact at `degree == 0` and come
+/// from the beam-search index otherwise, as the Leiden graph's do. Ties go to the lower leaf index.
+#[cfg_attr(not(feature = "python"), allow(dead_code))] // only the Python boundary holds the rows
+pub(crate) fn row_top_leaves<R: Real, C: ClusterFeature<R>>(
+    features: &[C],
+    flat: &[R],
+    hints: &[usize],
+    per_row: usize,
+    degree: usize,
+    seed: u64,
+) -> Vec<usize> {
+    let m = features.len();
+    let dim = if hints.is_empty() {
+        0
+    } else {
+        flat.len() / hints.len()
+    };
+    let means: Vec<Vec<R>> = features.iter().map(|f| f.mean().to_vec()).collect();
+    let plan = AssignPlan::new(&means, None).ok();
+    let near = leaf_neighbours(features, ROW_GRAPH_CANDIDATES.min(m - 1), degree, seed);
+    let pick = |r: usize| -> Vec<usize> {
+        let x = &flat[r * dim..(r + 1) * dim];
+        let own = plan
+            .as_ref()
+            .map_or(hints[r], |p| p.nearest(x, Some(hints[r])).0);
+        let mut cand: Vec<(R, usize)> = std::iter::once(own)
+            .chain(near[own].iter().copied())
+            .map(|j| (sq_euclidean(x, features[j].mean()), j))
+            .collect();
+        cand.sort_by(|a, b| {
+            a.0.partial_cmp(&b.0)
+                .unwrap_or(Ordering::Equal)
+                .then(a.1.cmp(&b.1))
+        });
+        cand.into_iter().take(per_row).map(|(_, j)| j).collect()
+    };
+    #[cfg(feature = "parallel")]
+    {
+        use rayon::prelude::*;
+        (0..hints.len())
+            .into_par_iter()
+            .flat_map_iter(pick)
+            .collect()
+    }
+    #[cfg(not(feature = "parallel"))]
+    {
+        (0..hints.len()).flat_map(pick).collect()
+    }
+}
+
+/// Each leaf's `k` nearest other leaves by mean, nearest first: the exact scan at `degree == 0`,
+/// the beam-search index at `max(k, degree)` neighbours otherwise.
+#[cfg_attr(not(feature = "python"), allow(dead_code))] // only the Python boundary holds the rows
+fn leaf_neighbours<R: Real, C: ClusterFeature<R>>(
+    features: &[C],
+    k: usize,
+    degree: usize,
+    seed: u64,
+) -> Vec<Vec<usize>> {
+    let m = features.len();
+    if degree > 0 {
+        let dist = |i: usize, j: usize| {
+            sq_euclidean(features[i].mean(), features[j].mean())
+                .to_f64()
+                .unwrap_or(f64::MAX)
+                .sqrt()
+        };
+        return super::knn::build(m, k.max(degree), seed, dist)
+            .into_iter()
+            .map(|list| list.into_iter().take(k).map(|(j, _)| j).collect())
+            .collect();
+    }
+    let one = |i: usize| -> Vec<usize> {
+        let mut d: Vec<(R, usize)> = (0..m)
+            .filter(|&j| j != i)
+            .map(|j| (sq_euclidean(features[i].mean(), features[j].mean()), j))
+            .collect();
+        let by = |a: &(R, usize), b: &(R, usize)| {
+            a.0.partial_cmp(&b.0)
+                .unwrap_or(Ordering::Equal)
+                .then(a.1.cmp(&b.1))
+        };
+        if k < d.len() {
+            d.select_nth_unstable_by(k, by);
+            d.truncate(k);
+        }
+        d.sort_by(by);
+        d.into_iter().map(|(_, j)| j).collect()
+    };
+    #[cfg(feature = "parallel")]
+    {
+        use rayon::prelude::*;
+        (0..m).into_par_iter().map(one).collect()
+    }
+    #[cfg(not(feature = "parallel"))]
+    {
+        (0..m).map(one).collect()
+    }
+}
+
+/// Leiden's modularity on the rows graph, scored as on `BᵀB` with its diagonal: a row adds
+/// `1/per_row²` to each of its leaves' loops and `(per_row − 1)/per_row²` to their other edges,
+/// so the loops scale every degree, and `2m`, by `per_row/(per_row − 1)`. The loops are left out
+/// and the resolution raised by that factor, which scores every partition the same.
+///
+/// Modularity only. CPM's resolution is an absolute density on the edge scale, and the density
+/// of this graph falls with the row count, so no CPM resolution would mean the same at two sizes.
+///
+/// A leaf no row names has no edge; it takes the community of its nearest named leaf rather than
+/// standing as a community of its own that no training row is in.
+pub(crate) fn leiden_rows<R: Real, C: ClusterFeature<R>>(
+    features: &[C],
+    graph: &RowGraph,
+    resolution: f64,
+    seed: u64,
+    max_passes: usize,
+) -> Community {
+    let m = graph.adj.len();
+    if m <= 1 {
+        return Community { labels: vec![0; m] };
+    }
+    let s = graph.per_row.max(2) as f64;
+    let (mut labels, _) = detect_passes_sized(
+        &graph.adj,
+        None,
+        resolution * s / (s - 1.0),
+        Objective::Modularity,
+        seed,
+        max_passes,
+    );
+    let unnamed: Vec<usize> = (0..m).filter(|&i| graph.mass[i] == 0.0).collect();
+    if !unnamed.is_empty() && unnamed.len() < m {
+        for &i in &unnamed {
+            let nearest = (0..m)
+                .filter(|&j| graph.mass[j] > 0.0)
+                .map(|j| (sq_euclidean(features[i].mean(), features[j].mean()), j))
+                .min_by(|a, b| {
+                    a.0.partial_cmp(&b.0)
+                        .unwrap_or(Ordering::Equal)
+                        .then(a.1.cmp(&b.1))
+                })
+                .map(|(_, j)| j)
+                .unwrap_or(i);
+            labels[i] = labels[nearest];
+        }
+        labels = relabel(&labels);
+    }
+    Community { labels }
 }
 
 /// The self-tuning kNN affinity graph over the leaf means, with the geometry terms whose weights
@@ -1796,5 +2007,149 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Every pair of leaves a row names gains `1/s²`, and a leaf's mass is its share `count/s`.
+    #[test]
+    fn the_rows_graph_counts_each_pair_of_leaves_a_row_names() {
+        // Three rows naming two leaves each, over four leaves; leaf 3 is named by no row.
+        let g = RowGraph::from_top(&[0, 1, 1, 0, 1, 2], 2, 4);
+        assert_eq!(g.adj[0], vec![(1, 0.5)]);
+        assert_eq!(g.adj[1], vec![(0, 0.5), (2, 0.25)]);
+        assert_eq!(g.adj[2], vec![(1, 0.25)]);
+        assert!(g.adj[3].is_empty());
+        assert_eq!(g.mass, vec![1.0, 1.5, 0.5, 0.0]);
+    }
+
+    /// The graph Leiden runs on leaves out `BᵀB`'s diagonal and raises γ by `s/(s − 1)`; that must
+    /// rank every partition as modularity on the whole of `BᵀB` does. The two scores differ by the
+    /// loops' weight, which no partition moves, so the difference between any two partitions is
+    /// the same under both.
+    #[test]
+    fn dropping_the_loops_and_raising_gamma_ranks_partitions_as_the_full_product_does() {
+        let (s, m, gamma) = (3usize, 6usize, 1.3);
+        let mut rng = SplitMix64::new(9);
+        let mut top = Vec::new();
+        for _ in 0..40 {
+            let mut row: Vec<usize> = Vec::new();
+            while row.len() < s {
+                let j = (rng.next_u64() % m as u64) as usize;
+                if !row.contains(&j) {
+                    row.push(j);
+                }
+            }
+            top.extend(row);
+        }
+        // The full product, loops included.
+        let mut full = vec![vec![0.0; m]; m];
+        for row in top.chunks_exact(s) {
+            for &a in row {
+                for &b in row {
+                    full[a][b] += 1.0 / (s * s) as f64;
+                }
+            }
+        }
+        let score = |w: &dyn Fn(usize, usize) -> f64, g: f64, labels: &[usize]| {
+            let deg: Vec<f64> = (0..m).map(|i| (0..m).map(|j| w(i, j)).sum()).collect();
+            let two_m: f64 = deg.iter().sum();
+            let mut inside = 0.0;
+            for i in 0..m {
+                for j in 0..m {
+                    if labels[i] == labels[j] {
+                        inside += w(i, j);
+                    }
+                }
+            }
+            let mut tot = vec![0.0; m];
+            for i in 0..m {
+                tot[labels[i]] += deg[i];
+            }
+            inside - g * tot.iter().map(|t| t * t).sum::<f64>() / two_m
+        };
+        let graph = RowGraph::from_top(&top, s, m);
+        let loopless = |i: usize, j: usize| {
+            graph.adj[i]
+                .iter()
+                .find(|&&(k, _)| k == j)
+                .map_or(0.0, |&(_, w)| w)
+        };
+        let with_loops = |i: usize, j: usize| full[i][j];
+        let raised = gamma * s as f64 / (s as f64 - 1.0);
+        let parts: [&[usize]; 3] = [
+            &[0, 0, 0, 1, 1, 1],
+            &[0, 1, 2, 0, 1, 2],
+            &[0, 0, 1, 1, 2, 3],
+        ];
+        for p in &parts[1..] {
+            let a = score(&with_loops, gamma, p) - score(&with_loops, gamma, parts[0]);
+            let b = score(&loopless, raised, p) - score(&loopless, raised, parts[0]);
+            assert!((a - b).abs() < 1e-12, "{a} vs {b}");
+        }
+    }
+
+    /// Three blobs, rows naming their nearest leaves: the rows graph finds the blobs without `k`,
+    /// on the exact leaf neighbours and on the index's.
+    #[test]
+    fn leiden_on_the_rows_graph_discovers_separated_blobs() {
+        let mut rng = SplitMix64::new(4);
+        let centers = [[0.0, 0.0], [12.0, 0.0], [0.0, 12.0]];
+        let (pts, truth) = blobs(&mut rng, 300, &centers, 0.5);
+        let (micros, p2m) = grid_micros(&pts, 1.0);
+        let flat: Vec<f64> = pts.iter().flatten().copied().collect();
+        for degree in [0, 8] {
+            let s = ROW_GRAPH_LEAVES.min(micros.len());
+            let top = row_top_leaves(&micros, &flat, &p2m, s, degree, 1);
+            assert_eq!(top.len(), pts.len() * s);
+            let graph = RowGraph::from_top(&top, s, micros.len());
+            let labels = leiden_rows(&micros, &graph, 1.0, 1, 1).labels;
+            let pred: Vec<usize> = p2m.iter().map(|&m| labels[m]).collect();
+            assert!(ari(&pred, &truth) > 0.95, "degree {degree}");
+        }
+    }
+
+    /// A row's first leaf is the nearest of its candidates, and its leaves are distinct.
+    #[test]
+    fn a_row_names_its_nearest_candidate_leaves_once_each() {
+        let mut rng = SplitMix64::new(2);
+        let (pts, _) = blobs(&mut rng, 200, &[[0.0, 0.0], [6.0, 0.0]], 1.0);
+        let (micros, p2m) = grid_micros(&pts, 0.7);
+        let flat: Vec<f64> = pts.iter().flatten().copied().collect();
+        let top = row_top_leaves(&micros, &flat, &p2m, 5, 0, 1);
+        for (r, row) in top.chunks_exact(5).enumerate() {
+            let mut sorted = row.to_vec();
+            sorted.sort_unstable();
+            sorted.dedup();
+            assert_eq!(sorted.len(), 5);
+            let d = |j: usize| sq_euclidean(&pts[r], micros[j].mean());
+            assert!(row.windows(2).all(|w| d(w[0]) <= d(w[1])));
+            // Its own grid cell holds it, so nothing is nearer than the first leaf named.
+            assert!(d(row[0]) <= d(p2m[r]));
+        }
+    }
+
+    /// A leaf no row names has no edge, and would stand alone as a community no training row is
+    /// in; it takes its nearest named leaf's community instead.
+    #[test]
+    fn a_leaf_no_row_names_joins_its_nearest_named_leaf() {
+        let mut rng = SplitMix64::new(4);
+        let (pts, _) = blobs(&mut rng, 100, &[[0.0, 0.0], [12.0, 0.0]], 0.5);
+        let (mut micros, p2m) = grid_micros(&pts, 1.0);
+        let mut stray = crate::feature::Spherical::new(2);
+        stray.push(&[12.5, 0.5], 1.0);
+        micros.push(stray);
+        let flat: Vec<f64> = pts.iter().flatten().copied().collect();
+        let s = ROW_GRAPH_LEAVES;
+        let top = row_top_leaves(&micros[..micros.len() - 1], &flat, &p2m, s, 0, 1);
+        let graph = RowGraph::from_top(&top, s, micros.len());
+        let labels = leiden_rows(&micros, &graph, 1.0, 1, 1).labels;
+        let last = micros.len() - 1;
+        let nearest = (0..last)
+            .min_by(|&a, &b| {
+                let d = |j: usize| sq_euclidean(micros[last].mean(), micros[j].mean());
+                d(a).partial_cmp(&d(b)).unwrap()
+            })
+            .unwrap();
+        assert_eq!(labels[last], labels[nearest]);
+        assert_eq!(n_distinct(&labels), n_distinct(&labels[..last]));
     }
 }

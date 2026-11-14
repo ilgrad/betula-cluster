@@ -698,6 +698,45 @@ Spectral, median ARI over seeds 0/1/2, 20 000-row draws, threshold 0, the true `
 | covtype, `unit` | 0.008 | 0.073 | 0.070 | 0.030 |
 | covtype, `mass` | 0.003 | 0.041 | 0.035 | 0.027 |
 
+**The rows-counted leaf graph.** Both graphs above join leaves by the affinity of their means, so
+the edge between two leaves says nothing about whether the rows between them exist.
+`leaf_graph="rows"` counts the edges from the rows instead, as U-SPEC does with its
+object–representative graph (Huang et al., IEEE TKDE 2020): each row names its $s = 5$ nearest
+leaves, and with $B$ the $n \times m$ matrix that puts $1/s$ on them, the leaf graph is $B^\top B$.
+The counts are integers, so the graph does not depend on the thread count. A row adds $1/s^2$ to
+each of its leaves' loops and $(s-1)/s^2$ to their other edges, so the loops scale every degree and
+$2m$ by $s/(s-1)$; dropping them and running modularity at $\gamma\, s/(s-1)$ ranks every partition
+as modularity on the whole of $B^\top B$ does
+(`dropping_the_loops_and_raising_gamma_ranks_partitions_as_the_full_product_does`). CPM is
+refused: its $\gamma$ is an absolute density, and the density of this graph falls with the row
+count.
+
+Two choices are measured. The $s$ nearest leaves are searched among the row's nearest leaf and
+that leaf's 20 nearest leaves: $n \cdot 20$ distances instead of $n \cdot m$, holding 0.91 of the
+exact top five on MNIST and 0.99 on digits, at an ARI within the seed spread of the full scan. The
+row's nearest leaf is found exactly, with the tree descent's leaf as the starting bound, and the
+row is labelled by that leaf in training and in `predict`: at $d = 784$ the descent reaches the
+nearest leaf for 69 % of MNIST rows, and labelling by the descent's leaf cost 0.05 ARI. So
+`predict` scans every leaf, `n·m·d` work, where the other graphs descend the tree.
+
+Median ARI (min–max), Leiden at $\gamma = 1$ until stable, five row orders × seeds 0/1/2:
+
+| data | leaves | `unit` | `mass` | `rows` |
+|---|---|---|---|---|
+| digits | 300 | 0.768 (0.714–0.816) | 0.750 (0.719–0.778) | **0.810** (0.790–0.825) |
+| MNIST-20k, raw | 4 000 | 0.689 (0.649–0.722) | 0.633 (0.608–0.650) | **0.746** (0.680–0.776) |
+| MNIST-20k, standardised | 4 000 | 0.492 (0.442–0.515) | 0.505 (0.458–0.549) | **0.535** (0.509–0.577) |
+| 20 newsgroups, MiniLM | 4 000 | 0.330 (0.301–0.353) | 0.312 (0.281–0.324) | **0.345** (0.333–0.364) |
+| covtype-20k | 4 000 | **0.039** (0.033–0.041) | 0.030 (0.027–0.032) | 0.032 (0.030–0.033) |
+| blobs-20k | 2 000 | 0.536 (0.500–0.579) | **0.623** (0.593–0.633) | 0.575 (0.518–0.615) |
+| rings, noise 0.04 | 600 | 0.133 (0.119–0.146) | **0.144** (0.121–0.158) | 0.121 (0.110–0.140) |
+| rings, noise 0.08 | 600 | **0.164** (0.150–0.173) | 0.160 (0.149–0.176) | 0.146 (0.132–0.159) |
+
+It gains on every real fixture but covtype, whose point-level ceiling is 0.02, and loses on the
+synthetic ones: on well-separated blobs the mass graph is better, and on noisy rings, where every
+graph over-segments at $\gamma = 1$, by 0.02. Python-igraph's Leiden on the same counted graph reads
+within 0.015 of these rows on MNIST, so the optimiser is not what limits them.
+
 Two moons and two circles at 20 000 points read 1.000 on both graphs at every budget; one seed of
 three falls to 0.55 on the moons at 3 200 leaves with `mass`.
 

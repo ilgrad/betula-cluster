@@ -1041,6 +1041,56 @@ def test_the_mass_leaf_graph_is_opt_in_and_survives_a_round_trip(blobs, method, 
         np.testing.assert_array_equal(restored.predict(x), est.predict(x))
 
 
+@pytest.mark.parametrize("dtype", [np.float64, np.float32])
+def test_the_rows_leaf_graph_is_read_alike_by_both_entry_points_and_kept_through_a_save(
+    blobs, dtype, tmp_path
+):
+    """``"rows"`` counts the graph from the training rows: the one-shot function and the estimator
+    count the same graph, a training row is labelled by its leaf's community, and a saved model
+    predicts as the fitted one does."""
+    import pickle
+
+    x, y = blobs
+    x = x.astype(dtype)
+    kw = dict(method="leiden", threshold=0.3, max_leaves=400, seed=1, leaf_graph="rows")
+    est = betula_cluster.Betula(**kw)
+    labels = est.fit_predict(x)
+    assert est.get_params()["leaf_graph"] == "rows"
+    assert ari(labels, y) > 0.95
+    np.testing.assert_array_equal(betula_cluster.fit_predict(x, **kw), labels)
+    np.testing.assert_array_equal(betula_cluster.Betula(**kw).fit(x).predict(x), labels)
+    path = tmp_path / "model.betula"
+    est.save(str(path))
+    for restored in (pickle.loads(pickle.dumps(est)), betula_cluster.Betula.load(str(path))):
+        assert restored.get_params()["leaf_graph"] == "rows"
+        np.testing.assert_array_equal(restored.predict(x), labels)
+
+
+def test_the_rows_leaf_graph_refuses_a_fit_with_no_dense_rows_to_count(blobs):
+    """The graph needs the rows at head time: ``partial_fit(None)`` has only the leaves, and a
+    sparse fit has no dense rows; a projection moves the head off the rows' space; the spectral
+    head does not read this graph, and CPM's resolution has no size-free meaning on it."""
+    x, _ = blobs
+    est = betula_cluster.Betula(method="leiden", leaf_graph="rows")
+    est.partial_fit(x)
+    with pytest.raises(ValueError, match="partial_fit\\(None\\) sees only the leaves"):
+        est.partial_fit()
+    with pytest.raises(ValueError, match="cannot be combined with a projection"):
+        betula_cluster.Betula(method="leiden", leaf_graph="rows", projection="svd").fit(x)
+    with pytest.raises(ValueError, match="cannot be combined with a projection"):
+        betula_cluster.fit_predict(x, method="leiden", leaf_graph="rows", projection="svd")
+    for method in ("spectral", "leiden-cpm"):
+        with pytest.raises(ValueError, match=f"read only by 'leiden', not by method='{method}'"):
+            betula_cluster.fit_predict(x, 3, method=method, leaf_graph="rows")
+
+
+def test_the_rows_leaf_graph_refuses_sparse_rows(blobs):
+    sparse = pytest.importorskip("scipy.sparse")
+    x, _ = blobs
+    with pytest.raises(ValueError, match="a sparse fit is not supported"):
+        betula_cluster.Betula(method="leiden", leaf_graph="rows").fit(sparse.csr_matrix(x))
+
+
 def test_a_shared_vmf_kappa_is_opt_in_and_survives_a_round_trip(blobs, tmp_path):
     """``"free"`` is the vMF head of every earlier release, so naming it changes nothing;
     ``"shared"`` is read the same way by both entry points and kept through a save."""
@@ -1140,9 +1190,13 @@ def test_an_unknown_kappa_is_refused_at_both_entry_points(blobs):
 
 def test_an_unknown_leaf_graph_is_refused_at_both_entry_points(blobs):
     x, _ = blobs
-    with pytest.raises(ValueError, match="leaf_graph must be 'unit' or 'mass', got 'points'"):
+    with pytest.raises(
+        ValueError, match="leaf_graph must be 'unit', 'mass' or 'rows', got 'points'"
+    ):
         betula_cluster.fit_predict(x, method="leiden", leaf_graph="points")
-    with pytest.raises(ValueError, match="leaf_graph must be 'unit' or 'mass', got 'points'"):
+    with pytest.raises(
+        ValueError, match="leaf_graph must be 'unit', 'mass' or 'rows', got 'points'"
+    ):
         betula_cluster.Betula(method="leiden", leaf_graph="points").fit(x)
 
 
