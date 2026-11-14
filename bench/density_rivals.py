@@ -22,7 +22,8 @@ None of the rivals is a project dependency:
         --with classixclustering --with denmune --with finch-clust --with genieclust \\
         --with lumbermark --with pynndescent python bench/density_rivals.py
 
-Writes `bench/results_density_rivals.csv` (schema of `bench/rivals.py`).
+Writes `bench/results_density_rivals.csv` (schema of `bench/rivals.py`). `--arms=a,b` re-runs only
+those arms and replaces their rows in the existing CSV.
 """
 
 from __future__ import annotations
@@ -77,11 +78,18 @@ def _classix(x):
 
 
 def _denmune(x):
+    import contextlib
+    import tempfile
+
     from denmune import DenMune
 
-    labels, _ = DenMune(train_data=x, k_nearest=39).fit_predict(
-        show_analyzer=False, show_noise=True
-    )
+    # DenMune writes `_temp_2d`, `solution.txt` and `tmp/` into the working directory, and its
+    # `show_plots=True` default calls `plt.show()`, which blocks on a window until it is closed.
+    # Data that is not 2-D it first embeds with its own t-SNE, and clusters the embedding.
+    with tempfile.TemporaryDirectory() as scratch, contextlib.chdir(scratch):
+        labels, _ = DenMune(train_data=x, k_nearest=39).fit_predict(
+            show_analyzer=False, show_noise=True, show_plots=False
+        )
     return np.asarray(labels["train"])
 
 
@@ -152,9 +160,17 @@ def one(arm: str, dataset: str, seed: int) -> dict:
     return {"time_s": dt, "rss_mb": peak.mb(), **score(np.asarray(y), labels)}
 
 
-def main() -> int:
+def main(argv: list[str]) -> int:
     import pandas as pd
 
+    only = next((a.split("=", 1)[1].split(",") for a in argv if a.startswith("--arms=")), None)
+    csv = HERE / "results_density_rivals.csv"
+    kept = pd.read_csv(csv) if only and csv.exists() else pd.DataFrame()
+    if only:
+        unknown = sorted(set(only) - set(ARMS))
+        if unknown:
+            raise SystemExit(f"unknown arms: {unknown}")
+        kept = kept[~kept["arm"].isin(only)] if len(kept) else kept
     ready = (
         subprocess.run(
             ["bash", str(Path.home() / ".claude/scripts/bench-ready.sh")], capture_output=True
@@ -165,6 +181,8 @@ def main() -> int:
     for dataset in DATASETS:
         n = len(load(dataset)[0])
         for arm, (told_k, _) in ARMS.items():
+            if only and arm not in only:
+                continue
             # A deterministic rival gives the same labels on every seed; one run says it all.
             for seed in SEEDS if arm.startswith("betula") else SEEDS[:1]:
                 cmd = [sys.executable, str(Path(__file__)), "--one", arm, dataset, str(seed)]
@@ -188,7 +206,7 @@ def main() -> int:
                     f"  {res['time_s']:7.2f} s  {res['rss_mb']:6.0f} MB"
                 )
                 print(f"{dataset:8s} {arm:20s} seed={seed}  {shown}", flush=True)
-                pd.DataFrame(rows).to_csv(HERE / "results_density_rivals.csv", index=False)
+                pd.concat([kept, pd.DataFrame(rows)]).to_csv(csv, index=False)
                 if timed_out:
                     break  # the other seeds would time out too; the DNF row stands for them
     return 0
@@ -198,4 +216,4 @@ if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "--one":
         print(json.dumps(one(sys.argv[2], sys.argv[3], int(sys.argv[4]))))
     else:
-        sys.exit(main())
+        sys.exit(main(sys.argv[1:]))

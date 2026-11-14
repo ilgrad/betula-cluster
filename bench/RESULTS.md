@@ -1236,13 +1236,13 @@ the wider of the two cells' three-seed spreads is not a result. Tables with no s
 single runs by construction and fall back to a per-axis tolerance.
 
 ```
-## quality — 29 win · 91 tie · 21 loss
+## quality — 29 win · 94 tie · 21 loss
 ## speed   — 30 win · 1 tie · 7 loss
-## memory  — 100 win · 6 tie · 1 loss
+## memory  — 103 win · 6 tie · 1 loss
 ```
 
-`bench/scoreboard.json` records those 286 verdicts: the 140 of the 2026-10-29 edition, which it
-re-derives unchanged, and 146 `vs-rival` cells added with the census on 2026-11-14. `--check`
+`bench/scoreboard.json` records those 292 verdicts: the 140 of the 2026-10-29 edition, which it
+re-derives unchanged, and 152 `vs-rival` cells added with the census on 2026-11-14. `--check`
 re-derives them and exits non-zero if
 any cell got worse or vanished, and `--update` is the deliberate act of accepting a new board. Five
 of the quality losses are the `covtype` and `digits` rows discussed above, the raw-TF-IDF `20news` row,
@@ -1394,7 +1394,8 @@ scikit-fuzzy 0.5.0, kmodes 0.12.2, tslearn 0.10.0, numba 0.68.1.
   `varied` betula loses**: its `hdbscan` head reads 0.302 against 0.505 (`hdbscan`), 0.503
   (`fast_hdbscan`) and 0.499 (FINCH), and `scale-space` reads 0. **On `digits` DenMune wins
   outright**, 0.786 against betula's 0.164, which still beats both HDBSCAN implementations (0.087).
-  DenMune did not finish moons, circles or highdim at 30 000 rows within 1 800 s.
+  DenMune clusters its own 2-D t-SNE of any input that is not 2-D, so on `digits` the 0.786 is
+  t-SNE followed by density clustering, not density on the 64 pixels.
 - **Hierarchy, told k.** `dc-median` wins blobs against Genie (0.854 against 0.840) and ties
   lumbermark. **On aniso both beat it**: lumbermark 0.843, Genie 0.750, `dc-median` 0.637. On
   `varied` Genie wins (0.641 against `ward` 0.575) and lumbermark loses (0.184). On `digits`
@@ -1407,7 +1408,7 @@ scikit-fuzzy 0.5.0, kmodes 0.12.2, tslearn 0.10.0, numba 0.68.1.
 
 ### The tables
 
-Bold rows are betula's. `bench/rivals.py --arms=a,b` re-runs the named arms and replaces their rows.
+Bold rows are betula's. `bench/rivals.py --arms=a,b` and `bench/density_rivals.py --arms=a,b` re-run the named arms and replace their rows.
 
 #### Manifold, embedding and graph contests (`results_rivals.csv`)
 
@@ -1501,7 +1502,7 @@ Bold rows are betula's. `bench/rivals.py --arms=a,b` re-runs the named arms and 
 | fast-hdbscan | 0.432 | 5 | 0.29 | 326 |
 | **betula-hdbscan** | 0.376 (0.376–0.376) | 6 | 0.34 | 172 |
 | finch | 0.304 | 2 | 0.00 | 1190 |
-| denmune | 0.000 | 2 | 0.00 | 688 |
+| denmune | 0.000 | 2 | 0.00 | 672 |
 | classix | 0.000 | 1 | 0.00 | 172 |
 | sklearn-optics | 0.000 | 1 | 0.00 | 255 |
 
@@ -1523,7 +1524,7 @@ Bold rows are betula's. `bench/rivals.py --arms=a,b` re-runs the named arms and 
 | hdbscan | 0.500 | 2 | 0.06 | 278 |
 | **betula-hdbscan** | 0.469 (0.469–0.469) | 2 | 0.11 | 172 |
 | fast-hdbscan | 0.447 | 2 | 0.14 | 326 |
-| denmune | 0.000 | 2 | 0.00 | 688 |
+| denmune | 0.000 | 2 | 0.00 | 672 |
 | classix | 0.000 | 1 | 0.00 | 172 |
 | sklearn-optics | 0.000 | 1 | 0.00 | 237 |
 
@@ -1544,7 +1545,7 @@ Bold rows are betula's. `bench/rivals.py --arms=a,b` re-runs the named arms and 
 | fast-hdbscan | 0.503 | 3 | 0.48 | 325 |
 | finch | 0.499 | 2 | 0.00 | 1289 |
 | **betula-hdbscan** | 0.302 (0.302–0.302) | 3 | 0.29 | 171 |
-| denmune | 0.000 | 1 | 0.00 | 689 |
+| denmune | 0.000 | 1 | 0.00 | 672 |
 | **betula-scale-space** | 0.000 (0.000–0.000) | 2 | 0.00 | 170 |
 | classix | 0.000 | 1 | 0.00 | 172 |
 | sklearn-optics | 0.000 | 1 | 0.00 | 247 |
@@ -1567,9 +1568,9 @@ Bold rows are betula's. `bench/rivals.py --arms=a,b` re-runs the named arms and 
 | **betula-scale-space** | 1.000 (1.000–1.000) | 2 | 0.00 | 171 |
 | **betula-hdbscan** | 1.000 (1.000–1.000) | 2 | 0.00 | 172 |
 | fast-hdbscan | 1.000 | 2 | 0.00 | 326 |
+| denmune | 0.997 | 2 | 0.00 | 671 |
 | finch | 0.440 | 2 | 0.00 | 1346 |
 | classix | 0.000 | 1 | 0.00 | 172 |
-| denmune | DNF (timeout 1800 s) | | | |
 
 **moons, n = 30 000, told k**
 
@@ -1589,9 +1590,9 @@ Bold rows are betula's. `bench/rivals.py --arms=a,b` re-runs the named arms and 
 | sklearn-optics | 1.000 | 2 | 0.00 | 248 |
 | **betula-hdbscan** | 1.000 (1.000–1.000) | 2 | 0.00 | 172 |
 | fast-hdbscan | 1.000 | 2 | 0.00 | 326 |
+| denmune | 0.999 | 2 | 0.00 | 671 |
 | classix | 0.000 | 1 | 0.00 | 172 |
 | finch | -0.000 | 3 | 0.00 | 1447 |
-| denmune | DNF (timeout 1800 s) | | | |
 
 **circles, n = 30 000, told k**
 
@@ -1612,8 +1613,8 @@ Bold rows are betula's. `bench/rivals.py --arms=a,b` re-runs the named arms and 
 | fast-hdbscan | 1.000 | 8 | 0.00 | 333 |
 | sklearn-optics | 1.000 | 8 | 0.00 | 227 |
 | classix | 1.000 | 8 | 0.00 | 188 |
+| denmune | 0.999 | 8 | 0.00 | 688 |
 | finch | 0.345 | 3 | 0.00 | 921 |
-| denmune | DNF (timeout 1800 s) | | | |
 
 **highdim, n = 30 000, told k**
 
@@ -1628,7 +1629,7 @@ Bold rows are betula's. `bench/rivals.py --arms=a,b` re-runs the named arms and 
 
 | method | ARI median (min–max) | clusters | noise | peak RSS MB |
 |---|---|---|---|---|
-| denmune | 0.786 | 10 | 0.01 | 270 |
+| denmune | 0.786 | 10 | 0.01 | 252 |
 | **betula-hdbscan** | 0.164 (0.164–0.164) | 7 | 0.58 | 174 |
 | finch | 0.146 | 2 | 0.00 | 331 |
 | hdbscan | 0.087 | 6 | 0.70 | 186 |
@@ -1689,8 +1690,14 @@ written by hand. A win names its rival, slice and axis; a loss is written the sa
 - **classix** — 1 win · 1 tie · 0 loss
   - win, memory, `highdim/30000/no-k` (density_rivals): betula 180 MB (`betula-hdbscan`) against 188 MB
   - tie, quality, `highdim/30000/no-k` (density_rivals): betula 1.000 ARI (`betula-hdbscan`) against 1.000 ARI
-- **denmune** — 1 win · 0 tie · 1 loss
-  - win, memory, `digits/1797/no-k` (density_rivals): betula 174 MB (`betula-hdbscan`) against 270 MB
+- **denmune** — 4 win · 3 tie · 1 loss
+  - win, memory, `circles/30000/no-k` (density_rivals): betula 171 MB (`betula-scale-space`) against 671 MB
+  - win, memory, `digits/1797/no-k` (density_rivals): betula 174 MB (`betula-hdbscan`) against 252 MB
+  - win, memory, `highdim/30000/no-k` (density_rivals): betula 180 MB (`betula-hdbscan`) against 688 MB
+  - win, memory, `moons/30000/no-k` (density_rivals): betula 171 MB (`betula-scale-space`) against 671 MB
+  - tie, quality, `circles/30000/no-k` (density_rivals): betula 1.000 ARI (`betula-scale-space`) against 0.999 ARI
+  - tie, quality, `highdim/30000/no-k` (density_rivals): betula 1.000 ARI (`betula-hdbscan`) against 0.999 ARI
+  - tie, quality, `moons/30000/no-k` (density_rivals): betula 1.000 ARI (`betula-scale-space`) against 0.997 ARI
   - loss, quality, `digits/1797/no-k` (density_rivals): betula 0.164 ARI (`betula-hdbscan`) against 0.786 ARI
 - **evoc** — 3 win · 2 tie · 1 loss
   - win, memory, `mnist/20000/no-k` (rivals): betula 366 MB (`betula-leiden-rows`) against 1028 MB
