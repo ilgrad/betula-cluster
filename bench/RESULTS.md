@@ -1405,7 +1405,7 @@ lumbermark and EVoC publish no numeric output, so they have no row; read theirs 
 | DenMune 1.17.1 | 1.0 | 1.0 | yes |
 | FINCH 0.2.3 | [92, 29, 14, 12] | [92, 25, 7, 2] | no — the finest partition (92) reproduces; the coarser ones do not |
 | hdbscan 0.8.44 | 3 | 3 | yes |
-| fast_hdbscan 0.3.4 (PLSCAN) | 1 | 3 | no — the docstring is stale: 3 layers on every run |
+| fast_hdbscan 0.3.4 (PLSCAN) | 1 | 3 | no — the docstring's output is wrong: 3 layers on every run |
 | scikit-learn 1.9.1 OPTICS | [0, 0, 0, 1, 1, 1] | [0, 0, 0, 1, 1, 1] | yes |
 | PhenoGraph 1.5.7 | (3, 0.66) | (3, 0.66) | yes |
 

@@ -153,9 +153,10 @@ STALE = {
     # The finest partition reproduces; the coarser ones are 25, 7, 2 with either metric's call
     # as published (cosine gives 132, 40, 11, 3): the notebook's output does not match this release.
     "FINCH 0.2.3": "the finest partition (92) reproduces; the coarser ones do not",
-    # Three layers (33, 7 and 3 clusters) on 5 of 5 runs, with and without `reproducible=True`.
+    # Three layers (33, 7 and 3 clusters) on 5 of 5 runs, with and without `reproducible=True`, and
+    # at the commit that added the example: its output was never what the code returns.
     # The harness runs `fast_hdbscan.HDBSCAN`, whose documentation publishes plots only.
-    "fast_hdbscan 0.3.4 (PLSCAN)": "the docstring is stale: 3 layers on every run",
+    "fast_hdbscan 0.3.4 (PLSCAN)": "the docstring's output is wrong: 3 layers on every run",
 }
 
 
