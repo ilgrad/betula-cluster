@@ -6,7 +6,7 @@ Two parts, both written to be *fair* and *reproducible*:
   metrics (ARI, AMI, V-measure, vs ground truth) and internal metrics (silhouette on a sample,
   the exact O(N k) medoid silhouette, Davies-Bouldin, Calinski-Harabasz), plus wall-clock fit time.
 * **Scaling** — fit time and **peak process RSS** vs `N`, each run isolated in a spawned subprocess
-  (its own `ru_maxrss`, a `RLIMIT_AS` cap, and a timeout) so a method that explodes in memory fails
+  (its own `VmHWM`, a `RLIMIT_AS` cap, and a timeout) so a method that explodes in memory fails
   gracefully instead of taking down the host. This surfaces betula's memory-bounded CF-tree.
 
 Outputs CSVs + seaborn plots into `bench/` and `bench/plots/`. Honest by construction: every cell is

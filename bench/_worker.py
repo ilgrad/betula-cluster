@@ -1,7 +1,7 @@
 """Standalone, single-task benchmark worker — invoked as a fresh OS process by `comprehensive.py`.
 
 Running each measurement in its own `subprocess` (not a `multiprocessing` child) guarantees a clean
-address space, so `ru_maxrss` is *this task's* peak — not the parent's. Generates its own data
+address space, so `VmHWM` is *this task's* peak — not the parent's. Generates its own data
 (pure NumPy, no sklearn dependency for data) and imports only the library the chosen method needs, so
 the measured peak RSS reflects what that method actually costs.
 
@@ -25,7 +25,6 @@ import contextlib
 import json
 import resource
 import sys
-import threading
 import time
 
 import numpy as np
@@ -39,36 +38,24 @@ def cap_memory():
 
 
 class Peak:
-    """Sample this process's *current* RSS from /proc/self/statm and track the max.
+    """This process's peak resident set (`VmHWM`) from the moment the object is made, in MB.
 
-    Unlike `ru_maxrss`, this reflects the post-`exec` program only — `ru_maxrss` retains the
-    fork-time high-water mark of the (possibly large) parent that launched us, which would make every
-    isolated worker report the parent's RSS.
+    The kernel keeps the high-water mark; writing 5 to `/proc/self/clear_refs` (Linux 4.0+) lowers
+    it to the current RSS, so the peak counts from here, after the interpreter and whatever was
+    loaded first. A sampling thread, the instrument before 2026-11-15, cannot run while a fit holds
+    the GIL, and betula's heads do: it read 265 MiB on MNIST-70k where `VmHWM` read 564.6 MiB, and
+    one `leiden` fit 659.8 MB on one seed and 972.8 on the next. `ru_maxrss` is no substitute: it
+    keeps the fork-time mark of the parent that launched this process.
     """
 
     def __init__(self):
-        self.max = 0
-        self._pg = resource.getpagesize()
-        self._stop = threading.Event()
-        self._t = threading.Thread(target=self._run, daemon=True)
-        self._t.start()
-
-    def _sample(self):
-        try:
-            with open("/proc/self/statm") as f:
-                self.max = max(self.max, int(f.read().split()[1]) * self._pg)
-        except OSError:
-            pass
-
-    def _run(self):
-        while not self._stop.is_set():
-            self._sample()
-            self._stop.wait(0.004)
+        with open("/proc/self/clear_refs", "w") as f:
+            f.write("5")
 
     def mb(self) -> float:
-        self._sample()
-        self._stop.set()
-        return self.max / 1e6
+        with open("/proc/self/status") as f:
+            kb = next(int(line.split()[1]) for line in f if line.startswith("VmHWM:"))
+        return kb * 1024 / 1e6
 
 
 def gen(dataset: str, n: int, seed: int = 0):

@@ -299,6 +299,18 @@ All notable changes to this project are documented here. The format follows
   clusters and 28 % noise. No median ARI moves. The `normalize` table now pairs "off" and "on" on one
   seed's draw, which moves five of its nine "off" cells. Memory on the board goes 110 / 6 / 1 →
   115 / 6 / 1 (five new one-shot cells); no verdict changed.
+- **The benchmark reads betula's peak memory from `VmHWM`** (`bench/_worker.py`). The sampling
+  thread that measured peak RSS cannot run while a head holds the GIL, so it missed betula's peaks:
+  265 MiB where the kernel's high-water mark read 565 MiB on MNIST-70k, and one `leiden` fit read
+  660 MB on one seed and 973 MB on the next. `Peak` now resets the mark when the measurement starts
+  and reads it back. The betula rows of the memory table and of `rivals.py`, `density_rivals.py` and
+  `head_references.py` (`--arms=` added) are re-run on the current tree; no ARI moved, and the
+  three seeds of an arm agree within 1.6 %. The streaming column reads 54.8–55.1 MB (was
+  55.8–55.9), so the 10 M ratio is 91×, not 89×. Two memory verdicts moved, to 115 / 5 / 2:
+  `news-minilm` told k against scikit-learn's `KMeans` is a loss (`vmf` 279 MB, which still holds a
+  float64 copy of the rows, against 259 MB), and MNIST-20k told k against it is a win (293 MB
+  against 365 MB, since a float32 fit no longer copies its rows). Rival cells, and betula's rows of
+  the scaling, sparse and real-scale tables, are still sampler readings until they are re-run.
 
 ## [1.5.0] — 2026-10-28
 

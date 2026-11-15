@@ -32,7 +32,8 @@ plus free-threaded 3.14t and 3.15t.
 ## At a glance — honest benchmarks
 
 Measured against scikit-learn on `StandardScaler`-normalized data, each method in its own subprocess
-with peak RSS sampled from `/proc/self/statm`. Full methodology, every metric, and all tables (wins
+with peak RSS read from the process's own `VmHWM` (rows measured before 2026-11-15 were sampled from
+`/proc/self/statm`, which can miss a peak). Full methodology, every metric, and all tables (wins
 **and** losses) live in [**`bench/RESULTS.md`**](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md).
 
 > **Re-measured 2026-10-29 against the current tree, on a machine read as idle.** Every quality figure is the
@@ -43,8 +44,8 @@ with peak RSS sampled from `/proc/self/statm`. Full methodology, every metric, a
 
 - ⚡🪶 **Faster and lighter than scikit-learn at most published sizes.**
   betula labels **1 M points in 0.21 s**: 9.9× faster than scikit-learn KMeans, 16× vs
-  GaussianMixture, 33× vs Birch — and streams **10 M in a flat ~56 MB** where an in-core KMeans
-  needs **~5.0 GB** (**89× less**, and the gap grows without bound); handed the whole array, betula
+  GaussianMixture, 33× vs Birch — and streams **10 M in a flat ~55 MB** where an in-core KMeans
+  needs **~5.0 GB** (**91× less**, and the gap grows without bound); handed the whole array, betula
   itself peaks at 1.65 GB, 3.0× less. Some rows are not ours, and all are in the tables. On sparse
   20-newsgroups scikit-learn is **2.9× faster** on raw TF-IDF
   (0.56 s vs 1.62 s) at a better ARI (0.056 vs 0.038), and 3.8× faster on the SVD row (0.38 s vs

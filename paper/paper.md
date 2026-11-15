@@ -64,7 +64,7 @@ parity-or-better cluster quality (for example, k-means adjusted Rand index
 $0.793$ vs $0.794$ on Gaussian blobs, median of three seeds; full-covariance
 mixtures $0.961$ vs $0.902$ on anisotropic data) while labelling $10^6$ points
 $9.9\times$ faster than scikit-learn's `KMeans` and $33\times$ faster than its
-`Birch`, and it clusters a $10^7$-point stream with peak memory held near 56 MB,
+`Birch`, and it clusters a $10^7$-point stream with peak memory held near 55 MB,
 where an in-core k-means requires about 5 GB.
 
 Two existing tools are close, in different directions. scikit-learn's `Birch`

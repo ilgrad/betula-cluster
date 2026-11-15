@@ -20,7 +20,7 @@ varies only the methods' initialisation. Same subprocess isolation, scoring and 
 None of the references is a project dependency:
 
     uv run --no-sync --with scikit-learn --with pandas --with kmedoids --with scikit-fuzzy \\
-        --with kmodes --with tslearn python bench/head_references.py
+        --with kmodes --with tslearn python bench/head_references.py [--arms=a,b]
 
 Writes `bench/results_head_refs.csv`.
 """
@@ -160,9 +160,18 @@ def one(arm: str, seed: int) -> dict:
     return {"time_s": dt, "rss_mb": peak.mb(), **score(y, labels)}
 
 
-def main() -> int:
+def main(argv: list[str]) -> int:
     import pandas as pd
 
+    # `--arms=a,b` re-runs only those arms and replaces their rows in the existing CSV.
+    only = next((a.split("=", 1)[1].split(",") for a in argv if a.startswith("--arms=")), None)
+    csv = HERE / "results_head_refs.csv"
+    kept = pd.read_csv(csv) if only and csv.exists() else pd.DataFrame()
+    if only:
+        unknown = sorted(set(only) - set(ARMS))
+        if unknown:
+            raise SystemExit(f"unknown arms: {unknown}")
+        kept = kept[~kept["arm"].isin(only)] if len(kept) else kept
     ready = (
         subprocess.run(
             ["bash", str(Path.home() / ".claude/scripts/bench-ready.sh")], capture_output=True
@@ -171,6 +180,8 @@ def main() -> int:
     )
     rows = []
     for arm, (dataset, _) in ARMS.items():
+        if only and arm not in only:
+            continue
         n = len(load(dataset)[0])
         for seed in SEEDS:
             cmd = [sys.executable, str(Path(__file__)), "--one", arm, str(seed)]
@@ -193,7 +204,7 @@ def main() -> int:
                 f"  {res['rss_mb']:6.0f} MB"
             )
             print(f"{dataset:14s} {arm:28s} seed={seed}  {shown}", flush=True)
-            pd.DataFrame(rows).to_csv(HERE / "results_head_refs.csv", index=False)
+            pd.concat([kept, pd.DataFrame(rows)]).to_csv(csv, index=False)
     return 0
 
 
@@ -201,4 +212,4 @@ if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "--one":
         print(json.dumps(one(sys.argv[2], int(sys.argv[3]))))
     else:
-        sys.exit(main())
+        sys.exit(main(sys.argv[1:]))
