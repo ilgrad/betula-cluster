@@ -38,19 +38,45 @@ pub(crate) struct Pca<R: Real> {
     pub basis: Vec<Vec<R>>,
     /// Between-leaf scatter the basis captures, `Σ_{k<r} σ_k² / ‖X̃‖²_F`, in `[0, 1]`.
     pub captured: R,
+    /// `basis` transposed into one flat `d × rank` buffer, the layout [`Pca::encode`] reads.
+    basis_t: Vec<R>,
+}
+
+/// `basis` (`rank × d`) as one flat `d × rank` buffer.
+fn transpose<R: Real>(basis: &[Vec<R>], d: usize) -> Vec<R> {
+    let rank = basis.len();
+    let mut out = vec![R::zero(); d * rank];
+    for (k, v) in basis.iter().enumerate() {
+        for (t, &vt) in v.iter().enumerate() {
+            out[t * rank + k] = vt;
+        }
+    }
+    out
 }
 
 impl<R: Real> Pca<R> {
     /// Encode one row: `(x − x̄)·Vᵀ`. Writes `rank` coordinates into `out`, reusing its allocation.
+    ///
+    /// The `rank` coordinates advance together over contiguous runs of the transposed basis, each
+    /// folding its terms in ascending `t` from zero — the order of one dot product per basis vector,
+    /// which walks `rank` separate vectors and cannot vectorize.
     pub fn encode(&self, x: &[R], out: &mut Vec<R>) {
+        let rank = self.basis.len();
         out.clear();
-        out.extend(self.basis.iter().map(|v| {
-            x.iter()
-                .zip(&self.centre)
-                .zip(v)
-                .map(|((&xi, &ci), &vi)| (xi - ci) * vi)
-                .fold(R::zero(), |a, b| a + b)
-        }));
+        out.resize(rank, R::zero());
+        if rank == 0 {
+            return;
+        }
+        for ((&xi, &ci), vt) in x
+            .iter()
+            .zip(&self.centre)
+            .zip(self.basis_t.chunks_exact(rank))
+        {
+            let diff = xi - ci;
+            for (o, &v) in out.iter_mut().zip(vt) {
+                *o = *o + diff * v;
+            }
+        }
     }
 }
 
@@ -68,6 +94,7 @@ where
             centre: vec![R::zero(); d],
             basis: Vec::new(),
             captured: R::zero(),
+            basis_t: Vec::new(),
         };
     }
     let weights: Vec<R> = feats.iter().map(|f| f.weight().max(R::zero())).collect();
@@ -106,10 +133,12 @@ where
     } else {
         R::zero()
     };
+    let basis_t = transpose(&basis, d);
     Pca {
         centre,
         basis,
         captured,
+        basis_t,
     }
 }
 
@@ -224,5 +253,57 @@ mod tests {
         let flat = vec![leaf::<f64>(2.0, &[7.0, -1.0]); 5];
         let pca = weighted_pca(&flat, 2, 0);
         assert_eq!(pca.captured, 0.0, "captured {}", pca.captured);
+    }
+
+    /// The transposed-basis encode against one dot product per basis vector, by bit pattern, on
+    /// signed leaves and probes carrying both signed zeros.
+    fn encoding_through_the_transposed_basis_is_one_dot_product_per_vector<R: Real>() {
+        let mut rng = SplitMix64::new(17);
+        let d = 23;
+        let feats: Vec<Spherical<R>> = (0..40)
+            .map(|_| {
+                let mean: Vec<f64> = (0..d).map(|_| rng.gauss()).collect();
+                leaf(1.0 + rng.next_f64() * 4.0, &mean)
+            })
+            .collect();
+        let pca = weighted_pca(&feats, 6, 3);
+        assert_eq!(pca.basis.len(), 6);
+        let mut code = Vec::new();
+        for probe in 0..20 {
+            let x: Vec<R> = (0..d)
+                .map(|t| match (probe + t) % 7 {
+                    0 => R::zero(),
+                    1 => -R::zero(),
+                    _ => R::from_f64(rng.gauss()).unwrap(),
+                })
+                .collect();
+            pca.encode(&x, &mut code);
+            let want: Vec<R> = pca
+                .basis
+                .iter()
+                .map(|v| {
+                    x.iter()
+                        .zip(&pca.centre)
+                        .zip(v)
+                        .map(|((&xi, &ci), &vi)| (xi - ci) * vi)
+                        .fold(R::zero(), |a, b| a + b)
+                })
+                .collect();
+            assert_eq!(code.len(), want.len());
+            for (k, (g, w)) in code.iter().zip(&want).enumerate() {
+                let (g, w) = (g.to_f64().unwrap(), w.to_f64().unwrap());
+                assert_eq!(g.to_bits(), w.to_bits(), "probe {probe} coordinate {k}");
+            }
+        }
+    }
+
+    #[test]
+    fn encoding_through_the_transposed_basis_is_one_dot_product_per_vector_f64() {
+        encoding_through_the_transposed_basis_is_one_dot_product_per_vector::<f64>();
+    }
+
+    #[test]
+    fn encoding_through_the_transposed_basis_is_one_dot_product_per_vector_f32() {
+        encoding_through_the_transposed_basis_is_one_dot_product_per_vector::<f32>();
     }
 }

@@ -196,6 +196,18 @@ All notable changes to this project are documented here. The format follows
   retired instructions at the first checkpoint (3 578 one-row leaves) instead of 179.6 G (−57 %),
   and 25.4 G instead of 55.3 G at the last; label and `predict_proba` digests are equal at all five
   checkpoints, on another row order, on another seed, with `kappa="free"`, and at 1 and 8 threads.
+- **The sparse text path does 29–71 % less work.** `fit_predict_sparse` on the
+  20-newsgroups TF-IDF bench matrix (18 846 × 2 000, `max_leaves=2048`, one thread) retires 9.07 G
+  instructions instead of 12.77 G with `method="kmeans"`, and 9.90 G instead of 33.92 G with
+  `projection="svd"`. Labels are byte-identical: the label digests of both calls are equal at
+  `max_leaves` 128, 256, 512, 1 024 and 2 048, and `scripts/thread_determinism.py` passes. Four
+  changes, each keeping every floating-point sum in its order:
+  the leader pass scores a row through per-feature lists of the leaders written there, skipping
+  products by an exact zero (−3.09 G); the forced branch's search for a leader under its mass share
+  shares the main scan's distances (−0.61 G); the four products of the randomized SVD advance a
+  row of cells together instead of folding one cell at a time (−19.64 G); and the PCA encode of
+  leaves and of CSR rows reads a transposed basis (−0.68 G). The restarts of the `kmeans` head now
+  run their Lloyd passes in parallel, with the starts drawn in sequence as before.
 
 ### Notes
 - **The benchmark page is re-measured** (`bench/RESULTS.md`, 2026-10-29): the four quality tables and

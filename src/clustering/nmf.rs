@@ -34,6 +34,17 @@ fn build_rows<R: Real>(n: usize, f: impl Fn(usize) -> Vec<R>) -> Vec<Vec<R>> {
     (0..n).map(f).collect()
 }
 
+/// `n` independent results in index order, computed in parallel when the `parallel` feature is on.
+#[cfg(feature = "parallel")]
+fn build_blocks<T: Send>(n: usize, f: impl Fn(usize) -> T + Sync + Send) -> Vec<T> {
+    use rayon::prelude::*;
+    (0..n).into_par_iter().map(f).collect()
+}
+#[cfg(not(feature = "parallel"))]
+fn build_blocks<T>(n: usize, f: impl Fn(usize) -> T) -> Vec<T> {
+    (0..n).map(f).collect()
+}
+
 /// `r×r` Gram matrix of the rows of `a` (`a·aᵀ`).
 fn gram_rows<R: Real>(a: &[Vec<R>]) -> Vec<Vec<R>> {
     let r = a.len();
@@ -82,55 +93,94 @@ pub(crate) fn randomized_svd<R: Real>(
     let m = x.len();
     let d = x[0].len();
     let l = (r + 10).min(m).min(d);
-    let mut rng = SplitMix64::new(seed ^ 0x5eed_05bd_u64);
+    let (q, b) = range_sketch(x, l, seed);
+    svd_of_sketch(&q, &b, m, d, r, l)
+}
 
-    // Y = X Ω  (m×l), Ω ~ N(0,1) (d×l), then two power iterations Y ← X(XᵀY) for spectral decay.
-    let omega: Vec<Vec<R>> = (0..d)
+/// The Gaussian test matrix `Ω ~ N(0,1)` (`d×l`) of [`randomized_svd`], drawn row by row.
+fn sketch_omega<R: Real>(d: usize, l: usize, seed: u64) -> Vec<Vec<R>> {
+    let mut rng = SplitMix64::new(seed ^ 0x5eed_05bd_u64);
+    (0..d)
         .map(|_| (0..l).map(|_| R::from_f64(rng.gauss()).unwrap()).collect())
-        .collect();
-    let mut q: Vec<Vec<R>> = build_rows(m, |j| {
-        (0..l)
-            .map(|c| {
-                (0..d)
-                    .map(|t| x[j][t] * omega[t][c])
-                    .fold(R::zero(), |a, b| a + b)
-            })
-            .collect()
-    });
+        .collect()
+}
+
+/// The orthonormal range basis `Q` (`m×l`) of `x` and `B = QᵀX` (`l×d`): `Y = XΩ`, then two power
+/// iterations `Y ← X(XᵀY)` with re-orthonormalization for spectral decay.
+///
+/// Every product cell is the ascending fold from zero a per-cell dot product would be; [`x_times`]
+/// and [`xt_times`] change only which cells advance together, so the result is bit-for-bit the
+/// per-cell form's.
+fn range_sketch<R: Real>(x: &[Vec<R>], l: usize, seed: u64) -> (Vec<Vec<R>>, Vec<Vec<R>>) {
+    let omega = sketch_omega(x[0].len(), l, seed);
+    let mut q = x_times(x, &omega, l);
     for _ in 0..2 {
         orthonormalize(&mut q, l);
-        let xtq: Vec<Vec<R>> = build_rows(d, |t| {
-            (0..l)
-                .map(|c| {
-                    (0..m)
-                        .map(|j| x[j][t] * q[j][c])
-                        .fold(R::zero(), |a, b| a + b)
-                })
-                .collect()
-        });
-        q = build_rows(m, |j| {
-            (0..l)
-                .map(|c| {
-                    (0..d)
-                        .map(|t| x[j][t] * xtq[t][c])
-                        .fold(R::zero(), |a, b| a + b)
-                })
-                .collect()
-        });
+        let xtq = xt_times(x, &q, l);
+        q = x_times(x, &xtq, l);
     }
     orthonormalize(&mut q, l);
+    // `B[c][t]` folds `q[j][c]·x[j][t]` over ascending `j`, which is `(XᵀQ)[t][c]` term for term: a
+    // floating-point product is commutative, only the sum depends on order.
+    let xtq = xt_times(x, &q, l);
+    let b = (0..l)
+        .map(|c| xtq.iter().map(|row| row[c]).collect())
+        .collect();
+    (q, b)
+}
 
-    // B = Qᵀ X (l×d); the SVD of B lifts back through Q.
-    let b: Vec<Vec<R>> = build_rows(l, |c| {
-        (0..d)
-            .map(|t| {
-                (0..m)
-                    .map(|j| q[j][c] * x[j][t])
-                    .fold(R::zero(), |a, b| a + b)
-            })
-            .collect()
+/// `X·W` (`m×l`) for `W` (`d×l`): an output row's `l` cells advance together over the contiguous
+/// rows of `W`, each folding in ascending `t` from zero.
+///
+/// The per-cell form — one serial fold per cell down a column of `W` — cannot vectorize and paid two
+/// indirections and two bounds checks per element: 15 instructions per multiply-add on the
+/// 20-newsgroups summary.
+fn x_times<R: Real>(x: &[Vec<R>], w: &[Vec<R>], l: usize) -> Vec<Vec<R>> {
+    build_rows(x.len(), |j| {
+        let mut acc = vec![R::zero(); l];
+        for (&xv, wt) in x[j].iter().zip(w) {
+            for (a, &s) in acc.iter_mut().zip(wt) {
+                *a = *a + xv * s;
+            }
+        }
+        acc
+    })
+}
+
+/// Output rows per parallel task of [`xt_times`]: a block of this many rows of `l` stays
+/// cache-resident while every row of `X` streams past it once.
+const XT_BLOCK: usize = 64;
+
+/// `Xᵀ·Q` (`d×l`) for `Q` (`m×l`), each cell folding `x[j][t]·q[j][c]` in ascending `j` from zero.
+/// Blocks of output rows run in parallel; a cell never spans two blocks, so the block size decides
+/// the schedule and nothing else.
+fn xt_times<R: Real>(x: &[Vec<R>], q: &[Vec<R>], l: usize) -> Vec<Vec<R>> {
+    let d = x[0].len();
+    let blocks = build_blocks(d.div_ceil(XT_BLOCK), |blk| {
+        let (lo, hi) = (blk * XT_BLOCK, ((blk + 1) * XT_BLOCK).min(d));
+        let mut out = vec![vec![R::zero(); l]; hi - lo];
+        for (xj, qj) in x.iter().zip(q) {
+            for (row, &xv) in out.iter_mut().zip(&xj[lo..hi]) {
+                for (a, &s) in row.iter_mut().zip(qj) {
+                    *a = *a + xv * s;
+                }
+            }
+        }
+        out
     });
-    let (eigvals, eigvecs) = jacobi_eigen(&gram_rows(&b));
+    blocks.into_iter().flatten().collect()
+}
+
+/// `(σ, U, V)` of [`randomized_svd`] from its range sketch: the SVD of `B` lifts back through `Q`.
+fn svd_of_sketch<R: Real>(
+    q: &[Vec<R>],
+    b: &[Vec<R>],
+    m: usize,
+    d: usize,
+    r: usize,
+    l: usize,
+) -> (Vec<R>, Vec<Vec<R>>, Vec<Vec<R>>) {
+    let (eigvals, eigvecs) = jacobi_eigen(&gram_rows(b));
     let mut order: Vec<usize> = (0..l).collect();
     order.sort_by(|&i, &j| eigvals[j].partial_cmp(&eigvals[i]).unwrap());
 
@@ -794,6 +844,105 @@ mod tests {
                     .collect()
             })
             .collect()
+    }
+
+    /// [`range_sketch`] as it was written before the loop interchange: one serial fold per output
+    /// cell. Kept as the reference the interchanged products must reproduce bit for bit.
+    fn range_sketch_per_cell<R: Real>(
+        x: &[Vec<R>],
+        l: usize,
+        seed: u64,
+    ) -> (Vec<Vec<R>>, Vec<Vec<R>>) {
+        let (m, d) = (x.len(), x[0].len());
+        let omega: Vec<Vec<R>> = sketch_omega(d, l, seed);
+        let mut q: Vec<Vec<R>> = build_rows(m, |j| {
+            (0..l)
+                .map(|c| {
+                    (0..d)
+                        .map(|t| x[j][t] * omega[t][c])
+                        .fold(R::zero(), |a, b| a + b)
+                })
+                .collect()
+        });
+        for _ in 0..2 {
+            orthonormalize(&mut q, l);
+            let xtq: Vec<Vec<R>> = build_rows(d, |t| {
+                (0..l)
+                    .map(|c| {
+                        (0..m)
+                            .map(|j| x[j][t] * q[j][c])
+                            .fold(R::zero(), |a, b| a + b)
+                    })
+                    .collect()
+            });
+            q = build_rows(m, |j| {
+                (0..l)
+                    .map(|c| {
+                        (0..d)
+                            .map(|t| x[j][t] * xtq[t][c])
+                            .fold(R::zero(), |a, b| a + b)
+                    })
+                    .collect()
+            });
+        }
+        orthonormalize(&mut q, l);
+        let b: Vec<Vec<R>> = build_rows(l, |c| {
+            (0..d)
+                .map(|t| {
+                    (0..m)
+                        .map(|j| q[j][c] * x[j][t])
+                        .fold(R::zero(), |a, b| a + b)
+                })
+                .collect()
+        });
+        (q, b)
+    }
+
+    fn assert_same_bits<R: Real>(what: &str, got: &[R], want: &[R]) {
+        assert_eq!(got.len(), want.len(), "{what}: length");
+        for (i, (g, w)) in got.iter().zip(want).enumerate() {
+            let (g, w) = (g.to_f64().unwrap(), w.to_f64().unwrap());
+            assert_eq!(g.to_bits(), w.to_bits(), "{what}[{i}]: {g:e} against {w:e}");
+        }
+    }
+
+    /// The interchanged products against the per-cell folds, by bit pattern of `σ`, `U` and `V`.
+    /// `d` spans three output blocks of [`xt_times`] and ends mid-block; the matrix carries negative
+    /// entries and both signed zeros, which a reordered sum would be the first to disturb.
+    fn the_interchanged_sketch_is_the_per_cell_one_bit_for_bit<R: Real>() {
+        let (m, d, r) = (70usize, 2 * XT_BLOCK + 22, 8usize);
+        let x: Vec<Vec<R>> = planted(m, d, 5, 0.3, 4)
+            .into_iter()
+            .enumerate()
+            .map(|(j, row)| {
+                row.into_iter()
+                    .enumerate()
+                    .map(|(t, v)| match (j * 7 + t * 3) % 11 {
+                        0 => R::zero(),
+                        1 => -R::zero(),
+                        _ => R::from_f64(v).unwrap(),
+                    })
+                    .collect()
+            })
+            .collect();
+        let l = (r + 10).min(m).min(d);
+        let (sigma, u, v) = randomized_svd(&x, r, 9);
+        let (q, b) = range_sketch_per_cell(&x, l, 9);
+        let (sigma_ref, u_ref, v_ref) = svd_of_sketch(&q, &b, m, d, r, l);
+        assert!(sigma[r - 1] > R::zero(), "a vacuous comparison: σ is zero");
+        assert_same_bits("sigma", &sigma, &sigma_ref);
+        assert_same_bits("U", &u.concat(), &u_ref.concat());
+        assert_same_bits("V", &v.concat(), &v_ref.concat());
+    }
+
+    #[test]
+    fn the_interchanged_sketch_is_the_per_cell_one_bit_for_bit_f64() {
+        the_interchanged_sketch_is_the_per_cell_one_bit_for_bit::<f64>();
+    }
+
+    #[test]
+    fn the_interchanged_sketch_is_the_per_cell_one_bit_for_bit_f32() {
+        the_interchanged_sketch_is_the_per_cell_one_bit_for_bit::<f32>();
     }
 
     #[test]

@@ -1285,6 +1285,16 @@ impl PointRule {
                 .iter()
                 .map(|v| -v.iter().zip(centre).map(|(&a, &b)| a * b).sum::<f64>())
                 .collect();
+            // Feature-major, so one non-zero updates the `r` coordinates from one contiguous run
+            // instead of reading a word from each of `r` separate basis vectors; every coordinate
+            // still takes its terms in the row's order.
+            let r = basis.len();
+            let mut basis_t = vec![0.0f64; dim * r];
+            for (k, v) in basis.iter().enumerate() {
+                for (c, &b) in v.iter().enumerate() {
+                    basis_t[c * r + k] = b;
+                }
+            }
             let mut scratch = Vec::new();
             let mut out = Vec::with_capacity(indptr.len().saturating_sub(1));
             for w in indptr.windows(2) {
@@ -1292,8 +1302,8 @@ impl PointRule {
                 let mut code = offset.clone();
                 for k in lo..hi {
                     let (c, v) = (indices[k] as usize, data[k]);
-                    for (z, b) in code.iter_mut().zip(basis) {
-                        *z += v * b[c];
+                    for (z, &b) in code.iter_mut().zip(&basis_t[c * r..(c + 1) * r]) {
+                        *z += v * b;
                     }
                 }
                 out.push(inner.label_of(&code, &mut scratch));

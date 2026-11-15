@@ -31,6 +31,16 @@ use crate::feature::{ClusterFeature, Spherical};
 /// The arithmetic is unchanged and deliberately so: for a fixed leader the row's terms are still
 /// accumulated in row order, so every `dot`, and therefore every distance, absorption decision and
 /// scatter update, is bit-for-bit what the per-leader layout produced.
+///
+/// **Posting lists.** Leaders stay sparse: on the 20-newsgroups bench matrix the 2 048 leaders end
+/// with 5.6 % of their cells non-zero, and 93 % of the multiply-adds of a dense run are by an exact
+/// zero. So each feature also lists the leaders ever written there, and scoring visits only those.
+/// A cell no leader ever wrote is `+0.0`, its product with a finite value is `±0.0`, and adding a
+/// signed zero to an accumulator that starts at `+0.0` never changes it (a round-to-nearest sum is
+/// `-0.0` only when both terms are), so every `dot` stays bit-for-bit the dense run's. The lists
+/// hold one `u32` per distinct (feature, leader) pair ever written — at most the input's non-zero
+/// count — and membership is a leader-major bitset of `n_features` bits per leader, 1/64 of
+/// `sumx_t`, so neither outgrows the dense buffer at any vocabulary size.
 struct LeaderSet {
     n_features: usize,
     /// Column capacity of `sumx_t`; the stride between consecutive features.
@@ -41,6 +51,12 @@ struct LeaderSet {
     n: Vec<f64>,
     sumx_sq: Vec<f64>,
     ssd: Vec<f64>,
+    /// Per feature, the leaders whose cell there has ever been written, in first-write order.
+    postings: Vec<Vec<u32>>,
+    /// Membership of `postings`, leader-major: bit `c` of leader `i`'s run of `words` words.
+    written: Vec<u64>,
+    /// `u64` words per leader in `written`.
+    words: usize,
 }
 
 impl LeaderSet {
@@ -55,17 +71,38 @@ impl LeaderSet {
             n: Vec::new(),
             sumx_sq: Vec::new(),
             ssd: Vec::new(),
+            postings: vec![Vec::new(); n_features],
+            written: Vec::new(),
+            words: n_features.div_ceil(64),
         }
     }
 
-    /// `⟨x, ΣX_i⟩` for every leader `i`, written into `acc`.
+    /// `⟨x, ΣX_i⟩` for every leader `i`, written into `acc`. The row's values must be finite, which
+    /// [`validate_csr`] guarantees: `inf · 0` is NaN, so an infinite value would read the skipped
+    /// cells (see the type's note on posting lists).
     fn dots(&self, idx: &[usize], val: &[f64], acc: &mut Vec<f64>) {
         acc.clear();
         acc.resize(self.len, 0.0);
         for (&c, &v) in idx.iter().zip(val) {
-            let base = c * self.cap;
-            for (a, &s) in acc.iter_mut().zip(&self.sumx_t[base..base + self.len]) {
-                *a += v * s;
+            let column = &self.sumx_t[c * self.cap..(c + 1) * self.cap];
+            for &i in &self.postings[c] {
+                let i = i as usize;
+                acc[i] += v * column[i];
+            }
+        }
+    }
+
+    /// Record that leader `i`'s cells at the features `idx` have been written.
+    fn note_written(&mut self, i: usize, idx: &[usize]) {
+        let leader = u32::try_from(i).expect(
+            "a leader index fits u32: the leader buffer would need 32 GiB per feature first",
+        );
+        let run = i * self.words;
+        for &c in idx {
+            let (word, bit) = (run + c / 64, 1u64 << (c % 64));
+            if self.written[word] & bit == 0 {
+                self.written[word] |= bit;
+                self.postings[c].push(leader);
             }
         }
     }
@@ -108,6 +145,8 @@ impl LeaderSet {
         self.sumx_sq.push(x_sq);
         self.ssd.push(0.0);
         self.len += 1;
+        self.written.resize(self.len * self.words, 0);
+        self.note_written(i, idx);
     }
 
     /// Fold the row into leader `i`, given its already-computed `⟨x, ΣX_i⟩`.
@@ -122,26 +161,44 @@ impl LeaderSet {
             self.sumx_t[c * self.cap + i] += v;
         }
         self.n[i] = w_new;
+        self.note_written(i, idx);
     }
 
-    /// The nearest leader still holding less than `mass_share` — at any distance, `+inf` included —
-    /// or `None` when every one is full.
+    /// The nearest leader with its distance, `None` only while there is no leader; and, when a
+    /// `mass_share` is given, the nearest leader still holding less than it — at any distance, `+inf`
+    /// included — or `None` when every one is full. Both keep the first of equally near leaders.
     ///
-    /// Only the forced branch of [`summarize_sparse`] calls this, so the main scan stays exactly the
-    /// loop it was; the rescan is `O(len)` arithmetic over the dots that scan already computed, next
-    /// to the `O(len · nnz)` it spent computing them.
-    fn nearest_under(&self, dots: &[f64], x_sq: f64, mass_share: f64) -> Option<usize> {
-        let mut best: Option<(usize, f64)> = None;
-        for (i, &dot) in dots.iter().enumerate() {
-            if self.n[i] >= mass_share {
-                continue;
+    /// One pass serves both because the forced branch of [`summarize_sparse`] needs the second answer
+    /// for the same distances the first is taken over; a second scan computed every distance again.
+    /// A finite coordinate past ~1.3e154 squares to infinity, and a row that far from every leader
+    /// still has a nearest one, hence the `is_none_or` rather than a comparison against `+inf`.
+    fn nearest(
+        &self,
+        dots: &[f64],
+        x_sq: f64,
+        mass_share: Option<f64>,
+    ) -> (Option<(usize, f64)>, Option<usize>) {
+        let mut nearest: Option<(usize, f64)> = None;
+        let Some(share) = mass_share else {
+            for (i, &dot) in dots.iter().enumerate() {
+                let d = self.dist2(i, dot, x_sq);
+                if nearest.is_none_or(|(_, bd)| d < bd) {
+                    nearest = Some((i, d));
+                }
             }
+            return (nearest, None);
+        };
+        let mut open: Option<(usize, f64)> = None;
+        for (i, &dot) in dots.iter().enumerate() {
             let d = self.dist2(i, dot, x_sq);
-            if best.is_none_or(|(_, bd)| d < bd) {
-                best = Some((i, d));
+            if nearest.is_none_or(|(_, bd)| d < bd) {
+                nearest = Some((i, d));
+            }
+            if self.n[i] < share && open.is_none_or(|(_, bd)| d < bd) {
+                open = Some((i, d));
             }
         }
-        best.map(|(i, _)| i)
+        (nearest, open.map(|(i, _)| i))
     }
 
     /// Materialise each leader into a dense spherical feature `(n, μ = ΣX/n, S)`.
@@ -231,25 +288,15 @@ pub fn summarize_sparse(
         idx_buf.extend(indices[lo..hi].iter().map(|&c| c as usize));
         let x_sq = norm_sq(val);
         leaders.dots(&idx_buf, val, &mut dots);
-        // `None` only while there is no leader. A finite coordinate past ~1.3e154 squares to
-        // infinity, and a row that far from every leader still has a nearest one, which the forced
-        // branch below spends.
-        let mut nearest: Option<(usize, f64)> = None;
-        for (li, &dot) in dots.iter().enumerate() {
-            let d = leaders.dist2(li, dot, x_sq);
-            if nearest.is_none_or(|(_, bd)| d < bd) {
-                nearest = Some((li, d));
-            }
-        }
+        let full = leaders.len >= hard_cap;
+        let (nearest, open) = leaders.nearest(&dots, x_sq, full.then_some(mass_share));
         match nearest {
             Some((best, bd)) if bd <= threshold => {
                 leaders.push_into(best, &idx_buf, val, x_sq, dots[best]);
                 of_row.push(best);
             }
-            Some((best, _)) if leaders.len >= hard_cap => {
-                let target = leaders
-                    .nearest_under(&dots, x_sq, mass_share)
-                    .unwrap_or(best);
+            Some((best, _)) if full => {
+                let target = open.unwrap_or(best);
                 leaders.push_into(target, &idx_buf, val, x_sq, dots[target]);
                 of_row.push(target);
             }
@@ -674,7 +721,9 @@ mod tests {
         leaders.n[0] = 5.0; // full at a share of 2
         let mut dots = Vec::new();
         leaders.dots(&[0], &[1.0], &mut dots); // e_0: at 0 from the full leader, +inf from the open one
-        assert_eq!(leaders.nearest_under(&dots, 1.0, 2.0), Some(1));
+        let (nearest, open) = leaders.nearest(&dots, 1.0, Some(2.0));
+        assert_eq!(nearest.map(|(i, _)| i), Some(0));
+        assert_eq!(open, Some(1));
     }
 
     #[test]
@@ -787,6 +836,89 @@ mod tests {
         assert!((sph.weight() - 2.0).abs() < 1e-12);
         assert!((sph.mean()[0] - 1.5).abs() < 1e-12);
         assert!((sph.ssd() - 0.5).abs() < 1e-9, "ssd = {}", sph.ssd());
+    }
+
+    /// `LeaderSet::dots` as it was before the posting lists: an `axpy` over every leader's cell for
+    /// each non-zero. Kept as the reference the posting lists must reproduce bit for bit.
+    fn dots_dense(set: &LeaderSet, idx: &[usize], val: &[f64]) -> Vec<f64> {
+        let mut acc = vec![0.0; set.len];
+        for (&c, &v) in idx.iter().zip(val) {
+            let base = c * set.cap;
+            for (a, &s) in acc.iter_mut().zip(&set.sumx_t[base..base + set.len]) {
+                *a += v * s;
+            }
+        }
+        acc
+    }
+
+    #[test]
+    fn dots_through_the_posting_lists_are_the_dense_runs_bit_for_bit() {
+        // Signed values, explicit `±0.0` entries, repeated columns, and rows that cancel an earlier
+        // one so a written cell returns to zero and is written again: the case a membership test on
+        // the cell's value would list twice. 150 features span three bitset words, and 40 leaders
+        // widen the capacity twice (16 → 32 → 40) between comparisons.
+        let (n_features, hard_cap) = (150usize, 40usize);
+        let mut rng = crate::clustering::rng::SplitMix64::new(0xd075);
+        let mut set = LeaderSet::new(n_features, hard_cap);
+        let mut previous: Option<(Vec<usize>, Vec<f64>, usize)> = None;
+        let mut dots = Vec::new();
+        let mut caps = Vec::new();
+        for step in 0..600 {
+            let (idx, val): (Vec<usize>, Vec<f64>) = match &previous {
+                Some((idx, val, _)) if step % 9 == 0 => {
+                    (idx.clone(), val.iter().map(|v| -v).collect())
+                }
+                _ => {
+                    let nnz = 1 + (rng.next_u64() % 8) as usize;
+                    let mut idx: Vec<usize> = (0..nnz)
+                        .map(|_| (rng.next_u64() % n_features as u64) as usize)
+                        .collect();
+                    if step % 13 == 0 {
+                        idx.push(idx[0]);
+                    }
+                    let val = idx
+                        .iter()
+                        .map(|_| match rng.next_u64() % 10 {
+                            0 => 0.0,
+                            1 => -0.0,
+                            _ => rng.gauss(),
+                        })
+                        .collect();
+                    (idx, val)
+                }
+            };
+            set.dots(&idx, &val, &mut dots);
+            let want = dots_dense(&set, &idx, &val);
+            assert_eq!(dots.len(), want.len());
+            for (i, (g, w)) in dots.iter().zip(&want).enumerate() {
+                assert_eq!(
+                    g.to_bits(),
+                    w.to_bits(),
+                    "step {step} leader {i}: {g:e} vs {w:e}"
+                );
+            }
+            let x_sq = norm_sq(&val);
+            let target = match &previous {
+                // The cancelling row goes back into the leader the row it negates went into.
+                Some((_, _, into)) if step % 9 == 0 => *into,
+                _ if set.len == 0 || (set.len < hard_cap && rng.next_u64() % 4 == 0) => set.len,
+                _ => (rng.next_u64() % set.len as u64) as usize,
+            };
+            if target == set.len {
+                set.push_new(&idx, &val, x_sq, hard_cap);
+            } else {
+                set.push_into(target, &idx, &val, x_sq, dots[target]);
+            }
+            if caps.last() != Some(&set.cap) {
+                caps.push(set.cap);
+            }
+            previous = Some((idx, val, target));
+        }
+        assert_eq!(
+            caps,
+            [16, 32, 40],
+            "the capacity did not widen between comparisons"
+        );
     }
 
     #[test]

@@ -44,11 +44,23 @@ pub fn kmeans<R: Real, C: ClusterFeature<R>>(
     let weights: Vec<R> = features.iter().map(|f| f.weight()).collect();
     let ssd: Vec<R> = features.iter().map(|f| f.ssd()).collect();
 
+    // Only k-means++ reads the generator, so drawing every start before any Lloyd run gives each
+    // restart the start it had when they ran in turn; the runs are then independent.
     let mut rng = SplitMix64::new(seed);
+    let inits: Vec<Vec<Vec<R>>> = (0..n_init.max(1))
+        .map(|_| kmeans_plus_plus(&means, &weights, &ssd, k, &mut rng))
+        .collect();
+    let run = |init| lloyd_hamerly(&means, &weights, &ssd, init, max_iter, dim);
+    #[cfg(feature = "parallel")]
+    let runs: Vec<KMeans<R>> = {
+        use rayon::prelude::*;
+        inits.into_par_iter().map(run).collect()
+    };
+    #[cfg(not(feature = "parallel"))]
+    let runs: Vec<KMeans<R>> = inits.into_iter().map(run).collect();
+    // In restart order, so the first of equally low inertias wins as it did serially.
     let mut best: Option<KMeans<R>> = None;
-    for _ in 0..n_init.max(1) {
-        let init = kmeans_plus_plus(&means, &weights, &ssd, k, &mut rng);
-        let res = lloyd_hamerly(&means, &weights, &ssd, init, max_iter, dim);
+    for res in runs {
         match &best {
             Some(b) if res.inertia >= b.inertia => {}
             _ => best = Some(res),
