@@ -78,7 +78,8 @@ with peak RSS sampled from `/proc/self/statm`. Full methodology, every metric, a
   hierarchy specialists and one outside reference per head on the same rows. It lists every win,
   tie and loss by rival, generated from the CSVs, with one betula head per contest. There are more
   losses than wins on quality: density clustering without a count (`hdbscan` 0.652 mean ARI against
-  0.616), a hierarchy given the count (Genie 0.839 against 0.734), MNIST-70k without a count
+  0.616), the anisotropic fixture given the count (lumbermark 0.843 against `leiden` 0.545; over
+  all seven density fixtures `leiden` ties Genie, 0.838 against 0.839), MNIST-70k without a count
   (`leiden` 0.769 against UMAP + HDBSCAN 0.920 and EVoC 0.899) and sentence embeddings (0.382
   against UMAP + k-means 0.451). On Gagolewski's clustering benchmark suite (81 datasets, given the
   count) `leiden` with `resolution="auto"` is level with the best of 387 published configurations

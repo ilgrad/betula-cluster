@@ -148,10 +148,13 @@ losses** are reported below.
   collapses outright on MNIST (0.003).
 - **Against the rest of the field, more losses than wins on quality** (*The census*: quality and
   peak RSS only, one betula head per contest). Losses: density without k, where `hdbscan` averages
-  0.652 ARI over seven fixtures against betula's `hdbscan` head at 0.616; a hierarchy given k, where
-  Genie averages 0.839 against `dc-median` at 0.734; MNIST-70k without k to UMAP + HDBSCAN and EVoC
-  (0.769 against 0.920 and 0.899); 20 newsgroups embeddings to every layout + k-means (0.382 against
-  UMAP + k-means 0.451) and, without k, to PhenoGraph and kNN + Leiden. Wins: MNIST-70k given k
+  0.652 ARI over seven fixtures against betula's `hdbscan` head at 0.616; aniso given k, where
+  lumbermark and Genie read 0.843 and 0.750 against the rows graph's 0.545; MNIST-70k without k to
+  UMAP + HDBSCAN and EVoC (0.769 against 0.920 and 0.899); 20 newsgroups embeddings to every layout
+  + k-means (0.382 against UMAP + k-means 0.451) and, without k, to PhenoGraph and kNN + Leiden. The
+  density fixtures given k are a tie on the mean: `leiden` on the rows graph averages 0.838 against
+  Genie's 0.839. Wins: `digits` given k against Genie and lumbermark (0.840 against 0.643 and
+  0.656); MNIST-70k given k
   against UMAP 0.5 + k-means and openTSNE + k-means (0.788 against 0.769 and 0.745), with no layout
   step; BERTopic's default pipeline on news (0.330 against 0.086); the AR mixture against tslearn's
   k-Shape (0.764 against 0.057). MNIST-20k is a tie with every manifold pipeline but one: it beats
@@ -1296,17 +1299,18 @@ the wider of the two cells' three-seed spreads is not a result. Tables with no s
 single runs by construction and fall back to a per-axis tolerance.
 
 ```
-## quality — 27 win · 94 tie · 30 loss
+## quality — 28 win · 96 tie · 27 loss
 ## speed   — 30 win · 1 tie · 7 loss
 ## memory  — 110 win · 6 tie · 1 loss
 ```
 
 `bench/scoreboard.json` records those 306 verdicts: the 140 of the 2026-10-29 edition, which it
-re-derives unchanged, and 166 `vs-rival` cells added with the census on 2026-11-14. `--check`
+re-derives unchanged, and 166 `vs-rival` cells added with the census on 2026-11-14 (eight of
+them re-paired on 2026-11-15, below). `--check`
 re-derives them and exits non-zero if
 any cell got worse or vanished, and `--update` is the deliberate act of accepting a new board. Five
 of the quality losses are the `covtype` and `digits` rows discussed above, the raw-TF-IDF `20news` row,
-and the two `fast_hdbscan` cells; the other 25, and the one memory loss (scikit-fuzzy, by 4 MB), are
+and the two `fast_hdbscan` cells; the other 22, and the one memory loss (scikit-fuzzy, by 4 MB), are
 census cells, listed under *Every verdict, rival by rival*; the seven speed losses are the two FAISS cells, the three `20news`
 rows the sparse scans own — 3.4× and 1.5× closer after task #71, but still losses — and the two
 10 M cells of the memory suite, which are one row counted twice and are discussed under *Memory*.
@@ -1383,6 +1387,15 @@ accepted deliberately rather than overwritten:
   an 18.6 MB tolerance. That retires the +7.9 MB regression the 2026-09-07 edition recorded and the
   2026-09-08 re-measure above already refuted — the gated re-run agrees with the eight paired runs,
   not with the single sample.
+- **2026-11-15, the density contest gains the arms a user would pick: one demotion, three
+  promotions.** Told k, the board's rule now picks `leiden` with `leaf_graph="rows"` and
+  `resolution="auto"` over `dc-median` (worst-seed mean 0.821 against 0.734), which re-pairs the
+  fourteen told-k density cells against Genie and lumbermark. Quality went 27/94/30 →
+  **28/96/27**. `blobs/told-k/genieclust-genie` went **win → tie**: the rows graph reads 0.829
+  (0.827–0.846) against Genie's 0.840, where `dc-median` read 0.854 with no seed spread. `digits`
+  went **loss → win** against both rivals (0.840 against 0.643 and 0.656), and `varied` against
+  Genie **loss → tie** (0.651, seeds 0.583–0.700, against 0.641). aniso stays a loss to both. The
+  fourteen memory cells stay wins at 170–185 MB against 200–217 MB.
 
 ## The census — every method a user would reach for, not only scikit-learn (2026-11-14)
 
@@ -1437,8 +1450,8 @@ scikit-fuzzy 0.5.0, kmodes 0.12.2, tslearn 0.10.0, numba 0.68.1.
   news embeddings. Picking the best of a dozen heads afresh for each fixture needs the labels, and
   under that rule every density fixture read as a betula win while `hdbscan` led on the mean. The
   tables show every head; a better head for one fixture is written as that, not as a win.
-- **An upper bound is not the count.** `xmeans`, the `gmm` BIC sweep and scikit-learn's
-  `BayesianGaussianMixture` take a ceiling on the count; each gets 20, never the true count, and
+- **An upper bound is not the count.** `xmeans`, the `gmm` and `gmm-full` BIC sweeps and
+  scikit-learn's `BayesianGaussianMixture` take a ceiling on the count; each gets 20, never the true count, and
   sits with the methods that choose the count.
 - **A rival runs as its own documentation runs it.** FINCH defaults to the cosine metric, which it
   recommends for real-world data; its toy-data example passes `distance="euclidean"`, the geometry
@@ -1510,24 +1523,44 @@ not. These have no row in any committed CSV:
   cluster slot.
 - **Density, k not given. A loss on the mean.** One method over all seven fixtures, mean ARI:
   `hdbscan` 0.652, `fast_hdbscan` 0.638, betula's `hdbscan` head 0.616, `scale-space` 0.609,
-  DenMune 0.540, the BIC sweep 0.498, FINCH 0.484, `BayesianGaussianMixture` 0.417. betula's
-  `hdbscan` head loses blobs, aniso and `varied` to `hdbscan` (0.376, 0.469 and 0.302 against 0.472,
-  0.500 and 0.505), wins `digits` (0.164 against 0.087), and ties moons, circles and highdim at
-  1.000. FINCH, which needs no parameter at all, beats it on blobs, aniso, `varied` and `digits`
-  (0.617, 0.522, 0.462, 0.333) and fails on the rings. Other heads do better on single fixtures — `scale-space` 0.739 on blobs, the BIC sweep
-  0.756 on `varied`, `leiden` 0.811 on `digits` — but no one head does on all of them, and picking
-  per fixture needs the labels. DenMune reads 0.786 on `digits`; it clusters its own 2-D t-SNE of
-  any input that is not 2-D, so that is t-SNE followed by density clustering, not density on the
-  64 pixels.
-- **Hierarchy, told k. A loss.** Mean ARI over the seven fixtures: Genie 0.839, lumbermark 0.790,
-  `dc-median` 0.734, `ward` 0.582. `dc-median` wins blobs against Genie (0.854 against 0.840) and
-  ties lumbermark there; it loses aniso to both (0.637 against 0.843 and 0.750), `varied` to Genie
-  (0.383 against 0.641) and `digits` to both (0.266 against 0.643 and 0.656), where `ward` reads
-  0.643. For a hierarchy given k on data of this size, use Genie.
+  the `gmm-full` BIC sweep 0.556, DenMune 0.540, the `gmm` BIC sweep 0.498, FINCH 0.484,
+  `BayesianGaussianMixture` 0.417, `leiden` 0.413, `leiden` on the rows graph 0.399. The board's
+  rule keeps betula's `hdbscan` head (worst-seed mean 0.616 against `scale-space` 0.609 and the
+  `gmm-full` sweep 0.556). It loses blobs, aniso and `varied` to `hdbscan` (0.376, 0.469 and 0.302
+  against 0.472, 0.500 and 0.505), wins `digits` (0.164 against 0.087), and ties moons, circles and
+  highdim at 1.000. FINCH, which needs no parameter at all, beats it on blobs, aniso, `varied` and
+  `digits` (0.617, 0.522, 0.462, 0.333) and fails on the rings. No one head serves both kinds of
+  cluster on this board. Gaussian clusters (blobs, aniso, `varied`): the `gmm-full` sweep reads
+  0.863, 0.902 and 0.757 with the right count, ahead of every rival without k. Connected shapes
+  (moons, circles): `hdbscan` and `scale-space` read 1.000, and the sweep over-splits them into
+  18–20 components (0.11). `digits`: `leiden` reads 0.811 and the rows graph 0.750, with 17–19
+  communities; the `gmm-full` sweep stops at 4 components (0.152). Picking per fixture needs the
+  labels. DenMune reads 0.786 on `digits`; it clusters its own 2-D t-SNE of any input that is not
+  2-D, so that is t-SNE followed by density clustering, not density on the 64 pixels.
+- **Density fixtures, told k (the hierarchy contest). A tie on the mean, one loss.** Mean ARI over
+  the seven fixtures: Genie 0.839, `leiden` with `leaf_graph="rows"` and `resolution="auto"` 0.838,
+  lumbermark 0.790, `dc-median` 0.734, `gmm-full` 0.657, `ward` 0.582, `kmeans` 0.557. The board's
+  rule picks the rows graph (worst-seed mean 0.821 against `dc-median` 0.734). It wins `digits`
+  against both rivals (0.840, seeds 0.803–0.855, against 0.643 and 0.656) and `varied` against
+  lumbermark (0.651 against 0.184). It ties `varied` against Genie (0.651, seeds 0.583–0.700,
+  against 0.641), and blobs, moons, circles and highdim against both. It loses aniso to both (0.545
+  against 0.843 and 0.750); `gmm-full` told k reads 0.902 there. For aniso-like data given k, use
+  `gmm-full` or lumbermark.
+- **A recipe, not a head: the `gmm-full` BIC fit merged to the count.** Fit `gmm-full` with
+  `n_clusters=0`, then merge its components down to k on the row posteriors of `predict_proba` (the
+  entropy criterion of Baudry et al. 2010; *Merging an over-fitted mixture to a known count* in the
+  USAGE guide). It reads a mean of 0.871: 0.863, 0.902 and 0.757 on blobs, aniso and `varied`, as
+  `gmm-full` told k does, and 1.000 on moons, circles and highdim, where `gmm-full` told k reads
+  0.504 and 0.000 on the rings. On `digits` the sweep stops at 4 components, below the count, so
+  there is nothing to merge and the recipe returns the told-k fit: 0.575. It is two calls and a
+  merge loop, not one `method=`, so the table prints it as a recipe row and the board does not
+  choose it as betula's arm.
 - **A count under a ceiling.** Given the same ceiling of 20, the `gmm` BIC sweep finds blobs and
   `varied` (0.865 and 0.756) where `BayesianGaussianMixture` keeps 19–20 components and reads 0.543
-  and 0.248. On `digits` `BayesianGaussianMixture` reads 0.617 against the sweep's 0.444 and
-  `xmeans`' 0.587. On rings (moons, circles) every Gaussian method fails, both libraries' alike.
+  and 0.248. The `gmm-full` sweep finds blobs, aniso and `varied` with the right count (0.863, 0.902,
+  0.757). On `digits` `BayesianGaussianMixture` reads 0.617 against the `gmm` sweep's 0.444,
+  `xmeans`' 0.587 and the `gmm-full` sweep's 0.152. On rings (moons, circles) every Gaussian method
+  fails, both libraries' alike.
 - **The heads with an outside reference.** `kmedoids` matches FasterPAM (0.651 against 0.650);
   `fuzzy-cmeans` ties scikit-fuzzy (0.206 against 0.216, both unstable over seeds); `KPrototypes`
   ties kmodes' Huang implementation on mixed covtype (0.028 against 0.022, both near 0).
@@ -1633,11 +1666,13 @@ Bold rows are betula's. `bench/rivals.py --arms=a,b` and `bench/density_rivals.p
 | method | ARI median (min–max) | clusters | noise | peak RSS MB |
 |---|---|---|---|---|
 | **betula-gmm-bic** | 0.865 (0.865–0.865) | 6 | 0.00 | 176 |
+| **betula-gmm-full-bic** | 0.863 (0.863–0.863) | 6 | 0.00 | 172 |
 | **betula-xmeans** | 0.861 (0.861–0.861) | 6 | 0.00 | 171 |
 | **betula-scale-space** | 0.739 (0.739–0.739) | 5 | 0.00 | 170 |
 | finch | 0.617 | 4 | 0.00 | 2012 |
 | sklearn-bgmm | 0.543 (0.526–0.549) | 19 | 0.00 | 216 |
 | hdbscan | 0.472 | 4 | 0.10 | 278 |
+| **betula-leiden-rows** | 0.433 (0.411–0.439) | 18 | 0.00 | 174 |
 | **betula-leiden** | 0.432 (0.380–0.473) | 17 | 0.00 | 171 |
 | fast-hdbscan | 0.432 | 5 | 0.29 | 326 |
 | **betula-hdbscan** | 0.376 (0.376–0.376) | 6 | 0.34 | 172 |
@@ -1649,15 +1684,20 @@ Bold rows are betula's. `bench/rivals.py --arms=a,b` and `bench/density_rivals.p
 
 | method | ARI median (min–max) | clusters | noise | peak RSS MB |
 |---|---|---|---|---|
+| **betula-gmm-full** | 0.863 (0.863–0.863) | 6 | 0.00 | 167 |
+| **betula-gmm-full-merge** (recipe) | 0.863 (0.863–0.863) | 6 | 0.00 | 172 |
+| **betula-kmeans** | 0.861 (0.861–0.861) | 6 | 0.00 | 165 |
 | **betula-dc-median** | 0.854 (0.854–0.854) | 6 | 0.00 | 172 |
 | lumbermark | 0.845 | 6 | 0.00 | 207 |
 | genieclust-genie | 0.840 | 6 | 0.00 | 205 |
+| **betula-leiden-rows-auto** | 0.829 (0.827–0.846) | 6 | 0.00 | 173 |
 | **betula-ward** | 0.811 (0.811–0.811) | 6 | 0.00 | 170 |
 
 **aniso, n = 30 000, k not given**
 
 | method | ARI median (min–max) | clusters | noise | peak RSS MB |
 |---|---|---|---|---|
+| **betula-gmm-full-bic** | 0.902 (0.902–0.902) | 3 | 0.00 | 170 |
 | **betula-scale-space** | 0.525 (0.525–0.525) | 2 | 0.00 | 171 |
 | finch | 0.522 | 2 | 0.00 | 1883 |
 | hdbscan | 0.500 | 2 | 0.06 | 278 |
@@ -1665,6 +1705,7 @@ Bold rows are betula's. `bench/rivals.py --arms=a,b` and `bench/density_rivals.p
 | fast-hdbscan | 0.447 | 2 | 0.14 | 326 |
 | sklearn-bgmm | 0.300 (0.300–0.314) | 19 | 0.00 | 215 |
 | **betula-leiden** | 0.232 (0.221–0.239) | 17 | 0.00 | 171 |
+| **betula-leiden-rows** | 0.210 (0.207–0.223) | 17 | 0.00 | 174 |
 | **betula-xmeans** | 0.196 (0.195–0.196) | 20 | 0.00 | 171 |
 | **betula-gmm-bic** | 0.180 (0.180–0.180) | 20 | 0.00 | 177 |
 | denmune | 0.000 | 2 | 0.00 | 672 |
@@ -1675,15 +1716,20 @@ Bold rows are betula's. `bench/rivals.py --arms=a,b` and `bench/density_rivals.p
 
 | method | ARI median (min–max) | clusters | noise | peak RSS MB |
 |---|---|---|---|---|
+| **betula-gmm-full** | 0.902 (0.902–0.902) | 3 | 0.00 | 166 |
+| **betula-gmm-full-merge** (recipe) | 0.902 (0.902–0.902) | 3 | 0.00 | 171 |
 | lumbermark | 0.843 | 3 | 0.00 | 207 |
 | genieclust-genie | 0.750 | 3 | 0.00 | 206 |
 | **betula-dc-median** | 0.637 (0.637–0.637) | 3 | 0.00 | 172 |
+| **betula-leiden-rows-auto** | 0.545 (0.537–0.548) | 3 | 0.00 | 174 |
+| **betula-kmeans** | 0.545 (0.545–0.545) | 3 | 0.00 | 165 |
 | **betula-ward** | 0.410 (0.410–0.410) | 3 | 0.00 | 171 |
 
 **varied, n = 30 000, k not given**
 
 | method | ARI median (min–max) | clusters | noise | peak RSS MB |
 |---|---|---|---|---|
+| **betula-gmm-full-bic** | 0.757 (0.757–0.757) | 3 | 0.00 | 170 |
 | **betula-gmm-bic** | 0.756 (0.756–0.756) | 3 | 0.00 | 175 |
 | **betula-xmeans** | 0.548 (0.548–0.548) | 4 | 0.00 | 171 |
 | hdbscan | 0.505 | 3 | 0.48 | 280 |
@@ -1691,6 +1737,7 @@ Bold rows are betula's. `bench/rivals.py --arms=a,b` and `bench/density_rivals.p
 | finch | 0.462 | 2 | 0.00 | 1859 |
 | **betula-hdbscan** | 0.302 (0.302–0.302) | 3 | 0.29 | 171 |
 | sklearn-bgmm | 0.248 (0.244–0.257) | 20 | 0.00 | 216 |
+| **betula-leiden-rows** | 0.194 (0.168–0.208) | 16 | 0.00 | 173 |
 | **betula-leiden** | 0.184 (0.176–0.225) | 19 | 0.00 | 171 |
 | denmune | 0.000 | 1 | 0.00 | 672 |
 | **betula-scale-space** | 0.000 (0.000–0.000) | 2 | 0.00 | 170 |
@@ -1701,8 +1748,12 @@ Bold rows are betula's. `bench/rivals.py --arms=a,b` and `bench/density_rivals.p
 
 | method | ARI median (min–max) | clusters | noise | peak RSS MB |
 |---|---|---|---|---|
+| **betula-gmm-full** | 0.757 (0.757–0.757) | 3 | 0.00 | 166 |
+| **betula-gmm-full-merge** (recipe) | 0.757 (0.757–0.757) | 3 | 0.00 | 170 |
+| **betula-leiden-rows-auto** | 0.651 (0.583–0.700) | 3 | 0.00 | 173 |
 | genieclust-genie | 0.641 | 3 | 0.00 | 205 |
 | **betula-ward** | 0.575 (0.575–0.575) | 3 | 0.00 | 170 |
+| **betula-kmeans** | 0.541 (0.541–0.541) | 3 | 0.00 | 165 |
 | **betula-dc-median** | 0.383 (0.383–0.383) | 3 | 0.00 | 172 |
 | lumbermark | 0.184 | 3 | 0.00 | 207 |
 
@@ -1719,6 +1770,8 @@ Bold rows are betula's. `bench/rivals.py --arms=a,b` and `bench/density_rivals.p
 | finch | 0.451 | 2 | 0.00 | 1858 |
 | **betula-leiden** | 0.122 (0.113–0.142) | 18 | 0.00 | 172 |
 | **betula-gmm-bic** | 0.118 (0.117–0.118) | 20 | 0.00 | 177 |
+| **betula-gmm-full-bic** | 0.114 (0.114–0.115) | 18 | 0.00 | 172 |
+| **betula-leiden-rows** | 0.112 (0.110–0.117) | 19 | 0.00 | 174 |
 | sklearn-bgmm | 0.108 (0.101–0.109) | 19 | 0.00 | 216 |
 | **betula-xmeans** | 0.104 (0.104–0.104) | 20 | 0.00 | 171 |
 | classix | 0.000 | 1 | 0.00 | 172 |
@@ -1727,10 +1780,14 @@ Bold rows are betula's. `bench/rivals.py --arms=a,b` and `bench/density_rivals.p
 
 | method | ARI median (min–max) | clusters | noise | peak RSS MB |
 |---|---|---|---|---|
-| lumbermark | 1.000 | 2 | 0.00 | 207 |
+| **betula-leiden-rows-auto** | 1.000 (1.000–1.000) | 2 | 0.00 | 174 |
+| **betula-gmm-full-merge** (recipe) | 1.000 (1.000–1.000) | 2 | 0.00 | 177 |
 | genieclust-genie | 1.000 | 2 | 0.00 | 205 |
+| lumbermark | 1.000 | 2 | 0.00 | 207 |
 | **betula-dc-median** | 1.000 (1.000–1.000) | 2 | 0.00 | 172 |
 | **betula-ward** | 0.633 (0.633–0.633) | 2 | 0.00 | 171 |
+| **betula-gmm-full** | 0.504 (0.504–0.504) | 2 | 0.00 | 167 |
+| **betula-kmeans** | 0.485 (0.485–0.485) | 2 | 0.00 | 166 |
 
 **circles, n = 30 000, k not given**
 
@@ -1744,7 +1801,9 @@ Bold rows are betula's. `bench/rivals.py --arms=a,b` and `bench/density_rivals.p
 | denmune | 0.999 | 2 | 0.00 | 671 |
 | **betula-gmm-bic** | 0.126 (0.126–0.126) | 20 | 0.00 | 177 |
 | **betula-leiden** | 0.109 (0.107–0.110) | 20 | 0.00 | 172 |
+| **betula-gmm-full-bic** | 0.105 (0.101–0.105) | 20 | 0.00 | 170 |
 | sklearn-bgmm | 0.104 (0.104–0.110) | 20 | 0.00 | 216 |
+| **betula-leiden-rows** | 0.096 (0.096–0.099) | 22 | 0.00 | 174 |
 | finch | 0.004 | 3 | 0.00 | 1849 |
 | classix | 0.000 | 1 | 0.00 | 172 |
 | **betula-xmeans** | -0.000 (-0.000–-0.000) | 4 | 0.00 | 171 |
@@ -1753,10 +1812,14 @@ Bold rows are betula's. `bench/rivals.py --arms=a,b` and `bench/density_rivals.p
 
 | method | ARI median (min–max) | clusters | noise | peak RSS MB |
 |---|---|---|---|---|
-| lumbermark | 1.000 | 2 | 0.00 | 207 |
 | genieclust-genie | 1.000 | 2 | 0.00 | 206 |
+| lumbermark | 1.000 | 2 | 0.00 | 207 |
+| **betula-leiden-rows-auto** | 1.000 (1.000–1.000) | 2 | 0.00 | 174 |
+| **betula-gmm-full-merge** (recipe) | 1.000 (1.000–1.000) | 2 | 0.00 | 179 |
 | **betula-dc-median** | 1.000 (1.000–1.000) | 2 | 0.00 | 172 |
 | **betula-ward** | 0.000 (0.000–0.000) | 2 | 0.00 | 171 |
+| **betula-gmm-full** | -0.000 (-0.000–-0.000) | 2 | 0.00 | 167 |
+| **betula-kmeans** | -0.000 (-0.000–-0.000) | 2 | 0.00 | 166 |
 
 **highdim, n = 30 000, k not given**
 
@@ -1771,6 +1834,8 @@ Bold rows are betula's. `bench/rivals.py --arms=a,b` and `bench/density_rivals.p
 | **betula-leiden** | 1.000 (1.000–1.000) | 8 | 0.00 | 207 |
 | **betula-gmm-bic** | 1.000 (1.000–1.000) | 8 | 0.00 | 188 |
 | finch | 1.000 | 8 | 0.00 | 805 |
+| **betula-gmm-full-bic** | 1.000 (1.000–1.000) | 8 | 0.00 | 184 |
+| **betula-leiden-rows** | 1.000 (1.000–1.000) | 8 | 0.00 | 185 |
 | denmune | 0.999 | 8 | 0.00 | 688 |
 | sklearn-bgmm | 0.997 (0.997–0.998) | 20 | 0.00 | 224 |
 | **betula-xmeans** | 0.964 (0.926–0.964) | 9 | 0.00 | 179 |
@@ -1783,6 +1848,10 @@ Bold rows are betula's. `bench/rivals.py --arms=a,b` and `bench/density_rivals.p
 | **betula-ward** | 1.000 (1.000–1.000) | 8 | 0.00 | 179 |
 | genieclust-genie | 1.000 | 8 | 0.00 | 213 |
 | lumbermark | 1.000 | 8 | 0.00 | 217 |
+| **betula-leiden-rows-auto** | 1.000 (1.000–1.000) | 8 | 0.00 | 185 |
+| **betula-gmm-full** | 1.000 (1.000–1.000) | 8 | 0.00 | 176 |
+| **betula-kmeans** | 1.000 (1.000–1.000) | 8 | 0.00 | 174 |
+| **betula-gmm-full-merge** (recipe) | 1.000 (1.000–1.000) | 8 | 0.00 | 181 |
 
 **digits, n = 1 797, k not given**
 
@@ -1790,11 +1859,13 @@ Bold rows are betula's. `bench/rivals.py --arms=a,b` and `bench/density_rivals.p
 |---|---|---|---|---|
 | **betula-leiden** | 0.811 (0.801–0.834) | 13 | 0.00 | 203 |
 | denmune | 0.786 | 10 | 0.01 | 252 |
+| **betula-leiden-rows** | 0.750 (0.749–0.784) | 18 | 0.00 | 170 |
 | sklearn-bgmm | 0.617 (0.606–0.665) | 20 | 0.00 | 193 |
 | **betula-xmeans** | 0.587 (0.570–0.611) | 20 | 0.00 | 173 |
 | **betula-gmm-bic** | 0.444 (0.444–0.444) | 20 | 0.00 | 199 |
 | finch | 0.333 | 5 | 0.00 | 337 |
 | **betula-hdbscan** | 0.164 (0.164–0.164) | 7 | 0.58 | 174 |
+| **betula-gmm-full-bic** | 0.152 (0.152–0.200) | 4 | 0.00 | 196 |
 | hdbscan | 0.087 | 6 | 0.70 | 186 |
 | fast-hdbscan | 0.087 | 6 | 0.70 | 938 |
 | classix | 0.001 | 2 | 0.00 | 173 |
@@ -1805,9 +1876,13 @@ Bold rows are betula's. `bench/rivals.py --arms=a,b` and `bench/density_rivals.p
 
 | method | ARI median (min–max) | clusters | noise | peak RSS MB |
 |---|---|---|---|---|
+| **betula-leiden-rows-auto** | 0.840 (0.803–0.855) | 10 | 0.00 | 170 |
 | lumbermark | 0.656 | 10 | 0.00 | 200 |
 | **betula-ward** | 0.643 (0.643–0.643) | 10 | 0.00 | 174 |
 | genieclust-genie | 0.643 | 10 | 0.00 | 201 |
+| **betula-gmm-full** | 0.575 (0.575–0.575) | 10 | 0.00 | 175 |
+| **betula-gmm-full-merge** (recipe) | 0.575 (0.575–0.575) | 10 | 0.00 | 201 |
+| **betula-kmeans** | 0.467 (0.443–0.571) | 10 | 0.00 | 167 |
 | **betula-dc-median** | 0.266 (0.266–0.266) | 8 | 0.00 | 175 |
 
 #### Head references (`results_head_refs.csv`)
@@ -1908,21 +1983,21 @@ side of every cell is the one head its contest chose (see the rules above).
   - loss, quality, `blobs/30000/no-k` (density_rivals): betula 0.376 ARI (`betula-hdbscan`) against 0.617 ARI
   - loss, quality, `digits/1797/no-k` (density_rivals): betula 0.164 ARI (`betula-hdbscan`) against 0.333 ARI
   - loss, quality, `varied/30000/no-k` (density_rivals): betula 0.302 ARI (`betula-hdbscan`) against 0.462 ARI
-- **genieclust-genie** — 8 win · 3 tie · 3 loss
-  - win, memory, `aniso/30000/told-k` (density_rivals): betula 172 MB (`betula-dc-median`) against 206 MB
-  - win, memory, `blobs/30000/told-k` (density_rivals): betula 172 MB (`betula-dc-median`) against 205 MB
-  - win, memory, `circles/30000/told-k` (density_rivals): betula 172 MB (`betula-dc-median`) against 206 MB
-  - win, memory, `digits/1797/told-k` (density_rivals): betula 175 MB (`betula-dc-median`) against 201 MB
-  - win, memory, `highdim/30000/told-k` (density_rivals): betula 180 MB (`betula-dc-median`) against 213 MB
-  - win, memory, `moons/30000/told-k` (density_rivals): betula 172 MB (`betula-dc-median`) against 205 MB
-  - win, memory, `varied/30000/told-k` (density_rivals): betula 172 MB (`betula-dc-median`) against 205 MB
-  - win, quality, `blobs/30000/told-k` (density_rivals): betula 0.854 ARI (`betula-dc-median`) against 0.840 ARI
-  - tie, quality, `circles/30000/told-k` (density_rivals): betula 1.000 ARI (`betula-dc-median`) against 1.000 ARI
-  - tie, quality, `highdim/30000/told-k` (density_rivals): betula 1.000 ARI (`betula-dc-median`) against 1.000 ARI
-  - tie, quality, `moons/30000/told-k` (density_rivals): betula 1.000 ARI (`betula-dc-median`) against 1.000 ARI
-  - loss, quality, `aniso/30000/told-k` (density_rivals): betula 0.637 ARI (`betula-dc-median`) against 0.750 ARI
-  - loss, quality, `digits/1797/told-k` (density_rivals): betula 0.266 ARI (`betula-dc-median`) against 0.643 ARI
-  - loss, quality, `varied/30000/told-k` (density_rivals): betula 0.383 ARI (`betula-dc-median`) against 0.641 ARI
+- **genieclust-genie** — 8 win · 5 tie · 1 loss
+  - win, memory, `aniso/30000/told-k` (density_rivals): betula 174 MB (`betula-leiden-rows-auto`) against 206 MB
+  - win, memory, `blobs/30000/told-k` (density_rivals): betula 173 MB (`betula-leiden-rows-auto`) against 205 MB
+  - win, memory, `circles/30000/told-k` (density_rivals): betula 174 MB (`betula-leiden-rows-auto`) against 206 MB
+  - win, memory, `digits/1797/told-k` (density_rivals): betula 170 MB (`betula-leiden-rows-auto`) against 201 MB
+  - win, memory, `highdim/30000/told-k` (density_rivals): betula 185 MB (`betula-leiden-rows-auto`) against 213 MB
+  - win, memory, `moons/30000/told-k` (density_rivals): betula 174 MB (`betula-leiden-rows-auto`) against 205 MB
+  - win, memory, `varied/30000/told-k` (density_rivals): betula 173 MB (`betula-leiden-rows-auto`) against 205 MB
+  - win, quality, `digits/1797/told-k` (density_rivals): betula 0.840 ARI (`betula-leiden-rows-auto`) against 0.643 ARI
+  - tie, quality, `blobs/30000/told-k` (density_rivals): betula 0.829 ARI (`betula-leiden-rows-auto`) against 0.840 ARI
+  - tie, quality, `circles/30000/told-k` (density_rivals): betula 1.000 ARI (`betula-leiden-rows-auto`) against 1.000 ARI
+  - tie, quality, `highdim/30000/told-k` (density_rivals): betula 1.000 ARI (`betula-leiden-rows-auto`) against 1.000 ARI
+  - tie, quality, `moons/30000/told-k` (density_rivals): betula 1.000 ARI (`betula-leiden-rows-auto`) against 1.000 ARI
+  - tie, quality, `varied/30000/told-k` (density_rivals): betula 0.651 ARI (`betula-leiden-rows-auto`) against 0.641 ARI
+  - loss, quality, `aniso/30000/told-k` (density_rivals): betula 0.545 ARI (`betula-leiden-rows-auto`) against 0.750 ARI
 - **hdbscan** — 8 win · 3 tie · 3 loss
   - win, memory, `aniso/30000/no-k` (density_rivals): betula 172 MB (`betula-hdbscan`) against 278 MB
   - win, memory, `blobs/30000/no-k` (density_rivals): betula 172 MB (`betula-hdbscan`) against 278 MB
@@ -1951,21 +2026,21 @@ side of every cell is the one head its contest chose (see the rules above).
   - tie, quality, `mnist/20000/no-k` (rivals): betula 0.762 ARI (`betula-leiden-rows`) against 0.687 ARI
   - tie, quality, `mnist/70000/no-k` (rivals): betula 0.769 ARI (`betula-leiden-rows`) against 0.711 ARI
   - loss, quality, `news-minilm/17901/no-k` (rivals): betula 0.330 ARI (`betula-leiden-rows`) against 0.386 ARI
-- **lumbermark** — 8 win · 4 tie · 2 loss
-  - win, memory, `aniso/30000/told-k` (density_rivals): betula 172 MB (`betula-dc-median`) against 207 MB
-  - win, memory, `blobs/30000/told-k` (density_rivals): betula 172 MB (`betula-dc-median`) against 207 MB
-  - win, memory, `circles/30000/told-k` (density_rivals): betula 172 MB (`betula-dc-median`) against 207 MB
-  - win, memory, `digits/1797/told-k` (density_rivals): betula 175 MB (`betula-dc-median`) against 200 MB
-  - win, memory, `highdim/30000/told-k` (density_rivals): betula 180 MB (`betula-dc-median`) against 217 MB
-  - win, memory, `moons/30000/told-k` (density_rivals): betula 172 MB (`betula-dc-median`) against 207 MB
-  - win, memory, `varied/30000/told-k` (density_rivals): betula 172 MB (`betula-dc-median`) against 207 MB
-  - win, quality, `varied/30000/told-k` (density_rivals): betula 0.383 ARI (`betula-dc-median`) against 0.184 ARI
-  - tie, quality, `blobs/30000/told-k` (density_rivals): betula 0.854 ARI (`betula-dc-median`) against 0.845 ARI
-  - tie, quality, `circles/30000/told-k` (density_rivals): betula 1.000 ARI (`betula-dc-median`) against 1.000 ARI
-  - tie, quality, `highdim/30000/told-k` (density_rivals): betula 1.000 ARI (`betula-dc-median`) against 1.000 ARI
-  - tie, quality, `moons/30000/told-k` (density_rivals): betula 1.000 ARI (`betula-dc-median`) against 1.000 ARI
-  - loss, quality, `aniso/30000/told-k` (density_rivals): betula 0.637 ARI (`betula-dc-median`) against 0.843 ARI
-  - loss, quality, `digits/1797/told-k` (density_rivals): betula 0.266 ARI (`betula-dc-median`) against 0.656 ARI
+- **lumbermark** — 9 win · 4 tie · 1 loss
+  - win, memory, `aniso/30000/told-k` (density_rivals): betula 174 MB (`betula-leiden-rows-auto`) against 207 MB
+  - win, memory, `blobs/30000/told-k` (density_rivals): betula 173 MB (`betula-leiden-rows-auto`) against 207 MB
+  - win, memory, `circles/30000/told-k` (density_rivals): betula 174 MB (`betula-leiden-rows-auto`) against 207 MB
+  - win, memory, `digits/1797/told-k` (density_rivals): betula 170 MB (`betula-leiden-rows-auto`) against 200 MB
+  - win, memory, `highdim/30000/told-k` (density_rivals): betula 185 MB (`betula-leiden-rows-auto`) against 217 MB
+  - win, memory, `moons/30000/told-k` (density_rivals): betula 174 MB (`betula-leiden-rows-auto`) against 207 MB
+  - win, memory, `varied/30000/told-k` (density_rivals): betula 173 MB (`betula-leiden-rows-auto`) against 207 MB
+  - win, quality, `digits/1797/told-k` (density_rivals): betula 0.840 ARI (`betula-leiden-rows-auto`) against 0.656 ARI
+  - win, quality, `varied/30000/told-k` (density_rivals): betula 0.651 ARI (`betula-leiden-rows-auto`) against 0.184 ARI
+  - tie, quality, `blobs/30000/told-k` (density_rivals): betula 0.829 ARI (`betula-leiden-rows-auto`) against 0.845 ARI
+  - tie, quality, `circles/30000/told-k` (density_rivals): betula 1.000 ARI (`betula-leiden-rows-auto`) against 1.000 ARI
+  - tie, quality, `highdim/30000/told-k` (density_rivals): betula 1.000 ARI (`betula-leiden-rows-auto`) against 1.000 ARI
+  - tie, quality, `moons/30000/told-k` (density_rivals): betula 1.000 ARI (`betula-leiden-rows-auto`) against 1.000 ARI
+  - loss, quality, `aniso/30000/told-k` (density_rivals): betula 0.545 ARI (`betula-leiden-rows-auto`) against 0.843 ARI
 - **opentsne+kmeans** — 4 win · 1 tie · 1 loss
   - win, memory, `mnist/20000/told-k` (rivals): betula 365 MB (`betula-leiden-rows-auto`) against 626 MB
   - win, memory, `mnist/70000/told-k` (rivals): betula 751 MB (`betula-leiden-rows-auto`) against 1272 MB

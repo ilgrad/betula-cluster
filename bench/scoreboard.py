@@ -286,10 +286,16 @@ CONTEST = {
 }
 
 
+# Rows a user gets by composing public calls, not by one `method=`: printed beside the heads, never
+# chosen as betula's arm, until the recipe is one library call.
+RECIPES = {"betula-gmm-full-merge"}
+
+
 def _contest_champions(df, by):
     """betula's arm per contest: present on every slice, best mean of its worst-seed ARI."""
     out = {}
-    for key, grp in df[df["arm"].str.startswith("betula")].groupby(list(by), sort=True):
+    heads = df[df["arm"].str.startswith("betula") & ~df["arm"].isin(RECIPES)]
+    for key, grp in heads.groupby(list(by), sort=True):
         worst = grp.groupby(["arm", "dataset", "n"])["ari"].min().unstack(["dataset", "n"])
         worst = worst.dropna()  # an arm missing from a slice cannot be the contest's one choice
         out[key if isinstance(key, tuple) else (key,)] = worst.mean(axis=1).idxmax()

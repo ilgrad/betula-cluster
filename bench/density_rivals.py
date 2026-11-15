@@ -10,8 +10,12 @@ pick when the number of clusters is unknown, or when clusters are not convex, ha
 | hierarchy, count given | genieclust (`Genie`), lumbermark |
 | count chosen under a bound | scikit-learn `BayesianGaussianMixture` |
 
-against `hdbscan`, `scale-space`, `leiden` (count chosen), `xmeans` and the `gmm` BIC sweep (count
-chosen under a bound) and `dc-median`, `ward` (count given). A method that takes an upper bound on
+against `hdbscan`, `scale-space`, `leiden` on the unit and the rows graph (count chosen), `xmeans`
+and the `gmm` and `gmm-full` BIC sweeps (count chosen under a bound) and `dc-median`, `ward`,
+`leiden` on the rows graph with `resolution="auto"`, `gmm-full`, `kmeans` (count given). One more
+told-count row, `betula-gmm-full-merge`, is a recipe rather than a head: the `gmm-full` BIC fit
+merged down to the count on its row posteriors. It is printed, and is not a candidate for betula's
+arm on the board. A method that takes an upper bound on
 the count gets `K_BOUND` = 20, the same for all, and never the true count; the board files it with
 the methods that choose the count. The fixtures
 are the main bench's quality fixtures at 30 000 rows (standardised; `blobs`, `aniso`, `varied`,
@@ -82,6 +86,28 @@ def _betula_bounded(x, seed, **kw):
     return bc.Betula(threshold=0.0, seed=seed, **kw).fit_predict(x)
 
 
+def _gmm_full_merge(x, k, seed):
+    """The BIC fit, its components merged to `k` on the row posteriors by the entropy criterion of
+    Baudry et al. 2010. A recipe on the public API, not a head. A sweep that stops below `k` leaves
+    nothing to merge, and the recipe falls back to the fit told `k`."""
+    import betula_cluster as bc
+
+    est = bc.Betula(n_clusters=0, method="gmm-full", threshold=0.0, seed=seed).fit(x)
+    p = np.asarray(est.predict_proba(x), dtype=np.float64)
+    if p.shape[1] < k:
+        return _betula(x, k, seed, method="gmm-full")
+
+    def h(q):
+        return -(q * np.log(np.clip(q, 1e-300, None))).sum()
+
+    while p.shape[1] > k:
+        pairs = [(a, b) for a in range(p.shape[1]) for b in range(a + 1, p.shape[1])]
+        a, b = max(pairs, key=lambda ab: h(p[:, ab[0]]) + h(p[:, ab[1]]) - h(p[:, ab].sum(1)))
+        p[:, a] += p[:, b]
+        p = np.delete(p, b, axis=1)
+    return p.argmax(1)
+
+
 def _bgmm(x, seed):
     from sklearn.mixture import BayesianGaussianMixture
 
@@ -145,8 +171,24 @@ ARMS = {
     ),
     # `n_clusters=0` is the BIC sweep, whose default ceiling `auto_k_max` is K_BOUND.
     "betula-gmm-bic": (False, lambda x, k, s: _betula_bounded(x, s, method="gmm", n_clusters=0)),
+    "betula-gmm-full-bic": (
+        False,
+        lambda x, k, s: _betula_bounded(x, s, method="gmm-full", n_clusters=0),
+    ),
+    "betula-leiden-rows": (
+        False,
+        lambda x, k, s: _betula_bounded(x, s, method="leiden", leaf_graph="rows"),
+    ),
     "betula-dc-median": (True, lambda x, k, s: _betula(x, k, s, method="dc-median")),
     "betula-ward": (True, lambda x, k, s: _betula(x, k, s, method="ward")),
+    "betula-leiden-rows-auto": (
+        True,
+        lambda x, k, s: _betula(x, k, s, method="leiden", leaf_graph="rows", resolution="auto"),
+    ),
+    "betula-gmm-full": (True, lambda x, k, s: _betula(x, k, s, method="gmm-full")),
+    "betula-kmeans": (True, lambda x, k, s: _betula(x, k, s, method="kmeans")),
+    # A recipe, not a head: `bench/scoreboard.py` keeps it out of the choice of betula's arm.
+    "betula-gmm-full-merge": (True, lambda x, k, s: _gmm_full_merge(x, k, s)),
     "hdbscan": (
         False,
         lambda x, k, s: (

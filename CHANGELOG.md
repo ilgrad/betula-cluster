@@ -254,6 +254,18 @@ All notable changes to this project are documented here. The format follows
   cells, and text-only numbers say "not in a CSV". New text states that the `fast_hdbscan` contest
   feeds its rows sorted by label, which costs the `hdbscan` head up to 0.10 ARI. It also names the
   rival families with no row, with the reason for each.
+- **The density board runs the arms a user would pick** (`bench/density_rivals.py`). New arms at
+  seeds 0/1/2 on the seven fixtures: the `gmm-full` BIC sweep and `leiden` on the rows graph without
+  a count; `leiden` on the rows graph with `resolution="auto"`, `gmm-full` and `kmeans` given it.
+  Given the count, the board's rule now picks the rows graph over `dc-median` (worst-seed mean
+  0.821 against 0.734). Its mean ARI ties Genie (0.838 against 0.839): it wins `digits` (0.840
+  against 0.643 and lumbermark's 0.656), ties `varied` and blobs, and loses aniso (0.545 against
+  0.750 and 0.843). Quality on the board goes 27 / 94 / 30 → 28 / 96 / 27: blobs against Genie
+  goes win → tie, `digits` against both rivals loss → win, `varied` against Genie loss → tie.
+  Without a count the head stays `hdbscan`; the `gmm-full` sweep reads 0.863 / 0.902 / 0.757 on
+  blobs / aniso / `varied` and fails rings and `digits`. A recipe row, the `gmm-full` BIC fit merged
+  to the count on its posteriors, reads a mean of 0.871 and is in USAGE (*Merging an over-fitted
+  mixture to a known count*); the board does not choose it as betula's arm.
 
 ## [1.5.0] — 2026-10-28
 

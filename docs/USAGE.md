@@ -231,7 +231,7 @@ answer.
 | **community / graph structure**, unknown count | `leiden` (or `leiden-cpm`) | **no** — count is discovered; tune `resolution` |
 | community / graph structure, **known** count | `leiden` with `resolution="auto"` | yes — γ is searched for `n_clusters` communities |
 | variable-density clusters **+ noise**, unknown count | `hdbscan` | no |
-| the same density structure, but you know `k` and want a partition rather than noise | `dc-median` | yes — read *Naming `k` on the density hierarchy*; `dc-center` is the other objective and is **mass-blind** |
+| the same density structure, but you know `k` and want a partition rather than noise | `leiden` with `leaf_graph="rows"`, `resolution="auto"` (mean ARI 0.838 over the seven density fixtures, tied with Genie; it loses aniso), or `dc-median` to cut the density hierarchy itself | yes — for `dc-median` read *Naming `k` on the density hierarchy*; `dc-center` is the other objective and is **mass-blind** |
 | **density peaks**, arbitrary count, no `k` *or* bandwidth to pick | `scale-space` | **no** — scale chosen by mode persistence |
 | **ordered / stationary signals** (time-series windows, trajectories, sensor waveforms), covariance *shape* | `gmm-toeplitz` | yes (or `0` = BIC) |
 | ordered signals with structure **beyond a low-order AR** (long-lag echo, narrowband) | `gmm-toeplitz-full` (any lag) or `gmm-toeplitz-gs` (likelihood-optimal precision, ≤ order 16) | yes (or `0` = BIC) |
@@ -322,6 +322,46 @@ same partition as the fully-swept `kmeans` **120× faster**, which is the head t
 
 A selection that lands exactly on its ceiling raises a `UserWarning`: an argmax on the last candidate
 is evidence the search stopped early, not evidence about the data.
+
+### Merging an over-fitted mixture to a known count
+
+On curved or connected clusters the `gmm-full` BIC sweep over-fits: it covers each of two moons or
+rings with 18–20 components. Merging those components down to the known count on the row
+posteriors recovers the shapes. This is a recipe on the public API, not a `method=`. The merge
+order is the entropy criterion of Baudry et al. (2010): join the two columns whose sum loses the
+most entropy.
+
+```python
+import numpy as np
+from betula_cluster import Betula
+
+def gmm_full_merged(X, k, seed=0):
+    est = Betula(n_clusters=0, method="gmm-full", seed=seed).fit(X)
+    p = np.asarray(est.predict_proba(X), dtype=np.float64)
+    if p.shape[1] < k:  # the sweep stopped below k: nothing to merge
+        return Betula(n_clusters=k, method="gmm-full", seed=seed).fit_predict(X)
+
+    def h(q):
+        return -(q * np.log(np.clip(q, 1e-300, None))).sum()
+
+    while p.shape[1] > k:
+        pairs = [(a, b) for a in range(p.shape[1]) for b in range(a + 1, p.shape[1])]
+        a, b = max(pairs, key=lambda ab: h(p[:, ab[0]]) + h(p[:, ab[1]]) - h(p[:, ab].sum(1)))
+        p[:, a] += p[:, b]
+        p = np.delete(p, b, axis=1)
+    return p.argmax(1)
+```
+
+On the seven density fixtures of `bench/density_rivals.py` (seeds 0/1/2, no seed spread) it reads
+1.000 on moons and circles, where `gmm-full` told the count reads 0.504 and 0.000, and equals the
+told-count fit on blobs, aniso and `varied` (0.863, 0.902, 0.757). On `digits` the sweep stops at 4
+components, below the 10 asked for, and the recipe returns the told-count fit: 0.575, against 0.840
+for `leiden` with `leaf_graph="rows"` and `resolution="auto"`. The merge needs the count: without it
+no stop rule tried (an entropy elbow, a DEMP cutoff, a density-valley test) found the right one on
+both Gaussian and ring-shaped fixtures. Each step scores every pair of columns over every row, so
+the loop costs `O(K³·n)` for `K` components; at `K` ≤ 20 that is small next to the sweep. Numbers
+in [bench/RESULTS.md](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md),
+*Where betula is the right choice*.
 
 ### How many restarts a k-means head needs — `n_init`
 
