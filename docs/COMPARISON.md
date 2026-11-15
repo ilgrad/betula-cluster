@@ -20,7 +20,7 @@ whole process. A difference smaller than the wider seed range of the two is a ti
 | Images (raw MNIST), count given | **betula** `leiden`, `resolution="auto"` | 0.788 at 70 000 rows: level with UMAP 0.6 + k-means (0.804) and PaCMAP + k-means (0.795), ahead of openTSNE + k-means (0.745). |
 | Low-dimensional data, density, count unknown | **hdbscan** | Mean ARI over seven fixtures 0.652 against betula's `hdbscan` head 0.616. |
 | A hierarchy, count given | **Genie** (genieclust) | Mean ARI over seven fixtures 0.839 against `dc-median` 0.734. |
-| Benchmark datasets, count given | **betula** `leiden`, `resolution="auto"`, or **Lumbermark** / **GIc** | Gagolewski's suite, 81 datasets: mean accuracy 0.782 against 0.786 and 0.784, a tie. `leiden` cannot reach the count on 6 of the 81. |
+| Benchmark datasets, count given | **betula** `leiden`, `resolution="auto"`, or **Lumbermark** / **GIc** | Gagolewski's suite, 81 datasets: mean accuracy 0.774 against 0.786 and 0.784, a tie. `leiden` cannot reach the count on 3 of the 81. |
 | Mixed numeric and categorical columns | either: betula `KPrototypes` or kmodes | 0.028 against 0.022 on mixed covtype: a tie, and both near 0. |
 | A stream of rows | **betula** `partial_fit` | After each chunk the labels equal a refit on every row seen (75 of 75 checkpoints, 20 newsgroups). UMAP + k-means refitted at each checkpoint is level at 20 and 40 % of the stream and ahead from 60 % on (0.429–0.448 against 0.383–0.392), at the cost of a refit each time. |
 | Input larger than memory | **betula**, fed in chunks | 500 000 to 10 M rows (20-D) in 56 MB, against 0.41–5.0 GB for an in-core scikit-learn `KMeans`. scikit-learn's `MiniBatchKMeans` and `Birch` also learn in chunks; they were not measured here. |

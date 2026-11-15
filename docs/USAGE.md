@@ -59,8 +59,9 @@ density head runs on; `0` = the exact complete graph, a positive value is a **fl
 to whatever `min_samples` needs — see *Graph-indexing the density head* below; for `"leiden"` /
 `"leiden-cpm"`, a positive value builds the leaf graph on the same index instead of by an exact scan),
 `resolution` (Leiden γ — granularity for `method="leiden"` / `"leiden-cpm"`, higher
-⇒ more communities; `"auto"`, for `leiden` only, searches γ for `n_clusters` communities of at
-least 0.5 % of the rows each — see *Telling Leiden the count* in [MATH.md](MATH.md)), `covariance_weight` (Leiden β — a log-Euclidean covariance/shape term in the
+⇒ more communities; `"auto"`, for `leiden` only, returns `n_clusters` communities: it searches γ
+for that many of at least 0.5 % of the rows each, then folds the smaller ones in and merges any
+surplus — see *Telling Leiden the count* in [MATH.md](MATH.md)), `covariance_weight` (Leiden β — a log-Euclidean covariance/shape term in the
 affinity, `feature="full"`; `0` = off, the centroid-only default), `tangent_weight` / `tangent_rank`
 (Leiden γ — a Grassmann tangent-subspace term of rank `tangent_rank` for manifold-aware communities,
 `feature="full"`; `0` = off), `n_iterations` (Leiden passes: each pass after the first starts from

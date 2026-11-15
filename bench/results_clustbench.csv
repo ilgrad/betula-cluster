@@ -32,6 +32,7 @@ fcps,lsun,betula-ward,0.640000
 fcps,target,betula-dc-median,1.000000
 fcps,target,betula-gmm,1.000000
 fcps,target,betula-kmeans,0.834711
+fcps,target,betula-leiden-auto,1.000000
 fcps,target,betula-spectral,1.000000
 fcps,target,betula-ward,0.825344
 fcps,tetra,betula-dc-median,0.943333
@@ -284,10 +285,12 @@ sipu,unbalance,betula-spectral,0.998571
 sipu,unbalance,betula-ward,0.998571
 sipu,worms_2,betula-dc-median,0.373777
 sipu,worms_2,betula-kmeans,0.473718
+sipu,worms_2,betula-leiden-auto,0.402749
 sipu,worms_2,betula-spectral,0.387393
 sipu,worms_2,betula-ward,0.475878
 sipu,worms_64,betula-dc-median,0.460933
 sipu,worms_64,betula-kmeans,0.407202
+sipu,worms_64,betula-leiden-auto,0.482063
 sipu,worms_64,betula-spectral,0.224355
 sipu,worms_64,betula-ward,0.440476
 uci,ecoli,betula-gmm,0.459883
@@ -399,7 +402,7 @@ wut,olympic,betula-ward,0.284000
 wut,smile,betula-dc-median,1.000000
 wut,smile,betula-gmm,0.784000
 wut,smile,betula-kmeans,0.864000
-wut,smile,betula-leiden-auto,0.952000
+wut,smile,betula-leiden-auto,1.000000
 wut,smile,betula-spectral,0.952000
 wut,smile,betula-ward,0.883333
 wut,stripes,betula-dc-median,0.976000

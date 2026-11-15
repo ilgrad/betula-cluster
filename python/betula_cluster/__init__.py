@@ -937,8 +937,9 @@ class Betula(_Clusterer):
         # Leiden resolution γ (only method="leiden" / "leiden-cpm"): higher ⇒ more, smaller
         # communities. The modularity objective has a resolution limit; "leiden-cpm" does not.
         # "auto" (method="leiden" only) searches γ for n_clusters communities holding at least
-        # 0.5 % of the rows each, by bisection on log γ; smaller communities may remain beside
-        # them, and a graph with more components than n_clusters cannot be merged below that.
+        # 0.5 % of the rows each, by bisection on log γ, then returns exactly n_clusters: smaller
+        # communities join the one they share most edge weight with, and a surplus is merged where
+        # modularity loses least. Fewer come back only when the graph splits into fewer communities.
         self.resolution = resolution
         # Covariance-aware Leiden weight β (method="leiden" / "leiden-cpm" with feature="full"):
         # >0 adds a log-Euclidean shape term to the microcluster affinity, so communities agree in

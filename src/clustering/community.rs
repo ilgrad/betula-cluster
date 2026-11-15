@@ -222,27 +222,31 @@ fn counted_communities(labels: &[usize], mass: &[f64]) -> usize {
     held.iter().filter(|&&h| h >= floor).count()
 }
 
-/// The partition `run(γ)` returns at the resolution whose [`counted_communities`] is `k`, found by
-/// bisection on `log γ` over `[1e-4, 1]`, the upper end raised fourfold up to 64 while it gives
-/// fewer than `k`. The count is not monotone in `γ`, so the search is bounded at 14 halvings and
-/// returns the partition whose count came nearest `k`, the first found on a tie.
-fn for_k(k: usize, mass: &[f64], run: impl Fn(f64) -> Vec<usize>) -> Vec<usize> {
+/// The partition `run(γ)` returns at the resolution whose [`counted_communities`] is `k`, and that
+/// resolution, found by bisection on `log γ` over `[1e-4, 1]`, the upper end raised fourfold up to
+/// 64 while it gives fewer than `k`. The count is not monotone in `γ`, so the search is bounded at
+/// 14 halvings. Short of `k` exactly it returns the partition with the fewest counted communities
+/// above `k`, which [`to_k`] merges down; only when no resolution reached `k` does it return the
+/// one that came nearest from below. The first found wins a tie.
+fn for_k(k: usize, mass: &[f64], run: impl Fn(f64) -> Vec<usize>) -> (Vec<usize>, f64) {
+    // Over `k` ranks before under it, nearer before farther.
+    let rank = |got: usize| (got < k, got.abs_diff(k));
     let (mut lo, mut hi) = (1e-4_f64, 1.0_f64);
     let mut labels = run(hi);
     while counted_communities(&labels, mass) < k && hi < 64.0 {
         hi *= 4.0;
         labels = run(hi);
     }
-    let mut best = (counted_communities(&labels, mass).abs_diff(k), labels);
+    let mut best = (rank(counted_communities(&labels, mass)), labels, hi);
     for _ in 0..14 {
-        if best.0 == 0 {
+        if best.0 == (false, 0) {
             break;
         }
         let mid = (lo * hi).sqrt();
         let labels = run(mid);
         let got = counted_communities(&labels, mass);
-        if got.abs_diff(k) < best.0 {
-            best = (got.abs_diff(k), labels);
+        if rank(got) < best.0 {
+            best = (rank(got), labels, mid);
         }
         if got < k {
             lo = mid;
@@ -250,7 +254,202 @@ fn for_k(k: usize, mass: &[f64], run: impl Fn(f64) -> Vec<usize>) -> Vec<usize> 
             hi = mid;
         }
     }
-    best.1
+    (best.1, best.2)
+}
+
+/// Squared Euclidean distance between two centroids.
+fn centroid_gap(a: &[f64], b: &[f64]) -> f64 {
+    a.iter().zip(b).map(|(x, y)| (x - y) * (x - y)).sum()
+}
+
+/// The candidate whose centroid is nearest `from`'s, the lower index on a tie.
+fn nearest_centroid(from: usize, among: impl Iterator<Item = usize>, cent: &[Vec<f64>]) -> usize {
+    among
+        .map(|c| (centroid_gap(&cent[from], &cent[c]), c))
+        .min_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)))
+        .map(|(_, c)| c)
+        .expect("a candidate community exists")
+}
+
+/// Mass-weighted centroid of a community from its weighted coordinate sum.
+fn centroid_of(sum: &[f64], held: f64) -> Vec<f64> {
+    sum.iter()
+        .map(|&s| s / held.max(f64::MIN_POSITIVE))
+        .collect()
+}
+
+/// `labels` brought to `k` communities on the graph `adj` whose modularity at `gamma` Leiden
+/// optimised. When fewer than `k` hold [`COUNTED_SHARE`] of `mass`, the heaviest of the others are
+/// counted with them up to `k`. Every community not counted joins the counted one it shares the
+/// most edge weight with. While more than `k` remain, the two sharing an edge whose merge loses
+/// the least modularity are merged; when no two remaining communities share an edge, the two whose
+/// merge adds the least within-community sum of squares (Ward's criterion on the mass-weighted
+/// centroids). Fewer than `k` come back only when the partition holds fewer than `k` communities
+/// of any size. Labels are numbered in first-seen order.
+///
+/// A small community with no edge to a counted one, or tied between two, joins the nearest by
+/// centroid. Every tie goes to the lower community index, so the result depends on the partition
+/// alone, not on an iteration order.
+fn to_k<R: Real, C: ClusterFeature<R>>(
+    features: &[C],
+    adj: &[Vec<(usize, f64)>],
+    gamma: f64,
+    mass: &[f64],
+    labels: Vec<usize>,
+    k: usize,
+) -> Vec<usize> {
+    let nc = labels.iter().max().map_or(0, |&l| l + 1);
+    let dim = features.first().map_or(0, |f| f.mean().len());
+    let mut held = vec![0.0; nc];
+    let mut sum = vec![vec![0.0_f64; dim]; nc];
+    for ((&l, &w), f) in labels.iter().zip(mass).zip(features) {
+        held[l] += w;
+        for (s, &x) in sum[l].iter_mut().zip(f.mean()) {
+            *s += w * x.to_f64().unwrap_or(0.0);
+        }
+    }
+    let floor = COUNTED_SHARE * mass.iter().sum::<f64>();
+    let mut counted: Vec<bool> = held.iter().map(|&h| h >= floor).collect();
+    let short = k
+        .max(1)
+        .saturating_sub(counted.iter().filter(|&&c| c).count());
+    if short > 0 {
+        // Fewer than `k` pass the floor: the heaviest of the rest are kept up to `k`.
+        let mut rest: Vec<usize> = (0..nc).filter(|&c| !counted[c]).collect();
+        rest.sort_by(|&a, &b| held[b].total_cmp(&held[a]).then(a.cmp(&b)));
+        for &c in rest.iter().take(short) {
+            counted[c] = true;
+        }
+    }
+    let cent: Vec<Vec<f64>> = (0..nc).map(|c| centroid_of(&sum[c], held[c])).collect();
+
+    // Every small community joins a counted one, all against the same partition.
+    let mut shared: Vec<HashMap<usize, f64>> = vec![HashMap::new(); nc];
+    for (i, row) in adj.iter().enumerate() {
+        if counted[labels[i]] {
+            continue;
+        }
+        for &(j, w) in row {
+            if counted[labels[j]] {
+                *shared[labels[i]].entry(labels[j]).or_insert(0.0) += w;
+            }
+        }
+    }
+    let mut root: Vec<usize> = (0..nc).collect();
+    for c in (0..nc).filter(|&c| !counted[c]) {
+        let top = shared[c].values().copied().fold(0.0_f64, f64::max);
+        let tied =
+            (0..nc).filter(|&t| counted[t] && (top <= 0.0 || shared[c].get(&t) == Some(&top)));
+        root[c] = nearest_centroid(c, tied, &cent);
+    }
+
+    // The counted communities, merged down to `k`.
+    let alive: Vec<usize> = (0..nc).filter(|&c| counted[c]).collect();
+    let mut slot = vec![usize::MAX; nc];
+    for (s, &c) in alive.iter().enumerate() {
+        slot[c] = s;
+    }
+    let of = |l: usize| slot[root[l]];
+    let na = alive.len();
+    let degree: Vec<f64> = adj
+        .iter()
+        .map(|r| r.iter().map(|&(_, w)| w).sum())
+        .collect();
+    let two_m: f64 = degree.iter().sum();
+    let mut w = vec![vec![0.0_f64; na]; na];
+    let mut deg = vec![0.0_f64; na];
+    let mut wt = vec![0.0_f64; na];
+    let mut sums = vec![vec![0.0_f64; dim]; na];
+    for (i, row) in adj.iter().enumerate() {
+        let a = of(labels[i]);
+        deg[a] += degree[i];
+        for &(j, x) in row {
+            let b = of(labels[j]);
+            if a != b {
+                w[a][b] += x;
+            }
+        }
+    }
+    for c in 0..nc {
+        let s = of(c);
+        wt[s] += held[c];
+        for (t, &x) in sums[s].iter_mut().zip(&sum[c]) {
+            *t += x;
+        }
+    }
+    let mut live = vec![true; na];
+    let mut into: Vec<usize> = (0..na).collect();
+    let mut cent: Vec<Vec<f64>> = (0..na).map(|s| centroid_of(&sums[s], wt[s])).collect();
+    let mut gap: Vec<Vec<f64>> = (0..na)
+        .map(|a| (0..na).map(|b| centroid_gap(&cent[a], &cent[b])).collect())
+        .collect();
+    for _ in k..na {
+        let mut best: Option<(f64, usize, usize)> = None;
+        for a in (0..na).filter(|&a| live[a]) {
+            for b in (a + 1..na).filter(|&b| live[b]) {
+                let between = 0.5 * (w[a][b] + w[b][a]);
+                if between <= 0.0 {
+                    continue;
+                }
+                // Modularity change of the merge, times `2m / 2`.
+                let gain = between - gamma * deg[a] * deg[b] / two_m;
+                if best.is_none_or(|(g, _, _)| gain > g) {
+                    best = Some((gain, a, b));
+                }
+            }
+        }
+        let (a, b) = match best {
+            Some((_, a, b)) => (a, b),
+            // No two share an edge: Ward's criterion, the merge that adds the least
+            // within-community sum of squares.
+            None => {
+                let mut ward: Option<(f64, usize, usize)> = None;
+                for a in (0..na).filter(|&a| live[a]) {
+                    for b in (a + 1..na).filter(|&b| live[b]) {
+                        let cost = wt[a] * wt[b] / (wt[a] + wt[b]) * gap[a][b];
+                        if ward.is_none_or(|(c, _, _)| cost < c) {
+                            ward = Some((cost, a, b));
+                        }
+                    }
+                }
+                let (_, a, b) = ward.expect("more than k communities are live");
+                (a, b)
+            }
+        };
+        live[b] = false;
+        into[b] = a;
+        for c in 0..na {
+            w[a][c] += w[b][c];
+            w[c][a] += w[c][b];
+        }
+        w[a][a] = 0.0;
+        deg[a] += deg[b];
+        wt[a] += wt[b];
+        let moved = std::mem::take(&mut sums[b]);
+        for (t, x) in sums[a].iter_mut().zip(moved) {
+            *t += x;
+        }
+        cent[a] = centroid_of(&sums[a], wt[a]);
+        for c in (0..na).filter(|&c| live[c] && c != a) {
+            let g = centroid_gap(&cent[a], &cent[c]);
+            gap[a][c] = g;
+            gap[c][a] = g;
+        }
+    }
+    let find = |mut s: usize| {
+        while into[s] != s {
+            s = into[s];
+        }
+        s
+    };
+    let mut fresh: HashMap<usize, usize> = HashMap::new();
+    labels
+        .iter()
+        .map(|&l| {
+            let next = fresh.len();
+            *fresh.entry(find(of(l))).or_insert(next)
+        })
+        .collect()
 }
 
 /// [`leiden_on`] with the leaf graph's neighbour lists found by the bounded-degree beam-search
@@ -293,7 +492,11 @@ pub(crate) fn leiden_on_degree<R: Real, C: ClusterFeature<R>>(
     };
     let labels = match resolution {
         Gamma::Fixed(gamma) => run(gamma),
-        Gamma::ForK(k) => for_k(k, &leaf_mass(features), run),
+        Gamma::ForK(k) => {
+            let mass = leaf_mass(features);
+            let (labels, gamma) = for_k(k, &mass, run);
+            to_k(features, &base, gamma, &mass, labels, k)
+        }
     };
     Community { labels }
 }
@@ -499,7 +702,18 @@ pub(crate) fn leiden_rows<R: Real, C: ClusterFeature<R>>(
     };
     let labels = match resolution {
         Gamma::Fixed(gamma) => run(gamma),
-        Gamma::ForK(k) => for_k(k, &leaf_mass(features), run),
+        Gamma::ForK(k) => {
+            let mass = leaf_mass(features);
+            let (labels, gamma) = for_k(k, &mass, run);
+            to_k(
+                features,
+                &graph.adj,
+                gamma * s / (s - 1.0),
+                &mass,
+                labels,
+                k,
+            )
+        }
     };
     Community { labels }
 }
@@ -875,6 +1089,7 @@ mod tests {
     use super::*;
     use crate::clustering::rng::SplitMix64;
     use crate::clustering::testutil::{ari, blobs, grid_micros};
+    use crate::feature::Spherical;
     use std::collections::HashSet;
 
     fn n_distinct(labels: &[usize]) -> usize {
@@ -2292,8 +2507,178 @@ mod tests {
             )
             .labels;
             assert_eq!(counted_communities(&unit, &mass), k, "unit graph, k = {k}");
+            assert_eq!(n_distinct(&unit), k, "unit graph, k = {k}");
             let rows = leiden_rows(&micros, &graph, Gamma::ForK(k), 1, 1).labels;
             assert_eq!(counted_communities(&rows, &mass), k, "rows graph, k = {k}");
+            assert_eq!(n_distinct(&rows), k, "rows graph, k = {k}");
         }
+    }
+
+    /// Three blobs far apart, each its own component of both graphs, with a few stray points
+    /// between them. Asked for fewer communities than there are components, or for more, the
+    /// search returns exactly that many labels, strays and components included.
+    #[test]
+    fn the_resolution_search_returns_k_labels_across_components_and_strays() {
+        let mut rng = SplitMix64::new(9);
+        let centers = [[0.0, 0.0], [40.0, 0.0], [0.0, 40.0]];
+        let (mut pts, _) = blobs(&mut rng, 300, &centers, 1.0);
+        pts.extend([[20.0, 0.0], [0.0, 20.0], [20.0, 20.0], [12.0, 30.0]].map(|p| p.to_vec()));
+        let (micros, p2m) = grid_micros(&pts, 0.8);
+        let flat: Vec<f64> = pts.iter().flatten().copied().collect();
+        let s = ROW_GRAPH_LEAVES;
+        let graph = RowGraph::from_top(
+            &row_top_leaves(&micros, &flat, &p2m, s, 0, 1),
+            s,
+            micros.len(),
+        );
+        for k in [1, 2, 3, 5] {
+            let unit = leiden_on_degree(
+                &micros,
+                Gamma::ForK(k),
+                Objective::Modularity,
+                1,
+                0.0,
+                0.0,
+                2,
+                1,
+                LeafGraph::Unit,
+                0,
+            )
+            .labels;
+            assert_eq!(n_distinct(&unit), k, "unit graph, k = {k}");
+            let rows = leiden_rows(&micros, &graph, Gamma::ForK(k), 1, 1).labels;
+            assert_eq!(n_distinct(&rows), k, "rows graph, k = {k}");
+        }
+    }
+
+    /// One-coordinate leaves of the given positions and masses.
+    fn line_leaves(at: &[(f64, f64)]) -> Vec<Spherical<f64>> {
+        at.iter()
+            .map(|&(x, w)| {
+                let mut f = Spherical::new(1);
+                f.push(&[x], w);
+                f
+            })
+            .collect()
+    }
+
+    /// An undirected graph from its edge list.
+    fn undirected(n: usize, edges: &[(usize, usize, f64)]) -> Vec<Vec<(usize, f64)>> {
+        let mut adj = vec![Vec::new(); n];
+        for &(i, j, w) in edges {
+            adj[i].push((j, w));
+            adj[j].push((i, w));
+        }
+        adj
+    }
+
+    #[test]
+    fn a_community_under_the_floor_joins_the_one_it_shares_most_weight_with() {
+        // Leaves 0–1 and 2–3 hold 100 each; leaf 4 holds 0.1 and is a community of its own,
+        // tied to leaf 3 by more weight than to leaf 0 although it sits nearer leaf 0.
+        let f = line_leaves(&[
+            (0.0, 50.0),
+            (1.0, 50.0),
+            (10.0, 50.0),
+            (11.0, 50.0),
+            (2.0, 0.1),
+        ]);
+        let adj = undirected(5, &[(0, 1, 1.0), (2, 3, 1.0), (4, 0, 0.2), (4, 3, 0.3)]);
+        let mass = leaf_mass(&f);
+        assert_eq!(
+            to_k(&f, &adj, 1.0, &mass, vec![0, 0, 1, 1, 2], 2),
+            [0, 0, 1, 1, 1]
+        );
+        // With equal weight to both, or with no edge at all, the nearer centroid decides.
+        let tied = undirected(5, &[(0, 1, 1.0), (2, 3, 1.0), (4, 0, 0.3), (4, 3, 0.3)]);
+        assert_eq!(
+            to_k(&f, &tied, 1.0, &mass, vec![0, 0, 1, 1, 2], 2),
+            [0, 0, 1, 1, 0]
+        );
+        let none = undirected(5, &[(0, 1, 1.0), (2, 3, 1.0)]);
+        assert_eq!(
+            to_k(&f, &none, 1.0, &mass, vec![0, 0, 1, 1, 2], 2),
+            [0, 0, 1, 1, 0]
+        );
+    }
+
+    #[test]
+    fn short_of_k_the_heaviest_small_communities_are_kept() {
+        // Two pairs of 200 pass the floor; the singletons of 0.2 and 0.1 do not. Asked for three,
+        // the heavier singleton is kept and the lighter joins the nearest centroid kept, which is
+        // that singleton's; asked for four, both are kept.
+        let f = line_leaves(&[
+            (0.0, 100.0),
+            (1.0, 100.0),
+            (10.0, 100.0),
+            (11.0, 100.0),
+            (20.0, 0.2),
+            (30.0, 0.1),
+        ]);
+        let adj = undirected(6, &[(0, 1, 1.0), (2, 3, 1.0)]);
+        let mass = leaf_mass(&f);
+        let labels = vec![0, 0, 1, 1, 2, 3];
+        assert_eq!(
+            to_k(&f, &adj, 1.0, &mass, labels.clone(), 3),
+            [0, 0, 1, 1, 2, 2]
+        );
+        assert_eq!(to_k(&f, &adj, 1.0, &mass, labels.clone(), 4), labels);
+        // Asked for more than the partition holds, it comes back as it is.
+        assert_eq!(to_k(&f, &adj, 1.0, &mass, labels.clone(), 9), labels);
+    }
+
+    #[test]
+    fn counted_communities_over_k_merge_where_modularity_loses_least() {
+        // Three pairs in a chain: the middle pair shares 0.5 with the right one and 0.05 with
+        // the left one, so the merge to two communities joins the middle and the right.
+        let f = line_leaves(&[
+            (0.0, 1.0),
+            (1.0, 1.0),
+            (5.0, 1.0),
+            (6.0, 1.0),
+            (9.0, 1.0),
+            (9.5, 1.0),
+        ]);
+        let adj = undirected(
+            6,
+            &[
+                (0, 1, 1.0),
+                (2, 3, 1.0),
+                (4, 5, 1.0),
+                (1, 2, 0.05),
+                (3, 4, 0.5),
+            ],
+        );
+        let mass = leaf_mass(&f);
+        let labels = vec![0, 0, 1, 1, 2, 2];
+        assert_eq!(
+            to_k(&f, &adj, 1.0, &mass, labels.clone(), 2),
+            [0, 0, 1, 1, 1, 1]
+        );
+        assert_eq!(to_k(&f, &adj, 1.0, &mass, labels.clone(), 1), [0; 6]);
+        // Asked for as many or more, the partition comes back as it is.
+        assert_eq!(to_k(&f, &adj, 1.0, &mass, labels.clone(), 3), labels);
+        assert_eq!(to_k(&f, &adj, 1.0, &mass, labels.clone(), 7), labels);
+    }
+
+    #[test]
+    fn components_over_k_merge_by_wards_criterion() {
+        // No edges between the three pairs. The light pair at 10 is nearest the middle one, so
+        // "the lightest joins its nearest" would put it there; Ward's criterion merges the two
+        // heavy pairs a distance 1 apart instead (cost 10·10/20 · 1 against 10·1/11 · 81).
+        let f = line_leaves(&[
+            (0.0, 5.0),
+            (0.0, 5.0),
+            (1.0, 5.0),
+            (1.0, 5.0),
+            (10.0, 0.5),
+            (10.0, 0.5),
+        ]);
+        let adj = undirected(6, &[(0, 1, 1.0), (2, 3, 1.0), (4, 5, 1.0)]);
+        let mass = leaf_mass(&f);
+        assert_eq!(
+            to_k(&f, &adj, 1.0, &mass, vec![0, 0, 1, 1, 2, 2], 2),
+            [0, 0, 0, 0, 1, 1]
+        );
     }
 }

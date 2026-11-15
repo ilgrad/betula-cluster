@@ -158,10 +158,10 @@ losses** are reported below.
   UMAP + HDBSCAN on the UMAP docs' recipe (0.762 against 0.536). Peak RSS is below
   every manifold and graph rival's in each MNIST and news contest.
 - **On Gagolewski's clustering benchmark suite (81 datasets, told k), level with the best, not ahead.**
-  `leiden` with `resolution="auto"` ranks 3rd of 213 configurations scored in every battery (suite
-  mean NCA 0.782 against Lumbermark's 0.786 and GIc's 0.784; paired, ahead on 19 datasets and behind
-  on 20–23), ahead of Genie at its default, ITM and scikit-learn's k-means and GMM, and it cannot
-  hit K on 6 of the 81. On a GPU, cuML's UMAP + k-means and UMAP + HDBSCAN are a separate table that
+  `leiden` with `resolution="auto"` ranks 6th of 213 configurations scored in every battery (suite
+  mean NCA 0.774 against Lumbermark's 0.786 and GIc's 0.784; paired, ahead on 19 datasets and behind
+  on 22–25), ahead of Genie at its default, ITM and scikit-learn's k-means and GMM, and it cannot
+  hit K on 3 of the 81. On a GPU, cuML's UMAP + k-means and UMAP + HDBSCAN are a separate table that
   enters no total: the k-means pipelines find what their CPU versions find.
 - **A capability no mainstream library ships:** `method="gmm-toeplitz"` — an AR/Toeplitz-structured
   covariance GMM for ordered stationary signals — recovers a mixture of AR processes that differ *only*
@@ -1535,8 +1535,8 @@ not. These have no row in any committed CSV:
   (0.018) do not.
 - **Told k on small and medium benchmark sets.** On Gagolewski's suite `leiden` with
   `resolution="auto"` is level with the best of 387 published configurations, and loses its
-  `graves`, `other` and MNIST batteries to GIc, Lumbermark and ITM. For a K it cannot reach, use
-  `spectral` (rank 21, misses K on 2 dataset-K pairs against `leiden`'s 10).
+  `graves`, `other`, `sipu` and MNIST batteries. For a K it cannot reach, use `spectral` (rank 21,
+  misses K on 2 dataset-K pairs against `leiden`'s 3).
 - **A stream of embeddings.** `partial_fit` reads what a refit reads at every checkpoint, with no
   refit; UMAP + k-means refitted at each checkpoint wins from 60 % of the stream on (0.448 against
   0.383 at the end), and UMAP + HDBSCAN degrades as the stream grows (*A stream against refits*).
@@ -1551,7 +1551,7 @@ Bold rows are betula's. `bench/rivals.py --arms=a,b` and `bench/density_rivals.p
 
 | method | ARI median (min–max) | clusters | noise | peak RSS MB |
 |---|---|---|---|---|
-| **betula-leiden-rows-auto** | 0.762 (0.718–0.766) | 10 | 0.00 | 366 |
+| **betula-leiden-rows-auto** | 0.762 (0.718–0.766) | 10 | 0.00 | 365 |
 | pacmap+kmeans | 0.751 (0.750–0.798) | 10 | 0.00 | 514 |
 | opentsne+kmeans | 0.740 (0.737–0.742) | 10 | 0.00 | 626 |
 | umap+kmeans | 0.734 (0.731–0.738) | 10 | 0.00 | 678 |
@@ -1585,7 +1585,7 @@ Bold rows are betula's. `bench/rivals.py --arms=a,b` and `bench/density_rivals.p
 | **betula-vmf-shared** | 0.382 (0.374–0.386) | 20 | 0.00 | 244 |
 | **betula-kmeans** | 0.372 (0.351–0.374) | 20 | 0.00 | 237 |
 | **betula-spherical-kmeans** | 0.371 (0.365–0.391) | 20 | 0.00 | 237 |
-| **betula-leiden-rows-auto** | 0.366 (0.366–0.374) | 20 | 0.00 | 256 |
+| **betula-leiden-rows-auto** | 0.374 (0.366–0.375) | 20 | 0.00 | 256 |
 
 **news-minilm, n = 17 901, k not given**
 
@@ -1606,7 +1606,7 @@ Bold rows are betula's. `bench/rivals.py --arms=a,b` and `bench/density_rivals.p
 |---|---|---|---|---|
 | umap-0.6+kmeans | 0.804 (0.804–0.931) | 10 | 0.00 | 1115 |
 | pacmap+kmeans | 0.795 (0.791–0.796) | 10 | 0.00 | 1046 |
-| **betula-leiden-rows-auto** | 0.788 (0.781–0.789) | 10 | 0.00 | 752 |
+| **betula-leiden-rows-auto** | 0.788 (0.781–0.789) | 10 | 0.00 | 751 |
 | umap+kmeans | 0.769 (0.762–0.774) | 10 | 0.00 | 1097 |
 | opentsne+kmeans | 0.745 (0.741–0.756) | 10 | 0.00 | 1272 |
 | **betula-spectral-mass** | 0.641 (0.641–0.644) | 10 | 0.00 | 689 |
@@ -1967,15 +1967,15 @@ side of every cell is the one head its contest chose (see the rules above).
   - loss, quality, `aniso/30000/told-k` (density_rivals): betula 0.637 ARI (`betula-dc-median`) against 0.843 ARI
   - loss, quality, `digits/1797/told-k` (density_rivals): betula 0.266 ARI (`betula-dc-median`) against 0.656 ARI
 - **opentsne+kmeans** — 4 win · 1 tie · 1 loss
-  - win, memory, `mnist/20000/told-k` (rivals): betula 366 MB (`betula-leiden-rows-auto`) against 626 MB
-  - win, memory, `mnist/70000/told-k` (rivals): betula 752 MB (`betula-leiden-rows-auto`) against 1272 MB
+  - win, memory, `mnist/20000/told-k` (rivals): betula 365 MB (`betula-leiden-rows-auto`) against 626 MB
+  - win, memory, `mnist/70000/told-k` (rivals): betula 751 MB (`betula-leiden-rows-auto`) against 1272 MB
   - win, memory, `news-minilm/17901/told-k` (rivals): betula 244 MB (`betula-vmf-shared`) against 537 MB
   - win, quality, `mnist/70000/told-k` (rivals): betula 0.788 ARI (`betula-leiden-rows-auto`) against 0.745 ARI
   - tie, quality, `mnist/20000/told-k` (rivals): betula 0.762 ARI (`betula-leiden-rows-auto`) against 0.740 ARI
   - loss, quality, `news-minilm/17901/told-k` (rivals): betula 0.382 ARI (`betula-vmf-shared`) against 0.416 ARI
 - **pacmap+kmeans** — 3 win · 2 tie · 1 loss
-  - win, memory, `mnist/20000/told-k` (rivals): betula 366 MB (`betula-leiden-rows-auto`) against 514 MB
-  - win, memory, `mnist/70000/told-k` (rivals): betula 752 MB (`betula-leiden-rows-auto`) against 1046 MB
+  - win, memory, `mnist/20000/told-k` (rivals): betula 365 MB (`betula-leiden-rows-auto`) against 514 MB
+  - win, memory, `mnist/70000/told-k` (rivals): betula 751 MB (`betula-leiden-rows-auto`) against 1046 MB
   - win, memory, `news-minilm/17901/told-k` (rivals): betula 244 MB (`betula-vmf-shared`) against 397 MB
   - tie, quality, `mnist/20000/told-k` (rivals): betula 0.762 ARI (`betula-leiden-rows-auto`) against 0.751 ARI
   - tie, quality, `mnist/70000/told-k` (rivals): betula 0.788 ARI (`betula-leiden-rows-auto`) against 0.795 ARI
@@ -2076,7 +2076,7 @@ side of every cell is the one head its contest chose (see the rules above).
   - win, memory, `digits/1797/told-k` (head_refs): betula 166 MB (`betula-kmeans`) against 181 MB
   - win, memory, `covtype` (real_scale): betula 897 MB (`betula-kmeans`) against 934 MB
   - win, memory, `covtype/betula-kmeans` (real_scale): betula 897 MB (`betula-kmeans`) against 934 MB
-  - win, memory, `mnist/70000/told-k` (rivals): betula 752 MB (`betula-leiden-rows-auto`) against 836 MB
+  - win, memory, `mnist/70000/told-k` (rivals): betula 751 MB (`betula-leiden-rows-auto`) against 836 MB
   - win, memory, `news-minilm/17901/told-k` (rivals): betula 244 MB (`betula-vmf-shared`) against 259 MB
   - win, memory, `10000/betula-kmeans` (scaling): betula 50 MB (`betula-kmeans`) against 173 MB
   - win, memory, `1000000/betula-kmeans` (scaling): betula 91 MB (`betula-kmeans`) against 320 MB
@@ -2094,7 +2094,7 @@ side of every cell is the one head its contest chose (see the rules above).
   - win, speed, `1000000/betula-kmeans` (scaling): betula 0.21 s (`betula-kmeans`) against 2.09 s
   - win, speed, `200000/betula-kmeans` (scaling): betula 0.07 s (`betula-kmeans`) against 0.88 s
   - win, speed, `50000/betula-kmeans` (scaling): betula 0.04 s (`betula-kmeans`) against 0.69 s
-  - tie, memory, `mnist/20000/told-k` (rivals): betula 366 MB (`betula-leiden-rows-auto`) against 365 MB
+  - tie, memory, `mnist/20000/told-k` (rivals): betula 365 MB (`betula-leiden-rows-auto`) against 365 MB
   - tie, memory, `20news/betula-sparse` (sparse): betula 335 MB (`betula-sparse`) against 335 MB
   - tie, quality, `highdim/1000000/kmeans-speed` (external): betula 1.000 ARI (`betula-kmeans`) against 1.000 ARI
   - tie, quality, `digits/1797/told-k` (head_refs): betula 0.668 ARI (`betula-kmeans`) against 0.664 ARI
@@ -2177,15 +2177,15 @@ side of every cell is the one head its contest chose (see the rules above).
   - win, quality, `mnist/20000/no-k` (rivals): betula 0.762 ARI (`betula-leiden-rows`) against 0.536 ARI
   - loss, quality, `mnist/70000/no-k` (rivals): betula 0.769 ARI (`betula-leiden-rows`) against 0.920 ARI
 - **umap+kmeans** — 4 win · 1 tie · 1 loss
-  - win, memory, `mnist/20000/told-k` (rivals): betula 366 MB (`betula-leiden-rows-auto`) against 678 MB
-  - win, memory, `mnist/70000/told-k` (rivals): betula 752 MB (`betula-leiden-rows-auto`) against 1097 MB
+  - win, memory, `mnist/20000/told-k` (rivals): betula 365 MB (`betula-leiden-rows-auto`) against 678 MB
+  - win, memory, `mnist/70000/told-k` (rivals): betula 751 MB (`betula-leiden-rows-auto`) against 1097 MB
   - win, memory, `news-minilm/17901/told-k` (rivals): betula 244 MB (`betula-vmf-shared`) against 640 MB
   - win, quality, `mnist/70000/told-k` (rivals): betula 0.788 ARI (`betula-leiden-rows-auto`) against 0.769 ARI
   - tie, quality, `mnist/20000/told-k` (rivals): betula 0.762 ARI (`betula-leiden-rows-auto`) against 0.734 ARI
   - loss, quality, `news-minilm/17901/told-k` (rivals): betula 0.382 ARI (`betula-vmf-shared`) against 0.451 ARI
 - **umap-0.6+kmeans** — 3 win · 2 tie · 1 loss
-  - win, memory, `mnist/20000/told-k` (rivals): betula 366 MB (`betula-leiden-rows-auto`) against 889 MB
-  - win, memory, `mnist/70000/told-k` (rivals): betula 752 MB (`betula-leiden-rows-auto`) against 1115 MB
+  - win, memory, `mnist/20000/told-k` (rivals): betula 365 MB (`betula-leiden-rows-auto`) against 889 MB
+  - win, memory, `mnist/70000/told-k` (rivals): betula 751 MB (`betula-leiden-rows-auto`) against 1115 MB
   - win, memory, `news-minilm/17901/told-k` (rivals): betula 244 MB (`betula-vmf-shared`) against 737 MB
   - tie, quality, `mnist/20000/told-k` (rivals): betula 0.762 ARI (`betula-leiden-rows-auto`) against 0.731 ARI
   - tie, quality, `mnist/70000/told-k` (rivals): betula 0.788 ARI (`betula-leiden-rows-auto`) against 0.804 ARI
@@ -2260,8 +2260,8 @@ matrix, which gives the 1.2.0 value exactly (300 random cases, largest differenc
 |---|---|---|---|---|---|---|---|---|---|
 | 1 | Lumbermark_f0.5_M0 | 0.786 | 0.981 | 0.889 | 0.629 | 0.854 | 0.876 | 0.459 | 0.811 |
 | 2 | GIc | 0.784 | 0.990 | 0.960 | 0.586 | 0.858 | 0.860 | 0.421 | 0.813 |
-| 3 | **betula `leiden`, `resolution="auto"`** | **0.782** | 0.990 | 0.900 | 0.588 | 0.793 | 0.903 | 0.448 | 0.849 |
-| 4 | Lumbermark_f0.5_M1 | 0.782 | 0.977 | 0.889 | 0.637 | 0.853 | 0.870 | 0.435 | 0.809 |
+| 3 | Lumbermark_f0.5_M1 | 0.782 | 0.977 | 0.889 | 0.637 | 0.853 | 0.870 | 0.435 | 0.809 |
+| 6 | **betula `leiden`, `resolution="auto"`** | **0.774** | 0.991 | 0.900 | 0.588 | 0.793 | 0.849 | 0.448 | 0.852 |
 | 7 | Genie_G0.1_M3 | 0.770 | 0.990 | 0.933 | 0.590 | 0.774 | 0.840 | 0.455 | 0.810 |
 | 18 | ITM | 0.750 | 0.983 | 0.890 | 0.686 | 0.743 | 0.740 | 0.455 | 0.753 |
 | 21 | **betula `spectral`** | **0.747** | 0.968 | 0.920 | 0.499 | 0.770 | 0.816 | 0.434 | 0.826 |
@@ -2271,19 +2271,20 @@ matrix, which gives the 1.2.0 value exactly (300 random cases, largest differenc
 | 116 | **betula `kmeans`** | **0.621** | 0.791 | 0.570 | 0.475 | 0.644 | 0.805 | 0.417 | 0.643 |
 
 - **`leiden` with `resolution="auto"` is level with the best configurations, not ahead of them.**
-  Paired on the 75 datasets both scored, it averages 0.819 against Lumbermark_f0.5_M0's 0.812 and
-  GIc's 0.811, and is ahead on 19 datasets and behind on 23 and 20. It is ahead of Genie at
-  genieclust's default `gini_threshold=0.3` (0.789; ahead on 21, behind on 18), ITM (0.757),
-  scikit-learn's `GaussianMixture` (0.710, on the 73 datasets those two share, where `leiden` averages
-  0.826) and `KMeans` (0.657), and Ward linkage (0.656).
-- **It misses K more often than the other heads.** On 10 dataset-K pairs its resolution search ends
-  on another count, and on 6 datasets (`sipu`'s a1, birch1, birch2, worms_2 and worms_64, `fcps`'s
-  target) on every K. Those are absent from its means, which flatters it on `sipu` and `fcps`.
-  `gmm`, `ward` and `dc-median` miss 3 pairs each, `spectral` 2, `kmeans` none.
-- **Where it loses:** `graves` (0.900 against GIc's 0.960), `other` (0.793 against 0.858) and the
-  suite's `mnist` battery (0.588 against ITM's 0.686). **Where it is level with the best:** `wut`
-  (0.849 against Genie_G0.3_M3's 0.848) and `sipu`, on the 15 datasets it splits into K (0.903
-  against the best configuration's 0.910 on the same 15).
+  Paired on the 78 datasets both scored, it averages 0.812 against Lumbermark_f0.5_M0's 0.810 and
+  GIc's 0.811, and is ahead on 19 datasets and behind on 25 and 22. It is ahead of Genie at
+  genieclust's default `gini_threshold=0.3` (0.787; ahead on 21, behind on 19), ITM (0.757),
+  scikit-learn's `GaussianMixture` (0.712, on the 74 datasets those two share, where `leiden` averages
+  0.829) and `KMeans` (0.658), and Ward linkage (0.657).
+- **It misses K on 3 dataset-K pairs, as `gmm`, `ward` and `dc-median` do.** On `sipu`'s a1, birch1
+  and birch2 (K = 20, 100, 100) the partition it reaches holds fewer than K communities of any size,
+  and it returns 19, 99 and 90. Those are absent from its means. `spectral` misses 2, `kmeans`
+  none.
+- **Where it loses:** `graves` (0.900 against GIc's 0.960), `other` (0.793 against 0.858), the
+  suite's `mnist` battery (0.588 against ITM's 0.686) and `sipu` (0.849 against the best
+  configuration's 0.902 on the same 17 datasets; worms_2 and worms_64 read 0.403 and 0.482).
+  **Where it is level with the best:** `wut` (0.852 against Genie_G0.3_M3's 0.848) and `fcps`
+  (0.991 against 0.996).
 - **The centroid heads rank where centroid methods rank.** betula's `kmeans` (0.621, rank 116) and
   `ward` (0.628, rank 107) sit with scikit-learn's `KMeans` (0.630, rank 105) and fastcluster's Ward
   (0.636, rank 97). On the `uci` battery `gmm` is level with scikit-learn's `GaussianMixture`, the
