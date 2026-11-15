@@ -22,11 +22,11 @@ whole process. A difference smaller than the wider seed range of the two is a ti
 | A hierarchy, count given | **Genie** (genieclust) | Mean ARI over seven fixtures 0.839 against `dc-median` 0.734. |
 | Benchmark datasets, count given | **betula** `leiden`, `resolution="auto"`, or **Lumbermark** / **GIc** | Gagolewski's suite, 81 datasets: mean accuracy 0.782 against 0.786 and 0.784, a tie. `leiden` cannot reach the count on 6 of the 81. |
 | Mixed numeric and categorical columns | either: betula `KPrototypes` or kmodes | 0.028 against 0.022 on mixed covtype: a tie, and both near 0. |
-| A stream of rows | **betula** `partial_fit` | After each chunk the labels equal a refit on every row seen (75 of 75 checkpoints, 20 newsgroups). UMAP + k-means refitted at each checkpoint is level at 20 and 40 % of the stream and ahead from 60 % on (0.431–0.448 against 0.383–0.392), at the cost of a refit each time. |
+| A stream of rows | **betula** `partial_fit` | After each chunk the labels equal a refit on every row seen (75 of 75 checkpoints, 20 newsgroups). UMAP + k-means refitted at each checkpoint is level at 20 and 40 % of the stream and ahead from 60 % on (0.429–0.448 against 0.383–0.392), at the cost of a refit each time. |
 | Input larger than memory | **betula**, fed in chunks | 500 000 to 10 M rows (20-D) in 56 MB, against 0.41–5.0 GB for an in-core scikit-learn `KMeans`. scikit-learn's `MiniBatchKMeans` and `Birch` also learn in chunks; they were not measured here. |
-| k-means on a million rows, speed first | **FAISS** | 0.07 s against betula's 0.42 s at one thread, with ARI 0.624 against 1.000 at FAISS's defaults. |
-| Outliers inside clusters of unequal density | **betula** `outlier_scores` | ROC-AUC / average precision 1.000 / 0.998 against IsolationForest 0.887 / 0.175 and LOF 0.993 / 0.915. |
-| Global outliers, or sheared clusters | **IsolationForest** | 1.000 / 1.000 and 0.980 / 0.698 against betula 0.991 / 0.940 and 0.596 / 0.059. |
+| k-means on a million rows, speed first | **FAISS** | 0.07 s against betula's 0.42 s, with ARI 0.624 against 1.000 at FAISS's defaults. Both ran multi-threaded: FAISS on eight OpenMP threads, betula on its rayon pool. |
+| Outliers inside clusters of unequal density | **betula** `outlier_scores` | ROC-AUC / average precision 1.000 / 0.998 against IsolationForest 0.887 / 0.175 and LOF 0.993 / 0.915. Not in a CSV: an untracked harness, median of seeds 0/1/2. |
+| Global outliers, or sheared clusters | **IsolationForest** | 1.000 / 1.000 and 0.980 / 0.698 against betula 0.991 / 0.940 and 0.596 / 0.059. Not in a CSV, as the row above. |
 | A mixture of stationary signals | **betula** `gmm-toeplitz` | 0.764 on an AR mixture against tslearn's k-Shape 0.057 and a diagonal GMM 0.018. |
 | A GPU is available | the same choices | cuML's k-means and UMAP + k-means find what their CPU versions find (*GPU rivals* in the census). |
 
@@ -35,7 +35,7 @@ whole process. A difference smaller than the wider seed range of the two is a ti
 Each rival cell cites the release's documentation or source. "Not documented" means that release
 was read and no such feature was found. Each betula cell names a test, a script or a bench row.
 
-| | betula-cluster 1.5.0 | umap-learn 0.6.0 + hdbscan 0.8.44 | EVoC 0.3.2 | fast_hdbscan 0.3.4 | scikit-learn 1.9.1 | FAISS 1.16.0 |
+| | betula-cluster `main` (1.5.0 and `[Unreleased]`) | umap-learn 0.6.0 + hdbscan 0.8.44 | EVoC 0.3.2 | fast_hdbscan 0.3.4 | scikit-learn 1.9.1 | FAISS 1.16.0 |
 |---|---|---|---|---|---|---|
 | **Learn from a stream** | `partial_fit` on chunks, then `partial_fit()` (`test_streaming_partial_fit_matches_oneshot`) | UMAP: [`update(X)`][u-update] retrains with the new rows; hdbscan: not documented | not documented | not documented | `partial_fit` on `MiniBatchKMeans` and [`Birch`][s-birch]; not on `HDBSCAN` | not documented |
 | **Input larger than memory** | chunked `partial_fit`; 56 MB at 0.5–10 M rows (*Memory — streaming stays bounded*) | UMAP: [`low_memory`][u-lowmem] covers the neighbour search only; hdbscan: not documented | its [example][e-chunks] refits each chunk | not documented | `MiniBatchKMeans`, `Birch` ([incremental estimators][s-scaling]) | k-means [trains on a subsample][x-subsample] |

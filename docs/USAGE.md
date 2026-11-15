@@ -30,8 +30,8 @@ sphere squared-Euclidean is monotone in cosine, so the tree clusters by angle. I
 it is now a wash — 0.307 → 0.346, inside the seed spread and sign-flipping between seeds, since the
 tree-rebuild fix removed most of the Euclidean collapse it used to compensate for. Leave it off for
 tabular data where magnitude is signal: it takes covtype ward to **−0.049**, worse than random),
-`n_shards` (shard+merge tree build — `>1` gives ~4–5× on large
-`N`, and **changes the labels**, since the shards are the partition; `canonical_order=True` derives
+`n_shards` (shard+merge tree build — `>1` gives 3.4–3.9× at 8–32 shards on
+`n = 200 000`, and **changes the labels**, since the shards are the partition; `canonical_order=True` derives
 the shard count from `n` instead and rejects a caller-set one), `threshold`, `branching` (≥ 2), `leaf_cap` (≥ 1), `max_leaves` (an integer is an absolute leaf cap; a
 float in `(0, 1)` is a **fraction of the row count**, resolved as `ceil(frac·N)` at `fit` time —
 ELKI's `-cftree.maxleaves` convention, whose own default is `0.05`. A fraction is undefined for
@@ -1020,6 +1020,8 @@ N = 100 000, `min_cluster_size = 250` (ARI, clusters found):
 | `max_leaves = 2 000` (leaf mass 50) | 0.480 (24) | 0.477 (24) | 0.784 (5) |
 | `max_leaves = 8 000` (leaf mass 12) | 0.569 (4) | 0.800 (5) | **0.849** (6) |
 
+(A probe on the 1.0.0 tree, not in a CSV.)
+
 So set `min_samples` comfortably above `N / max_leaves`, or raise `max_leaves` until the leaf mass
 falls below the `min_samples` you want. On well-separated clusters neither matters; on overlapping
 ones it is the difference between single linkage — which here sheds two dozen fragments off the
@@ -1033,8 +1035,14 @@ On the same fixture it reads 0.821 at `max_leaves = 2 000` and 0.822 at 8 000 (m
 points. The plateau is wide — five to forty leaves are all inside the seed spread there — so the
 constant is the shape of the rule rather than a fit to it.
 
-On the six published quality fixtures at N = 30 000 (median of seeds 0/1/2) the same rule costs
-nothing anywhere and gains on `varied`:
+**The order of the rows matters as well.** This fixture feeds its rows sorted by label. A screen on
+the current tree reads 0.895 with the rows shuffled, at the automatic `min_samples` and 8 000
+leaves, where label order reads 0.799; `canonical_order=True` reads 0.897 in any order (one row
+order per arm, not in a CSV; `bench/RESULTS.md`, *Specialist baselines*). Before a density fit,
+shuffle rows that arrive sorted, or pass `canonical_order=True`.
+
+On the six published quality fixtures at N = 30 000 (median of seeds 0/1/2, the 1.0.0 tree, not in
+a CSV) the same rule costs nothing anywhere and gains on `varied`:
 
 | fixture | `min_samples=10` | automatic |
 |---|---:|---:|
@@ -1048,6 +1056,15 @@ nothing anywhere and gains on `varied`:
 It is not a win everywhere. On two overlapping blobs at N = 100 000 the fixed ten beats it at 200
 and 2 000 leaves — ARI 0.484 and 0.452 against 0.000 and 0.337 — and ties it at 8 000; the grid is
 in [`bench/RESULTS.md`](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md).
+
+**A sparse cluster beside a dense one is shattered, not called noise.** Two Gaussians of equal
+count whose densities differ 4–256×, adjacent or nested, at `max_leaves=300`,
+`min_cluster_size=25`, `min_samples=10`: the head marks 24–42 % of the sparse cluster as noise and
+returns 16–40 clusters, where `sklearn.cluster.HDBSCAN` on the raw points marks 49–85 % as noise and
+returns 2–6. A larger leaf budget hands the raw-point behaviour back: at 1 200 leaves on the nested
+64× fixture the head marks 77 % as noise and returns 6 clusters, against scikit-learn's 80 % and 5.
+Read a large cluster count on uneven densities as this effect before you read it as structure.
+(Median of seeds 0/1/2 on the tree of 2026-08-26, `local/scratch/density_bias.py`; not in a CSV.)
 
 Pass an integer whenever you want the scikit-learn number instead; it is used exactly as given. The
 same automatic value serves `dc-center` / `dc-median`, which read the same core distances.
@@ -2392,6 +2409,11 @@ re-measured 2026-08-30):
 | `projection="svd"`, `max_leaves=512` | 0.136 | 1.2 s |
 | `projection="svd"`, `max_leaves=2048` | 0.195 | 4.7 s |
 | `TruncatedSVD(50)` + `KMeans` on the raw rows | 0.143 | 0.78 s |
+
+This table is the 2026-08-30 single-threaded edition, not in a CSV. The current bench row
+(`bench/results_sparse.csv`, 2026-10-29, `max_leaves=2048`, seed 0, the machine's threads) reads
+ARI 0.200 in 1.45 s for `projection="svd"` against 0.130 in 0.38 s for `TruncatedSVD(50)` +
+`KMeans`; the sparse path with no projection reads 0.038 in 1.62 s.
 
 Two things decide whether this works for you.
 

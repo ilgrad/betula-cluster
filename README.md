@@ -35,37 +35,42 @@ Measured against scikit-learn on `StandardScaler`-normalized data, each method i
 with peak RSS sampled from `/proc/self/statm`. Full methodology, every metric, and all tables (wins
 **and** losses) live in [**`bench/RESULTS.md`**](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md).
 
-> **Re-measured 2026-09-10 against the current tree, on a machine gated to be idle.** Every quality figure is the
+> **Re-measured 2026-10-29 against the current tree, on a machine read as idle.** Every quality figure is the
 > **median of seeds 0, 1, 2** — clustering
 > quality is seed-dependent and a single run is not a result. Ranges per cell are in
-> `bench/results_*_spread.csv`; on the synthetic sets every row moves by more than 0.05 ARI across the
-> three seeds, so a margin below that is a tie and is written as one here.
+> `bench/results_*_spread.csv`; a margin smaller than the wider of the two cells' three-seed ranges is
+> a tie, as on the bench page, and is written as one here.
 
-- ⚡🪶 **Faster and lighter than scikit-learn at every published size and compression budget.**
+- ⚡🪶 **Faster and lighter than scikit-learn at most published sizes.**
   betula labels **1 M points in 0.21 s**: 9.9× faster than scikit-learn KMeans, 16× vs
   GaussianMixture, 33× vs Birch — and streams **10 M in a flat ~56 MB** where an in-core KMeans
-  needs **~5.0 GB** (**89× less**, and the gap grows without bound). Two rows are not ours, and both
-  are in the tables: on sparse 20-newsgroups scikit-learn is **2.9× faster** on raw TF-IDF
-  (0.56 s vs 1.62 s) at a better ARI (0.056 vs 0.038), and `fast-hdbscan` recovers the 100 k-point
-  blobs at **ARI 0.910 against our 0.480** — where we are 10× faster on half the memory. A specialist
-  at its own contest is a different claim from a general-purpose library at every size.
-- 🎯 **Parity on the centroid heads, ahead on the structured ones.** betula's k-means ties
-  scikit-learn (blobs 0.793 vs 0.794, `digits` 0.467 vs 0.468); full-covariance GMM **beats** it on
-  anisotropic data (**0.961 vs 0.902**) and on real 64-D `digits` (**0.575 vs 0.463**, via the
-  high-dimensional covariance floor); betula-ward clusters 1 M in 0.33 s where `O(N²)` sklearn-ward
+  needs **~5.0 GB** (**89× less**, and the gap grows without bound). Some rows are not ours, and all
+  are in the tables. On sparse 20-newsgroups scikit-learn is **2.9× faster** on raw TF-IDF
+  (0.56 s vs 1.62 s) at a better ARI (0.056 vs 0.038), and 3.8× faster on the SVD row (0.38 s vs
+  1.45 s), where betula's ARI is higher (0.200 vs 0.130). At 10 M rows the in-core KMeans finishes
+  first (5.71 s vs 7.26 s, a timing the bench page calls unreliable). FAISS k-means at its defaults
+  is faster at both sizes measured. `fast-hdbscan` recovers the 100 k-point blobs at **ARI 0.910
+  against our 0.480** — where we are 10× faster on half the memory. A specialist at its own contest
+  is a different claim from a general-purpose library at every size.
+- 🎯 **Parity with scikit-learn, and higher readings the seeds do not resolve.** betula's k-means
+  ties scikit-learn (blobs 0.793 vs 0.794, `digits` 0.467 vs 0.468); full-covariance GMM reads
+  **0.961 vs 0.902** on anisotropic data and **0.575 vs 0.463** on real 64-D `digits` (via the
+  high-dimensional covariance floor), both ties, since scikit-learn's three seeds span 0.626–0.999
+  and 0.402–0.601; betula-ward clusters 1 M in 0.33 s where `O(N²)` sklearn-ward
   can't run past ~10 k; and on non-convex moons & circles the **spectral** and HDBSCAN heads hit
   **ARI 1.00**. Spectral matches `SpectralClustering`'s quality; the speed ratio is not worth quoting
   — it has read 3–5×, 1.0–1.5× and 2.4–2.5× across editions and the movement is in scikit-learn's arm,
   not ours. The durable claim is *scaling*: cost set by `max_leaves`, not `N`.
-- 🌍 **Real data, and two losses stated plainly.** betula's diagonal GMM ties scikit-learn on hard
+- 🌍 **Real data, and one loss stated plainly.** betula's diagonal GMM ties scikit-learn on hard
   `covtype` at adequate leaf resolution (**0.0801 vs 0.0801** at 16 000 leaves — it used to be
   recorded as a win, and the rebuild change made it an exact tie), and it clusters **full covtype
   (581 k rows) 5.6× faster** at a better ARI (0.087 vs 0.049). But `sklearn-birch` beats **every**
-  betula head on both `covtype` (0.131) and MNIST (0.426 vs 0.394). On `covtype` that is a loss on the
-  merits — tested in both directions, and the mechanism is the leaf budget's unequal cell *mass*; on
-  MNIST Birch simply does not compress (20 000 subclusters for 20 000 points), and at equal
-  compression the 0.032 gap falls to 0.010. HDBSCAN-on-CF likewise trails raw HDBSCAN on overlapping
-  density.
+  betula head on `covtype` (0.131 vs 0.091). That is a loss on the merits — tested in both
+  directions, and the mechanism is the leaf budget's unequal cell *mass*. On MNIST Birch reads 0.426
+  against 0.394, a tie by the seed rule; Birch simply does not compress there (20 000 subclusters
+  for 20 000 points), and at equal compression the 0.032 gap falls to 0.010. HDBSCAN-on-CF reads
+  lower than raw HDBSCAN on overlapping density (0.568 vs 0.802 on `varied`), a tie only because its
+  own seeds span 0.042–0.757.
   [`bench/RESULTS.md`](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md) reports
   both rather than hiding them.
 - 🧭 **Against the rest of the field, not only scikit-learn.** The bench page's *census* runs UMAP,
@@ -148,13 +153,18 @@ Three cases, each measured rather than assumed:
   nothing. Cluster the points directly.
 - **HDBSCAN where the densities overlap** — `fast-hdbscan` recovers the 100 k-point blob fixture at
   **ARI 0.910 against our 0.480**, and that is the fixture density methods are judged on. We are 10×
-  faster on half the memory, which is the trade, not a rebuttal. If the density structure *is* the
+  faster on half the memory, which is the trade, not a rebuttal. Part of that gap is the input order:
+  the benchmark feeds the rows sorted by label, and a screen with shuffled rows or
+  `canonical_order=True` puts the head's defaults within 0.015 of the rival (a screen, one row order
+  per arm, not in a CSV; `bench/RESULTS.md`, *Specialist baselines*). Sorted input costs the `hdbscan` head up to
+  0.10 ARI there. If the density structure *is* the
   answer, run the exact algorithm on the points.
 - **A mixture whose likelihood has to be a raw-point likelihood** — the E-step ties responsibilities
   within a leaf and every `ln p` is computed from `(n, μ, S)`, so a per-point density, a BIC
   against a model fitted to raw points, or a likelihood-ratio test are not what comes out. On raw
   pixels the model itself is the limit as well: `gmm` reads ARI 0.185 on MNIST-20k at the default
-  leaf budget where a nearest-centre rule reads 0.378, because a diagonal covariance charges 784
+  leaf budget where a nearest-centre rule reads 0.378 (a probe, not in a CSV; at 4 000 leaves
+  `bench/results_real.csv` reads `gmm` 0.306 against `kmeans` 0.327), because a diagonal covariance charges 784
   independent penalties for 784 correlated pixels.
 
 ## Installation
@@ -210,8 +220,8 @@ labels = est.predict(X_query)
 
 Reproducibility — every BIRCH-family tree builds its prototype set as a greedy threshold-net **in
 arrival order**, so the same rows in a different order give a different answer; at real compression
-that matters more than the seed does (order pairwise ARI 0.55 against the seed arm's 0.75, over 27
-measured cells). `canonical_order=True` sorts the rows by a key derived from the data before the
+that matters more than the seed does (mean order pairwise ARI 0.63 against the seed arm's 0.76, over
+27 measured cells). `canonical_order=True` sorts the rows by a key derived from the data before the
 first insert, which makes the summary a function of the multiset — and the guarantee is **exact**:
 
 ```python
@@ -220,7 +230,7 @@ labels_b = betula_cluster.fit_predict(X[perm], 10, canonical_order=True)
 assert (labels_a == labels_b[np.argsort(perm)]).all()   # equal element for element, in all 27 cells
 ```
 
-It buys reproducibility, not accuracy — the median quality change is −0.002 ARI, and the realised
+It buys reproducibility, not accuracy — the median quality change is −0.005 ARI, and the realised
 leaf count stops varying too. Numbers, costs and the two cells where it loses:
 [`bench/RESULTS.md`](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md#the-cure--canonical_ordertrue).
 The guarantee holds on one CPU architecture. The distance kernels sum in a different order on
@@ -266,7 +276,7 @@ snapshots / active-learning batches, the Rust API, and the CLI — all in the
   insertion-order permutations).
 - **Order-invariant builds** — `canonical_order=True` makes the summary a function of the multiset,
   so any row permutation returns bit-identical labels. Measured exact in all 27 cells of the
-  published sweep; no other BIRCH-family implementation publishes such a guarantee.
+  published sweep.
 - **Tuning** — `tune`: memory-aware hyperparameter search with a **quality / memory / speed** Pareto
   mode; NumPy-only, optional Optuna backend (`pip install 'betula-cluster[tune]'`).
 
@@ -501,7 +511,12 @@ betula-cluster is an independent implementation (with extensions); the algorithm
 **BETULA** — Lang & Schubert, *Information Systems* (2022),
 [doi:10.1016/j.is.2021.101918](https://doi.org/10.1016/j.is.2021.101918) — building on **BIRCH** —
 Zhang, Ramakrishnan & Livny, *SIGMOD* (1996),
-[doi:10.1145/233269.233324](https://doi.org/10.1145/233269.233324).
+[doi:10.1145/233269.233324](https://doi.org/10.1145/233269.233324). Lang's dissertation
+([TU Dortmund, 2025](https://eldorado.tu-dortmund.de/items/b386c231-0f78-4ff6-8c55-9eb0418ff1ff))
+names a Rust implementation of BETULA with Python bindings as future work (§7.1). The nearest
+library from the same group is Schubert's [`kno10/fuel`](https://github.com/kno10/fuel) (Rust, PyO3
+bindings, AGPL-3.0): it ships GMM, von Mises–Fisher, spherical k-means, HDBSCAN and FasterPAM, and
+no CF-tree. It has no row in the benchmark yet.
 
 ## License
 

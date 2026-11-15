@@ -130,6 +130,12 @@ zero dispatch cost; Python/CLI pick variants via enums.
   measured slower at small $d$ because its indirect call cannot inline. See ADR 003.
 - **Parallel**: `rayon` for assignment/E-step over points/CFs; thread-local accumulators merged
   (CF is a commutative monoid → exact reduction).
+- **Routing stays a tree descent.** Its cost is set by branching × depth, so it is flat in the leaf
+  count: at branching 32 one more level per 32× of leaves. Two replacements were measured on
+  distance-call counts and rejected (probes of 2026-09-01, not in a CSV). A VP-tree needs 2.1–14.6×
+  the descent's calls on synthetic leaf centroids, and its exact 10-NN query prunes nothing on MNIST
+  leaf centroids at d = 784 (1 807 calls for 1 807 centroids). A beam-search graph router costs
+  2.8–13.3× the descent's calls and loses 0.227 ARI on MNIST-20k (k-means head, 2 000 leaves).
 - **Linalg**: hand-rolled tiny Cholesky in `linalg.rs` for per-CF $d \times d$; `faer` (pure-Rust SIMD,
   no LAPACK) for any larger/batched ops.
 - **Python**: PyO3 0.29 `abi3-py311` wheels via maturin; `rust-numpy` zero-copy; `Python::detach`
@@ -173,7 +179,8 @@ Python end-to-end + scikit-learn benchmark (`README.md`, `bench/RESULTS.md`):
   walked off the concentration cliff); per-feature EWMA `decay`; runtime-selectable routing; **parallel
   shard+merge build**
   `build_sharded` / `n_shards` — each shard summarises to `max_leaves/shards` leaves so the merge
-  stays ~`max_leaves` CFs, giving ~4–5× on large `N` at equal granularity; opt-in, default serial.
+  stays ~`max_leaves` CFs, giving 3.4–3.9× at 8–32 shards on `n = 200 000` at equal granularity
+  (`docs/USAGE.md`); opt-in, default serial.
   The shard count is part of the answer and the thread count is not: the `parallel` feature decides
   only whether the shards run concurrently, and under `canonical_order` the count comes from `n`
   rather than from the caller, so neither the machine nor the build configuration enters the summary;
@@ -349,8 +356,11 @@ Honest scope — inherent to CF-compression + streaming, not bugs:
    quadratic heads (`ward`, HDBSCAN, Mapper) limit how far "more leaves" can go.
 4. **HDBSCAN-on-CF ≠ raw-point HDBSCAN** — mass-aware HDBSCAN over the microclusters (approximate).
    On the overlap contest of `bench/RESULTS.md` it reads 0.821 at 2 000 leaves and 0.822 at 8 000
-   (medians of seeds 0/1/2) against 0.910 for `fast_hdbscan` on the raw points. The gap is the
-   between-leaf density contrast the summary drops, which no per-leaf radius puts back.
+   (medians of seeds 0/1/2 on the 1.0.0 tree, not in a CSV) against 0.910 for `fast_hdbscan` on the
+   raw points. The gap is the between-leaf density contrast the summary drops, which no per-leaf
+   radius puts back. That contest feeds its rows sorted by label; with the rows shuffled a screen on
+   the current tree reads 0.895 at 8 000 leaves (not in a CSV), and `canonical_order=True` reads
+   0.897 in any order.
 5. **Expected-log GMM optimizes a CF-level objective**, not pointwise EM — but it is the *exact*
    variational bound on the pointwise one. $\log \mathcal{N}(x \mid \mu_k, \Sigma_k)$ is quadratic in
    $x$, so $\mathbb{E}_{x \sim \text{leaf}}[\log \mathcal{N}]$ is exact from $(n, \mu, S)$: the E-step

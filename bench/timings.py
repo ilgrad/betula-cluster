@@ -13,9 +13,9 @@ as a check that the work done is the work scored elsewhere:
   of minutes, so `scale` fits once.
 - Cases run in rounds. Each round shuffles them with its own seed, so drift during the campaign
   spreads over every arm instead of landing on the last ones. The round is the seed.
-- A control, a fixed NumPy SVD that no arm can change, runs before each round and after each case.
-  `control_drift` is its change against the campaign's first reading; a row whose control moved by
-  more than `DRIFT` is `timing_valid=False`.
+- A control, a fixed NumPy SVD that no arm can change, runs once before the first case and after
+  each case. `control_drift` is its change against the campaign's first reading; a row whose
+  control moved by more than `DRIFT` is `timing_valid=False`.
 - Each row records the CPU temperature before and after; GPU rows also record the device's clock,
   temperature and power draw. The run writes its environment (governor, power source, thread
   counts, package versions, uptime, the `bench-ready.sh` report) to a JSON beside the CSV.

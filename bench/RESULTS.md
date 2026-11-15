@@ -9,6 +9,10 @@
 > single run, since `bench/_worker.py` pins `seed=0` for them and they are seed-invariant by
 > construction. This page is re-measured as a whole, not patched cell by cell.
 >
+> **A table that names no `results_*.csv` is not in a CSV.** Most study sections after *Quality
+> against the leaf budget* report probes (`local/scratch/…`, or a `bench/` script that writes no file),
+> each on the tree of its own date. Their numbers cannot be re-derived from the committed files.
+>
 > **The 2026-10-29 edition moved six quality rows, all `betula-spectral`, and all of them through one
 > commit.** Of the 139 quality rows, the other 133 agree with the 2026-09-10 edition in every metric
 > column to 1e-13 relative; the last-place differences fall on scikit-learn rows as often as on betula
@@ -117,26 +121,31 @@ losses** are reported below.
 
 ## TL;DR (honest)
 
-- **Faster and lighter than scikit-learn, at every published size.** betula labels 1 M points in **0.21 s**
-  (9.9× faster than scikit-learn KMeans, 16× vs GaussianMixture, 33× vs Birch) and streams 10 M in a
-  flat **~56 MB** where an in-core KMeans needs **~5.0 GB** (**89× less**, and the gap grows without
-  bound). Against scikit-learn this holds for every method at every size, and it is what a
-  bounded-memory compression engine is built to deliver. It is not unconditional: FAISS k-means is
-  faster at both sizes measured (*Specialist baselines*).
-- **Quality is at parity on the centroid heads and ahead on the structured ones.** betula's k-means is
-  at parity with scikit-learn (blobs 0.793 vs 0.794, `digits` 0.467 vs 0.468, and MNIST 0.327 vs
-  0.324, which was a loss until the distortion-ranked rebuild); full-covariance GMM **beats**
-  scikit-learn's on anisotropic data (**0.961 vs 0.902**) and on real 64-D `digits` (**0.575 vs
-  0.463**, via the high-dimensional covariance floor); the **HDBSCAN** and **spectral** heads both
-  hit ARI **1.00** on moons and circles.
-- **Two losses stated plainly.** On `covtype` and MNIST, `sklearn-birch` beats **every** betula head —
-  0.131 vs a best of 0.091, and 0.426 vs 0.394. On `covtype` that is a loss on the merits (not a
+- **Faster and lighter than scikit-learn at most published sizes; five speed cells are losses.**
+  betula labels 1 M points in **0.21 s** (9.9× faster than scikit-learn KMeans, 16× vs
+  GaussianMixture, 33× vs Birch) and streams 10 M in a flat **~56 MB** where an in-core KMeans needs
+  **~5.0 GB** (**89× less**, and the gap grows without bound). This is what a bounded-memory
+  compression engine is built to deliver. It is not unconditional. At 10 M rows the in-core KMeans is
+  faster than the stream (5.71 s against 7.26 s; one row, two board cells, and a timing *Memory*
+  calls unreliable). On sparse 20 newsgroups scikit-learn is faster on raw TF-IDF (0.56 s against 1.62 s) and on the SVD row (0.38 s against 1.45 s; two rows,
+  three board cells). FAISS k-means is faster at both sizes measured (*Specialist baselines*).
+- **Quality is at parity on the centroid heads; the structured heads lead by margins the seeds do not
+  resolve.** betula's k-means is at parity with scikit-learn (blobs 0.793 vs 0.794, `digits` 0.467 vs
+  0.468, and MNIST 0.327 vs 0.324, which was a loss until the distortion-ranked rebuild).
+  Full-covariance GMM reads **0.961 vs 0.902** on anisotropic data and **0.575 vs 0.463** on real
+  64-D `digits` (via the high-dimensional covariance floor). Both are ties under this page's rule:
+  scikit-learn's three seeds span 0.626–0.999 and 0.402–0.601. The **HDBSCAN** and **spectral** heads
+  both hit ARI **1.00** on moons and circles.
+- **One loss stated plainly, and one gap the seeds do not resolve.** On `covtype` `sklearn-birch`
+  beats every betula head, 0.131 vs a best of 0.091. That is a loss on the merits (not a
   leaf-budget artefact, measured both ways) and the mechanism is now known: the leaf budget produces
-  cells of far more unequal mass than a radius threshold does. On MNIST most of the gap is the price
-  of compression — Birch returns 20 000 subclusters for 20 000 points and compresses nothing, and at
-  equal (non-)compression the 0.032 gap falls to 0.010. See *The `covtype` loss*. HDBSCAN-on-CF also
-  trails raw HDBSCAN on `varied` (0.568 vs 0.802) and collapses outright on MNIST (0.003), though it
-  now leads on blobs (0.423 vs 0.324).
+  cells of far more unequal mass than a radius threshold does. On MNIST Birch reads 0.426 against
+  betula-ward's 0.394, a tie under this page's rule (betula-ward's three seeds span 0.334–0.471). Most
+  of that gap is the price of compression — Birch returns 20 000 subclusters for 20 000 points and
+  compresses nothing, and at equal (non-)compression the 0.032 gap falls to 0.010. See *The `covtype`
+  loss*. HDBSCAN-on-CF reads 0.568 against raw HDBSCAN's 0.802 on `varied` and 0.423 against 0.324 on
+  blobs; both are ties, because the betula head's seeds span 0.042–0.757 and 0.142–0.456. It
+  collapses outright on MNIST (0.003).
 - **Against the rest of the field, more losses than wins on quality** (*The census*: quality and
   peak RSS only, one betula head per contest). Losses: density without k, where `hdbscan` averages
   0.652 ARI over seven fixtures against betula's `hdbscan` head at 0.616; a hierarchy given k, where
@@ -145,7 +154,8 @@ losses** are reported below.
   UMAP + k-means 0.451) and, without k, to PhenoGraph and kNN + Leiden. Wins: MNIST-70k given k
   against UMAP 0.5 + k-means and openTSNE + k-means (0.788 against 0.769 and 0.745), with no layout
   step; BERTopic's default pipeline on news (0.330 against 0.086); the AR mixture against tslearn's
-  k-Shape (0.764 against 0.057). MNIST-20k is a tie with every manifold pipeline. Peak RSS is below
+  k-Shape (0.764 against 0.057). MNIST-20k is a tie with every manifold pipeline but one: it beats
+  UMAP + HDBSCAN on the UMAP docs' recipe (0.762 against 0.536). Peak RSS is below
   every manifold and graph rival's in each MNIST and news contest.
 - **On Gagolewski's clustering benchmark suite (81 datasets, told k), level with the best, not ahead.**
   `leiden` with `resolution="auto"` ranks 3rd of 213 configurations scored in every battery (suite
@@ -255,7 +265,7 @@ Median of seeds 0/1/2 (`results_quality.csv`; spreads in `results_quality_spread
 | **betula-ward** | 0.787 | 0.544 | 0.718 | **0.637** | 0.003 | 1.00 |
 | **betula-spectral** | 0.729 | 0.424 | 0.659 | **1.00** | **1.00** | 1.00 |
 | **betula-leiden** (auto-`k`) | 0.722 | 0.465 | 0.633 | 0.512 | 0.007 | 1.00 |
-| **betula-hdbscan** | 0.423 | 0.568 | 0.568 | **1.00** | **1.00** | 1.00 |
+| **betula-hdbscan** | 0.423 | 0.567 | 0.568 | **1.00** | **1.00** | 1.00 |
 | sklearn-kmeans | 0.794 | 0.545 | 0.670 | 0.484 | −0.000 | 1.00 |
 | sklearn-minibatch | 0.694 | 0.547 | 0.665 | 0.484 | −0.000 | 1.00 |
 | sklearn-birch | 0.748 | 0.554 | 0.460 | 0.616 | 0.005 | 1.00 |
@@ -265,15 +275,17 @@ Median of seeds 0/1/2 (`results_quality.csv`; spreads in `results_quality_spread
 
 Reading it honestly:
 
-- **betula-kmeans ≡ sklearn-kmeans.** 0.793 vs 0.794 on blobs, 0.545 vs 0.545 on aniso, 0.671 vs
+- **betula-kmeans ≡ sklearn-kmeans.** 0.793 vs 0.794 on blobs, 0.545 vs 0.545 on aniso, 0.670 vs
   0.670 on varied — three ties inside the seed spread. CF compression costs no quality at this
   resolution. (The previous edition read this as "*exact* parity, 0.861 = 0.861"; 0.861 is the top of
   the three-seed range, and the two heads agree at every point in it.)
-- **betula-gmm-full beats sklearn's full GMM on the anisotropic case**, 0.961 vs 0.902 — the case
-  k-means cannot do at 0.545. On `varied` all three GMM variants tie at 0.907.
-- **betula-ward** (bounded, 4 000 leaves) beats the **full-30 000** `sklearn-ward` on `varied`
-  (0.718 vs 0.673), `moons` (0.637 vs 0.507) and blobs (0.787 vs 0.770), and is behind on `aniso`
-  (0.544 vs 0.565). Compression does not cost here; the CF microclusters denoise the linkage. This is
+- **betula-gmm-full reads 0.961 against sklearn's full GMM's 0.902 on the anisotropic case** — the
+  case k-means cannot do at 0.545. It is a tie under this page's rule: scikit-learn's three seeds span
+  0.626–0.999. On `varied` all three GMM variants tie at 0.907.
+- **betula-ward** (bounded, 4 000 leaves) ties the **full-30 000** `sklearn-ward` on all four
+  fixtures with structure: ahead on `varied` (0.718 vs 0.673), `moons` (0.637 vs 0.507) and blobs
+  (0.787 vs 0.770), behind on `aniso` (0.544 vs 0.565), and each margin inside the wider three-seed
+  range. Compression does not cost here. This is
   the row the distortion-ranked rebuild moved most on this table — `varied` +0.055 and blobs +0.012
   against the previous edition, `aniso` −0.030 — because the linkage reads the leaf masses directly
   and they are no longer half singletons.
@@ -289,13 +301,14 @@ Reading it honestly:
   structure (highdim 1.00, blobs 0.722) but, being a modularity community-detector rather than a
   general partitioner, it over-splits elongated manifolds (moons 0.512). Use spectral for those.
 - The honest weak spot: **HDBSCAN-on-CF on overlapping density.** `varied` 0.568 vs raw HDBSCAN's
-  0.802 — the wrong tool for overlapping Gaussians, and the CF approximation widens the gap. On blobs
-  the sign flipped this edition: 0.142 → 0.423 against raw HDBSCAN's 0.324, which is the same
+  0.802 — the wrong tool for overlapping Gaussians. Under this page's rule it is a tie, but only
+  because the betula cell's own range is so wide (below). On blobs the sign flipped this edition:
+  0.142 → 0.423 against raw HDBSCAN's 0.324, also a tie, which is the same
   compaction change and the same reason as the ward row, since the density head is a function of the
   leaf masses too. Use a parametric head for blobs; HDBSCAN-CF / spectral for density / non-convex.
   These cells are also by far the least stable in the whole table — betula-hdbscan's three-seed range
   is 0.142–0.456 on blobs, 0.042–0.757 on `varied` and **0.424–0.993** on `aniso`, where the median
-  0.568 sits between a near-total failure and a near-perfect recovery. Read the whole row as a regime
+  0.567 sits between a near-total failure and a near-perfect recovery. Read the whole row as a regime
   without a stable answer rather than as six numbers.
 
 ### Non-convex: spectral clustering that scales (N = 30 000)
@@ -311,7 +324,8 @@ rather than on all `N`, so its cost is bounded by the microcluster count and the
 | sklearn-SpectralClustering (k-NN affinity) | 0.999 | **1.00** | 0.564 s / 0.547 s |
 | betula-leiden | 0.116 | 0.127 | 0.156 s / 0.136 s |
 
-Median of three gated repetitions, which on this fixture is barely a median: every ARI is identical
+Median of three gated repetitions, not in a CSV (`bench/spectral_nonconvex.py` prints the table and
+writes no file). On this fixture it is barely a median: every ARI is identical
 across the three and betula's times span 0.240–0.240 and 0.217–0.218.
 
 **Both columns moved since the previous edition, in opposite directions, and only one of them is
@@ -325,10 +339,10 @@ be quoted** — the previous edition read 1.04× and 1.54× on the same two arms
 denominator moves 1.4× between runs it cannot account for is not a result. The durable claim is the
 **scaling** one: betula's cost is set by `max_leaves`, not by `N`.
 
-The ARI here reads 1.00 where the quality table above reads 0.989 / 0.981 for the same head on the
-same generators. Both are right: this table is `max_leaves = 2000` at seed 0, and that one is the
-median of three seeds at `max_leaves = 4000` — where `seed` also redraws the dataset, so the three
-cells are three different moons.
+The ARI here reads 1.00, and so does the quality table above for the same head on the same
+generators (medians 0.9999 and 1.0000, `results_quality.csv`). The two runs still differ: this table
+is `max_leaves = 2000` at seed 0, and that one is the median of three seeds at `max_leaves = 4000` —
+where `seed` also redraws the dataset, so the three cells are three different moons.
 
 `method="leiden"` is included as an honest negative: it is built for community / blob structure, not
 elongated manifolds — modularity chops each arc into ~19 segments (ARI ~0.12), exactly the
@@ -570,8 +584,9 @@ tree than the caller could have afforded, which is the failure a caller can see 
 
 Synthetic data can flatter a method, so the same comparison on real datasets loaded straight from
 scikit-learn (`load_digits`, `fetch_openml("mnist_784")`, `fetch_covtype`), standardized. The large
-ones are subsampled to 20 k for the all-methods table so the O(N²) baselines stay feasible
-(full-covariance GMM is skipped past ~100 dims — it is O(d³) per component; `—` below). Downloads are
+ones are subsampled to 20 k for the all-methods table. The O(N²) baselines (`sklearn-ward`,
+`sklearn-hdbscan`) are still skipped there, since the harness runs them only up to 5 000 rows, and
+full-covariance GMM is skipped past ~100 dims — it is O(d³) per component; `—` below. Downloads are
 best-effort. **Here betula runs at the tight `max_leaves = 4000`**; the next section removes that
 self-handicap.
 
@@ -581,10 +596,10 @@ Median of seeds 0/1/2 (`results_real.csv`; spreads in `results_real_spread.csv`)
 
 | method | digits (1797×64) | covtype (20k×54) | mnist (20k×784) |
 |---|---|---|---|
-| **betula-kmeans** | 0.467 | **0.066** | 0.327 |
+| **betula-kmeans** | 0.467 | 0.066 | 0.327 |
 | sklearn-kmeans | 0.468 | 0.054 | 0.324 |
 | **betula-gmm** (diag) | 0.461 | 0.077 | 0.306 |
-| **betula-gmm-full** | **0.575** | 0.069 | — |
+| **betula-gmm-full** | 0.575 | 0.069 | — |
 | sklearn-gmm (full) | 0.463 | 0.080 | — |
 | **betula-ward** | 0.643 | 0.091 | 0.394 |
 | sklearn-ward | 0.664 | — | — |
@@ -594,7 +609,8 @@ Median of seeds 0/1/2 (`results_real.csv`; spreads in `results_real_spread.csv`)
 | sklearn-hdbscan | 0.149 | — | — |
 | sklearn-birch | 0.664 | **0.131** | **0.426** |
 
-Bold on a betula row = it beats its same-algorithm scikit-learn counterpart. `sklearn-birch` is a
+Bold on a betula row = it beats its same-algorithm scikit-learn counterpart under the scoreboard's
+tie rule. `sklearn-birch` is a
 CF-tree method with no direct betula counterpart; it is shown for context and **it leads the
 all-methods table on both large real sets**.
 
@@ -602,23 +618,23 @@ Reading it honestly:
 
 - **digits (64-D):** k-means is a **tie** — 0.467 vs 0.468, well inside betula's 0.443–0.571 seed
   spread. The previous edition claimed a 0.568-vs-0.468 lead; 0.568 is the top of that range under
-  `normalize=True`, not the raw-Euclidean median. The real win here is the **full GMM: 0.575 vs
-  scikit-learn's 0.463**, where the high-dimensional covariance floor keeps all 10 components
-  populated and an unregularized full GMM collapses one. `betula-leiden` leads the whole table at
-  0.781 with no `k` supplied. **HDBSCAN is now a win too — 0.164 against `sklearn-hdbscan`'s 0.149,
+  `normalize=True`, not the raw-Euclidean median. The **full GMM reads 0.575 against scikit-learn's
+  0.463**, where the high-dimensional covariance floor keeps all 10 components populated and an
+  unregularized full GMM collapses one. It is still a tie under this page's rule: scikit-learn's three
+  seeds span 0.402–0.601. `betula-leiden` leads the whole table at 0.728 with no `k` supplied. **HDBSCAN is now a win too — 0.164 against `sklearn-hdbscan`'s 0.149,
   both zero-spread across three seeds** — and it is the first edition where that comparison is
   like-for-like: betula used to exclude the object from its own `min_samples` neighbourhood, so
   `min_samples=5` acted like 6 and the published row compared an effective 11 against
   `sklearn.cluster.HDBSCAN`'s 10. Aligning the convention also cut the noise fraction from 0.620 to
   0.580.
 - **covtype (54-D):** a genuinely hard set — every method scores low, and at `max_leaves=4000` the
-  betula heads sit within one seed spread of each other and of scikit-learn. betula-kmeans beats
-  sklearn-kmeans (0.066 vs 0.054); the diagonal GMM at 0.077 against scikit-learn's full GMM at
+  betula heads sit within one seed spread of each other and of scikit-learn. betula-kmeans ties
+  sklearn-kmeans (0.066 vs 0.054, ranges 0.058–0.081 and 0.037–0.084); the diagonal GMM at 0.077 against scikit-learn's full GMM at
   0.080 is a **tie**, not the win an earlier edition claimed — the two three-seed ranges are
   0.059–0.097 and 0.055–0.102, i.e. almost coincident, and the margin either way is a fifth of the
   spread. The head to quote here is `ward` (0.091, range 0.086–0.093, the tightest on the table, and
   the one cell on this dataset the compaction change left alone). Every other covtype cell lost a few
-  thousandths to it — kmeans 0.074 → 0.066, spectral 0.064 → 0.058, leiden 0.056 → 0.046 — all inside
+  thousandths to it — kmeans 0.074 → 0.066, spectral 0.064 → 0.058 (0.056 since 2026-10-29), leiden 0.056 → 0.046 — all inside
   their own spreads, and all on the dataset where a merge-only compaction was already known not to
   help, because covtype's mass sits in heavy cells a merge cannot split. The **16 000-leaf** GMM
   separation the previous edition reported here (0.104 vs 0.080) did not survive the re-measure — it
@@ -633,7 +649,7 @@ Reading it honestly:
   what they cost instead of by how close they are cuts those to 0.532 and 0.663, and the heads that
   read the summary follow.
   `normalize=True` no longer adds anything on the k-means row (two sections down). `sklearn-birch`
-  still leads, 0.426 against betula-ward's 0.394 — but at **20 000 subclusters for 20 000 points**,
+  still reads higher, 0.426 against betula-ward's 0.394, a tie under this page's rule — and at **20 000 subclusters for 20 000 points**,
   i.e. no compression at all against betula's 5.3×; give betula the same non-compression and it
   reaches 0.416. See below.
 - **`betula-hdbscan` on MNIST went the other way: 0.117 → 0.003.** The density head is the one that
@@ -673,8 +689,10 @@ does not survive measurement, tested in both directions:
 
 - Raise Birch's `threshold` to 1.0 and it yields **4 222 subclusters — a 4.74 : 1 compression, the
   same ratio betula gets at `max_leaves=4000`** — and its ARI is unchanged at **0.132** vs 0.131.
-- Hand betula Birch's own **11 774 leaves** and every head gets *worse*: kmeans 0.086, gmm 0.077,
-  ward 0.086.
+- Hand betula Birch's own **11 774 leaves** and no head comes closer to Birch: kmeans 0.086, gmm
+  0.077, ward 0.086 (an earlier edition's run of `local/scratch/covtype_birch_gap.py`, not in a
+  CSV). Against the 4 000-leaf cells of `results_real.csv` (kmeans 0.066, gmm 0.077, ward 0.091) only
+  `ward` gets worse.
 - Across seeds Birch's minimum (0.119) exceeds every betula head's **median** and every head's
   **maximum** (0.097 for gmm, 0.093 for ward). An earlier edition had one exception, `spectral`, whose
   three seeds spanned −0.015 to 0.128; on 2026-10-29 they span 0.037–0.062, below Birch's floor like
@@ -686,7 +704,8 @@ criterion, and it is now measured rather than conjectured.
 ### The mechanism: cell **shape**, not weighting and not compression
 
 A BIRCH-family pipeline has two parts, so a 2×2 isolates them (`local/scratch/birch_gap_mechanism.py`,
-`max_leaves=4000`, seeds 0/1/2, both sides assigned by nearest centre so only one thing differs):
+`max_leaves=4000`, seeds 0/1/2, both sides assigned by nearest centre so only one thing differs; not in
+a CSV):
 
 | | covtype | mnist |
 |---|---|---|
@@ -698,7 +717,8 @@ A BIRCH-family pipeline has two parts, so a 2×2 isolates them (`local/scratch/b
 removing the weights costs **−0.059** on covtype and **−0.354** on MNIST. The entire gap — and more —
 sits in the *summary*: B → C moves +0.103 and +0.413.
 
-Two further measurements say what is wrong with the summary (`local/scratch/birch_gap_followup.py`):
+Two further measurements say what is wrong with the summary (`local/scratch/birch_gap_followup.py`;
+not in a CSV):
 
 - **covtype — the leaf masses are far more skewed.** At matched cell counts (betula 3 602, Birch 4 222):
 
@@ -725,9 +745,11 @@ Two further measurements say what is wrong with the summary (`local/scratch/birc
   | 16 000 | 15 664 | 1.28× | 0.4069 |
   | 20 000 | 20 000 | 1.00× | **0.4159** |
 
-  Against Birch's 0.4257 the published **0.059 gap becomes 0.010 at equal compression** — so ~83 % of
-  the MNIST row is the price betula pays for a 5.3× summary that Birch never pays because it never
-  builds one.
+  Against Birch's 0.4257 this table's **0.059 gap becomes 0.010 at equal compression** — so ~83 % of
+  it is the price betula pays for a 5.3× summary that Birch never pays because it never builds one.
+  The published cell comes from the harness, not from this script, and reads 0.394, not 0.3667
+  (`results_real.csv`). So the published gap is 0.032, and the same arithmetic puts ~69 % of it on
+  compression.
 
 The actionable half of this is covtype's mass skew, which is a property of the leaf-budget criterion
 and not of the CF or of the head. It is tracked as its own task (mass-balanced leaf budget); the
@@ -805,7 +827,7 @@ Clustering a **real** half-million-row dataset, each run isolated in its own sub
 betula-kmeans clusters the full 581 k-row covtype **5.6× faster** than scikit-learn KMeans — at the
 same memory and, on this run, a higher ARI (0.087 vs 0.049), on real data rather than blobs. This is
 a single seed, like every row in the speed suite, and the 20 k subsample's three-seed spread
-(0.071–0.102 for the same head) is wide enough that the ARI column here should be read as "not
+(0.058–0.081 for the same head, `results_real_spread.csv`) is wide enough that the ARI column here should be read as "not
 worse", not as a lead of that size.
 
 **Re-measured 2026-09-10.** This is the one cell in the speed suite where the rebuild change moves
@@ -879,7 +901,8 @@ signals — on generic embeddings (no coordinate order) the structure is meaning
 
 `projection="weighted-nmf"` factorizes the ≤ `max_leaves` leaf centroids with their masses as weights
 rather than all `N` points (`bench/nmf_cf_weighted.py`, nonnegative topic mixtures, d = 60, k = 4,
-NMF rank 8 → k-means, median over 8 seeds):
+NMF rank 8 → k-means, median over 8 seeds; not in a CSV, the script prints the table and writes no
+file):
 
 | N | sklearn NMF → k-means | CF-weighted NMF | speed |
 |---|---|---|---|
@@ -1077,8 +1100,12 @@ uv run --with faiss-cpu --with fast-hdbscan --with scikit-learn --with pandas \
     python bench/external_baselines.py
 ```
 
-Single-threaded, seed 0, `max_leaves = 2000`, one subprocess per row so peak RSS is that method's own.
+Seed 0, `max_leaves = 2000`, one subprocess per row so peak RSS is that method's own.
 `min_samples = 10` and `min_cluster_size = n/400` are handed to every method identically, in points.
+The run was not single-threaded. The harness sets `OMP_NUM_THREADS=1` only when it is unset
+(`os.environ.setdefault`), and the shell set it to 8, so FAISS and scikit-learn ran with eight OpenMP
+threads. betula's pool is rayon, which that variable does not reach; `n_shards=1` makes only the tree
+build serial.
 
 | contest | n | method | time | peak RSS | clusters found | ARI |
 |---|---:|---|---:|---:|---:|---:|
@@ -1109,6 +1136,26 @@ default row 0.07 → 0.04 s, a timing of a few tens of milliseconds), which is t
 timing on this machine. A second run on a build carrying the crate's
 `--inline-threshold` hint (which the run above lacked) read 0.12 / 0.43 s for `betula-kmeans` and
 0.13 / 0.20 s for `betula-hdbscan`: these rows do not depend on it.
+
+**The contest's betula arm reads its rows in label order, and that order costs the `hdbscan` head
+most of the gap.** `_worker.gen` stacks the six blobs one after another, so the tree sees every row of
+one cluster before the first row of the next. A screen on the current tree (one fixture draw, seeds
+0/1/2 of the head, one row order per column; not in a CSV,
+`local/scratch/research-2026-11-15/probes/ext_blobs*.out`) reads, at 100 000 / 500 000 rows:
+
+| betula arm | label order | shuffled rows |
+|---|---:|---:|
+| `hdbscan`, `min_samples=10`, 2 000 leaves (the contest arm) | 0.480 / 0.490 | 0.568 / 0.567 |
+| `hdbscan` at its default `min_samples`, 8 000 leaves | 0.799 / 0.796 | 0.895 / 0.890 |
+| the same, `canonical_order=True` | 0.897 / not run | 0.897 / not run |
+| `gmm-full`, BIC sweep (no count given) | 0.983 / 0.983 | 0.983 / 0.983 |
+| `xmeans` (no count given) | 0.977 / 0.977 | 0.977 / 0.977 |
+
+Sorted input costs the `hdbscan` head up to 0.10 ARI at its defaults and 0.09 at the contest's
+settings. On shuffled rows its defaults come within 0.015 of `fast_hdbscan`'s 0.910 at 100 000 rows
+and level with its 0.892 at 500 000. `canonical_order=True` removes the order effect: it reads 0.897
+in the label order and in four shuffles. Two heads that need no count read above the rival in either
+order. The contest row above stays as measured until the harness is re-run.
 
 ### The FAISS row is two rows, because FAISS's defaults are not a like-for-like fit
 
@@ -1165,6 +1212,8 @@ already credits raw HDBSCAN with owning. Swept on n = 100 000 with `min_cluster_
 | betula, `max_leaves` 2 000 | 0.480 (24) | 0.477 (24) | 0.784 (5) | 0.761 (6) |
 | betula, `max_leaves` 8 000 | 0.569 (4) | 0.800 (5) | **0.849** (6) | 0.762 (5) |
 
+The sweep is a probe, not in a CSV, and its rows are in label order like the contest's.
+
 The betula rows are the 1.0.0 tree; before its cost-ranked rebuild they read 0.478 (3), 0.566 (4),
 0.785 (5), 0.762 (5) and 0.566 (4), 0.799 (5), 0.843 (6), 0.764 (5). So best-against-best the gap is
 0.910 against 0.849 (timed at ~1.4 s against 2.1 s on the earlier tree), not the 0.910 against ~0.48
@@ -1200,7 +1249,7 @@ put back.
 — the conventional ten-*point* default translated into the currency the head counts in, the same
 translation the proximity-graph degree already made in the other direction. On the 1.0.0 tree it
 reads **0.821** at `max_leaves = 2 000` and **0.822** at 8 000 (medians of seeds 0/1/2, against 0.612
-and 0.717 for the fixed ten and `fast_hdbscan`'s 0.910 over the same seeds). It was published at
+and 0.717 for the fixed ten and `fast_hdbscan`'s 0.910 over the same seeds; not in a CSV). It was published at
 0.820 and **0.896**, measured on the tree before the cost-ranked rebuild that shipped in the same
 release. Only the 8 000-leaf median moved, but seed 0 fell at both budgets — 0.790 → 0.561 at
 2 000 and 0.896 → 0.799 at 8 000 — losing one cluster at each. The plateau is still wide: 5 to 40
@@ -1208,7 +1257,8 @@ leaves are all inside the seed spread at both budgets, so the ten is the shape o
 fit to this fixture.
 
 Checked against the six published quality fixtures at N = 30 000 (median of seeds 0/1/2, 1.0.0
-tree), the rule costs nothing anywhere — `moons` 0.9999 → 0.9996, `circles` 1.0000 → 0.9999,
+tree; not in a CSV — the published quality, real and external tables run `min_samples=10`), the rule
+costs nothing anywhere — `moons` 0.9999 → 0.9996, `circles` 1.0000 → 0.9999,
 `highdim` 1.0000 → 1.0000, `aniso` 0.568 → 0.565, `blobs` 0.423 → 0.429 — and gains on `varied`,
 **0.568 → 0.839**. (On the earlier tree the fixed ten also failed on `blobs`, 0.142 against the
 rule's 0.444, and `varied` read 0.479 → 0.548.) Swept more widely (two- and six-blob fixtures ×
@@ -1218,7 +1268,9 @@ and the two it loses are real losses: two overlapping blobs at N = 100 000, wher
 ARI 0.484 at 200 leaves and 0.452 at 2 000 against the rule's 0.000 and 0.337. On the earlier tree
 (`local/scratch/q4_rule_grid.out`: three wins) the two losses sat at a 200-leaf budget between two
 failures, 0.074 against 0.000; the cost-ranked rebuild lifted the fixed ten on this fixture and not
-the rule.
+the rule. The committed rows of the default rule are the census ones: `results_density_rivals.csv`
+reads blobs 0.376, aniso 0.469 and varied 0.302 on the seed-0 draw of each fixture, at the default
+leaf budget.
 
 The units trap found on the way is fixed as of this edition, and was the more serious half. On the
 summary route `min_cluster_size` and `min_samples` used to be counted in **leaves**: `hdbscan.rs`
@@ -1363,8 +1415,9 @@ scikit-fuzzy 0.5.0, kmodes 0.12.2, tslearn 0.10.0, numba 0.68.1.
 
 - **Quality and peak RSS only.** The runs shared the machine with other work, so every row records
   `timing_valid = False`, and no wall time from them is quoted here. Timing waits for a quiet
-  machine: `bench/timings.py` re-times every arm of these harnesses and of the four below, in
-  rounds of shuffled order with a control workload after each case, and keeps the first fit (with
+  machine: `bench/timings.py` re-times every arm of these harnesses and of three of the four below
+  (the GPU, stream and Rust tables; it has no stage for Gagolewski's suite), in rounds of shuffled
+  order with a control workload after each case, and keeps the first fit (with
   imports, JIT compilation and device set-up) apart from the second.
 - **Peak RSS is the whole process**, the method's own import stack included (numba, for
   instance). A betula process starts at about 165 MB. A memory cell is what a user's
@@ -1392,15 +1445,21 @@ scikit-fuzzy 0.5.0, kmodes 0.12.2, tslearn 0.10.0, numba 0.68.1.
   of every fixture here, and so does this harness. CLASSIX's documentation says to tune `radius`
   down from 1 until the count is slightly above the expected one: that needs the count, so CLASSIX
   runs at its default `radius=0.5` and is reported as such.
-- **A rival that finds no structure is not scored.** At their defaults CLASSIX, DenMune and OPTICS
-  return one cluster (ARI 0.000) on several standardised fixtures. That measures a default against
-  data it was not set for, not the method, so those cells are in the tables and not on the board.
-  The rule removes only betula wins.
+- **A rival that finds no structure is not scored.** A rival whose median ARI on a slice is below
+  0.01 gives no board cell there. That removes 14 (rival, slice) pairs, all in the density contest
+  without k. In 10 the rival returns one cluster (CLASSIX on five fixtures, OPTICS on four, DenMune
+  on one); in the other 4 it returns two or three clusters at ARI 0.004 or less (CLASSIX on
+  `digits`, DenMune on blobs and aniso, FINCH on circles). That measures a default against data it
+  was not set for, not the method, so those cells are in the tables and not on the board. The rule
+  removes 14 betula quality wins; of the 14 memory cells it removes, 8 would be wins and 6 ties.
 
 **Each rival reproduces its own documentation first** (`bench/rival_reproductions.py`): the example
 the package publishes, called as published, against the published output. Six of eight match. The
 two that do not are stable across runs and are traced to the documentation, not to the call.
 lumbermark and EVoC publish no numeric output, so they have no row; read theirs with that in mind.
+The other census packages have no check either, and are not exempt by any rule: umap-learn, PaCMAP,
+openTSNE, leidenalg with igraph (kNN + Leiden), BERTopic's default pipeline, kmedoids, scikit-fuzzy,
+kmodes and tslearn. Their rows rest on the documented call alone.
 
 | rival | published | reproduced | |
 |---|---|---|---|
@@ -1412,6 +1471,21 @@ lumbermark and EVoC publish no numeric output, so they have no row; read theirs 
 | fast_hdbscan 0.3.4 (PLSCAN) | 1 | 3 | no — the docstring's output is wrong: 3 layers on every run |
 | scikit-learn 1.9.1 OPTICS | [0, 0, 0, 1, 1, 1] | [0, 0, 0, 1, 1, 1] | yes |
 | PhenoGraph 1.5.7 | (3, 0.66) | (3, 0.66) | yes |
+
+**Rival families with no row, and why.** Every rival a user would reach for is named, measured or
+not. These have no row in any committed CSV:
+
+| family | named, not measured | reason |
+|---|---|---|
+| no CPython 3.14 wheel | fastcluster, scikit-learn-extra, trimap, SuperKMeans, ClustPy | the bench runs on CPython 3.14, and without a wheel the arm needs a compiler; fastcluster's Ward enters only as a published vector of Gagolewski's suite |
+| density | scikit-learn `DBSCAN` | not yet run |
+| stationary signals | aeon | not yet run; tslearn's k-Shape has rows |
+| outliers | PyOD | not yet run; the outlier table holds IsolationForest and LOF |
+| streaming | scikit-learn's `partial_fit` learners, BICO | not yet run; the memory table compares the stream with one-shot k-means |
+| GPU | cuML `DBSCAN`, cuML `HDBSCAN` on the raw rows, `cuml.accel`, cuVS k-means, FAISS on a GPU, fastkmeans, flash-kmeans, rapids-singlecell, TorchDR | not yet run; the GPU table holds cuML's k-means and UMAP pipelines |
+| Rust | `kno10/fuel` (Schubert; PyO3 bindings, AGPL-3.0; GMM, von Mises–Fisher, spherical k-means, HDBSCAN, FasterPAM; no CF-tree) | not yet run; the Rust table holds linfa-clustering, clump and the `hdbscan` crate |
+| deep clustering | ClustPy, the deep methods of CLUBench | by design: a deep method learns the representation, and betula clusters vectors it is given. The fair contest is the same embedding with another clusterer, which the news rows run. CLUBench (arXiv 2605.29933; 24 algorithms, 131 datasets) reports that deep clustering does not clearly beat the best conventional methods on average |
+| papers with no package | Torque Clustering, DelTriC, CoreSPECT | no package found |
 
 ### Where betula is the right choice, and where it is not
 
@@ -2200,7 +2274,8 @@ matrix, which gives the 1.2.0 value exactly (300 random cases, largest differenc
   Paired on the 75 datasets both scored, it averages 0.819 against Lumbermark_f0.5_M0's 0.812 and
   GIc's 0.811, and is ahead on 19 datasets and behind on 23 and 20. It is ahead of Genie at
   genieclust's default `gini_threshold=0.3` (0.789; ahead on 21, behind on 18), ITM (0.757),
-  scikit-learn's `GaussianMixture` (0.710) and `KMeans` (0.657), and Ward linkage (0.656).
+  scikit-learn's `GaussianMixture` (0.710, on the 73 datasets those two share, where `leiden` averages
+  0.826) and `KMeans` (0.657), and Ward linkage (0.656).
 - **It misses K more often than the other heads.** On 10 dataset-K pairs its resolution search ends
   on another count, and on 6 datasets (`sipu`'s a1, birch1, birch2, worms_2 and worms_64, `fcps`'s
   target) on every K. Those are absent from its means, which flatters it on `sipu` and `fcps`.
@@ -2228,8 +2303,8 @@ over seeds, then the median (min–max) over the five orders. Quality only.
 | **betula, refitted** | 0.391 (0.370–0.409) | 0.398 (0.388–0.398) | 0.392 (0.385–0.401) | 0.390 (0.382–0.406) | 0.383 (0.371–0.394) | 20 | 0.00 |
 | UMAP + k-means, refitted | 0.410 (0.390–0.418) | 0.417 (0.394–0.438) | 0.431 (0.415–0.443) | 0.429 (0.417–0.439) | 0.448 (0.425–0.452) | 20 | 0.00 |
 | scikit-learn k-means, refitted | 0.364 (0.331–0.375) | 0.376 (0.368–0.384) | 0.372 (0.346–0.384) | 0.376 (0.371–0.378) | 0.369 (0.359–0.380) | 20 | 0.00 |
-| UMAP + HDBSCAN, refitted | 0.186 (0.020–0.207) | 0.136 (0.117–0.138) | 0.120 (0.080–0.155) | 0.085 (0.082–0.106) | 0.089 (0.082–0.090) | 43 → 214 | 0.29–0.36 |
-| EVoC, refitted | 0.215 (0.193–0.234) | 0.197 (0.173–0.265) | 0.184 (0.156–0.202) | 0.208 (0.187–0.222) | 0.202 (0.163–0.212) | 9–17 | 0.27–0.33 |
+| UMAP + HDBSCAN, refitted | 0.186 (0.020–0.207) | 0.136 (0.117–0.138) | 0.120 (0.080–0.155) | 0.085 (0.082–0.106) | 0.089 (0.082–0.090) | 43 → 213 | 0.29–0.37 |
+| EVoC, refitted | 0.215 (0.193–0.234) | 0.197 (0.173–0.265) | 0.184 (0.156–0.202) | 0.208 (0.187–0.222) | 0.202 (0.163–0.212) | 11–18 | 0.27–0.33 |
 
 - **Streaming costs nothing in quality here.** At all 75 checkpoints (five orders, three seeds,
   five fractions) `partial_fit` gives the same ARI as a refit on every row seen, to the last digit:
@@ -2237,7 +2312,7 @@ over seeds, then the median (min–max) over the five orders. Quality only.
 - **UMAP + k-means wins from 60 % of the stream on**, by 0.039–0.065, and is level before that. It
   pays a full refit, layout included, at each checkpoint.
 - **UMAP + HDBSCAN, BERTopic's cluster step, gets worse as posts arrive**: its topic count grows from
-  43 to 214 and its ARI falls from 0.186 to 0.089. betula is ahead of it, and of EVoC, at every
+  43 to 213 and its ARI falls from 0.186 to 0.089. betula is ahead of it, and of EVoC, at every
   checkpoint. scikit-learn's k-means is level with betula at four checkpoints and behind it at 40 %
   (0.376 against 0.398).
 
@@ -2271,14 +2346,15 @@ the rows included. Seeded arms run on seeds 0, 1, 2; a single value means all th
 | clump `Hdbscan` | 0.000 | 0.000 | 0.000 | 1.000 | 1.000 | 1.000 | 0.000 | 0.429 | 12–24 |
 | **betula `hdbscan`** (the table above, Python) | 0.376 | 0.469 | 0.302 | 1.000 | 1.000 | 1.000 | 0.164 | 0.616 | — |
 
-- **k-means is a three-way tie.** The three implementations agree to the third digit on six
-  fixtures; on `digits` all three spread over seeds and overlap.
+- **k-means is a three-way tie.** The three implementations agree to the third digit on four
+  fixtures and within 0.002 on blobs and `varied`; on `digits` all three spread over seeds and
+  overlap.
 - **Full-covariance GMM: a tie on quality, and on memory.** betula's `gmm-full` and linfa's
   mixture match on six fixtures. On `digits` betula reads 0.575 on every seed and linfa 0.378–0.613,
   a tie by the rule. betula's process peaks at 15 MB there against linfa's 10 MB, and at 12, 13 and
-  15 MB at `RAYON_NUM_THREADS` 1, 2 and 8. Up to 1.5.0 it peaked at 259 MB: the head kept a dense
-  64 × 64 matrix per leaf for each restart that ran at once, where the leaf's covariance is a
-  diagonal.
+  15 MB at `RAYON_NUM_THREADS` 1, 2 and 8 (one run each, not in a CSV; the committed rows ran at
+  8). Up to 1.5.0 it peaked at 259 MB: the head kept a dense 64 × 64 matrix per leaf for each
+  restart that ran at once, where the leaf's covariance is a diagonal.
 - **No count given, the `hdbscan` crate is ahead on the mean** (0.640 against betula's 0.616): it
   wins blobs and `varied`, betula wins aniso and `digits`. clump's `Hdbscan` returns one cluster on
   four fixtures at its defaults, so by the rule above it is not scored there.
@@ -2351,9 +2427,10 @@ page.** Every `structured` cell read 0.4174 at every budget — sixteen times th
 *nothing*, and `kmeans` / `ward` / `gmm` agreed to three decimals, because the summary no longer
 contained the answer. Ranking compaction merges by the within-cluster sum of squares they cost
 instead of by how close the pair is takes `top1` from **0.800 to 0.064** at 250 leaves and every one
-of those cells to **1.0000**: 42 of the 46 betula cells in `results_imbalance.csv` moved, none of the
-10 scikit-learn cells did, and the four that did not move were already at 1.0 because they absorb on
-`ward`, where the gap *was* the merge cost all along. That is the same built-in control as the ELKI
+of those cells to **1.0000**. The ARI of 45 of the 128 betula rows in `results_imbalance.csv` moved
+(the file at `7e5471f` against its parent) and none of the 10 scikit-learn rows did. Of the 83 betula
+rows that did not move, 75 were already at 1.0000, the `ward` absorption arms among them, where the
+gap *was* the merge cost all along. That is the same built-in control as the ELKI
 D4/R row.
 
 The one thing compaction still cannot do is *split* a leaf, so a genuinely degenerate core — every
@@ -2507,31 +2584,39 @@ fixtures, medians of seeds 0/1/2 for the betula rows (Birch is deterministic and
 | structured | sklearn-birch, threshold matched to the budget | 250 | 210 | 0.4180 | 0.800 |
 | structured | sklearn-birch, threshold matched to the budget | 1000 | 971 | 0.3535 | 0.800 |
 | structured | sklearn-birch, threshold matched to the budget | 4000 | 4 183 | 0.3266 | 0.800 |
-| structured | betula-kmeans | 250 / 1000 / 4000 | 241 / 914 / 3 767 | 0.4174 | 0.800 |
+| structured | betula-kmeans | 250 / 1000 / 4000 | 246 / 937 / 3 746 | **1.0000** | 0.064 / 0.033 / 0.013 |
 | flat | sklearn-birch (defaults) | — | 7 162 | 0.8519 | 0.800 |
 | flat | sklearn-birch, matched | 1000 | 987 | 0.8521 | 0.800 |
-| flat | betula-kmeans | 250 / 1000 / 4000 | 232 / 920 / 3 792 | **1.0000** | 0.800 |
+| flat | betula-kmeans | 250 / 1000 / 4000 | 235 / 965 / 3 700 | **1.0000** | 0.046 / 0.019 / 0.011 |
 
-Three things this settles. **`top1 = 0.800` in every row**: both trees put the entire core in one
-leaf, so the mis-allocation is a property of the shared design — one global absorption radius — and
-not of either implementation. **Birch is measured at its defaults *and* matched**, because its
+Three things this settles. **`top1 = 0.800` in every Birch row**: Birch puts the entire core in one
+leaf at every threshold. Before 2026-09-10 betula did the same (ARI 0.4174 and `top1` 0.800 at all
+three budgets, *What it cost* above), so the mis-allocation was a property of the shared design — one
+global absorption radius — and not of either implementation. **Birch is measured at its defaults *and* matched**, because its
 default threshold produced ~7 000 subclusters against budgets of 250–4 000, and a rival compared only
 at its defaults is a rival misreported (the same discipline as the FAISS row above). **More leaves
 make Birch worse** on `structured` — 0.4180 → 0.3266 as its subcluster count goes 210 → 4 183 —
 which is what mis-allocation looks like when the extra budget goes to the minorities.
 
-betula is on the better side of the shared defect at every budget, and on `flat` it recovers the
-answer exactly where Birch loses 15 points. That is worth saying plainly: this row is not a win
-claimed over a fixed rival, it is the same known failure measured in both.
+Since the distortion-ranked rebuild betula recovers both fixtures exactly at every budget, where
+Birch reads 0.33–0.42 on `structured` and 0.85 on `flat` at its defaults. This row is still not a win
+claimed over a fixed rival: betula had the same failure until 2026-09-10, and Birch has it today.
 
 ### It is D0, not the CF-tree — the correction (task #65)
+
+> **The table and the prose of this subsection are from before 2026-09-10 and no longer reproduce.**
+> On the current tree every `structured` and `flat` cell of all eight criteria reads a median of
+> 1.0000 at 250, 1 000 and 4 000 leaves, with `top1` 0.008–0.234 (`results_imbalance.csv`, the
+> `betula-kmeans/<criterion>` rows). They are kept, dated, as the record of what the radius criteria
+> did before the rebuild ranked merges by their cost.
 
 The paragraph above says the mis-allocation is "a property of the shared design — one global
 absorption radius". The mechanism is right; the scope was too wide. The rows above all run the
 shipped default `absorb="euclidean"`, which is D0 — a raw centroid radius. Hold the tree, the budget,
 the feature model, the head and the seeds fixed and change **only** the absorption criterion:
 
-`structured`, `kmeans`, medians of seeds 0/1/2, cells are **ARI / realised leaves / `top1`**:
+`structured`, `kmeans`, medians of seeds 0/1/2, **as measured before 2026-09-10**, cells are
+**ARI / realised leaves / `top1`**:
 
 | `absorb=` | @250 | @1000 | @4000 |
 |---|---|---|---|
@@ -2567,13 +2652,14 @@ A bigger budget is **not** a third: it rescues D1, D3 and R at 4 000 leaves, and
 sixteen times the budget still buys nothing. None of this makes the D0 rows wrong — BIRCH's published
 criterion is a radius, scikit-learn implements a radius, and that comparison is the row.
 
-`bench/size_imbalance.py` sweeps all eight criteria, so every cell above is reproducible from the
-shipped harness.
+`bench/size_imbalance.py` sweeps all eight criteria. It reproduces the current cells quoted in the
+banner of this subsection, not the dated table.
 
 ## Quality against the leaf budget — the knob the tables never varied
 
 `bench/leaf_budget.py`, median of seeds 0/1/2, `threshold=0.0`, crossed over the four routing
-distances; `bench/results_budget.csv` holds all 252 cells, **re-run 2026-09-09**. The feature is
+distances; `bench/results_budget.csv` holds all 252 cells, **last re-run 2026-09-10** (`7e5471f`,
+the rebuild that ranks merges by their cost). The feature is
 `spherical` for the centroid heads and `diagonal` for `gmm`, which is the pair the library now
 accepts — the earlier edition of this table put `gmm` on `spherical` too, and the difference is the
 subject of the two subsections below. Every table above this
@@ -2586,44 +2672,48 @@ mean squared radius **0** — every leaf is a single point. Re-running at `max_l
 those cells to the digit. That row is raw-point clustering behind a betula wrapper and cannot support
 any claim about summarization.
 
-It also understates the library. On `digits` the curve has an **interior optimum**, not a monotone
-decline:
+Compression does not help the centroid heads there; only `gmm` gains from it:
 
 | `max_leaves` | leaves | compression | max leaf weight | mean sq radius | ward | k-means | gmm |
 |---|---|---|---|---|---|---|---|
-| 4000 / 1797 | 1797 | ×1.0 | 1 | 0.000 | 0.6428 | 0.4670 | 0.4613 |
-| 900 | 898 | **×2.0** | 54 | 4.689 | **0.6819** | **0.5600** | 0.4403 |
-| 450 | 427 | ×4.2 | 160 | 12.47 | 0.6197 | 0.5241 | **0.5485** |
-| 225 | 218 | ×8.2 | 243 | 20.77 | 0.3909 | 0.5628 | 0.5190 |
-| 112 | 111 | ×16.2 | 605 | 30.72 | 0.2870 | 0.1903 | 0.2517 |
-| 90 | 89 | ×20.2 | 1102 | 34.64 | 0.1101 | 0.1786 | 0.2091 |
-| 45 | 44 | ×40.8 | 1251 | 39.21 | 0.1778 | 0.1198 | 0.2566 |
+| 4000 / 1797 | 1797 | ×1.0 | 1 | 0.000 | **0.6428** | 0.4670 | 0.4613 |
+| 900 | 833 | ×2.2 | 22 | 4.609 | 0.5087 | 0.4774 | 0.4636 |
+| 450 | 441 | ×4.1 | 40 | 8.929 | 0.4574 | 0.5143 | 0.5359 |
+| 225 | 211 | ×8.5 | 83 | 13.33 | 0.6169 | 0.5477 | **0.5475** |
+| 112 | 107 | ×16.8 | 92 | 18.10 | 0.5725 | 0.5011 | 0.5159 |
+| 90 | 81 | ×22.2 | 96 | 19.83 | 0.5406 | 0.5018 | 0.5099 |
+| 45 | 41 | ×43.8 | 156 | 24.32 | 0.4691 | 0.5352 | 0.5039 |
 
-Halving the leaf count **improves** ward (0.6428 → 0.6819) and k-means (0.4670 → 0.5600). The
-summary is not a lossy approximation of the point-level answer there; it is a denoising step, and
-the published zero-compression row is on the wrong side of the peak.
+`ward` is best at ×1.0, and every compressed `ward` cell is below it (its seed range is zero in
+every row). `k-means` is level at every budget: its best, 0.5477 at ×8.5, is inside the ×1.0
+cell's seed range (0.443–0.571). `gmm` gains: 0.5475 at ×8.5 and 0.5359 at ×4.1 against 0.4613,
+outside both seed ranges. The 2026-09-09 edition read an interior optimum for `ward` and `k-means`
+at ×2.0 (0.6819 and 0.5600); the cost-ranked rebuild of 2026-09-10 removed it.
 
-`covtype-20k` behaves differently and more usefully: the `ward` head holds 0.1412–0.1430 from ×11.1
-all the way to **×202** (99 leaves, maximum leaf weight 5773), and the order study below reads
-0.1416 for the same head at ×1.0 — two orders of magnitude of compression cost nothing measurable,
-and the best `covtype` cell in the whole sweep (0.1430) is the *most* compressed one.
+`covtype-20k` behaves differently and more usefully: the `ward` head holds 0.1417–0.1418 from ×10.9
+to ×87, and the order study below reads 0.1416 for the same head at ×1.0 — an order of magnitude of
+compression costs nothing measurable. At ×204 (98 leaves, maximum leaf weight 1351) it drops to
+0.1354, a loss under the seed rule. The best `covtype` cell in the whole sweep (0.1439, `average`
+routing, 91 leaves) is the *most* compressed one.
 
 > **These `covtype-20k` cells are not the `covtype` rows of the quality tables, and must not be read
 > against them.** This sweep and the order study are the **pop** rule; the quality tables are
 > **sub**. The same ward head reads **0.1416** here and **0.0861** there, and the difference is the
 > fixture, not the budget: see "Which `covtype` is this?" for both rules, and "What the `covtype` /
-> `ward` gap actually is" above for the cross that isolates it. `mnist-10k` degrades gently to ×5.5 (k-means 0.2900 → 0.2725, ward 0.3419 → 0.3228)
-and then falls off a cliff between ×10 and ×22.
+> `ward` gap actually is" above for the cross that isolates it. `mnist-10k` holds k-means to ×5.4 (0.2900 → 0.2962), then drops it to 0.2306 at ×11, where it
+stays to ×100 (0.23–0.24). The `ward` head has no ×1.0 cell; it reads 0.3428 at ×5.4 and 0.3404 at
+×11, and falls off a cliff to 0.1835 at ×21.5.
 
 Two further readings the sweep settles:
 
 - **The `gmm` head was the fragile one, and the cause was a feature/head mismatch (task #89) that
   is now refused.** On `feature="spherical"` it collapsed to 0.0088 on `digits` at ×2.0 and to
   0.0618 / 0.0512 on MNIST at ×5.5 / ×10, in cells where k-means and ward were near their best; on
-  the `diagonal` feature the same cells read **0.4403** and **0.2850 / 0.2213**. The collapse was
-  the pair, not the head, and the re-run is the confirmation: with a per-dimension scatter to read,
-  `gmm` is the *strongest* head on `digits` at ×4.2 (0.5485 against k-means 0.5241) and on MNIST
-  below ×20, where k-means and ward have fallen to 0.08–0.16 and it holds 0.15–0.19. Nothing in the
+  the `diagonal` feature the nearest cells of the current sweep read **0.4636** (×2.2) and
+  **0.2704 / 0.2568** (×5.4 / ×11). The collapse was the pair, not the head, and the re-run is the
+  confirmation: with a per-dimension scatter to read, `gmm` is the best head on `digits` at ×4.1
+  (0.5359 against k-means 0.5143, a tie, and ward 0.4574). On MNIST it beats k-means at ×11 (0.2568
+  against 0.2306), ties it at ×21.5 and ×42, and beats ward at ×21.5 (0.3193 against 0.1835). Nothing in the
   fixed-budget tables exposed either fact, because they never crossed the region where it happens.
   The mechanism is below.
 
@@ -2721,13 +2811,14 @@ the refusal.)
 - **`results_order.csv`** — 18 of 81 cells moved, all `gmm`, and this one **changes a published
   conclusion**: see "The cure — `canonical_order=True`" below.
 - **The routing distance only exists under compression, mechanically.** At ×1.0 the spread across
-  `euclidean` / `manhattan` / `ward` / `average` is exactly **0.0000** on all three datasets: the four
-  distances build the identical singleton leaf set, so there is nothing left to differ. The spread
-  grows with compression (`digits` gmm: 0.0000 → 0.0884 at ×2.0 → 0.1701 at ×8.2, and 0.4785 at
-  ×40.8). Task 27 measured the routing lever at one budget and found it small; this says the budget
-  it was measured at is the one regime where it provably cannot matter. Counting wins per cell,
-  `ward` routing takes 13/23 on `digits` and 13/19 on MNIST — and only 2/21 on `covtype`, where
-  `average` (9) and `manhattan` (7) lead. The default stays `euclidean`; the recommendation is now data-dependent and measured.
+  `euclidean` / `manhattan` / `ward` / `average` is exactly **0.0000** for `kmeans` and `gmm` on all
+  three datasets: the four distances build the identical singleton leaf set. The one exception is
+  the `digits` `ward` head, 0.0350, which is the routing descent the order study below describes.
+  Under compression the spread reaches 0.1978 (`digits` gmm at ×22.2) and 0.2467 (MNIST ward at
+  ×42). Task 27 measured the routing lever at one budget and found it small; this says the budget
+  it was measured at is the regime where it matters least. Counting the routing with the highest
+  median per cell (a tie counts for each distance in it), `ward` routing leads on `digits` (11 of
+  23 cells) and MNIST (10 of 19), and `euclidean` on `covtype` (10 of 21). The default stays `euclidean`; the recommendation is now data-dependent and measured.
 
 The `mean_sq_radius` column is Σᵢwᵢrᵢ²/n, the summary's mean squared quantization error, and it is
 the input to task #60's Zador-form fit. It is monotone in the leaf count on all three datasets and is
@@ -3615,6 +3706,7 @@ per-cluster z-score, so it is local by construction where a global distance-to-m
 
 Three fixtures, `N = 4000`, 5% contamination, median of seeds 0/1/2; betula at `n_clusters=5`,
 `feature="full"`, `max_leaves=0.05` (200 leaves), IsolationForest and LOF at their sklearn defaults.
+Not in a CSV: the harness is `local/scratch/outlier_dami.py`, untracked.
 
 | fixture | betula | IsolationForest | LOF |
 |---|---|---|---|
@@ -3712,8 +3804,10 @@ inside a single leaf.
 Two trees can look identically pathological — budget spent, one leaf holding most of the mass — and
 only one of them has lost anything. `bench/size_imbalance.py` ships the control pair that makes this
 checkable: `structured` puts two true clusters 2.0 apart *inside* the dense core, `flat` puts nothing
-there, and both give a heaviest leaf holding exactly 80% of the mass at a 93–96% full budget. Mass
-concentration alone therefore cannot be the diagnosis.
+there, and before 2026-09-10 both gave a heaviest leaf holding exactly 80% of the mass at a 93–96%
+full budget. Mass concentration alone therefore cannot be the diagnosis. (Since the cost-ranked
+rebuild the heaviest leaf holds 1.3–6.4 % of the mass on `structured` and 1.1–4.6 % on `flat`,
+`results_imbalance.csv`, so the measurements of this section are from before that change.)
 
 The heaviest leaf's **radius** can. Medians of seeds 0/1/2, as the heaviest leaf's RMS radius over
 the median non-degenerate leaf radius:
@@ -3880,7 +3974,7 @@ Three results:
   **18 of the 27** cells and is constant under reseeding, so the two arms are not even comparing
   summaries of the same size.
 
-This closes the loose end from task 27: `ward` on `digits` varied 0.6224–0.6525 across the four
+This closes the loose end from task 27: `ward` on `digits` varied 0.6176–0.6525 across the four
 routing distances at an identical singleton leaf set, which had no explanation while the leaf set was
 believed to be the only input. Here the same head varies 0.6428–0.6587 across permutations of that
 same identical leaf set. It is not a tie-break: it is the routing descent. The leaf set is the same,
@@ -4251,19 +4345,22 @@ build — runs 0.84 to 2.46, worst on `mnist-10k ward`, which is the linear fact
 on the pass's own route. The old build's ratios run 0.97 to 1.88 on the same cells, since its refit
 never widened and only the labelling route did.
 
-## Restarts pass scikit-learn on MNIST, and the same count loses on digits (`n_init`)
+## Restarts reach scikit-learn on MNIST, and the same count loses on digits (`n_init`)
 
 Lloyd converges to a *local* optimum of the inertia, so the k-means head has always run several
 k-means++ draws and kept the lowest — four of them, hard-coded. `n_init` makes that count a
 parameter. The question the parameter had to answer first was whether the count was worth exposing:
-the published `mnist,20000,betula-kmeans` cell reads ARI 0.3069 against `sklearn-kmeans`'s 0.3244,
-and a restart-starved head would explain the gap for free.
+the published `mnist,20000,betula-kmeans` cell read ARI 0.3069 against `sklearn-kmeans`'s 0.3244
+before 2026-09-10, and a restart-starved head would explain the gap for free. Since the
+distortion-ranked rebuild the cell reads 0.3265 (seeds 0.3148–0.3309), a tie (`results_real.csv`).
 
 Harness identical to `bench/comprehensive.py::run_real` — the same per-seed 20 000-row subsample, the
 same `StandardScaler` (the **sub** rule; the `covtype-20k` figures below are that fixture, not the
 **pop** one the budget sweeps use — see "Which `covtype` is this?"), the same `BETULA_KW` (`threshold=0`, `max_leaves=4000`, `n_shards=1`) —
 `feature="spherical"`, `method="kmeans"`, ARI and wall time the median of seeds 0/1/2, one machine,
-one process, `RAYON_NUM_THREADS` default. Raw output in `local/scratch/q3_curve_shipped.out`.
+one process, `RAYON_NUM_THREADS` default. Raw output in `local/scratch/q3_curve_shipped.out`; not in
+a CSV. The sweep ran on the tree before 2026-09-10, so its default row is not today's published cell
+(mnist 0.3265, covtype 0.0658 in `results_real.csv`).
 
 | `n_init` | mnist ARI | mnist time | digits ARI | covtype ARI |
 |---|---|---|---|---|
@@ -4275,7 +4372,7 @@ one process, `RAYON_NUM_THREADS` default. Raw output in `local/scratch/q3_curve_
 | `sklearn.cluster.KMeans(n_init=10)`, raw rows | 0.3244 | 13.45 s | — | 0.0539 |
 
 **On MNIST the gap was restart-cheap, and the fix is not free.** 25 draws take the head to 0.3303,
-past scikit-learn's 0.3244, in half its wall clock — but at 3.0× the four-draw fit. The three seeds
+level with scikit-learn's 0.3244 (the seed ranges overlap), in half its wall clock — but at 3.0× the four-draw fit. The three seeds
 separate cleanly: 25 restarts read [0.3219, 0.3328] against the default's [0.3061, 0.3146], so this
 is the parameter moving the answer and not the seed.
 
@@ -4382,7 +4479,7 @@ Every one of the four reaches the true partition at its own radius; they simply 
 a radius of 1 means. Any comparison that fixes the radius across libraries is measuring the units.
 
 **At each head's own best radius, chosen on the stationary prefix** (median of seeds 0/1/2, ARI
-before → after the change):
+before → after the change; not in a CSV, `bench/stream_reference.py` prints it):
 
 | head | radius | stationary | jump (+50) | split (each cluster becomes two) |
 |---|---:|---|---|---|
@@ -4407,17 +4504,18 @@ micro-cluster here, so the head cannot represent the new structure: 0.120 and 0.
 tune on — costs the ability to see a cluster divide. It is not a fixable constant: a smaller radius
 that resolves the split is the same radius that reads 0.628 on the stationary fixture.
 
-**Cost, at the shared radius, per point learned:**
+**Cost, at the shared radius, per point learned** (`results_stream.csv`: the median over seeds and
+chunks per scenario, and the range over the three scenarios):
 
 | head | µs / point |
 |---|---:|
-| betula `DenStream` | **0.1** |
-| betula `DbStream` | 1.0–1.7 |
-| river `DenStream` | 4.7 |
-| river `DBSTREAM` | 21–23 |
-| river `CluStream` | 150–181 |
+| betula `DenStream` | **0.11–0.16** |
+| betula `DbStream` | 0.93–1.68 |
+| river `DenStream` | 4.56–4.65 |
+| river `DBSTREAM` | 21.7–22.1 |
+| river `CluStream` | 144–175 |
 
-That is 47× on DenStream and 13–22× on DBSTREAM, against a pure-Python reference — the comparison is
+That is 28–42× on DenStream and 13–24× on DBSTREAM, scenario by scenario, against a pure-Python reference — the comparison is
 worth exactly what "compiled against interpreted" is worth, and is recorded because the streaming
 path had no cost reference at all, not because it settles anything. Prediction cost is deliberately
 excluded: River re-runs its whole offline step on **every** `predict_one`, which is a different
@@ -4465,8 +4563,8 @@ answered exactly.
 - **Use betula** when data is large or streaming, memory is bounded, or you want one numerically
   stable engine spanning k-means / GMM (diag, full & Toeplitz) / Ward / spectral / Leiden /
   HDBSCAN-style / Mapper with sklearn-style `predict` and inspection. Quality is at parity with
-  scikit-learn on the centroid heads and ahead on the structured ones (anisotropic full GMM, 64-D
-  `digits` GMM, covtype GMM); speed and memory are dramatically better at scale; `gmm-toeplitz` is a
+  scikit-learn on the centroid and mixture heads: the full GMM reads higher on anisotropic data and
+  64-D `digits`, but inside the seed spread, and the covtype GMM is a tie; speed and memory are dramatically better at scale; `gmm-toeplitz` is a
   capability no mainstream library ships.
 - **Use raw scikit-learn** when `N` is small enough to fit comfortably and you want the canonical
   point-level algorithm with no compression — at small `N` the two-phase overhead removes betula's
@@ -4476,11 +4574,14 @@ answered exactly.
   faster than betula and lands at ARI 0.62. Configured to recover the same partition it is 9×–14×
   *slower* than betula and still misses at 1 M, so it is not the choice when the partition matters.
   Use **`fast_hdbscan`** for density clustering in low dimension when the data fits in memory and the
-  densities overlap: it beats betula outright on that axis, where betula needs `min_samples` above the
-  mass of a single leaf — the summary erases the small-radius density estimate HDBSCAN\* runs on.
+  densities overlap: it beats betula's published arm on that axis, where betula needs `min_samples`
+  above the mass of a single leaf — the summary erases the small-radius density estimate HDBSCAN\*
+  runs on. That arm also reads its rows sorted by label; on shuffled rows, or with
+  `canonical_order=True`, a screen puts the head's defaults within 0.015 of the rival
+  (*Specialist baselines*).
 - **Use `sklearn-birch`** if `covtype`-like all-methods quality at ~20 k rows is the only criterion and
   no summary is needed: it beats every betula head there, and the compression-ratio defence does not
-  hold. Its MNIST lead comes with no compression at all (20 000 subclusters for 20 000 points), so it
+  hold. Its higher MNIST reading, a tie under the seed rule, comes with no compression at all (20 000 subclusters for 20 000 points), so it
   buys nothing on the axis a CF-tree exists for.
 - **For sparse high-dimensional text**, reduce dimensionality first — raw TF-IDF concentrates and
   defeats every fast clusterer. `fit_predict_sparse(..., projection="svd", method="spherical-kmeans")`
@@ -4489,8 +4590,8 @@ answered exactly.
 - **Tune `max_leaves`, and shuffle first.** The budget is the knob that matters and it is not
   monotone: on `digits` ×2 compression beats no compression on both ward and k-means, on `covtype`
   ×202 costs nothing, on MNIST the cliff is between ×10 and ×22. And at real compression the *row
-  order* moves ARI more than the seed does (MNIST at 200 leaves: pairwise 0.295 across permutations
-  against 0.703 across seeds), so a single-permutation number at high compression is a draw from a
+  order* moves ARI more than the seed does (over the 27 cells of the order study, mean pairwise ARI
+  0.625 across permutations against 0.758 across seeds), so a single-permutation number at high compression is a draw from a
   distribution roughly 0.15 wide — including every such number in the tables above.
 - The numbers above are what the committed `bench/comprehensive.py` + `bench/median_of_seeds.py`
   (plus `bench/spectral_nonconvex.py`, `bench/toeplitz_ar_mixture.py`, `bench/nmf_cf_weighted.py`)

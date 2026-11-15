@@ -204,6 +204,14 @@ All notable changes to this project are documented here. The format follows
 - **Documentation:** USAGE states the Leiden head's leaf-graph cost: an exact `O(m²·d)`
   nearest-neighbour scan at every leaf count, with no approximate graph past 2 048 leaves as
   `spectral` has, so doubling `max_leaves` quadruples it.
+- **Published text checked against the committed CSVs.** `bench/RESULTS.md`, the README,
+  `docs/COMPARISON.md`, `docs/USAGE.md`, `docs/index.md` and `DESIGN.md` had numbers no CSV holds
+  and verdicts the tie rule does not allow. Full-covariance GMM on aniso and `digits`, `sklearn-birch`
+  on MNIST and HDBSCAN-on-CF on `varied` and blobs are ties, not wins or losses. The five speed
+  losses to scikit-learn are named. Two `results_imbalance.csv` tables now show the current 1.0000
+  cells, and text-only numbers say "not in a CSV". New text states that the `fast_hdbscan` contest
+  feeds its rows sorted by label, which costs the `hdbscan` head up to 0.10 ARI. It also names the
+  rival families with no row, with the reason for each.
 
 ## [1.5.0] — 2026-10-28
 
