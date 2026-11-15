@@ -7,7 +7,7 @@
 
 use crate::clustering::hyperbolic::{lorentz_dot, lorentz_norm};
 use crate::feature::{ClusterFeature, Full, SecondMoment};
-use crate::kernels;
+use crate::kernels::{self, Lead};
 use crate::linalg;
 use crate::types::Real;
 
@@ -39,6 +39,25 @@ pub trait CFDistance<R: Real, C>: Send + Sync {
         }
         kernels::sq_euclidean(a.mean(), b.mean()) * na * nb / nab
     }
+
+    /// The candidate nearest to `x` under [`point`](Self::point), as `(index, distance)`: one
+    /// `point` per candidate in iteration order and a strict `<` against the lead, from where
+    /// `lead` starts. `None` when no candidate takes the lead.
+    ///
+    /// Hidden because it is a fast path, not a designed extension point. A scan through `point`
+    /// pays the vector kernel's run-time dispatch on every candidate, which at `d = 20` is most of
+    /// the cost of a tree build; [`CentroidEuclidean`] overrides this to pay it once per scan. An
+    /// override must return what this default returns, to the bit.
+    #[doc(hidden)]
+    #[inline]
+    fn nearest<'a, I>(&self, x: &[R], cands: I, lead: Lead) -> Option<(usize, R)>
+    where
+        Self: Sized,
+        C: 'a,
+        I: Iterator<Item = (usize, &'a C)>,
+    {
+        kernels::nearest_by(cands, lead, |c| self.point(c, x))
+    }
 }
 
 /// D0 — squared Euclidean distance between centroids.
@@ -53,6 +72,14 @@ impl<R: Real, C: ClusterFeature<R>> CFDistance<R, C> for CentroidEuclidean {
     #[inline]
     fn between(&self, a: &C, b: &C) -> R {
         kernels::sq_euclidean(a.mean(), b.mean())
+    }
+    #[inline]
+    fn nearest<'a, I>(&self, x: &[R], cands: I, lead: Lead) -> Option<(usize, R)>
+    where
+        C: 'a,
+        I: Iterator<Item = (usize, &'a C)>,
+    {
+        kernels::nearest_sq_euclidean(x, cands.map(|(i, c)| (i, c.mean())), lead)
     }
 }
 

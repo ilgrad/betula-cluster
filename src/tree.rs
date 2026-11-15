@@ -16,6 +16,7 @@
 
 use crate::distance::CFDistance;
 use crate::feature::ClusterFeature;
+use crate::kernels::Lead;
 use crate::types::{Real, ShapeError};
 use core::cmp::Ordering;
 
@@ -551,16 +552,9 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> CF
 
     fn nearest_entry_in(&self, leaf: usize, x: &[R]) -> usize {
         let ch = &self.nodes[leaf].children;
-        let mut best = ch[0];
-        let mut bd = self.dist.point(&self.entries[best], x);
-        for &e in &ch[1..] {
-            let d = self.dist.point(&self.entries[e], x);
-            if d < bd {
-                bd = d;
-                best = e;
-            }
-        }
-        best
+        self.dist
+            .nearest(x, ch.iter().map(|&e| (e, &self.entries[e])), Lead::First)
+            .map_or(ch[0], |(e, _)| e)
     }
 
     /// Index of the leaf entry nearest to `x`, keeping the `beam` nearest nodes at each level of the
@@ -612,18 +606,15 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> CF
             frontier.extend(scored.iter().map(|&(_, n)| n));
         }
         // Same invariant `nearest_entry` relies on: a leaf in the tree holds at least one entry.
-        let mut best = self.nodes[frontier[0]].children[0];
-        let mut bd = self.dist.point(&self.entries[best], x);
-        for &leaf in &frontier {
-            for &e in &self.nodes[leaf].children {
-                let d = self.dist.point(&self.entries[e], x);
-                if d < bd {
-                    bd = d;
-                    best = e;
-                }
-            }
-        }
-        best
+        let entries = frontier.iter().flat_map(|&leaf| {
+            self.nodes[leaf]
+                .children
+                .iter()
+                .map(|&e| (e, &self.entries[e]))
+        });
+        self.dist
+            .nearest(x, entries, Lead::First)
+            .map_or(self.nodes[frontier[0]].children[0], |(e, _)| e)
     }
 
     /// Rebuild every leaf entry from the rows that finally route to it: one Lloyd step at the
@@ -1399,17 +1390,10 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> CF
 
     /// Nearest leaf entry to `x` within `leaf`, or `None` when the leaf has no entries yet.
     fn nearest_in_leaf(&self, leaf: usize, x: &[R]) -> Option<usize> {
-        let (&first, rest) = self.nodes[leaf].children.split_first()?;
-        let mut best = first;
-        let mut bd = self.dist.point(&self.entries[best], x);
-        for &e in rest {
-            let d = self.dist.point(&self.entries[e], x);
-            if d < bd {
-                bd = d;
-                best = e;
-            }
-        }
-        Some(best)
+        let ch = &self.nodes[leaf].children;
+        self.dist
+            .nearest(x, ch.iter().map(|&e| (e, &self.entries[e])), Lead::First)
+            .map(|(e, _)| e)
     }
 
     /// Winsorize `x` against entry `e`: clamp each coordinate to `[μ_j − k·σ_j, μ_j + k·σ_j]` where
@@ -1440,42 +1424,23 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> CF
 
     fn nearest_child(&self, node: usize, x: &[R]) -> usize {
         let ch = &self.nodes[node].children;
-        let mut best = ch[0];
-        let mut bestd = self.dist.point(&self.nodes[best].cf, x);
-        for &c in &ch[1..] {
-            let d = self.dist.point(&self.nodes[c].cf, x);
-            if d < bestd {
-                bestd = d;
-                best = c;
-            }
-        }
-        best
+        self.dist
+            .nearest(x, ch.iter().map(|&c| (c, &self.nodes[c].cf)), Lead::First)
+            .map_or(ch[0], |(c, _)| c)
     }
 
     fn try_absorb(&mut self, leaf: usize, x: &[R]) -> bool {
-        let n = self.nodes[leaf].children.len();
-        if n == 0 {
-            return false;
-        }
-        // Index into `children` per step (each access copies a `usize`) so no `Vec` is cloned per
-        // insert and the borrow of `nodes` never overlaps the `entries` mutation below.
+        // An entry already at the mass cap is not a candidate. `Lead::Infinity`, so a leaf with no
+        // candidate left answers `None` and the point starts an entry of its own.
         let room = self.mass_cap().map(|cap| cap - R::one());
-        let mut best = usize::MAX;
-        let mut bestd = R::infinity();
-        for i in 0..n {
-            let e = self.nodes[leaf].children[i];
-            if room.is_some_and(|r| self.entries[e].weight() > r) {
-                continue;
-            }
-            let d = self.dist.point(&self.entries[e], x);
-            if d < bestd {
-                bestd = d;
-                best = e;
-            }
-        }
-        if best == usize::MAX {
+        let open = self.nodes[leaf]
+            .children
+            .iter()
+            .map(|&e| (e, &self.entries[e]))
+            .filter(|(_, cf)| !room.is_some_and(|r| cf.weight() > r));
+        let Some((best, _)) = self.dist.nearest(x, open, Lead::Infinity) else {
             return false;
-        }
+        };
         if self.abs.point(&self.entries[best], x) <= self.threshold {
             self.entries[best].push(x, R::one());
             true
@@ -3031,6 +2996,159 @@ mod tests {
                 "{shards} shard(s): a moving mean read {near}"
             );
         }
+    }
+
+    /// [`CentroidEuclidean`] without its batched `nearest`: every scan takes the trait's default,
+    /// one `point` per candidate, which is how the tree scanned before the batched kernel.
+    #[derive(Clone, Copy)]
+    #[cfg_attr(feature = "persistence", derive(serde::Serialize, serde::Deserialize))]
+    struct PerPair;
+    impl<R: Real, C: ClusterFeature<R>> CFDistance<R, C> for PerPair {
+        fn point(&self, cf: &C, x: &[R]) -> R {
+            CentroidEuclidean.point(cf, x)
+        }
+        fn between(&self, a: &C, b: &C) -> R {
+            CentroidEuclidean.between(a, b)
+        }
+    }
+
+    /// Which scans a build runs: absorption filters its candidates under a mass cap, the robust
+    /// insert has a leaf scan of its own, and a sharded build merges its sub-trees by descent.
+    #[derive(Clone, Copy, Debug)]
+    enum Drive {
+        Plain,
+        Capped,
+        Huber,
+        Sharded,
+    }
+
+    fn drive<R: Real, D: CFDistance<R, Spherical<R>> + Clone>(
+        dist: D,
+        rows: &[R],
+        dim: usize,
+        how: Drive,
+    ) -> CFTree<R, Spherical<R>, D, CentroidEuclidean> {
+        let n = rows.len() / dim;
+        if let Drive::Sharded = how {
+            return CFTree::build_sharded(
+                dim,
+                4,
+                4,
+                R::zero(),
+                48,
+                dist,
+                CentroidEuclidean,
+                rows,
+                n,
+                3,
+                None,
+                false,
+                None,
+            );
+        }
+        let mut t = CFTree::new(dim, 4, 4, R::zero(), 48, dist, CentroidEuclidean);
+        match how {
+            Drive::Capped => t.set_balance(R::from_f64(1.5)),
+            Drive::Huber => t.set_huber_k(R::from_f64(2.0)),
+            Drive::Plain | Drive::Sharded => {}
+        }
+        for x in rows.chunks_exact(dim) {
+            t.insert(x);
+        }
+        t
+    }
+
+    /// Eight Gaussian blobs, rows interleaved so that every insert can land anywhere.
+    fn blob_rows<R: Real>(n: usize, dim: usize, seed: u64) -> Vec<R> {
+        let mut rng = crate::clustering::rng::SplitMix64::new(seed);
+        let centres: Vec<f64> = (0..8 * dim).map(|_| rng.gauss() * 6.0).collect();
+        let mut rows = Vec::with_capacity(n * dim);
+        for i in 0..n {
+            for j in 0..dim {
+                rows.push(R::from_f64(centres[(i % 8) * dim + j] + rng.gauss()).unwrap());
+            }
+        }
+        rows
+    }
+
+    fn assert_same_tree<R: Real, D1, D2>(
+        a: &CFTree<R, Spherical<R>, D1, CentroidEuclidean>,
+        b: &CFTree<R, Spherical<R>, D2, CentroidEuclidean>,
+        what: &str,
+    ) where
+        D1: CFDistance<R, Spherical<R>>,
+        D2: CFDistance<R, Spherical<R>>,
+    {
+        let bits = |v: R| v.to_f64().unwrap().to_bits();
+        let cf = |e: &Spherical<R>| {
+            let mean: Vec<u64> = e.mean().iter().map(|&m| bits(m)).collect();
+            (bits(e.weight()), bits(e.ssd()), mean)
+        };
+        assert_eq!(a.rebuilds, b.rebuilds, "{what}: rebuilds");
+        assert_eq!(bits(a.threshold), bits(b.threshold), "{what}: threshold");
+        assert_eq!(a.root, b.root, "{what}: root");
+        assert_eq!(a.nodes.len(), b.nodes.len(), "{what}: node count");
+        for (i, (p, q)) in a.nodes.iter().zip(&b.nodes).enumerate() {
+            assert_eq!(
+                (p.leaf, &p.children, p.parent, cf(&p.cf)),
+                (q.leaf, &q.children, q.parent, cf(&q.cf)),
+                "{what}: node {i}"
+            );
+        }
+        assert_eq!(a.entries.len(), b.entries.len(), "{what}: entry count");
+        for (i, (p, q)) in a.entries.iter().zip(&b.entries).enumerate() {
+            assert_eq!(cf(p), cf(q), "{what}: entry {i}");
+        }
+    }
+
+    /// The batched scans change the speed, not the answer: a tree built through them is the tree
+    /// built one `point` call per candidate, to the bit, in both dtypes and through every scan —
+    /// the descent, absorption with and without a mass cap, the robust insert's leaf scan, a
+    /// sharded build's merge, the label route and the beam. The widths cover the vector kernel's
+    /// turns and tails from `SIMD_MIN` up, and two below it, where both sides are the loop.
+    #[test]
+    fn a_tree_built_through_the_batched_scans_is_the_tree_built_one_pair_at_a_time() {
+        // A macro rather than a generic function: the CBOR comparison needs `R: Serialize`, which
+        // `Real` does not promise.
+        macro_rules! check {
+            ($r:ty) => {{
+                for dim in [2usize, 8, 16, 17, 20, 24, 31, 32, 33, 48, 64] {
+                    let rows: Vec<$r> = blob_rows(600, dim, dim as u64);
+                    let n = rows.len() / dim;
+                    for how in [Drive::Plain, Drive::Capped, Drive::Huber, Drive::Sharded] {
+                        let what = format!("{} d={dim} {how:?}", stringify!($r));
+                        let a = drive(CentroidEuclidean, &rows, dim, how);
+                        let b = drive(PerPair, &rows, dim, how);
+                        assert!(
+                            matches!(how, Drive::Sharded) || a.rebuilds > 0,
+                            "{what}: no rebuild, so the fixture never merges"
+                        );
+                        assert_same_tree(&a, &b, &what);
+                        assert_eq!(
+                            a.nearest_entries(&rows, n),
+                            b.nearest_entries(&rows, n),
+                            "{what}: route"
+                        );
+                        for x in rows.chunks_exact(dim).step_by(7) {
+                            assert_eq!(
+                                a.nearest_entry_beam(x, 3),
+                                b.nearest_entry_beam(x, 3),
+                                "{what}: beam"
+                            );
+                        }
+                        #[cfg(feature = "persistence")]
+                        {
+                            let (mut p, mut q) = (Vec::new(), Vec::new());
+                            ciborium::into_writer(&a, &mut p).unwrap();
+                            ciborium::into_writer(&b, &mut q).unwrap();
+                            assert_eq!(p, q, "{what}: serialised bytes");
+                        }
+                    }
+                }
+            }};
+        }
+        check!(f64);
+        check!(f32);
     }
 
     /// A model file written before the accumulator existed has no rows to read against, and has

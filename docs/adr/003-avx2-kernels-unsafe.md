@@ -1,7 +1,8 @@
 # ADR 003 — the distance kernels get a hand-written AVX2 path, and the crate's first `unsafe`
 
 **Status:** Accepted, on measurement, in **0.7.0**. Scope: `src/kernels.rs` only. Amended after the
-first version shipped a 1.55× regression at `d = 2` — see *The length gate* below.
+first version shipped a 1.55× regression at `d = 2` — see *The length gate* below. Amended again on
+2026-11-15, when the dispatch moved from each candidate to each scan — see the *Addendum* at the end.
 
 ## Context
 
@@ -189,3 +190,132 @@ alone would have hidden that the ids move. Both are true and they mean different
 - **Narrow `Real` to a sealed trait over `f32`/`f64` and specialize properly.** Cleaner than `TypeId`,
   but it is a breaking change to a public trait in service of an internal dispatch detail. Worth
   doing at a major version if `Real` is narrowed for other reasons; not worth doing for this.
+
+## Addendum, 2026-11-15 — one dispatch per scan, not per candidate
+
+### Context
+
+One sentence of the decision above is wrong on `x86_64`: "a macro expands the branch at each call
+site and keeps the intrinsic body inlinable". The branch is expanded, but a `#[target_feature]`
+function cannot inline into a caller without the same features, so the body was never inlined. The
+length gate then put the dispatch itself out of line. A distance between a point and a candidate
+therefore made two calls: from the inlined wrapper into `simd_sq_euclidean` (the length test, two
+feature checks, the `TypeId` compare), and from there into the kernel. A compute audit
+counted it at `d = 20`: 83 instructions around 20 of arithmetic, plus 26–47 in the caller's loop.
+Every candidate of the descent, of the leaf scan and of the centre scans paid it.
+
+The `d = 8` measurement that put the dispatch out of line is not in question. It measured the cost
+of inlining the dispatcher into the wrapper; it did not ask what the dispatcher costs once per
+candidate.
+
+### Decision
+
+**The scans give all their candidates to one function, and the dispatch is paid once per scan.**
+
+- `kernels::nearest_sq_euclidean(x, candidates, lead)` tests the length gate and the two features
+  once, then calls `avx2::nearest_sq_euclidean_{f64,f32}`: one `#[target_feature]` function per
+  dtype, generic over the candidate iterator, with the reduction inline. Without AVX2 and FMA,
+  below `SIMD_MIN`, and on every other architecture, it is the per-pair loop over `sq_euclidean`.
+- **The reduction is written once**, as the `reduce!` macro, which both the six kernels and the
+  scan expand. Per candidate the scan computes `sq_euclidean(c, x)` operation for operation: the
+  same operands in the same order, the same two accumulators, the same scalar tail.
+- **The loop is counted**: four vectors a turn, then at most one turn of two and one of one.
+  Vector `v` goes to accumulator `v % 2`, in order, so each sum is the old two-a-turn loop's to the
+  bit. The shape matters only once the reduction is inlined. In the first prototype the two-a-turn
+  loop was not unrolled inside the scan (11 instructions per 8 `f64` coordinates against 15 per
+  16), and a whole fit at `d = 784` cost 17.7 % more instructions than the shipped file. The
+  disassembly of the final build reads 15 instructions per 16 `f64` coordinates, in the
+  stand-alone kernel and inside the scan alike.
+- **Two start rules, because the old loops had two.** `Lead::First` starts from the first
+  candidate whatever its distance, so a NaN first candidate keeps the lead: the descent and the
+  leaf lookups. `Lead::Infinity` starts from +∞ and can find nothing: absorption under a mass cap
+  and the centre scans. Both compare with a strict `<`, so of two equal distances the earlier
+  candidate wins, as before.
+- **The tree reaches the scan through `CFDistance::nearest`**, a provided method whose default is
+  the per-pair loop; `CentroidEuclidean` overrides it. It is `#[doc(hidden)]` because it is a fast
+  path, not a designed extension point: an override must return what the default returns, to the
+  bit. `where Self: Sized` keeps the trait dyn-compatible. The Python routing enum matches once
+  per scan instead of once per candidate. The Manhattan, Ward, average and Lorentz routings keep
+  the per-pair loop. `nearest_center` and `refine_centers` call the scan directly; they computed
+  `sq_euclidean(x, c)` and the scan computes `sq_euclidean(c, x)`, which is the same value to the
+  bit, since `fl(a − b) = −fl(b − a)` and the square drops the sign.
+- **`aarch64` has nothing to batch.** The NEON kernels need no `#[target_feature]`, so they already
+  inline into the loop. `nearest_sq_euclidean` there is the per-pair loop, and the NEON arithmetic
+  is unchanged. The new tests that are not AVX2-specific pass under `qemu-aarch64`.
+
+### Evidence
+
+Instructions retired in user space, from `perf_event_open` around the call, one thread. Both
+builds are the wheel's (LTO cdylib, `--inline-threshold=1000`) from the same toolchain, rustc 1.100;
+the base is `567301c`.
+
+| call | before | after | change |
+|---|---|---|---|
+| 1 000 000 × 20, `kmeans`, `float64` | 8.078 G | 4.892 G | **−39.4 %** |
+| the same, 8 shards | 6.477 G | 3.979 G | −38.6 % |
+| 1 000 000 × 20, `kmeans`, `float32` | 11.934 G | 6.731 G | **−43.6 %** |
+| the same, 8 shards | 9.796 G | 5.724 G | −41.6 % |
+| CSR estimator, 20 newsgroups TF-IDF, `d = 2 000`: build | 4.031 G | 3.968 G | −1.6 % |
+| the same: head, predict | 2.914 G, 3.622 G | 2.909 G, 3.622 G | −0.2 %, 0.0 % |
+| rows-graph `leiden`, 17 901 × 384 sentence embeddings, `float32`: fit | 27.33 G | 25.49 G | −6.7 % |
+| rows-graph `leiden`, 20 000 × 784 MNIST, `float32`: fit | 28.04 G | 26.58 G | −5.2 % |
+
+50 000 rows of eight blobs, `kmeans`, `max_leaves = 2000`, by width:
+
+| `d` | 2 | 8 | 16 | 20 | 32 | 48 | 64 | 128 | 256 | 784 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `float64` | −9.8 % | −7.2 % | −34.9 % | −34.3 % | −29.0 % | −24.8 % | −22.2 % | −15.0 % | −9.7 % | −3.8 % |
+| `float32` | −9.5 % | −6.9 % | −34.0 % | −38.3 % | −30.4 % | −26.7 % | −23.0 % | −15.3 % | −10.0 % | −4.1 % |
+
+The rows-graph `predict` does not move: it runs a scalar loop over the leaf centres that this change
+does not touch.
+
+Below the gate, at `d = 2` and 8, every candidate still takes the scalar fold, and the count still
+falls 7–10 %. Two things change on that path: the routing `match` and the length gate are evaluated
+once per scan. Which of them accounts for the fall was not isolated. It is the size of the ≈8 %
+time residual that *The length gate* records as unexplained; whether it recovers that residual is
+a question for a timing run. **No wall time is quoted here**: the machine was not fit to measure
+when this was written. Instruction counts are deterministic, and they are the claim.
+
+Labels and saved trees do not move, by construction and by test:
+
+- the six kernels against a scalar model of their lanes, by `to_bits()`, at every length from 0 to
+  100 in both dtypes. The model shares no code with the kernels, and the loop the rewrite replaced
+  passes it too;
+- the scan against the per-pair loop, by index and by `to_bits()` of the distance, at every length
+  from 0 to 100, with an exact duplicate of the nearest candidate, in both dtypes;
+- both start rules with a first candidate at a distance of NaN and one at +∞, with every distance
+  NaN and with no candidate, below and above the gate; exact mirror ties at `d = 20` in the kernel
+  and in both centre scans;
+- trees built through the scans and through a routing that keeps the per-pair loop, at 11 widths
+  from 2 to 64, plain, mass-capped, Huber-weighted and sharded, in both dtypes: the same nodes and
+  entries by bits, the same leaf and beam lookups, and the same CBOR bytes;
+- digests of labels and fitted parameters, equal before and after on 285 configurations (27 heads
+  and 16 tree paths at `d` = 12, 20 and 40 in both dtypes, the one-shot call at 1, 2 and 8 shards,
+  a three-chunk stream, three CSR calls), and on 228 more: every betula arm of
+  `bench/comprehensive.py`, with its own keywords, in its quality, real-data, high-resolution,
+  normalisation, scaling, stream, full-covtype and sparse suites, in both dtypes.
+
+Mutants of the scan that these tests kill: the two accumulators swapped, `<=` for `<` in either
+scan, and a NaN start for `Lead::Infinity`.
+
+### Consequences
+
+- The `unsafe` stays in `src/kernels.rs`. The scan adds no new precondition: the features are
+  detected one frame above, as before, and each candidate is read to `c.len().min(x.len())`.
+- A routing that wants the fast path overrides `CFDistance::nearest`, and the tree test above is the
+  template for proving the override. A routing that does not keeps the loop by default.
+- Each call site monomorphizes its own scan, so the extension grew by 0.8 % (15 124 664 →
+  15 249 512 bytes).
+
+### Alternatives considered
+
+- **Inline the dispatcher back into the wrapper.** Measured 1.26× slower at `d = 8` (above), and
+  it would still test the features once per candidate.
+- **Compile the callers with `#[target_feature]`.** The whole insert path would need two copies
+  and a dispatch at its entry: a much larger change for the same saving.
+- **A kernel pointer chosen once.** An indirect call per candidate, which this ADR already measured
+  slower than the macro.
+- **Keep a switch back to the per-pair loop**, as the prototype had. With its switch off, the
+  prototype read 6.4 % more instructions than the shipped file, so the switch was not free. The
+  final form has none, and its saving was counted again on that form.

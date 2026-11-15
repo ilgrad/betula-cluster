@@ -42,6 +42,7 @@ use crate::distance::{
     LorentzCentroid, MahalanobisChi2, Radius, SubspaceChi2, VarianceIncrease,
 };
 use crate::feature::{ClusterFeature, Diagonal, FdSketch, Full, Spherical};
+use crate::kernels::Lead;
 use crate::linalg::{cholesky_lower, mahalanobis_sq_from_chol};
 use crate::mixture::{Mixture, SparseAssigner};
 use crate::model::{
@@ -1885,6 +1886,22 @@ impl<R: Real, C: ClusterFeature<R>> CFDistance<R, C> for RouteKind {
             RouteKind::Ward => VarianceIncrease.between(a, b),
             RouteKind::Average => AverageIntercluster.between(a, b),
             RouteKind::Lorentz => LorentzCentroid.between(a, b),
+        }
+    }
+    // One `match` per scan rather than per candidate, and the Euclidean arm reaches the batched
+    // kernel of `CentroidEuclidean::nearest`; a per-candidate `point` would lose both.
+    #[inline(always)]
+    fn nearest<'a, I>(&self, x: &[R], cands: I, lead: Lead) -> Option<(usize, R)>
+    where
+        C: 'a,
+        I: Iterator<Item = (usize, &'a C)>,
+    {
+        match self {
+            RouteKind::Euclidean => CentroidEuclidean.nearest(x, cands, lead),
+            RouteKind::Manhattan => CentroidManhattan.nearest(x, cands, lead),
+            RouteKind::Ward => VarianceIncrease.nearest(x, cands, lead),
+            RouteKind::Average => AverageIntercluster.nearest(x, cands, lead),
+            RouteKind::Lorentz => LorentzCentroid.nearest(x, cands, lead),
         }
     }
 }

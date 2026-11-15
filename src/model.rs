@@ -12,7 +12,7 @@ use crate::clustering::{
 };
 use crate::distance::CFDistance;
 use crate::feature::ClusterFeature;
-use crate::kernels::sq_euclidean;
+use crate::kernels::{Lead, nearest_sq_euclidean};
 use crate::mixture::Mixture;
 use crate::tree::CFTree;
 use crate::types::{Real, ShapeError};
@@ -416,15 +416,8 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> Mo
 /// Label of the nearest `(label, centre)` pair. `centers` is never empty on this path: a fitted
 /// partition has at least one non-empty cluster.
 fn nearest_center<R: Real>(centers: &[(usize, Vec<R>)], x: &[R]) -> usize {
-    let mut best = 0;
-    let mut bd = R::infinity();
-    for (i, (_, c)) in centers.iter().enumerate() {
-        let d = sq_euclidean(x, c);
-        if d < bd {
-            bd = d;
-            best = i;
-        }
-    }
+    let rows = centers.iter().map(|(_, c)| c.as_slice()).enumerate();
+    let best = nearest_sq_euclidean(x, rows, Lead::Infinity).map_or(0, |(i, _)| i);
     centers[best].0
 }
 
@@ -485,15 +478,8 @@ pub(crate) fn refine_centers<R: Real>(
         let mut moved = false;
         for i in 0..n {
             let x = &flat[i * dim..(i + 1) * dim];
-            let mut best = 0;
-            let mut bd = R::infinity();
-            for c in 0..k {
-                let d = sq_euclidean(x, &centers[c * dim..(c + 1) * dim]);
-                if d < bd {
-                    bd = d;
-                    best = c;
-                }
-            }
+            let rows = centers.chunks_exact(dim).enumerate();
+            let best = nearest_sq_euclidean(x, rows, Lead::Infinity).map_or(0, |(c, _)| c);
             moved |= owner[i] != best;
             owner[i] = best;
             counts[best] += 1;
@@ -914,6 +900,7 @@ mod tests {
     use crate::clustering::testutil::{ari, blob_leaves, blobs};
     use crate::distance::CentroidEuclidean;
     use crate::feature::{Diagonal, Spherical};
+    use crate::kernels::sq_euclidean;
     use std::collections::HashMap;
 
     #[test]
@@ -1443,6 +1430,52 @@ mod tests {
         assert_eq!(nearest_center(&centers, &[0.0, 0.0]), 3);
         assert_eq!(nearest_center(&centers, &[0.9, 0.0]), 7);
         assert_eq!(nearest_center(&centers, &[-0.9, 0.0]), 3);
+    }
+
+    /// The same tie rule at a width that takes the packed kernel, in both scans that read raw rows
+    /// against centres — the label pass and Phase 4. Every row has a zero first coordinate, so it
+    /// is equidistant from `+e₀` and `−e₀` term by term and therefore to the bit; both scans must
+    /// give it to the earlier centre.
+    #[test]
+    fn the_centre_scans_keep_the_first_of_two_equidistant_centres_above_the_vector_gate() {
+        let dim = 20;
+        let axis =
+            |s: f64| -> Vec<f64> { (0..dim).map(|j| if j == 0 { s } else { 0.0 }).collect() };
+        let mut rng = SplitMix64::new(3);
+        let mut rows = Vec::new();
+        for _ in 0..8 {
+            rows.push(0.0);
+            rows.extend((1..dim).map(|_| rng.gauss()));
+        }
+        let centers = vec![(3usize, axis(1.0)), (7usize, axis(-1.0))];
+        for x in rows.chunks_exact(dim) {
+            assert_eq!(
+                sq_euclidean(&centers[0].1, x).to_bits(),
+                sq_euclidean(&centers[1].1, x).to_bits(),
+                "the fixture is not actually tied, so it tests nothing"
+            );
+            assert_eq!(nearest_center(&centers, x), 3);
+        }
+        // One sweep gives every row to the first centre, which moves to their mean; the second
+        // attracts nothing and keeps its place.
+        let mut flat: Vec<f64> = centers
+            .iter()
+            .flat_map(|(_, c)| c.iter().copied())
+            .collect();
+        assert_eq!(refine_centers(&mut flat, &rows, 8, dim, false, 1), 1);
+        assert_eq!(
+            &flat[dim..],
+            axis(-1.0).as_slice(),
+            "a tied row went to the later centre"
+        );
+        for j in 0..dim {
+            let mean = rows.chunks_exact(dim).map(|r| r[j]).sum::<f64>() / 8.0;
+            assert!(
+                (flat[j] - mean).abs() < 1e-12,
+                "coordinate {j}: {} vs {mean}",
+                flat[j]
+            );
+        }
     }
 
     #[test]

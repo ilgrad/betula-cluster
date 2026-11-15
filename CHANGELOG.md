@@ -129,6 +129,22 @@ All notable changes to this project are documented here. The format follows
   draws per cell the default tree reads 0.61–0.65 at every `φ`.
 
 ### Performance
+- **The tree's scans dispatch the distance kernel once per scan, not once per candidate.** An AVX2
+  kernel cannot inline into a caller built without AVX2, so every candidate of the descent, the leaf
+  lookups, absorption and the nearest-centre scans paid the run-time dispatch and two calls: 83
+  instructions around 20 of arithmetic at `d = 20`. The candidates now go to one AVX2 function per
+  dtype with the reduction inline, written once for it and the kernels. Each candidate gets the same
+  arithmetic in the same order, so labels, centres and saved files are byte-identical (285 digests
+  over 27 heads and 16 tree paths at three widths, every betula arm of the benchmark, both dtypes
+  throughout; trees built both ways compared by their CBOR bytes). Retired instructions on one
+  thread: 1 000 000 × 20 `kmeans` −39 % in `float64` and −44 % in `float32`; −29 … −38 % at `d`
+  16–32, −15 % at 128, −4 % at 784, −7 … −10 % at `d` 2 and 8; a rows-graph `leiden` fit −5 … −7 %;
+  a CSR build at `d = 2 000` −1.6 %. Wall time is not measured yet. Only the Euclidean routing takes
+  the new path; the other routings, and `aarch64`, whose NEON kernels already inline, keep the
+  per-pair loop. `CFDistance` gains a hidden provided method, so implementations outside the crate
+  compile and behave as before.
+  [ADR 003](https://github.com/ilgrad/betula-cluster/blob/main/docs/adr/003-avx2-kernels-unsafe.md)
+  has the addendum.
 - **`leaf_refit` routes its rows on the thread pool.** Each refit round re-routed every row serially,
   the only full-data route that did not go through the parallel row map; it now forks from 4 096 rows
   like the others, and the fold into the new entries stays serial in row order. Labels, centres and
