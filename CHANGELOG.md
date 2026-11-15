@@ -266,6 +266,21 @@ All notable changes to this project are documented here. The format follows
   blobs / aniso / `varied` and fails rings and `digits`. A recipe row, the `gmm-full` BIC fit merged
   to the count on its posteriors, reads a mean of 0.871 and is in USAGE (*Merging an over-fitted
   mixture to a known count*); the board does not choose it as betula's arm.
+- **Benchmark rows that measured something else** (`bench/RESULTS.md`). The `20news` row that runs
+  scikit-learn's NMF and then betula's k-means is named for it, `betula-kmeans-on-sklearn-nmf`, not
+  `betula-nmf`; no number moved. `leiden` in the quality and real-data tables runs as it ships, at
+  the default 2 000 leaves and until stable, not one pass over 800 leaves at `threshold=0.4`: it
+  over-splits the 2-D fixtures (blobs 0.722 → 0.385, moons 0.512 → 0.119, 16–20 communities) and
+  gains on real data (`digits` 0.728 → 0.822, MNIST 0.281 → 0.411). The memory table gains betula
+  one-shot: holding the whole 20-D array, it peaks at 128 MB – 1.65 GB against scikit-learn
+  `KMeans`'s 409 MB – 4.97 GB, 3.0–3.2× less; the 89× is the stream's. The Rust harness fits
+  `gmm` and `gmm-full` on a `Diagonal` tree, as the Python wrapper does, not on `Spherical`, which
+  the wrapper refuses for them; no ARI cell moves by more than 0.0001. `bench/median_of_seeds.py`
+  takes each row whole from its median-ARI run: a column-wise median had printed blobs
+  `betula-hdbscan`'s 0.423 beside another seed's 3 clusters and 3 % noise, where that run found 47
+  clusters and 28 % noise. No median ARI moves. The `normalize` table now pairs "off" and "on" on one
+  seed's draw, which moves five of its nine "off" cells. Memory on the board goes 110 / 6 / 1 →
+  115 / 6 / 1 (five new one-shot cells); no verdict changed.
 
 ## [1.5.0] — 2026-10-28
 

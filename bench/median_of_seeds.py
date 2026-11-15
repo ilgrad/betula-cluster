@@ -1,4 +1,4 @@
-"""Reduce per-seed benchmark runs to the published tables by taking the element-wise median.
+"""Reduce per-seed benchmark runs to the published tables: each row is the median run.
 
 Clustering quality is seed-dependent and EM is non-convex, so a single run is not a result. The
 quality suites of ``comprehensive.py`` are run once per seed with ``--seed S --tag _sS``; this script
@@ -6,7 +6,9 @@ collapses those runs into the canonical ``results_*.csv`` that the docs quote.
 
 The median, not the mean: one restart that lands in a bad local optimum should not drag the published
 number, and with an odd number of seeds the median is an *observed* run rather than a synthetic point
-between runs.
+between runs. The run is chosen by the table's ARI column and the whole row is taken from it, so the
+cluster count, noise share and time beside a published ARI are that run's. A median per column would
+print one seed's ARI beside another seed's cluster count.
 
 Run: ``python bench/median_of_seeds.py --seeds 0 1 2``
 """
@@ -42,19 +44,15 @@ def reduce_table(stem: str, keys: list[str], seeds: list[int]) -> pd.DataFrame |
         raise SystemExit(f"{stem}: missing {', '.join(missing)}; rerun those seeds")
     parts = [pd.read_csv(f).assign(_seed=s) for s, f in files.items()]
     df = pd.concat(parts, ignore_index=True)
+    metric = next(c for c in ("ARI", "ARI_norm_on") if c in df.columns)
 
-    # A cell that errored carries no measurement in any seed; keep the message rather than emit a
-    # row of NaNs that reads like a silent zero.
-    err = None
-    if "error" in df.columns:
-        err = df.groupby(keys, dropna=False)["error"].first()
-        df = df.drop(columns=["error"])
-
-    num = [c for c in df.columns if c not in keys and c != "_seed"]
-    out = df.groupby(keys, dropna=False)[num].median(numeric_only=True)
-    if err is not None:
-        out = out.join(err)
-    out = out.reset_index()
+    # The median run of each row: rank the runs by the metric (ties by seed) and take the middle
+    # one. A cell that errored has no metric in any seed and keeps its first seed's row, error
+    # message included, rather than a row of NaNs that reads like a silent zero.
+    ranked = df.sort_values([metric, "_seed"], na_position="last", kind="stable")
+    by_key = ranked.groupby(keys, dropna=False, sort=False)
+    middle = ((by_key[metric].transform("count") - 1) // 2).clip(lower=0)
+    out = ranked[by_key.cumcount() == middle].drop(columns="_seed")
 
     # Preserve the row order of the first seed's file: the tables are read by humans top to bottom.
     order = parts[0][keys].drop_duplicates()
@@ -65,13 +63,11 @@ def reduce_table(stem: str, keys: list[str], seeds: list[int]) -> pd.DataFrame |
     # over 0.443-0.571 across three seeds, and the single-seed table this replaces happened to
     # publish the top of that range as the result. The spread ships next to the medians so a reader
     # can see which rows are seed-stable and which are not.
-    metric = next((c for c in ("ARI", "ARI_norm_on") if c in df.columns), None)
-    if metric is not None:
-        g = df.groupby(keys, dropna=False)[metric]
-        spread = pd.DataFrame({"min": g.min(), "median": g.median(), "max": g.max()})
-        spread["range"] = spread["max"] - spread["min"]
-        spread = order.merge(spread.reset_index(), on=keys, how="left")
-        spread.to_csv(HERE / f"{stem}_spread.csv", index=False)
+    g = df.groupby(keys, dropna=False)[metric]
+    spread = pd.DataFrame({"min": g.min(), "median": g.median(), "max": g.max()})
+    spread["range"] = spread["max"] - spread["min"]
+    spread = order.merge(spread.reset_index(), on=keys, how="left")
+    spread.to_csv(HERE / f"{stem}_spread.csv", index=False)
 
     print(f"  {stem}: {len(out)} rows from {len(seeds)} seeds -> {stem}.csv")
     return out
@@ -81,6 +77,8 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--seeds", type=int, nargs="+", default=[0, 1, 2])
     args = ap.parse_args()
+    if len(args.seeds) % 2 == 0:
+        raise SystemExit("an even number of seeds has no middle run; pass an odd number")
 
     print(f"[median] seeds={args.seeds}")
     written = [

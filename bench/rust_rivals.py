@@ -12,7 +12,9 @@ binary prints one label per row, and the score and the peak RSS of that process 
 
 Fixtures, minimum cluster size and scoring are `bench/density_rivals.py`'s, so betula's own
 `hdbscan` head is read from that table: its Rust API is not a one-call function. Every crate runs at
-its documented defaults; betula as `docs/USAGE.md`'s Rust section builds it. Seeded arms run on
+its documented defaults; betula as `docs/USAGE.md`'s Rust section builds it, on the leaf feature the
+Python wrapper builds for each head (`Diagonal` for the two mixtures, which it refuses on
+`Spherical`). Seeded arms run on
 seeds 0, 1, 2; the deterministic ones once. Quality and peak RSS only.
 
     uv run --no-sync --with scikit-learn --with pandas python bench/rust_rivals.py [--arms=a,b]

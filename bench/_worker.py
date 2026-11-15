@@ -8,6 +8,7 @@ the measured peak RSS reflects what that method actually costs.
 Usage (prints one JSON line):
     python _worker.py fit        <method> <dataset> <n>
     python _worker.py stream     <n> <d> <chunk>      # betula chunked partial_fit (bounded memory)
+    python _worker.py oneshot_betula <n> <d>          # the same betula estimator, whole array in
     python _worker.py oneshot_km <n> <d>              # sklearn KMeans, must hold the whole array
     python _worker.py real_fit   <method> <dataset>   # full real dataset (time · RSS · ARI)
     python _worker.py sparse_fit <method> <dataset>   # TF-IDF CSR: betula O(nnz) sparse-native vs sklearn
@@ -148,8 +149,8 @@ def fit_method(method: str, X, k: int, n: int):
         if kind == "spectral":
             return bc.fit_predict(X, k, method="spectral", **bkw)
         if kind == "leiden":
-            # community detection: moderate threshold (a very fine graph over-splits); ignores k
-            return bc.fit_predict(X, k, method="leiden", threshold=0.4, max_leaves=800, seed=0)
+            # comprehensive.py's arm: default budget and threshold, passes until stable; ignores k
+            return bc.fit_predict(X, k, method="leiden", n_iterations=-1, seed=0)
         if kind == "hdbscan":
             return bc.fit_predict(X, method="hdbscan", min_cluster_size=mcs, min_samples=10, **bkw)
     if method == "sklearn-kmeans":
@@ -194,8 +195,8 @@ def main() -> dict:
             "rss_mb": peak.mb(),
             "n_clusters": len({int(v) for v in labels if v >= 0}),
         }
-    if kind == "stream":
-        n, d, chunk = int(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4])
+    if kind in ("stream", "oneshot_betula"):
+        n, d = int(sys.argv[2]), int(sys.argv[3])
         import betula_cluster as bc
 
         est = bc.Betula(
@@ -207,6 +208,12 @@ def main() -> dict:
             seed=0,
         )
         rng = np.random.default_rng(0)
+        if kind == "oneshot_betula":  # the same estimator handed the whole array, as KMeans is
+            X = rng.standard_normal((n, d))
+            t0 = time.perf_counter()
+            est.fit(X)
+            return {"time_s": time.perf_counter() - t0, "rss_mb": peak.mb()}
+        chunk = int(sys.argv[4])
         t0 = time.perf_counter()
         done = 0
         while done < n:  # never materialize the full array
@@ -267,9 +274,11 @@ def main() -> dict:
                     projection_dim=50,
                 )
             )
-        elif method == "betula-nmf":
+        elif method == "betula-kmeans-on-sklearn-nmf":
             import betula_cluster as bc
 
+            # scikit-learn's NMF, then betula's k-means. betula's own NMF is
+            # `projection="weighted-nmf"`, which this row does not run.
             z = reduce_dims(X, "nmf", 20)
             labels = np.asarray(
                 bc.fit_predict(

@@ -126,10 +126,10 @@ def methods(k: int, n: int, seed: int = 0) -> dict:
             True,
         ),
         "betula-leiden": (
-            # community detection: moderate threshold (a fine graph over-splits); count is discovered
-            lambda X: bc.fit_predict(
-                X, k, method="leiden", threshold=0.4, max_leaves=800, seed=seed
-            ),
+            # The count is discovered. The library's default leaf budget and threshold, with passes
+            # until the partition stops changing; the row used to run one pass over 800 leaves at
+            # threshold 0.4, a configuration no user is told to pass.
+            lambda X: bc.fit_predict(X, k, method="leiden", n_iterations=-1, seed=seed),
             True,
         ),
         "betula-hdbscan": (
@@ -415,10 +415,13 @@ def run_scaling(sizes: list[int], dataset: str = "blobs") -> pd.DataFrame:
 
 
 def run_memory(sizes: list[int], d: int = 20, chunk: int = 50_000) -> pd.DataFrame:
-    """Peak RSS: betula streaming (chunked `partial_fit`) vs sklearn KMeans one-shot, at large N."""
+    """Peak RSS at large N: betula streaming (chunked `partial_fit`), and betula and sklearn KMeans
+    one-shot, each holding the whole array — the streaming row alone would credit the library with
+    what the access pattern saves."""
     rows = []
     for label, argv in [
         ("betula (streaming)", lambda n: ["stream", str(n), str(d), str(chunk)]),
+        ("betula (one-shot)", lambda n: ["oneshot_betula", str(n), str(d)]),
         ("sklearn-kmeans (one-shot)", lambda n: ["oneshot_km", str(n), str(d)]),
     ]:
         for n in sizes:
@@ -452,7 +455,7 @@ def run_sparse(datasets: list[str]) -> pd.DataFrame:
             "sklearn-kmeans",
             "betula-svd",
             "sklearn-svd",
-            "betula-nmf",
+            "betula-kmeans-on-sklearn-nmf",
             "sklearn-nmf",
         ]:
             res = _run_worker(["sparse_fit", name, ds], TIMEOUT * 3)

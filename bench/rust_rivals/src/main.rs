@@ -9,7 +9,7 @@ use std::fs;
 use std::time::Instant;
 
 use betula_cluster::distance::CentroidEuclidean;
-use betula_cluster::feature::Spherical;
+use betula_cluster::feature::{ClusterFeature, Diagonal, Spherical};
 use betula_cluster::model::{Method, Model};
 use betula_cluster::tree::CFTree;
 use linfa::traits::{Fit, Predict};
@@ -20,7 +20,10 @@ use rand_xoshiro::Xoshiro256Plus;
 
 type Labels = Vec<i64>;
 
-fn betula(
+/// `C` is the leaf feature the Python wrapper builds for the head: `Spherical` for k-means, and
+/// `Diagonal`, its default, for `gmm` and `gmm-full`, which it refuses on a `Spherical` tree —
+/// that feature's one scalar of scatter is added to every dimension of every component.
+fn betula<C: ClusterFeature<f64>>(
     rows: &[Vec<f64>],
     k: usize,
     seed: u64,
@@ -28,7 +31,7 @@ fn betula(
 ) -> Result<Labels, Box<dyn Error>> {
     // The construction of `docs/USAGE.md`'s Rust section: branching and leaf capacity 32, a
     // threshold of 0 and a 2 000-leaf budget; `0` takes the default restart count and `auto_k_max`.
-    let mut tree: CFTree<f64, Spherical<f64>, _, _> = CFTree::new(
+    let mut tree: CFTree<f64, C, _, _> = CFTree::new(
         rows[0].len(),
         32,
         32,
@@ -106,9 +109,9 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let start = Instant::now();
     let labels = match arm {
-        "betula-kmeans" => betula(&rows, k, seed, Method::KMeans)?,
-        "betula-gmm" => betula(&rows, k, seed, Method::Gmm)?,
-        "betula-gmm-full" => betula(&rows, k, seed, Method::GmmFull)?,
+        "betula-kmeans" => betula::<Spherical<f64>>(&rows, k, seed, Method::KMeans)?,
+        "betula-gmm" => betula::<Diagonal<f64>>(&rows, k, seed, Method::Gmm)?,
+        "betula-gmm-full" => betula::<Diagonal<f64>>(&rows, k, seed, Method::GmmFull)?,
         "linfa-kmeans" => linfa_kmeans(&rows, k, seed)?,
         "linfa-gmm" => linfa_gmm(&rows, k, seed)?,
         "clump-kmeans" => clump_labels(

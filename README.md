@@ -44,8 +44,9 @@ with peak RSS sampled from `/proc/self/statm`. Full methodology, every metric, a
 - ⚡🪶 **Faster and lighter than scikit-learn at most published sizes.**
   betula labels **1 M points in 0.21 s**: 9.9× faster than scikit-learn KMeans, 16× vs
   GaussianMixture, 33× vs Birch — and streams **10 M in a flat ~56 MB** where an in-core KMeans
-  needs **~5.0 GB** (**89× less**, and the gap grows without bound). Some rows are not ours, and all
-  are in the tables. On sparse 20-newsgroups scikit-learn is **2.9× faster** on raw TF-IDF
+  needs **~5.0 GB** (**89× less**, and the gap grows without bound); handed the whole array, betula
+  itself peaks at 1.65 GB, 3.0× less. Some rows are not ours, and all are in the tables. On sparse
+  20-newsgroups scikit-learn is **2.9× faster** on raw TF-IDF
   (0.56 s vs 1.62 s) at a better ARI (0.056 vs 0.038), and 3.8× faster on the SVD row (0.38 s vs
   1.45 s), where betula's ARI is higher (0.200 vs 0.130). At 10 M rows the in-core KMeans finishes
   first (5.71 s vs 7.26 s, a timing the bench page calls unreliable). FAISS k-means at its defaults

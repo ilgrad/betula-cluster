@@ -70,8 +70,9 @@ SAME_ALGORITHM = {
     "betula-hdbscan": "sklearn-hdbscan",
     "betula-sparse": "sklearn-kmeans",
     "betula-svd": "sklearn-svd",
-    "betula-nmf": "sklearn-nmf",
+    "betula-kmeans-on-sklearn-nmf": "sklearn-nmf",
     "betula (streaming)": "sklearn-kmeans (one-shot)",
+    "betula (one-shot)": "sklearn-kmeans (one-shot)",
 }
 
 QUALITY_TABLES = [
