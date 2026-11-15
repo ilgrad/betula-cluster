@@ -1342,9 +1342,17 @@ rejected — 5/16 and 7/16 cells non-negative against this scheme's 12/16, for a
 **`n_shards` is a model parameter, not a worker count — which is why it is not called `n_jobs`.**
 The shard+merge build splits the insertion sequence, so the shard count *is* the partition: two
 counts hold different point sets and build different sub-summaries, which no merge order can repair.
-Measured over the 27 cells above at 1 / 2 / 4 / 8 shards, the labels at 8 agree with those at 1 at
-pairwise ARI **0.46 on average and 0.098 at worst** wherever compression is real (exactly 1.0000
-where `max_leaves ≥ n`, which is the control) — as far apart as two row orders were. scikit-learn's
+How far that moves the labels is read against the row order, which moves a one-shard build too. On
+the 18 cells above where compression is real (arrival order, six row permutations × seeds 0/1/2),
+two one-shard builds on different orders agree at pairwise ARI **0.592** on average, and one shard
+against eight on the same order at **0.557**; the second sits inside the range of the first in 16 of
+the 18 cells. Where `max_leaves ≥ n` the two counts give identical labels, which is the control.
+Those sets hold 1 797–20 000 rows, so each of eight shards sees 225–2 500 of them, and there
+sharding costs a little: ARI to the truth moves by **−0.024** on average, most on `ward` (−0.15 at
+worst). On full covtype (581 012 rows, `max_leaves=4000`) the cost is gone: `kmeans` reads 0.075 at
+one shard and 0.070 at eight, inside its spread over row orders, and `ward` 0.091 and 0.090. **Set
+`n_shards` where each shard keeps at least 25 000 rows, the knee `canonical_order` derives its count
+from below, and leave it at 1 under that.** scikit-learn's
 own documentation defines `n_jobs` only as a worker count and stops short of promising the output
 does not move with it; what made the old name a defect anyway is that no scikit-learn estimator
 *does* move, so it carried a convention every caller reads it by. Threads come from
