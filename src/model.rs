@@ -334,18 +334,25 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> Mo
             // A head that named its own centres keeps them: averaging the clusters instead would
             // hand `predict` a Voronoi partition the fit never produced.
             (Rule::Centroid { unit }, _) => Assignment::Centers {
-                centers: fit
-                    .centers
-                    .unwrap_or_else(|| cluster_centroids(tree.leaf_features(), &fit.labels, unit)),
+                centers: match fit.centers {
+                    Centres::Named(c) => c,
+                    Centres::FromLabels => {
+                        cluster_centroids(tree.leaf_features(), &fit.labels, unit)
+                    }
+                    Centres::EveryLeaf => fit
+                        .labels
+                        .iter()
+                        .zip(tree.leaf_features())
+                        .map(|(&l, f)| (l, f.mean().to_vec()))
+                        .collect(),
+                },
                 unit,
             },
             (Rule::Posterior, Some(m)) => Assignment::Posterior(m),
-            (Rule::Lorentz, _) => {
-                fit.centers
-                    .map_or(Assignment::Microcluster, |centers| Assignment::Lorentz {
-                        centers,
-                    })
-            }
+            (Rule::Lorentz, _) => match fit.centers {
+                Centres::Named(centers) => Assignment::Lorentz { centers },
+                Centres::FromLabels | Centres::EveryLeaf => Assignment::Microcluster,
+            },
             _ => Assignment::Microcluster,
         };
         Self {
@@ -543,11 +550,23 @@ pub(crate) struct HeadFit<R: Real> {
     pub resp: Option<Vec<Vec<R>>>,
     /// The point-level density, for the heads that are generative.
     pub mixture: Option<Mixture>,
-    /// The head's own `(label, centre)` pairs, for a [`Rule::Centroid`] head whose centres are **not**
-    /// the cluster means — today only `kmedoids`, whose Voronoi partition is around the medoids it
-    /// chose. `None` means "derive them from the labels", which is what every other centroid head
-    /// wants.
-    pub centers: Option<Vec<(usize, Vec<R>)>>,
+    /// Where the head's centres come from, for a [`Rule::Centroid`] or [`Rule::Lorentz`] head.
+    pub centers: Centres<R>,
+}
+
+/// Where a centroid head's centres come from.
+pub(crate) enum Centres<R: Real> {
+    /// The cluster means, derived from the labels: what every centroid head wants unless it says
+    /// otherwise.
+    FromLabels,
+    /// The head's own `(label, centre)` pairs, whose centres are **not** the cluster means:
+    /// `kmedoids` (its Voronoi partition is around the medoids it chose), the fuzzy and the
+    /// hyperbolic heads.
+    Named(Vec<(usize, Vec<R>)>),
+    /// Every leaf is a centre carrying its own label: the rows-graph Leiden head, which labels a
+    /// row by its nearest leaf, as the graph counted it. The tree already holds those means, so
+    /// none is copied here.
+    EveryLeaf,
 }
 
 impl<R: Real> HeadFit<R> {
@@ -557,7 +576,15 @@ impl<R: Real> HeadFit<R> {
             labels,
             resp: None,
             mixture: None,
-            centers: None,
+            centers: Centres::FromLabels,
+        }
+    }
+
+    /// A head whose every leaf is a centre carrying its own label ([`Centres::EveryLeaf`]).
+    fn every_leaf(labels: Vec<usize>) -> Self {
+        Self {
+            centers: Centres::EveryLeaf,
+            ..Self::hard(labels)
         }
     }
 
@@ -567,7 +594,7 @@ impl<R: Real> HeadFit<R> {
             labels,
             resp: None,
             mixture: None,
-            centers: Some(centers),
+            centers: Centres::Named(centers),
         }
     }
 
@@ -578,7 +605,7 @@ impl<R: Real> HeadFit<R> {
             labels,
             resp: Some(resp),
             mixture: None,
-            centers: Some(centers),
+            centers: Centres::Named(centers),
         }
     }
 
@@ -591,7 +618,7 @@ impl<R: Real> HeadFit<R> {
             labels,
             resp: Some(resp),
             mixture: Some(mixture),
-            centers: None,
+            centers: Centres::FromLabels,
         }
     }
 }
@@ -808,12 +835,7 @@ pub(crate) fn fit_head<R: Real, C: ClusterFeature<R>>(
                 RowEdges::Counted(rows) => {
                     debug_assert!(!cpm, "the rows graph is refused for CPM at the boundary");
                     let labels = leiden_rows(features, rows, gamma, seed, opts.passes).labels;
-                    let centers = labels
-                        .iter()
-                        .zip(features)
-                        .map(|(&l, f)| (l, f.mean().to_vec()))
-                        .collect();
-                    return HeadFit::centred(labels, centers);
+                    return HeadFit::every_leaf(labels);
                 }
                 RowEdges::Requested => {
                     unreachable!("the caller holding the rows counts the graph or refuses the fit")

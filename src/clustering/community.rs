@@ -583,8 +583,8 @@ pub(crate) fn row_top_leaves<R: Real, C: ClusterFeature<R>>(
     } else {
         flat.len() / hints.len()
     };
-    let means: Vec<Vec<R>> = features.iter().map(|f| f.mean().to_vec()).collect();
-    let plan = AssignPlan::new(&means, None).ok();
+    let means: Vec<&[R]> = features.iter().map(|f| f.mean()).collect();
+    let plan = AssignPlan::from_rows(&means, None).ok();
     let near = leaf_neighbours(features, ROW_GRAPH_CANDIDATES.min(m - 1), degree, seed);
     let pick = |r: usize| -> Vec<usize> {
         let x = &flat[r * dim..(r + 1) * dim];

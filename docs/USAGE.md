@@ -78,8 +78,8 @@ MNIST-20k it lifts the median ARI at every budget from 400 to 3 200 leaves, by 0
 and 0.06–0.25 for spectral; it costs up to 0.035 on digits and 0.035 on covtype, whose ARI is near 0
 either way — see *Mass-weighted leaf graphs* in [MATH.md](MATH.md); `"rows"`, for `leiden` only,
 counts the graph from the training rows — each row names its 5 nearest leaves and every pair it
-names gains an edge — and labels a row by its nearest leaf found by exact scan, so `predict` costs
-`n·m·d`. On MNIST-20k it lifts the median ARI from 0.689 to 0.746, on digits from 0.768 to 0.810;
+names gains an edge — and labels a row by its nearest leaf, found by the same exact search in
+training and in `predict` (at worst `n·m·d`). On MNIST-20k it lifts the median ARI from 0.689 to 0.746, on digits from 0.768 to 0.810;
 it loses to `"mass"` on well-separated blobs (0.575 against 0.623) and on noisy rings — see
 *The rows-counted leaf graph* in [MATH.md](MATH.md)), `kappa` (the concentration model of
 `method="vmf"`: `"free"`, the default, fits one `κ` per cluster; `"shared"` fits one for all — see

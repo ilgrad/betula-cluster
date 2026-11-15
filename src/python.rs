@@ -20,7 +20,9 @@ use std::ffi::CString;
 
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
+use std::sync::OnceLock;
 
+use crate::assign::AssignPlan;
 use crate::bregman::{
     BregmanCentroid, BregmanCf, BregmanDivergence, BregmanIncrease, ItakuraSaito, KullbackLeibler,
     Logistic, SquaredEuclidean,
@@ -46,7 +48,7 @@ use crate::kernels::Lead;
 use crate::linalg::{cholesky_lower, mahalanobis_sq_from_chol};
 use crate::mixture::{Mixture, SparseAssigner};
 use crate::model::{
-    HeadOptions, Method, Model, RowEdges, Rule, assignment_rule, auto_k_ceiling, fit_head,
+    Centres, HeadOptions, Method, Model, RowEdges, Rule, assignment_rule, auto_k_ceiling, fit_head,
     refinable, refine_centers,
 };
 use crate::order::{canonical_permutation, canonical_permutation_csr, canonical_shards};
@@ -827,28 +829,32 @@ fn dispatch_kind<R: Real, C: ClusterFeature<R>>(
             // A head that named its own centres has already answered the "where are the centres"
             // question; deriving them again from the labels would average the clusters and hand
             // `predict` a partition the fit never produced.
-            let rule = fit.centers.map(|c| {
-                let labels = c.iter().map(|&(l, _)| l as i64).collect();
-                let rows = c
-                    .iter()
-                    .flat_map(|(_, row)| row.iter().map(|v| v.to_f64().unwrap_or(0.0)))
-                    .collect();
-                match method {
-                    // The fuzzy head labels by the same argmin as any centroid head, but its soft
-                    // output is a membership rather than a posterior, so the rule carries the
-                    // fuzzifier that turns a distance into one.
-                    Method::FuzzyCMeans { fuzzifier } => PointRule::Fuzzy {
-                        labels,
-                        rows,
-                        m: fuzzifier,
-                    },
-                    // The hyperbolic head's centres are points of `H^d` and its assignment is a
-                    // Minkowski argmax, so a Euclidean nearest-centre rule would answer from a
-                    // different Voronoi diagram than the one the fit produced.
-                    Method::Hyperbolic => PointRule::Lorentz { labels, rows },
-                    _ => PointRule::Centers { labels, rows },
-                }
-            });
+            let rule = match fit.centers {
+                Centres::FromLabels => None,
+                Centres::EveryLeaf => Some(PointRule::NearestLeaf),
+                Centres::Named(c) => Some({
+                    let labels = c.iter().map(|&(l, _)| l as i64).collect();
+                    let rows = c
+                        .iter()
+                        .flat_map(|(_, row)| row.iter().map(|v| v.to_f64().unwrap_or(0.0)))
+                        .collect();
+                    match method {
+                        // The fuzzy head labels by the same argmin as any centroid head, but its soft
+                        // output is a membership rather than a posterior, so the rule carries the
+                        // fuzzifier that turns a distance into one.
+                        Method::FuzzyCMeans { fuzzifier } => PointRule::Fuzzy {
+                            labels,
+                            rows,
+                            m: fuzzifier,
+                        },
+                        // The hyperbolic head's centres are points of `H^d` and its assignment is a
+                        // Minkowski argmax, so a Euclidean nearest-centre rule would answer from a
+                        // different Voronoi diagram than the one the fit produced.
+                        Method::Hyperbolic => PointRule::Lorentz { labels, rows },
+                        _ => PointRule::Centers { labels, rows },
+                    }
+                }),
+            };
             Dispatch {
                 labels: fit.labels.into_iter().map(|l| l as i64).collect(),
                 proba,
@@ -1071,6 +1077,12 @@ fn cluster_count_for_centers(labels: &[i64]) -> usize {
 enum PointRule {
     /// `(label, centre)` per non-empty cluster; `rows` is flat `labels.len() × dim`.
     Centers { labels: Vec<i64>, rows: Vec<f64> },
+    /// The tree's own leaves are the centres, each carrying its label in the estimator's per-leaf
+    /// labels: a row takes the label of its nearest leaf. The rows-graph Leiden head declares every
+    /// leaf a centre, and the tree already holds the means, so the rule holds none of them; it is
+    /// answered by [`TreeState::nearest_leaf_labels`], with the tree's own arithmetic, which is
+    /// also how the graph pass found each training row's leaf.
+    NearestLeaf,
     /// The same centres, plus the fuzzifier `m` that turns a distance into a membership. The label
     /// is still the nearest centre — `u_j ∝ d_j^{−1/(m−1)}` is decreasing in `d_j`, so the argmax
     /// and the argmin agree — but the soft output is a partition of unity, not a posterior. Separate
@@ -1257,6 +1269,9 @@ impl PointRule {
                 basis,
                 inner,
             } => inner.label_of(&encode_row(centre, basis, x), scratch),
+            // Refused at the boundary: a projection with the rows graph, and every caller of a
+            // dense or sparse route answers this rule with the tree before it gets here.
+            PointRule::NearestLeaf => unreachable!("a nearest-leaf rule is answered by the tree"),
         }
     }
 
@@ -2929,6 +2944,71 @@ impl<R: Real> TreeState<R> {
         }
     }
 
+    /// An assignment plan over the leaf means, in the tree's own dtype; `None` when there is no
+    /// leaf to plan over.
+    fn leaf_plan(&self) -> Option<AssignPlan<R>> {
+        fn over<R: Real, C: ClusterFeature<R>>(leaves: &[C]) -> Option<AssignPlan<R>> {
+            let means: Vec<&[R]> = leaves.iter().map(|c| c.mean()).collect();
+            AssignPlan::from_rows(&means, None).ok()
+        }
+        match self {
+            TreeState::Spherical(t) => over(t.leaf_features()),
+            TreeState::Diagonal(t) => over(t.leaf_features()),
+            TreeState::Full(t) => over(t.leaf_features()),
+            TreeState::Fd(t) => over(t.leaf_features()),
+        }
+    }
+
+    /// The per-leaf label of each row's nearest leaf. The descent names a leaf and the plan finds
+    /// the exact nearest from there, the steps and the arithmetic by which the rows graph found
+    /// each training row's own leaf, so a training row is labelled as the graph counted it.
+    fn nearest_leaf_labels(
+        &self,
+        plan: Option<&AssignPlan<R>>,
+        labels: &[i64],
+        flat: &[R],
+        n: usize,
+        dim: usize,
+        beam: usize,
+    ) -> Vec<i64> {
+        let hints = self.entries(flat, n, dim, beam);
+        map_rows(n, |i| {
+            let own = plan.map_or(hints[i], |p| {
+                p.nearest(&flat[i * dim..(i + 1) * dim], Some(hints[i])).0
+            });
+            labels[own]
+        })
+    }
+
+    /// [`TreeState::nearest_leaf_labels`] for CSR rows, each expanded into one reused dense buffer.
+    #[allow(clippy::too_many_arguments)]
+    fn nearest_leaf_labels_csr(
+        &self,
+        plan: Option<&AssignPlan<R>>,
+        labels: &[i64],
+        data: &[f64],
+        indices: &[i64],
+        indptr: &[i64],
+        dim: usize,
+        beam: usize,
+    ) -> Vec<i64> {
+        let mut buf = vec![R::zero(); dim];
+        let mut out = Vec::with_capacity(indptr.len().saturating_sub(1));
+        for w in indptr.windows(2) {
+            let (lo, hi) = (w[0] as usize, w[1] as usize);
+            for k in lo..hi {
+                buf[indices[k] as usize] = R::from_f64(data[k]).unwrap_or_else(R::zero);
+            }
+            let hint = self.nearest_entry(&buf, beam);
+            let own = plan.map_or(hint, |p| p.nearest(&buf, Some(hint)).0);
+            out.push(labels[own]);
+            for k in lo..hi {
+                buf[indices[k] as usize] = R::zero();
+            }
+        }
+        out
+    }
+
     /// Stream CSR rows into the tree by expanding each into a reused dense buffer (so the dense
     /// `n × dim` matrix is never materialized). Caller has validated the CSR arrays. Generic over `R`.
     fn stream_chunk_csr(
@@ -3344,6 +3424,14 @@ fn default_kappa() -> String {
     "free".to_owned()
 }
 
+/// The [`AssignPlan`] over the leaf means that a [`PointRule::NearestLeaf`] rule is answered with,
+/// one slot per tree dtype. `None` inside a slot records that the tree had no leaf to plan over.
+#[derive(Default)]
+struct LeafPlans {
+    f64: OnceLock<Option<AssignPlan<f64>>>,
+    f32: OnceLock<Option<AssignPlan<f32>>>,
+}
+
 fn is_free_kappa(kappa: &str) -> bool {
     kappa == "free"
 }
@@ -3449,6 +3537,11 @@ struct Betula {
     /// keeps the microcluster route (see [`Model`]).
     #[serde(default)]
     rule: Option<PointRule>,
+    /// The plan a [`PointRule::NearestLeaf`] rule is answered with, built on its first use from the
+    /// tree's leaves and dropped whenever the tree or the rule changes. Not persisted: it is a
+    /// function of the tree, and one build costs as much as many single-row predicts.
+    #[serde(skip)]
+    leaf_plans: LeafPlans,
     /// BIRCH Phase-4 Lloyd sweeps over the raw rows after the leaf clustering; `0` disables it.
     #[serde(default)]
     refine: usize,
@@ -3624,6 +3717,7 @@ impl Betula {
         self.labels = None;
         self.proba = None;
         self.rule = None;
+        self.leaf_plans = LeafPlans::default();
         self.dim = 0;
         self.origin = None;
     }
@@ -3747,6 +3841,7 @@ impl Betula {
         }
         self.labels = None;
         self.proba = None;
+        self.leaf_plans = LeafPlans::default();
         Ok(())
     }
 
@@ -3828,6 +3923,18 @@ impl Betula {
             .as_ref()
             .ok_or_else(|| PyValueError::new_err("no fitted float64 tree for sparse predict"))?;
         match self.rule.as_ref() {
+            Some(PointRule::NearestLeaf) => {
+                let plan = self.leaf_plans.f64.get_or_init(|| t.leaf_plan());
+                Ok(t.nearest_leaf_labels_csr(
+                    plan.as_ref(),
+                    labels,
+                    data,
+                    indices,
+                    indptr,
+                    n_features,
+                    self.route_beam,
+                ))
+            }
             Some(rule) => Ok(rule.label_csr(data, indices, indptr, n_features)),
             None => Ok(t.route_csr(labels, data, indices, indptr, n_features, self.route_beam)),
         }
@@ -4055,6 +4162,7 @@ impl Betula {
                 .as_ref()
                 .map(|t| t.label_proba(kind, k, mi, ni, seed, akm, passes, nmf))
         };
+        self.leaf_plans = LeafPlans::default();
         match result {
             Some(out) => {
                 self.labels = Some(out.labels);
@@ -4153,15 +4261,19 @@ impl Betula {
                 "call fit(), fit_predict(), or partial_fit() (no args, to finalize) before predict()",
             )
         })?;
-        let rule = self.rule.as_ref();
+        let (rule, beam) = (self.rule.as_ref(), self.route_beam);
         if let Some(t) = &self.state64 {
             let (src, n, dim) = self.rows_of::<f64>(data)?;
             let flat = src.as_slice();
             self.check_dim(dim)?;
             Ok(py
                 .detach(|| match rule {
+                    Some(PointRule::NearestLeaf) => {
+                        let plan = self.leaf_plans.f64.get_or_init(|| t.leaf_plan());
+                        t.nearest_leaf_labels(plan.as_ref(), labels, flat, n, dim, beam)
+                    }
                     Some(r) => r.label_rows(flat, n, dim),
-                    None => t.route(labels, flat, n, dim, self.route_beam),
+                    None => t.route(labels, flat, n, dim, beam),
                 })
                 .into_pyarray(py))
         } else if let Some(t) = &self.state32 {
@@ -4170,8 +4282,12 @@ impl Betula {
             self.check_dim(dim)?;
             Ok(py
                 .detach(|| match rule {
+                    Some(PointRule::NearestLeaf) => {
+                        let plan = self.leaf_plans.f32.get_or_init(|| t.leaf_plan());
+                        t.nearest_leaf_labels(plan.as_ref(), labels, flat, n, dim, beam)
+                    }
                     Some(r) => r.label_rows(flat, n, dim),
-                    None => t.route(labels, flat, n, dim, self.route_beam),
+                    None => t.route(labels, flat, n, dim, beam),
                 })
                 .into_pyarray(py))
         } else {
@@ -4465,6 +4581,7 @@ impl Betula {
             nmf_components: None,
             nmf_reconstruction_err: None,
             rule: None,
+            leaf_plans: LeafPlans::default(),
             refine,
             route_beam,
             leaf_refit,
@@ -5348,6 +5465,12 @@ const SCHEMA_VERSION: u32 = 2;
 /// written as [`SCHEMA_VERSION`], so it stays readable by the builds that wrote its kind.
 const SCHEMA_VERSION_ORIGIN: u32 = 3;
 
+/// The schema of a model whose point rule is [`PointRule::NearestLeaf`], with or without an origin.
+/// 1.5.0 has no such variant and fails on it before it reads a version; the number marks these
+/// files for every later build, and leaves every other model at [`SCHEMA_VERSION`] or
+/// [`SCHEMA_VERSION_ORIGIN`], readable by the builds that wrote its kind.
+const SCHEMA_VERSION_LEAF: u32 = 4;
+
 /// Leading bytes of a gzip member (RFC 1952 §2.3.1), which is how [`decode`] tells a compressed
 /// model from one written before `save` framed them.
 const GZIP_MAGIC: [u8; 2] = [0x1f, 0x8b];
@@ -5364,7 +5487,9 @@ const GZIP_MAGIC: [u8; 2] = [0x1f, 0x8b];
 /// cross-compiles without a C toolchain, and a `.betula` file stays readable by `gzip -d`.
 fn encode(est: &Betula) -> PyResult<Vec<u8>> {
     let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
-    let version = if est.origin.is_some() {
+    let version = if matches!(est.rule, Some(PointRule::NearestLeaf)) {
+        SCHEMA_VERSION_LEAF
+    } else if est.origin.is_some() {
         SCHEMA_VERSION_ORIGIN
     } else {
         SCHEMA_VERSION
@@ -5397,13 +5522,31 @@ fn decode(bytes: &[u8]) -> PyResult<Betula> {
         ciborium::from_reader(bytes)
     }
     .map_err(|e| PyValueError::new_err(format!("deserialize failed: {e}")))?;
-    if version != SCHEMA_VERSION && version != SCHEMA_VERSION_ORIGIN {
+    if ![SCHEMA_VERSION, SCHEMA_VERSION_ORIGIN, SCHEMA_VERSION_LEAF].contains(&version) {
         return Err(PyValueError::new_err(format!(
-            "unsupported model version {version} (this build reads {SCHEMA_VERSION} and \
-             {SCHEMA_VERSION_ORIGIN})"
+            "unsupported model version {version} (this build reads {SCHEMA_VERSION}, \
+             {SCHEMA_VERSION_ORIGIN} and {SCHEMA_VERSION_LEAF})"
         )));
     }
-    if (version == SCHEMA_VERSION_ORIGIN) != est.origin.is_some() {
+    let nearest_leaf = matches!(est.rule, Some(PointRule::NearestLeaf));
+    if (version == SCHEMA_VERSION_LEAF) != nearest_leaf {
+        return Err(PyValueError::new_err(format!(
+            "corrupt model: a version {version} file {} a nearest-leaf rule",
+            if nearest_leaf { "with" } else { "without" }
+        )));
+    }
+    if nearest_leaf
+        && est
+            .labels
+            .as_ref()
+            .is_some_and(|l| l.len() != est.n_leaves_())
+    {
+        return Err(PyValueError::new_err(
+            "corrupt model: a nearest-leaf rule needs one label per leaf",
+        ));
+    }
+    if version != SCHEMA_VERSION_LEAF && (version == SCHEMA_VERSION_ORIGIN) != est.origin.is_some()
+    {
         return Err(PyValueError::new_err(format!(
             "corrupt model: a version {version} file {} an origin",
             if est.origin.is_some() {

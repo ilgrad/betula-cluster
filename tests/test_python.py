@@ -1066,6 +1066,56 @@ def test_the_rows_leaf_graph_is_read_alike_by_both_entry_points_and_kept_through
         np.testing.assert_array_equal(restored.predict(x), labels)
 
 
+def test_a_rows_head_model_holds_no_copy_of_the_leaf_means():
+    """The rows head labels a row by its nearest leaf, and the tree already holds every leaf's
+    mean: a saved model carries one label per leaf and no second copy of the means, so it is the
+    size of the same tree saved with another head, not ``n_leaves × d × 8`` bytes larger."""
+    import pickle
+
+    rng = np.random.default_rng(0)
+    x = rng.normal(size=(4000, 32))
+    kw = dict(method="leiden", threshold=0.0, max_leaves=800, seed=0)
+    rows = betula_cluster.Betula(leaf_graph="rows", **kw).fit(x)
+    unit = betula_cluster.Betula(leaf_graph="unit", **kw).fit(x)
+    copy = rows.n_leaves_ * x.shape[1] * 8
+    assert len(pickle.dumps(rows)) - len(pickle.dumps(unit)) < copy / 8
+
+
+_LATTICE_ROWS_KW = dict(method="leiden", threshold=0.0, max_leaves=150, seed=0, leaf_graph="rows")
+
+
+def _lattice():
+    """Rows on a small integer lattice, most of them repeated: many sit equally near two leaves."""
+    return np.random.default_rng(3).integers(0, 5, size=(3000, 4))
+
+
+@pytest.mark.parametrize("dtype", [np.float64, np.float32])
+def test_the_rows_head_labels_a_tied_row_alike_through_every_route(dtype, tmp_path):
+    """``fit_predict``, ``fit().predict`` and a reloaded model answer each row of the lattice with
+    the same leaf, so with the same label."""
+    import pickle
+
+    x = _lattice().astype(dtype)
+    est = betula_cluster.Betula(**_LATTICE_ROWS_KW)
+    labels = est.fit_predict(x)
+    np.testing.assert_array_equal(
+        betula_cluster.Betula(**_LATTICE_ROWS_KW).fit(x).predict(x), labels
+    )
+    path = tmp_path / "model.betula"
+    est.save(str(path))
+    for restored in (pickle.loads(pickle.dumps(est)), betula_cluster.Betula.load(str(path))):
+        np.testing.assert_array_equal(restored.predict(x), labels)
+
+
+def test_the_rows_head_labels_a_sparse_row_as_its_dense_twin():
+    """A CSR ``predict`` on a rows-head model expands each row and asks the tree the same question
+    the dense route asks."""
+    sparse = pytest.importorskip("scipy.sparse")
+    x = _lattice().astype(np.float64)
+    est = betula_cluster.Betula(**_LATTICE_ROWS_KW).fit(x)
+    np.testing.assert_array_equal(est.predict(sparse.csr_matrix(x)), est.predict(x))
+
+
 def test_the_rows_leaf_graph_refuses_a_fit_with_no_dense_rows_to_count(blobs):
     """The graph needs the rows at head time: ``partial_fit(None)`` has only the leaves, and a
     sparse fit has no dense rows; a projection moves the head off the rows' space; the spectral

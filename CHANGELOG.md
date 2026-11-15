@@ -21,11 +21,16 @@ All notable changes to this project are documented here. The format follows
 - **`leaf_graph="rows"` for `method="leiden"`.** The leaf graph counted from the training rows:
   each row names its 5 nearest leaves, and every pair of leaves one row names gains an edge (the
   object–representative graph of U-SPEC, folded onto the leaves). A row takes the community of its
-  nearest leaf found by exact scan, in training and in `predict`. Median ARI over five row orders ×
+  nearest leaf, found by one exact search in the tree's precision in training and in `predict`
+  alike, so `fit(X).predict(X)` equals `fit_predict(X)`. Median ARI over five row orders ×
   seeds 0/1/2 at `γ = 1`, against the better of `"unit"` and `"mass"`: MNIST-20k 0.689 → 0.746,
   standardised MNIST 0.505 → 0.535, digits 0.768 → 0.810, 20 newsgroups (MiniLM) 0.330 → 0.345,
   covtype 0.039 → 0.032. It loses on synthetic sets: blobs 0.623 → 0.575, noisy rings 0.144 → 0.121
-  and 0.164 → 0.146. `predict` scans every leaf (`n·m·d`), where the other graphs descend the tree.
+  and 0.164 → 0.146. The model keeps one label per leaf and reads the leaf means from the tree: on
+  MNIST-70k at 7 378 leaves a pickled model is 12.8 MB instead of 18.7 MB, the estimator holds
+  70 MB less after `fit`, and the fit's peak RSS is 19 MB lower. Such a model is saved as schema 4,
+  which earlier builds refuse. At worst the search visits every leaf (`n·m·d`), where the other
+  graphs descend the tree.
   `leiden-cpm` refuses it (its resolution would mean a different thing at every row count), and so
   do `partial_fit(None)`, sparse input and a projection, which have no dense rows to count. Labels
   are the same at any thread count. `"unit"` stays the default.

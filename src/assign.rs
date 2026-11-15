@@ -220,10 +220,40 @@ impl<R: Real> AssignPlan<R> {
         ))
     }
 
-    fn with_order(centroids: &[Vec<R>], order: Vec<u32>, block: usize, dim: usize) -> Self {
+    /// [`AssignPlan::new`] over centroids borrowed from wherever they already live.
+    pub(crate) fn from_rows(centroids: &[&[R]], weights: Option<&[R]>) -> Result<Self, PlanError> {
+        let dim = centroids.first().ok_or(PlanError::Empty)?.len();
+        if dim == 0 {
+            return Err(PlanError::ZeroDim);
+        }
+        for (row, c) in centroids.iter().enumerate() {
+            if c.len() != dim {
+                return Err(PlanError::Ragged {
+                    row,
+                    len: c.len(),
+                    dim,
+                });
+            }
+        }
+        let block = default_block(dim);
+        Ok(Self::with_order(
+            centroids,
+            variance_order(centroids, weights, dim),
+            block,
+            dim,
+        ))
+    }
+
+    fn with_order<C: AsRef<[R]>>(
+        centroids: &[C],
+        order: Vec<u32>,
+        block: usize,
+        dim: usize,
+    ) -> Self {
         let k = centroids.len();
         let mut flat = Vec::with_capacity(k * dim);
         for c in centroids {
+            let c = c.as_ref();
             flat.extend(order.iter().map(|&j| c[j as usize]));
         }
         let mut stages = Vec::new();
@@ -415,8 +445,8 @@ impl<R: Real> AssignPlan<R> {
 /// Dimensions by descending mass-weighted between-centroid variance.
 ///
 /// Any order gives an exact bound; this one maximises the expected prefix, so it prunes soonest.
-pub(crate) fn variance_order<R: Real>(
-    centroids: &[Vec<R>],
+pub(crate) fn variance_order<R: Real, C: AsRef<[R]>>(
+    centroids: &[C],
     weights: Option<&[R]>,
     dim: usize,
 ) -> Vec<u32> {
@@ -434,15 +464,15 @@ pub(crate) fn variance_order<R: Real>(
     };
 
     let mut var = vec![0f64; dim];
-    for d in 0..dim {
-        let mean = (0..k).fold(R::zero(), |a, i| a + weight(i) * centroids[i][d]);
+    for (d, slot) in var.iter_mut().enumerate() {
+        let mean = (0..k).fold(R::zero(), |a, i| a + weight(i) * centroids[i].as_ref()[d]);
         let v = (0..k).fold(R::zero(), |a, i| {
-            let e = centroids[i][d] - mean;
+            let e = centroids[i].as_ref()[d] - mean;
             a + weight(i) * e * e
         });
         // A non-finite coordinate makes the variance meaningless; sort those dimensions last
         // rather than letting NaN decide the comparison.
-        var[d] = v
+        *slot = v
             .to_f64()
             .filter(|x| x.is_finite())
             .unwrap_or(f64::NEG_INFINITY);

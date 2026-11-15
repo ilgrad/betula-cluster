@@ -716,8 +716,10 @@ that leaf's 20 nearest leaves: $n \cdot 20$ distances instead of $n \cdot m$, ho
 exact top five on MNIST and 0.99 on digits, at an ARI within the seed spread of the full scan. The
 row's nearest leaf is found exactly, with the tree descent's leaf as the starting bound, and the
 row is labelled by that leaf in training and in `predict`: at $d = 784$ the descent reaches the
-nearest leaf for 69 % of MNIST rows, and labelling by the descent's leaf cost 0.05 ARI. So
-`predict` scans every leaf, `n·m·d` work, where the other graphs descend the tree.
+nearest leaf for 69 % of MNIST rows, and labelling by the descent's leaf cost 0.05 ARI. `predict`
+runs the same exact search in the tree's precision, so `fit(X).predict(X)` equals `fit_predict(X)`;
+the model keeps one label per leaf and reads the leaf means from the tree. At worst the search
+visits every leaf, `n·m·d` work, where the other graphs descend the tree.
 
 Median ARI (min–max), Leiden at $\gamma = 1$ until stable, five row orders × seeds 0/1/2:
 
