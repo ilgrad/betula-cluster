@@ -241,13 +241,14 @@ answer.
 (`leiden` reads the count off the graph — tune granularity with `resolution` γ, higher ⇒ more, or
 pass `resolution="auto"` to have it searched for `n_clusters`).
 Leiden builds its leaf graph by an exact nearest-neighbour scan by default, `O(m²·d)` in the leaf
-count `m` and `O(m²)` in memory, so doubling `max_leaves` quadruples its cost (retired instructions
+count `m`, so doubling `max_leaves` quadruples its cost (retired instructions
 ×4.0–4.2 per doubling from 900 to 7 400 leaves). `graph_degree > 0` finds the neighbours by the
 beam-search index `spectral` switches to past 2 048 leaves, at no fewer than the exact graph keeps
 (10 per leaf past 100 leaves), so `graph_degree=1` asks for the exact graph's degree. On MNIST-20k the
 fit then retires 5.1·10⁹ instead of 1.5·10¹⁰ instructions at 3 966 leaves, 8.9·10⁹ instead of
-5.2·10¹⁰ at 7 826 and 1.7·10¹⁰ instead of 1.8·10¹¹ at 14 937, and peaks at 471 MB instead of
-2.4 GB there. A beam search can miss a true neighbour, so the partition moves, about as far as
+5.2·10¹⁰ at 7 826 and 1.7·10¹⁰ instead of 1.8·10¹¹ at 14 937, and peaked at 471 MB instead of
+2.4 GB there while the exact graph still held all `m²` leaf distances; it now holds each leaf's
+nearest few. A beam search can miss a true neighbour, so the partition moves, about as far as
 another Leiden seed moves it. Over seeds 0/1/2 the exact partition agrees with the indexed one at
 ARI 0.36 / 0.66 / 0.63 on MNIST-20k at 924 / 3 847 / 7 505 leaves, and with itself under another
 seed at 0.41 / 0.66 / 0.69. The median ARI against the digit labels moves 0.255 → 0.238,

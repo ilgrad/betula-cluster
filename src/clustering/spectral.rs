@@ -9,7 +9,7 @@
 //!
 //! **Two solvers, one boundary.** Up to [`SPECTRAL_EXACT_NODES`] the eigenproblem is solved exactly
 //! by the in-house cyclic-Jacobi routine (`O(M³)`; no LAPACK/ARPACK — the crate stays LEAN) on the
-//! complete `M×M` affinity. Above it, neither the `O(M³)` solve nor the `O(M²)` distance matrix that
+//! complete `M×M` affinity. Above it, neither the `O(M³)` solve nor the `O(M²)` pairwise scan that
 //! feeds it is affordable, and the head used to answer by *throwing resolution away*: reduce the
 //! leaves to 256 weighted k-means landmarks, cluster those, and let every leaf inherit its
 //! landmark's label — a second lossy summarisation stacked on the one the tree already did.
@@ -21,7 +21,7 @@
 //! bounded by 1 on the damped interval — that gap, not the matrix size, is what sets the iteration
 //! count. Nothing `M×M` is ever formed. Past [`SPECTRAL_DENSE_GRAPH_MAX`] the graph itself comes
 //! from the bounded-degree beam-search index too ([`knn_affinity_approx`], the same graph the
-//! HDBSCAN head runs on), since the `O(M²)` distance matrix is the next thing to go.
+//! HDBSCAN head runs on), since the `O(M²)` pairwise scan is the next thing to go.
 //!
 //! **Measured, A/B against the landmark path on the same trees, median of seeds 0/1/2.** Quality is
 //! a tie or a win wherever the two differ at all, and the cost falls by 2–12×: `two-moons` and
@@ -55,16 +55,16 @@ use crate::types::Real;
 /// the sparse graph and the Chebyshev solver take over; there is no landmark reduction either side.
 ///
 /// The boundary is where the dense route stops being the cheap one, not where it stops being
-/// correct: `O(M³)` Jacobi at 256 is well under a second, and the `M×M` distance matrix the exact
-/// affinity builds is 0.5 MB at 256, 134 MB at 4096 and 3.2 GB at 20 000.
+/// correct: `O(M³)` Jacobi at 256 is well under a second, and the exact affinity's `O(M²)` pairwise
+/// scan is cheaper still there.
 pub const SPECTRAL_EXACT_NODES: usize = 256;
 /// Nodes above which the affinity graph is built by approximate search rather than from the
 /// complete distance matrix.
 ///
 /// A second, independent boundary, because the exact graph and the exact solver stop being
 /// affordable for different reasons and at different sizes. The `O(M³)` Jacobi is the first to go;
-/// the `O(M²)` distance matrix survives well past it — 33 MB at 2048 — and is worth keeping, because
-/// the approximate graph is where the remaining quality difference lives, not the solver.
+/// the `O(M²)` pairwise scan survives well past it and is worth keeping, because the approximate
+/// graph is where the remaining quality difference lives, not the solver.
 pub const SPECTRAL_DENSE_GRAPH_MAX: usize = 2048;
 /// Cluster count used when `k == 0` (auto) is requested — spectral has no reliable built-in
 /// selection, and two clusters is the canonical non-convex case (moons / two rings).
@@ -212,8 +212,8 @@ fn spectral_core_full<R: Real>(
     // Symmetric self-tuning k-NN affinity graph, kept sparse. `A` is exactly symmetric by
     // construction, so the normalized affinity `P = D^{-1/2} A D^{-1/2}` is too.
     //
-    // The exact builder survives past the exact *solver*: what retires it is the `O(M²)` distance
-    // matrix, at [`SPECTRAL_DENSE_GRAPH_MAX`], not the `O(M³)` eigendecomposition at
+    // The exact builder survives past the exact *solver*: what retires it is the `O(M²)` pairwise
+    // scan, at [`SPECTRAL_DENSE_GRAPH_MAX`], not the `O(M³)` eigendecomposition at
     // [`SPECTRAL_EXACT_NODES`]. A forced degree means the caller is measuring the graph itself, so
     // it gets the exact one whatever the size.
     let mut adj = match degree {

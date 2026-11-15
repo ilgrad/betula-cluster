@@ -162,6 +162,17 @@ All notable changes to this project are documented here. The format follows
   by `gmm_full` on 1 800 one-row leaves of 64 coordinates: 258 MB → 8.4 MB at eight threads. Peak
   RSS of a Rust `gmm-full` fit on `digits`: 259 MB → 15 MB, against linfa's 10 MB. On 784-D data at
   2 000 leaves that is 9.6 GB a restart less. `feature="full"` keeps its dense matrices.
+- **The exact leaf graph no longer holds an `m × m` array.** The self-tuning kNN graph that
+  `leiden` / `leiden-cpm` (`leaf_graph="unit"` and `"mass"`) and `spectral` up to 2 048 leaves build
+  kept every pairwise leaf distance and an `m × m` boolean: 490 MB at 7 378 leaves. Each leaf now
+  keeps its nearest `max(degree, 7)` by (distance, index), the order the full sort gave, and every
+  pair distance is still computed once. Graphs are bit-identical to the old builder (a retained
+  copy checks edges and weight bits on exactly tied leaves), and labels are byte-identical (276
+  digests: `leiden` unit / mass / `resolution="auto"` / shape and tangent terms, `leiden-cpm` at
+  three resolutions, `spectral` unit / mass, on blobs, digits and MNIST-20k, f32 and f64). Fit-only
+  peak RSS of `leiden` at `max_leaves=8000` on MNIST-70k float32 (7 378 leaves) falls from
+  577 480 kB to 268 928 kB above the loaded rows (`"mass"`: 578 036 → 268 980 kB), the level of the
+  `kmeans` arm on the same tree (268 540 kB).
 - **`leaf_refit` routes its rows on the thread pool.** Each refit round re-routed every row serially,
   the only full-data route that did not go through the parallel row map; it now forks from 4 096 rows
   like the others, and the fold into the new entries stays serial in row order. Labels, centres and

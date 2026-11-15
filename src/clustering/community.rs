@@ -456,8 +456,8 @@ fn to_k<R: Real, C: ClusterFeature<R>>(
 /// index when `degree > 0`, at `degree` neighbours or the exact graph's own count, whichever is
 /// larger. `0` is the exact graph and [`leiden_on`] itself.
 ///
-/// The exact graph sorts an `m × m` distance matrix: `O(m²·d)` work and `O(m²)` memory, 512 MB of
-/// distances alone at 8 000 leaves. The index takes `O(m·log m)` distance evaluations and builds the
+/// The exact graph evaluates every pair of leaves: `O(m²·d)` work, though it holds only each
+/// leaf's nearest few. The index takes `O(m·log m)` distance evaluations and builds the
 /// graph the spectral head switches to past 2 048 leaves. A beam search can miss a true neighbour,
 /// so the partition moves; that is why it is asked for, not switched on by size.
 #[allow(clippy::too_many_arguments)]

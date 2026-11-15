@@ -30,9 +30,9 @@ pub fn knn_affinity<R: Real>(centers: &[Vec<R>]) -> Vec<Vec<(usize, R)>> {
 /// distance matrix — same weights, same self-tuning scale, `O(n·log n)` distance evaluations
 /// instead of `O(n²)`.
 ///
-/// [`knn_affinity`] materialises an `n×n` distance matrix to sort each node's neighbours exactly.
-/// That is 134 MB at `n = 4096` and 3.2 GB at `n = 20 000`, which is what actually bounds the
-/// spectral head once its eigensolver no longer does. [`knn::build`](super::knn::build) answers the
+/// [`knn_affinity`] evaluates all `n(n−1)/2` distances to find each node's neighbours exactly. It
+/// holds only the nearest few per node, so what bounds the spectral head once its eigensolver no
+/// longer does is that `O(n²·d)` work, not memory. [`knn::build`](super::knn::build) answers the
 /// same question approximately at bounded degree, and it is the graph the HDBSCAN head has been
 /// built on since the graph index landed.
 ///
@@ -234,45 +234,61 @@ fn knn_affinity_impl<R: Real>(
     let n = centers.len();
     let tiny = R::from_f64(1e-12).unwrap();
 
-    // Pairwise squared distances: centroid term + optional log-Euclidean shape + optional tangent.
-    let mut d2 = vec![vec![R::zero(); n]; n];
-    for i in 0..n {
-        let (head, tail) = d2.split_at_mut(i + 1);
-        let row_i = &mut head[i];
-        for (k, row_j) in tail.iter_mut().enumerate() {
-            let j = i + 1 + k;
-            let v = geo_sq(centers, cov, tangent, i, j);
-            row_i[j] = v;
-            row_j[i] = v;
-        }
-    }
-
-    // Per node, sort neighbours once, then read off the self-tuning local scale `σ_i` (distance to
-    // the `LOCAL_SCALE_NN`-th neighbour) and the `knn` nearest for the graph. `scale_rank` ≥ 1 since
-    // n ≥ 2; `knn` scales with the node count so the graph stays local on small trees.
+    // The self-tuning local scale `σ_i` is the distance to the `LOCAL_SCALE_NN`-th neighbour and
+    // the graph keeps the `knn` nearest, so a node needs no more of its row than the larger of the
+    // two. `scale_rank` ≥ 1 since n ≥ 2; `knn` scales with the node count so the graph stays local
+    // on small trees.
     let scale_rank = LOCAL_SCALE_NN.min(n - 1);
     let knn = degree.map_or_else(|| knn_degree(n), |d| d.clamp(1, n - 1));
-    let mut sigma = vec![R::zero(); n];
-    let mut adj = vec![vec![false; n]; n];
-    for i in 0..n {
-        let mut idx: Vec<usize> = (0..n).filter(|&j| j != i).collect();
-        idx.sort_by(|&x, &y| d2[i][x].partial_cmp(&d2[i][y]).unwrap());
-        sigma[i] = d2[i][idx[scale_rank - 1]].sqrt().max(tiny);
-        for &j in &idx[0..knn] {
-            adj[i][j] = true; // symmetric k-NN: an edge if either endpoint keeps the other
-            adj[j][i] = true;
-        }
-    }
+    let keep = knn.max(scale_rank);
 
-    let mut out: Vec<Vec<(usize, R)>> = vec![Vec::new(); n];
+    // Each pair's squared distance (centroid term + optional log-Euclidean shape + optional
+    // tangent) is computed once and offered to both endpoints' lists. A list is ordered by
+    // (distance, index): the order a stable sort of the node's complete row gives, so σ_i and the
+    // kept neighbours are those of the full distance matrix, ties included.
+    let mut near: Vec<Vec<(R, usize)>> = (0..n).map(|_| Vec::with_capacity(keep + 1)).collect();
     for i in 0..n {
-        for j in 0..n {
-            if i != j && adj[i][j] {
-                out[i].push((j, (-d2[i][j] / (sigma[i] * sigma[j])).exp()));
-            }
+        for j in i + 1..n {
+            let v = geo_sq(centers, cov, tangent, i, j);
+            offer(&mut near[i], keep, v, j);
+            offer(&mut near[j], keep, v, i);
         }
     }
-    out
+    let sigma: Vec<R> = near
+        .iter()
+        .map(|list| list[scale_rank - 1].0.sqrt().max(tiny))
+        .collect();
+
+    // Symmetric k-NN: an edge if either endpoint keeps the other.
+    let mut edges: Vec<Vec<(usize, R)>> = vec![Vec::new(); n];
+    for (i, list) in near.iter().enumerate() {
+        for &(v, j) in &list[..knn] {
+            edges[i].push((j, v));
+            edges[j].push((i, v));
+        }
+    }
+    drop(near);
+    edges
+        .into_iter()
+        .enumerate()
+        .map(|(i, mut row)| {
+            row.sort_unstable_by_key(|&(j, _)| j);
+            row.dedup_by_key(|&mut (j, _)| j);
+            row.into_iter()
+                .map(|(j, v)| (j, (-v / (sigma[i] * sigma[j])).exp()))
+                .collect()
+        })
+        .collect()
+}
+
+/// Offers neighbour `j` at squared distance `v` to `list`, which holds at most `keep` entries in
+/// ascending (distance, index) order.
+fn offer<R: Real>(list: &mut Vec<(R, usize)>, keep: usize, v: R, j: usize) {
+    let at = list.partition_point(|&(d, k)| d.partial_cmp(&v).unwrap().then(k.cmp(&j)).is_lt());
+    if at < keep {
+        list.insert(at, (v, j));
+        list.truncate(keep);
+    }
 }
 
 #[cfg(test)]
@@ -594,5 +610,171 @@ mod tests {
         let complete = knn_affinity_with_degree(&centers, n + 3);
         assert!(complete.iter().all(|row| row.len() == n - 1));
         assert_eq!(complete, knn_affinity_with_degree(&centers, n - 1));
+    }
+
+    /// The exact builder as it was before the bounded neighbour lists: the complete `n × n`
+    /// distance matrix, each row stable-sorted. Kept verbatim; the lists must reproduce it bit for
+    /// bit.
+    fn dense_reference<R: Real>(
+        centers: &[Vec<R>],
+        cov: Option<(&[Vec<Vec<R>>], R)>,
+        tangent: Option<(&[Vec<Vec<R>>], R)>,
+        degree: Option<usize>,
+    ) -> Vec<Vec<(usize, R)>> {
+        let n = centers.len();
+        let tiny = R::from_f64(1e-12).unwrap();
+
+        // Pairwise squared distances: centroid term + optional log-Euclidean shape + optional tangent.
+        let mut d2 = vec![vec![R::zero(); n]; n];
+        for i in 0..n {
+            let (head, tail) = d2.split_at_mut(i + 1);
+            let row_i = &mut head[i];
+            for (k, row_j) in tail.iter_mut().enumerate() {
+                let j = i + 1 + k;
+                let v = geo_sq(centers, cov, tangent, i, j);
+                row_i[j] = v;
+                row_j[i] = v;
+            }
+        }
+
+        // Per node, sort neighbours once, then read off the self-tuning local scale `σ_i` (distance to
+        // the `LOCAL_SCALE_NN`-th neighbour) and the `knn` nearest for the graph. `scale_rank` ≥ 1 since
+        // n ≥ 2; `knn` scales with the node count so the graph stays local on small trees.
+        let scale_rank = LOCAL_SCALE_NN.min(n - 1);
+        let knn = degree.map_or_else(|| knn_degree(n), |d| d.clamp(1, n - 1));
+        let mut sigma = vec![R::zero(); n];
+        let mut adj = vec![vec![false; n]; n];
+        for i in 0..n {
+            let mut idx: Vec<usize> = (0..n).filter(|&j| j != i).collect();
+            idx.sort_by(|&x, &y| d2[i][x].partial_cmp(&d2[i][y]).unwrap());
+            sigma[i] = d2[i][idx[scale_rank - 1]].sqrt().max(tiny);
+            for &j in &idx[0..knn] {
+                adj[i][j] = true; // symmetric k-NN: an edge if either endpoint keeps the other
+                adj[j][i] = true;
+            }
+        }
+
+        let mut out: Vec<Vec<(usize, R)>> = vec![Vec::new(); n];
+        for i in 0..n {
+            for j in 0..n {
+                if i != j && adj[i][j] {
+                    out[i].push((j, (-d2[i][j] / (sigma[i] * sigma[j])).exp()));
+                }
+            }
+        }
+        out
+    }
+
+    type Leaves<R> = (Vec<Vec<R>>, Vec<Vec<Vec<R>>>, Vec<Vec<Vec<R>>>);
+
+    /// `n` leaves whose distances tie exactly: means on a small integer lattice, log-covariances
+    /// from three integer matrices and tangent axes along x or y, so every term is an exact small
+    /// number. Every fifth leaf repeats an earlier mean, half of those with its whole geometry, so
+    /// zero distances tie as well. `jitter` adds a continuous offset to every leaf that is not a
+    /// copy, for the case where only the duplicates tie.
+    fn tied_leaves<R: Real>(n: usize, seed: u64, jitter: bool) -> Leaves<R> {
+        let mut st = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+        let mut next = move || {
+            st = st.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            (st >> 33) as usize
+        };
+        let shapes = [
+            [[0.0, 0.0], [0.0, 0.0]],
+            [[1.0, 0.0], [0.0, 2.0]],
+            [[2.0, 1.0], [1.0, 0.0]],
+        ];
+        let axes = [[[1.0], [0.0]], [[0.0], [1.0]]];
+        let r = |x: f64| R::from_f64(x).unwrap();
+        let (mut centers, mut logcov, mut bases): Leaves<R> = (Vec::new(), Vec::new(), Vec::new());
+        for i in 0..n {
+            let copy = (i >= 2 && i % 5 == 0).then(|| next() % i);
+            let c = match copy {
+                Some(src) => centers[src].clone(),
+                None => (0..2)
+                    .map(|_| {
+                        let lattice = (next() % 6) as f64;
+                        let offset = if jitter {
+                            (next() % 1000) as f64 * 1e-3
+                        } else {
+                            0.0
+                        };
+                        r(lattice + offset)
+                    })
+                    .collect(),
+            };
+            let (lc, b) = match copy {
+                Some(src) if i % 10 == 0 => (logcov[src].clone(), bases[src].clone()),
+                _ => (
+                    shapes[next() % 3]
+                        .iter()
+                        .map(|row| row.map(r).to_vec())
+                        .collect(),
+                    axes[next() % 2]
+                        .iter()
+                        .map(|row| row.map(r).to_vec())
+                        .collect(),
+                ),
+            };
+            centers.push(c);
+            logcov.push(lc);
+            bases.push(b);
+        }
+        (centers, logcov, bases)
+    }
+
+    fn assert_bit_identical<R: Real>(
+        got: &[Vec<(usize, R)>],
+        want: &[Vec<(usize, R)>],
+        what: &str,
+    ) {
+        assert_eq!(got.len(), want.len(), "{what}: node count");
+        for (i, (a, b)) in got.iter().zip(want).enumerate() {
+            assert_eq!(
+                a.iter().map(|e| e.0).collect::<Vec<_>>(),
+                b.iter().map(|e| e.0).collect::<Vec<_>>(),
+                "{what}: neighbours of {i}"
+            );
+            for (&(j, x), &(_, y)) in a.iter().zip(b) {
+                assert_eq!(
+                    x.to_f64().unwrap().to_bits(),
+                    y.to_f64().unwrap().to_bits(),
+                    "{what}: weight {i}-{j}"
+                );
+            }
+        }
+    }
+
+    fn bounded_lists_match_the_dense_builder<R: Real>() {
+        for n in [2, 3, 5, 9, 17, 40, 73] {
+            for seed in 0..3 {
+                for jitter in [false, true] {
+                    let (centers, logcov, bases) = tied_leaves::<R>(n, seed, jitter);
+                    let half = R::from_f64(0.5).unwrap();
+                    let terms = [
+                        (None, None),
+                        (Some((&logcov[..], half)), None),
+                        (None, Some((&bases[..], R::one()))),
+                        (Some((&logcov[..], R::one())), Some((&bases[..], half))),
+                    ];
+                    for (t, &(cov, tangent)) in terms.iter().enumerate() {
+                        for degree in [None, Some(1), Some(3), Some(8), Some(n + 2)] {
+                            assert_bit_identical(
+                                &knn_affinity_impl(&centers, cov, tangent, degree),
+                                &dense_reference(&centers, cov, tangent, degree),
+                                &format!(
+                                    "n {n}, seed {seed}, jitter {jitter}, terms {t}, {degree:?}"
+                                ),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_bounded_neighbour_lists_reproduce_the_dense_builder_bit_for_bit() {
+        bounded_lists_match_the_dense_builder::<f64>();
+        bounded_lists_match_the_dense_builder::<f32>();
     }
 }
