@@ -157,6 +157,41 @@ fn dot<R: Real>(a: &[R], b: &[R]) -> R {
     a.iter().zip(b).map(|(&x, &y)| x * y).sum()
 }
 
+/// `centers` as one `dim × k` row-major block, `[d·k + c] = centers[c][d]`, for [`dots_t`].
+fn transpose<R: Real>(centers: &[Vec<R>], dim: usize) -> Vec<R> {
+    let k = centers.len();
+    let mut t = vec![R::zero(); dim * k];
+    for (c, center) in centers.iter().enumerate() {
+        for (d, &v) in center.iter().enumerate() {
+            t[d * k + c] = v;
+        }
+    }
+    t
+}
+
+/// `out[c] = dot(x, centers[c])` for every `c` at once, from the [`transpose`]d centres.
+///
+/// Bit-identical to [`dot`], not merely close: each `out[c]` starts at `-0.0` (the neutral element
+/// of `Iterator::sum` over floats) and adds the same products in the same ascending `d`. Only the
+/// loop nest is turned, so the `k` independent chains advance together over a contiguous row and
+/// the compiler can put them in vector lanes; `dot`'s single chain is a serial dependency it cannot.
+fn dots_t<R: Real>(x: &[R], centers_t: &[R], out: &mut [R]) {
+    out.fill(R::neg_zero());
+    for (&xd, row) in x.iter().zip(centers_t.chunks_exact(out.len())) {
+        for (o, &s) in out.iter_mut().zip(row) {
+            *o = *o + xd * s;
+        }
+    }
+}
+
+/// `acc += w·x`, element by element: a multiply then an add, never a fused one, so the fit does
+/// not depend on the CPU. Each element is its own sum, so lanes change no rounding.
+fn add_scaled<R: Real>(acc: &mut [R], w: R, x: &[R]) {
+    for (a, &v) in acc.iter_mut().zip(x) {
+        *a = *a + w * v;
+    }
+}
+
 fn norm<R: Real>(v: &[R]) -> R {
     v.iter().map(|&x| x * x).sum::<R>().sqrt()
 }
@@ -349,6 +384,7 @@ fn spherical_lloyd<R: Real>(
     let mut high = vec![f64::INFINITY; m];
     let mut drift = vec![1.0f64; k];
     let mut served = vec![R::neg_infinity(); m];
+    let mut dots = vec![R::zero(); k];
     for it in 0..max_iter {
         // Loosen every bound by how far the centers turned in the previous update. Successive
         // shifts compose: each is a valid relaxation of the one before, so a leaf keeps a usable
@@ -370,15 +406,17 @@ fn spherical_lloyd<R: Real>(
         // Assign each leaf to the center with the largest cosine (‖μ_i‖ is constant across centers,
         // so max_c μ_i·μ_c is the max-cosine assignment); track how well each leaf is served.
         let mut changed = false;
+        let centers_t = transpose(&centers, dim);
         for i in 0..m {
             if it > 0 && scale[i] > 0.0 && low[i] - high[i] >= BOUND_SLACK {
                 continue;
             }
+            dots_t(&means[i], &centers_t, &mut dots);
             let mut best = 0;
-            let mut best_dot = dot(&means[i], &centers[0]);
+            let mut best_dot = dots[0];
             let mut second = R::neg_infinity();
             for c in 1..k {
-                let d = dot(&means[i], &centers[c]);
+                let d = dots[c];
                 if d > best_dot {
                     second = best_dot;
                     best_dot = d;
@@ -410,9 +448,7 @@ fn spherical_lloyd<R: Real>(
         for i in 0..m {
             let c = labels[i];
             count[c] += 1;
-            for d in 0..dim {
-                acc[c][d] = acc[c][d] + n[i] * means[i][d];
-            }
+            add_scaled(&mut acc[c], n[i], &means[i]);
         }
         if count.contains(&0) {
             // A skipped leaf carries a `served` value from whichever iteration last recomputed it,
@@ -525,15 +561,27 @@ pub fn movmf_with<R: Real, C: ClusterFeature<R>>(
     seed: u64,
     kappa: Kappa,
 ) -> Movmf<R> {
-    let mut best: Option<Movmf<R>> = None;
-    for s in 0..MOVMF_N_INIT {
-        let r = movmf_once(
+    // The restarts share nothing but the input, so they run in parallel; they are collected in
+    // restart order and scanned exactly as the sequential loop did, so the first of equal
+    // likelihoods still wins and the fit does not depend on the pool size.
+    let restart = |s: u64| {
+        movmf_once(
             features,
             k,
             max_iter,
             seed.wrapping_add(s.wrapping_mul(0x9E37_79B9)),
             kappa,
-        );
+        )
+    };
+    #[cfg(feature = "parallel")]
+    let fits: Vec<Movmf<R>> = {
+        use rayon::prelude::*;
+        (0..MOVMF_N_INIT).into_par_iter().map(restart).collect()
+    };
+    #[cfg(not(feature = "parallel"))]
+    let fits: Vec<Movmf<R>> = (0..MOVMF_N_INIT).map(restart).collect();
+    let mut best: Option<Movmf<R>> = None;
+    for r in fits {
         match &best {
             Some(b) if r.loglik <= b.loglik => {}
             _ => best = Some(r),
@@ -565,6 +613,7 @@ fn movmf_once<R: Real, C: ClusterFeature<R>>(
     let mut resp = vec![vec![R::zero(); k]; m];
     let mut loglik = R::neg_infinity();
     let tol = R::from_f64(1e-7).unwrap();
+    let mut dots = vec![R::zero(); k];
 
     for it in 0..max_iter {
         let logc: Vec<f64> = kappas
@@ -579,10 +628,12 @@ fn movmf_once<R: Real, C: ClusterFeature<R>>(
 
         // E-step (log-space softmax): log r_ic = ln π_c + log C_d(κ_c) + κ_c (d_i·μ_c).
         let mut new_ll = R::zero();
+        let means_t = transpose(&means, dim);
         for i in 0..m {
+            dots_t(&mu[i], &means_t, &mut dots);
             let mut logr = vec![0.0_f64; k];
             for c in 0..k {
-                let dv = dot(&mu[i], &means[c]).to_f64().unwrap_or(0.0);
+                let dv = dots[c].to_f64().unwrap_or(0.0);
                 logr[c] = lw[c] + logc[c] + kf[c] * dv;
             }
             let mx = logr.iter().copied().fold(f64::NEG_INFINITY, f64::max);
@@ -604,9 +655,7 @@ fn movmf_once<R: Real, C: ClusterFeature<R>>(
             for c in 0..k {
                 let w = n[i] * resp[i][c];
                 nk[c] = nk[c] + w;
-                for d in 0..dim {
-                    rvec[c][d] = rvec[c][d] + w * mu[i][d];
-                }
+                add_scaled(&mut rvec[c], w, &mu[i]);
             }
         }
         let ntot: R = nk.iter().copied().sum();
@@ -2022,5 +2071,413 @@ mod tests {
         );
         assert_eq!(got.centers[0], vec![1.0, 0.0]);
         assert_eq!(got.cohesion, 0.0);
+    }
+
+    /// Sixty leaves on `S^12` around five directions, `rows` points per leaf with weights 1, 2
+    /// and 3 in turn. One row is the stream's case (every leaf mean a unit vector); more rows make
+    /// the mean shorter than one and the weight larger. Neither 13 nor 5 is a multiple of four, so
+    /// a loop the compiler splits into lanes has a remainder over both dimension and component.
+    fn bit_fixture<R: Real>(rows: usize, seed: u64) -> Vec<Spherical<R>> {
+        let dim = 13;
+        let mut rng = SplitMix64::new(seed);
+        let dirs: Vec<Vec<f64>> = (0..5)
+            .map(|_| unit(&(0..dim).map(|_| rng.gauss()).collect::<Vec<f64>>()))
+            .collect();
+        (0..60)
+            .map(|leaf| {
+                let mut f = Spherical::new(dim);
+                for row in 0..rows {
+                    let p: Vec<f64> = dirs[leaf % 5]
+                        .iter()
+                        .map(|&m| m + 0.6 * rng.gauss())
+                        .collect();
+                    let p: Vec<R> = unit(&p).iter().map(|&x| R::from_f64(x).unwrap()).collect();
+                    f.push(&p, R::from_usize(1 + (leaf + row) % 3).unwrap());
+                }
+                f
+            })
+            .collect()
+    }
+
+    /// Exact bits of each value; an `f32` widens to `f64` without rounding, so nothing is hidden.
+    fn bits<R: Real>(v: &[R]) -> Vec<u64> {
+        v.iter().map(|x| x.to_f64().unwrap().to_bits()).collect()
+    }
+
+    fn assert_same_fit<R: Real>(got: &Movmf<R>, want: &Movmf<R>, what: &str) {
+        assert_eq!(
+            bits(&[got.loglik]),
+            bits(&[want.loglik]),
+            "{what}: log-likelihood"
+        );
+        assert_eq!(bits(&got.weights), bits(&want.weights), "{what}: weights");
+        assert_eq!(bits(&got.kappas), bits(&want.kappas), "{what}: kappas");
+        assert_eq!(
+            bits(&got.means.concat()),
+            bits(&want.means.concat()),
+            "{what}: means"
+        );
+        assert_eq!(
+            bits(&got.resp.concat()),
+            bits(&want.resp.concat()),
+            "{what}: resp"
+        );
+        assert_eq!(got.labels, want.labels, "{what}: labels");
+    }
+
+    fn movmf_is_bit_identical_to_the_indexed_loops<R: Real>() {
+        for rows in [1, 3] {
+            for kappa in [Kappa::Free, Kappa::Shared] {
+                for seed in [3, 8] {
+                    let feats = bit_fixture::<R>(rows, seed);
+                    let got = movmf_with(&feats, 5, 100, seed, kappa);
+                    let want = indexed::movmf_with(&feats, 5, 100, seed, kappa);
+                    assert_same_fit(&got, &want, &format!("rows {rows}, {kappa:?}, seed {seed}"));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn movmf_f64_is_bit_identical_to_the_indexed_loops() {
+        movmf_is_bit_identical_to_the_indexed_loops::<f64>();
+    }
+
+    #[test]
+    fn movmf_f32_is_bit_identical_to_the_indexed_loops() {
+        movmf_is_bit_identical_to_the_indexed_loops::<f32>();
+    }
+
+    fn spherical_kmeans_is_bit_identical_to_the_indexed_loops<R: Real>() {
+        for rows in [1, 3] {
+            for seed in [3, 8] {
+                let feats = bit_fixture::<R>(rows, seed);
+                let got = spherical_kmeans(&feats, 5, 50, 3, seed);
+                let want = indexed::spherical_kmeans(&feats, 5, 50, 3, seed);
+                let what = format!("rows {rows}, seed {seed}");
+                assert_eq!(got.labels, want.labels, "{what}: labels");
+                assert_eq!(
+                    bits(&got.centers.concat()),
+                    bits(&want.centers.concat()),
+                    "{what}: centers"
+                );
+                assert_eq!(
+                    bits(&[got.cohesion]),
+                    bits(&[want.cohesion]),
+                    "{what}: cohesion"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn spherical_kmeans_f64_is_bit_identical_to_the_indexed_loops() {
+        spherical_kmeans_is_bit_identical_to_the_indexed_loops::<f64>();
+    }
+
+    #[test]
+    fn spherical_kmeans_f32_is_bit_identical_to_the_indexed_loops() {
+        spherical_kmeans_is_bit_identical_to_the_indexed_loops::<f32>();
+    }
+
+    /// The E- and M-step loops exactly as they stood before they were rewritten for the
+    /// vectoriser: indexed, one `dot` per (leaf, centre), restarts in sequence. Every sum the
+    /// production code computes has to come out of these bit for bit, so this copy is the oracle
+    /// for that claim and must not be "tidied" towards the production form.
+    mod indexed {
+        use super::super::*;
+
+        pub(super) fn spherical_kmeans<R: Real, C: ClusterFeature<R>>(
+            features: &[C],
+            k: usize,
+            max_iter: usize,
+            n_init: usize,
+            seed: u64,
+        ) -> SphericalKMeans<R> {
+            assert!(k >= 1, "k must be >= 1");
+            assert!(features.len() >= k, "need at least k features");
+            let (means, n) = leaf_means(features);
+            let dim = features[0].dim();
+            let mut rng = SplitMix64::new(seed);
+            let mut best: Option<SphericalKMeans<R>> = None;
+            for _ in 0..n_init.max(1) {
+                let init = spherical_pp(&means, &n, k, &mut rng);
+                let res = spherical_lloyd(&means, &n, init, max_iter, dim);
+                match &best {
+                    Some(b) if res.cohesion <= b.cohesion => {}
+                    _ => best = Some(res),
+                }
+            }
+            best.expect("at least one init")
+        }
+
+        #[allow(clippy::needless_range_loop)] // spherical accumulation reads clearest with explicit d/c indices
+        fn spherical_lloyd<R: Real>(
+            means: &[Vec<R>],
+            n: &[R],
+            mut centers: Vec<Vec<R>>,
+            max_iter: usize,
+            dim: usize,
+        ) -> SphericalKMeans<R> {
+            let m = means.len();
+            let k = centers.len();
+            let mut labels = vec![0usize; m];
+            // Hamerly's two bounds, reformulated on similarities (Schubert, Lang & Feher, arXiv 2107.04074):
+            // `low[i]` is a lower bound on the cosine to the assigned center, `high[i]` an upper bound on
+            // the best of the others. `low ≥ high` proves the assignment cannot have moved, and the leaf's
+            // `k` dot products are skipped. `scale[i] = ‖μ_i‖` turns the dots into the cosines the bounds
+            // are stated in; the leaf means are *not* unit vectors, and must not be — the update needs the
+            // exactly mergeable resultant `Σ n_i μ_i`, not `Σ n_i μ̂_i`.
+            let scale: Vec<f64> = means
+                .iter()
+                .map(|x| norm(x).to_f64().unwrap_or(0.0))
+                .collect();
+            let mut low = vec![f64::NEG_INFINITY; m];
+            let mut high = vec![f64::INFINITY; m];
+            let mut drift = vec![1.0f64; k];
+            let mut served = vec![R::neg_infinity(); m];
+            for it in 0..max_iter {
+                // Loosen every bound by how far the centers turned in the previous update. Successive
+                // shifts compose: each is a valid relaxation of the one before, so a leaf keeps a usable
+                // bound across as many iterations as it goes without being recomputed.
+                if it > 0 {
+                    let (slowest, worst, worst_but_one) = two_smallest(&drift);
+                    for i in 0..m {
+                        low[i] = shift_lower(low[i], drift[labels[i]]);
+                        if k > 1 {
+                            let other = if slowest == labels[i] {
+                                worst_but_one
+                            } else {
+                                worst
+                            };
+                            high[i] = shift_upper(high[i], other);
+                        }
+                    }
+                }
+                // Assign each leaf to the center with the largest cosine (‖μ_i‖ is constant across centers,
+                // so max_c μ_i·μ_c is the max-cosine assignment); track how well each leaf is served.
+                let mut changed = false;
+                for i in 0..m {
+                    if it > 0 && scale[i] > 0.0 && low[i] - high[i] >= BOUND_SLACK {
+                        continue;
+                    }
+                    let mut best = 0;
+                    let mut best_dot = dot(&means[i], &centers[0]);
+                    let mut second = R::neg_infinity();
+                    for c in 1..k {
+                        let d = dot(&means[i], &centers[c]);
+                        if d > best_dot {
+                            second = best_dot;
+                            best_dot = d;
+                            best = c;
+                        } else if d > second {
+                            second = d;
+                        }
+                    }
+                    served[i] = best_dot;
+                    if scale[i] > 0.0 {
+                        low[i] = best_dot.to_f64().unwrap_or(f64::NEG_INFINITY) / scale[i];
+                        high[i] = if k > 1 {
+                            second.to_f64().unwrap_or(f64::INFINITY) / scale[i]
+                        } else {
+                            f64::NEG_INFINITY
+                        };
+                    }
+                    if labels[i] != best {
+                        labels[i] = best;
+                        changed = true;
+                    }
+                }
+                if !changed && it > 0 {
+                    break;
+                }
+                // Update: μ_c ← normalize(Σ_{i∈c} n_i μ_i); reseed an empty cluster from the worst-served leaf.
+                let mut acc = vec![vec![R::zero(); dim]; k];
+                let mut count = vec![0usize; k];
+                for i in 0..m {
+                    let c = labels[i];
+                    count[c] += 1;
+                    for d in 0..dim {
+                        acc[c][d] = acc[c][d] + n[i] * means[i][d];
+                    }
+                }
+                if count.contains(&0) {
+                    // A skipped leaf carries a `served` value from whichever iteration last recomputed it,
+                    // and the reseed picks the globally worst-served leaf — so the stale ones have to be
+                    // refreshed before anyone reads them. One dot product each, and only when it matters.
+                    for i in 0..m {
+                        served[i] = dot(&means[i], &centers[labels[i]]);
+                    }
+                }
+                let previous = centers.clone();
+                for c in 0..k {
+                    if count[c] == 0 {
+                        let worst = argmin(&served);
+                        centers[c] = unit(&means[worst]);
+                        served[worst] = R::infinity(); // don't reseed two clusters onto the same leaf
+                        continue;
+                    }
+                    let nrm = norm(&acc[c]);
+                    if nrm > R::zero() {
+                        for d in 0..dim {
+                            centers[c][d] = acc[c][d] / nrm;
+                        }
+                    }
+                }
+                for c in 0..k {
+                    drift[c] = dot(&previous[c], &centers[c])
+                        .to_f64()
+                        .unwrap_or(-1.0)
+                        .clamp(-1.0, 1.0);
+                }
+            }
+            let cohesion = cohesion_of(means, n, &labels, k, dim);
+            SphericalKMeans {
+                labels,
+                centers,
+                cohesion,
+            }
+        }
+
+        pub(super) fn movmf_with<R: Real, C: ClusterFeature<R>>(
+            features: &[C],
+            k: usize,
+            max_iter: usize,
+            seed: u64,
+            kappa: Kappa,
+        ) -> Movmf<R> {
+            let mut best: Option<Movmf<R>> = None;
+            for s in 0..MOVMF_N_INIT {
+                let r = movmf_once(
+                    features,
+                    k,
+                    max_iter,
+                    seed.wrapping_add(s.wrapping_mul(0x9E37_79B9)),
+                    kappa,
+                );
+                match &best {
+                    Some(b) if r.loglik <= b.loglik => {}
+                    _ => best = Some(r),
+                }
+            }
+            best.expect("MOVMF_N_INIT >= 1")
+        }
+
+        #[allow(clippy::needless_range_loop)] // EM over (leaf i, component c, dim d) is clearest indexed
+        fn movmf_once<R: Real, C: ClusterFeature<R>>(
+            features: &[C],
+            k: usize,
+            max_iter: usize,
+            seed: u64,
+            kappa: Kappa,
+        ) -> Movmf<R> {
+            assert!(k >= 1, "k must be >= 1");
+            assert!(features.len() >= k, "need at least k features");
+            let (mu, n) = leaf_means(features);
+            let dim = features[0].dim();
+            let m = mu.len();
+
+            // Warm-start directions from spherical k-means; seed κ from the hard-assignment resultants.
+            let km = spherical_kmeans(features, k, 50, 1, seed);
+            let mut means = km.centers;
+            let mut weights = vec![R::one() / R::from_usize(k).unwrap(); k];
+            let mut kappas = init_kappas(&mu, &n, &km.labels, k, dim, kappa);
+
+            let mut resp = vec![vec![R::zero(); k]; m];
+            let mut loglik = R::neg_infinity();
+            let tol = R::from_f64(1e-7).unwrap();
+
+            for it in 0..max_iter {
+                let logc: Vec<f64> = kappas
+                    .iter()
+                    .map(|&kap| log_vmf_norm(dim, kap.to_f64().unwrap().max(1e-8)))
+                    .collect();
+                let lw: Vec<f64> = weights
+                    .iter()
+                    .map(|&w| w.to_f64().unwrap_or(0.0).max(1e-300).ln())
+                    .collect();
+                let kf: Vec<f64> = kappas.iter().map(|&kap| kap.to_f64().unwrap()).collect();
+
+                // E-step (log-space softmax): log r_ic = ln π_c + log C_d(κ_c) + κ_c (d_i·μ_c).
+                let mut new_ll = R::zero();
+                for i in 0..m {
+                    let mut logr = vec![0.0_f64; k];
+                    for c in 0..k {
+                        let dv = dot(&mu[i], &means[c]).to_f64().unwrap_or(0.0);
+                        logr[c] = lw[c] + logc[c] + kf[c] * dv;
+                    }
+                    let mx = logr.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+                    let mut s = 0.0;
+                    for &l in &logr {
+                        s += (l - mx).exp();
+                    }
+                    let lse = mx + s.ln();
+                    new_ll = new_ll + n[i] * R::from_f64(lse).unwrap();
+                    for c in 0..k {
+                        resp[i][c] = R::from_f64((logr[c] - lse).exp()).unwrap();
+                    }
+                }
+
+                // M-step: π_c, μ_c = normalize(Σ n_i r_ic d_i), κ_c via Banerjee.
+                let mut rvec = vec![vec![R::zero(); dim]; k];
+                let mut nk = vec![R::zero(); k];
+                for i in 0..m {
+                    for c in 0..k {
+                        let w = n[i] * resp[i][c];
+                        nk[c] = nk[c] + w;
+                        for d in 0..dim {
+                            rvec[c][d] = rvec[c][d] + w * mu[i][d];
+                        }
+                    }
+                }
+                let ntot: R = nk.iter().copied().sum();
+                let mut pooled = R::zero();
+                for c in 0..k {
+                    weights[c] = if ntot > R::zero() {
+                        nk[c] / ntot
+                    } else {
+                        R::one() / R::from_usize(k).unwrap()
+                    };
+                    let rnorm = norm(&rvec[c]);
+                    pooled = pooled + rnorm;
+                    if rnorm > R::zero() {
+                        for d in 0..dim {
+                            means[c][d] = rvec[c][d] / rnorm;
+                        }
+                    }
+                    let rbar = if nk[c] > R::zero() {
+                        (rnorm / nk[c]).to_f64().unwrap_or(0.0)
+                    } else {
+                        0.0
+                    };
+                    kappas[c] = R::from_f64(estimate_kappa(rbar, dim)).unwrap();
+                }
+                if kappa == Kappa::Shared {
+                    kappas.fill(shared_kappa(pooled, ntot, dim));
+                }
+
+                if it > 0 && (new_ll - loglik).abs() <= tol * loglik.abs().max(R::one()) {
+                    loglik = new_ll;
+                    break;
+                }
+                loglik = new_ll;
+            }
+
+            let labels = resp.iter().map(|r| argmax(r)).collect();
+            let logc: Vec<f64> = kappas
+                .iter()
+                .map(|&kap| log_vmf_norm(dim, kap.to_f64().unwrap_or(0.0).max(1e-8)))
+                .collect();
+            let mixture = Mixture::vmf(&weights, &means, &kappas, &logc);
+            Movmf {
+                labels,
+                resp,
+                weights,
+                means,
+                kappas,
+                loglik,
+                mixture,
+            }
+        }
     }
 }

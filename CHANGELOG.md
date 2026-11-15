@@ -185,6 +185,17 @@ All notable changes to this project are documented here. The format follows
   those of the full scan. On MNIST-20k the head takes 0.54× the time at 1 966 leaves on one thread
   and at 3 847 leaves on eight threads, and is unchanged (1.02×) at 1 966 leaves on eight threads;
   below `d = 128` the scan is the old one.
+- **The `vmf` head computes the same sums in loops the compiler can vectorise.** The E-step takes
+  the `k` dot products of a leaf together over the centres transposed once per iteration, the M-step
+  and the spherical k-means warm start accumulate their resultants element by element, and the four
+  EM restarts run on the thread pool, collected in restart order and reduced by the same
+  "first best" scan. Every sum keeps its order and its start value, so labels, weights, means, κ and
+  responsibilities are bit-identical: new tests pin them with `to_bits()` against the old indexed
+  loops, in f32 and f64, at `d = 13`, `k = 5`, on one-row and multi-row leaves. On the 20-newsgroups
+  MiniLM stream (`kappa="shared"`, `max_leaves=4000`, five 20 % chunks) the head costs 76.8 G
+  retired instructions at the first checkpoint (3 578 one-row leaves) instead of 179.6 G (−57 %),
+  and 25.4 G instead of 55.3 G at the last; label and `predict_proba` digests are equal at all five
+  checkpoints, on another row order, on another seed, with `kappa="free"`, and at 1 and 8 threads.
 
 ### Notes
 - **The benchmark page is re-measured** (`bench/RESULTS.md`, 2026-10-29): the four quality tables and
