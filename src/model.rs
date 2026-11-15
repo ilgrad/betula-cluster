@@ -14,7 +14,7 @@ use crate::distance::CFDistance;
 use crate::feature::ClusterFeature;
 use crate::kernels::{Lead, nearest_sq_euclidean};
 use crate::mixture::Mixture;
-use crate::tree::CFTree;
+use crate::tree::{CFTree, RowBlocks};
 use crate::types::{Real, ShapeError};
 
 /// Default ceiling on `k` for the automatic selectors that **sweep** — those that refit the whole
@@ -472,6 +472,22 @@ pub(crate) fn refine_centers<R: Real>(
     unit: bool,
     iters: usize,
 ) -> usize {
+    refine_centers_by(centers, n, dim, unit, iters, &|visit| {
+        visit(&flat[..n * dim])
+    })
+}
+
+/// [`refine_centers`] over `n` rows that `rows` hands its visitor as consecutive blocks, in index
+/// order, once per sweep. The sweep reads one row at a time and in index order however the rows
+/// are split, so a caller that maps each row as it is read gets the bits of the stored rows.
+pub(crate) fn refine_centers_by<R: Real>(
+    centers: &mut [R],
+    n: usize,
+    dim: usize,
+    unit: bool,
+    iters: usize,
+    rows: &RowBlocks<'_, R>,
+) -> usize {
     let k = centers.len().checked_div(dim).unwrap_or(0);
     if k == 0 || n == 0 || iters == 0 {
         return 0;
@@ -483,17 +499,20 @@ pub(crate) fn refine_centers<R: Real>(
         sums.iter_mut().for_each(|v| *v = R::zero());
         counts.iter_mut().for_each(|c| *c = 0);
         let mut moved = false;
-        for i in 0..n {
-            let x = &flat[i * dim..(i + 1) * dim];
-            let rows = centers.chunks_exact(dim).enumerate();
-            let best = nearest_sq_euclidean(x, rows, Lead::Infinity).map_or(0, |(c, _)| c);
-            moved |= owner[i] != best;
-            owner[i] = best;
-            counts[best] += 1;
-            for (j, &v) in x.iter().enumerate() {
-                sums[best * dim + j] = sums[best * dim + j] + v;
+        let mut i = 0;
+        rows(&mut |block| {
+            for x in block.chunks_exact(dim) {
+                let rows = centers.chunks_exact(dim).enumerate();
+                let best = nearest_sq_euclidean(x, rows, Lead::Infinity).map_or(0, |(c, _)| c);
+                moved |= owner[i] != best;
+                owner[i] = best;
+                counts[best] += 1;
+                for (j, &v) in x.iter().enumerate() {
+                    sums[best * dim + j] = sums[best * dim + j] + v;
+                }
+                i += 1;
             }
-        }
+        });
         for c in 0..k {
             if counts[c] == 0 {
                 continue;

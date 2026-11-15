@@ -4680,6 +4680,8 @@ def test_a_row_past_the_bound_only_in_the_float32_frame_is_refused_before_any_in
 
 
 _FIT_EXTRA_SCRIPT = r"""
+import sys
+
 import betula_cluster
 import numpy as np
 
@@ -4699,7 +4701,9 @@ x = np.empty((n, d), dtype=np.float32)
 for lo in range(0, n, 4_000):
     x[lo : lo + 4_000] = centres[rng.integers(0, 10, 4_000)]
     x[lo : lo + 4_000] += rng.standard_normal((4_000, d), dtype=np.float32)
-est = betula_cluster.Betula(n_clusters=10, method="kmeans", max_leaves=200, threshold=0.0, seed=0)
+est = betula_cluster.Betula(
+    n_clusters=10, method="kmeans", max_leaves=200, threshold=0.0, seed=0, refine=int(sys.argv[1])
+)
 with open("/proc/self/clear_refs", "w") as f:
     f.write("5")
 base = status("VmRSS")
@@ -4709,17 +4713,23 @@ print(status("VmHWM") - base, x.nbytes)
 
 
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="reads /proc/self/status")
-def test_a_float32_fit_holds_no_copy_of_its_rows(tmp_path):
+@pytest.mark.parametrize("refine", [0, 1])
+def test_a_float32_fit_holds_no_copy_of_its_rows(tmp_path, refine):
     """A float32 fit works in a frame shifted by the per-coordinate median. Each phase that read the
     rows used to write the shifted rows out first, a copy of the whole array grown by doubling, so
     a fit's own peak was ~2x the array. Mapped a block at a time, the peak is the tree and a block.
+    `refine` widened the rows to a float64 copy, twice the array; it now widens a row at a time.
 
     A subprocess, because the high-water mark is per process and is reset here once the rows exist.
     """
     script = tmp_path / "fit_extra.py"
     script.write_text(_FIT_EXTRA_SCRIPT)
     done = subprocess.run(
-        [sys.executable, str(script)], capture_output=True, text=True, timeout=600, check=True
+        [sys.executable, str(script), str(refine)],
+        capture_output=True,
+        text=True,
+        timeout=600,
+        check=True,
     )
     extra, nbytes = map(int, done.stdout.split())
     assert nbytes >= 200 * 10**6

@@ -49,7 +49,7 @@ use crate::linalg::{cholesky_lower, mahalanobis_sq_from_chol};
 use crate::mixture::{Mixture, SparseAssigner};
 use crate::model::{
     Centres, HeadOptions, Method, Model, RowEdges, Rule, assignment_rule, auto_k_ceiling, fit_head,
-    refinable, refine_centers,
+    refinable, refine_centers_by,
 };
 use crate::order::{
     canonical_permutation, canonical_permutation_by, canonical_permutation_csr, canonical_shards,
@@ -4331,7 +4331,8 @@ impl Betula {
     ///
     /// The sweep runs in `f64` whatever the tree's dtype, because the rule's centres are `f64` and
     /// [`PointRule::label_of`] already scores every row in `f64` — refining in `f32` would optimize a
-    /// different objective from the one that then labels the points.
+    /// different objective from the one that then labels the points. Float32 rows are widened one
+    /// at a time as the sweep reads them, so the sweep holds a row of `f64`, not a copy of `X`.
     fn refine_rule(&mut self, py: Python<'_>, data: &Bound<'_, PyAny>) -> PyResult<()> {
         let Kind::Parametric(method) = self.kind else {
             return Ok(());
@@ -4347,19 +4348,12 @@ impl Betula {
             return Ok(());
         }
         let src = self.rows_of::<f64>(data)?;
-        let (view, n, dim) = (src.view(), src.n, src.dim);
-        self.check_dim(dim)?;
+        let view = src.view();
+        self.check_dim(view.dim)?;
         let iters = self.refine;
-        let copy;
-        let flat = match view.flat() {
-            Some(flat) => flat,
-            None => {
-                copy = view.concat(<[f64]>::to_vec);
-                &copy
-            }
-        };
         if let Some(PointRule::Centers { rows, .. }) = self.rule.as_mut() {
-            py.detach(|| refine_centers(rows, flat, n, dim, unit, iters));
+            let each_row = |visit: &mut dyn FnMut(&[f64])| view.visit_rows(None, visit);
+            py.detach(|| refine_centers_by(rows, view.n, view.dim, unit, iters, &each_row));
         }
         Ok(())
     }

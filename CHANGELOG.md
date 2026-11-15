@@ -149,6 +149,12 @@ All notable changes to this project are documented here. The format follows
   289 808 kB → 76 580 kB, `leiden` with `leaf_graph="rows"` 312 868 kB → 112 628 kB. A row past the
   norm bound is still refused before the first insert. Strided arrays, `normalize=True` and the
   directional heads copy as before, and so does the one-shot `fit_predict` function.
+- **`refine > 0` on float32 rows keeps no float64 copy of them.** The Lloyd sweeps run in float64,
+  and they read the rows as a float64 copy of the array, twice its size. Each row is now widened as
+  the sweep reads it, the same `x − origin` in float64, so labels and centres are byte-identical
+  (the digests above, at `refine` 1 and 3). Memory a `kmeans` fit with `refine=1` adds to its input,
+  MNIST 70 000 × 784 float32 at 7 378 leaves: 503 940 kB → 77 024 kB, against 76 776 kB at
+  `refine=0`.
 - **The tree's scans dispatch the distance kernel once per scan, not once per candidate.** An AVX2
   kernel cannot inline into a caller built without AVX2, so every candidate of the descent, the leaf
   lookups, absorption and the nearest-centre scans paid the run-time dispatch and two calls: 83
