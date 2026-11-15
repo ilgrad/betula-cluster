@@ -2259,9 +2259,9 @@ the rows included. Seeded arms run on seeds 0, 1, 2; a single value means all th
 | **betula `kmeans`** | 0.861 | 0.545 | 0.541 | 0.485 | 0.000 | 1.000 | 0.467 (0.443–0.571) | 0.557 | 7–23 |
 | linfa `KMeans` | 0.862 | 0.545 | 0.539 | 0.485 | 0.000 | 1.000 | 0.555 (0.526–0.570) | 0.569 | 7–23 |
 | clump `Kmeans` | 0.861 | 0.545 | 0.539 (0.536–0.539) | 0.485 | 0.000 | 1.000 (0.835–1.000) | 0.495 (0.399–0.564) | 0.561 | 6–23 |
-| **betula `gmm-full`** | 0.863 | 0.902 | 0.757 | 0.504 | 0.000 | 1.000 | 0.575 | 0.657 | 10–259 |
+| **betula `gmm-full`** | 0.863 | 0.902 | 0.757 | 0.504 | 0.000 | 1.000 | 0.575 | 0.657 | 9–23 |
 | linfa `GaussianMixtureModel` (full) | 0.864 | 0.902 | 0.752 | 0.507 | 0.000 | 1.000 | 0.421 (0.378–0.613) | 0.635 | 10–35 |
-| **betula `gmm`** (diagonal) | 0.865 | 0.540 | 0.756 | 0.519 | 0.000 | 1.000 | 0.461 | 0.592 | 10–23 |
+| **betula `gmm`** (diagonal) | 0.865 | 0.540 | 0.756 | 0.519 | 0.000 | 1.000 | 0.461 | 0.592 | 9–23 |
 
 **k not given**
 
@@ -2273,11 +2273,12 @@ the rows included. Seeded arms run on seeds 0, 1, 2; a single value means all th
 
 - **k-means is a three-way tie.** The three implementations agree to the third digit on six
   fixtures; on `digits` all three spread over seeds and overlap.
-- **Full-covariance GMM: a tie on quality, a loss on memory.** betula's `gmm-full` and linfa's
+- **Full-covariance GMM: a tie on quality, and on memory.** betula's `gmm-full` and linfa's
   mixture match on six fixtures. On `digits` betula reads 0.575 on every seed and linfa 0.378–0.613,
-  a tie by the rule. betula's process peaks at 259 MB there against linfa's 10 MB. The full head
-  keeps a 64 × 64 matrix per leaf for each restart that runs at once: the peak is 74 MB at
-  `RAYON_NUM_THREADS=1`, 137 MB at 2 and 265 MB at 8.
+  a tie by the rule. betula's process peaks at 15 MB there against linfa's 10 MB, and at 12, 13 and
+  15 MB at `RAYON_NUM_THREADS` 1, 2 and 8. Up to 1.5.0 it peaked at 259 MB: the head kept a dense
+  64 × 64 matrix per leaf for each restart that ran at once, where the leaf's covariance is a
+  diagonal.
 - **No count given, the `hdbscan` crate is ahead on the mean** (0.640 against betula's 0.616): it
   wins blobs and `varied`, betula wins aniso and `digits`. clump's `Hdbscan` returns one cluster on
   four fixtures at its defaults, so by the rule above it is not scored there.

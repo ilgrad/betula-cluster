@@ -145,6 +145,15 @@ All notable changes to this project are documented here. The format follows
   compile and behave as before.
   [ADR 003](https://github.com/ilgrad/betula-cluster/blob/main/docs/adr/003-avx2-kernels-unsafe.md)
   has the addendum.
+- **`gmm-full`, `mppca` and `mfa` read a diagonal leaf as its diagonal.** The default
+  `feature="diagonal"` (and `"spherical"`) leaf holds no off-diagonal moment, yet the three heads
+  asked every leaf for a dense `d × d` covariance, and built that set again in each parallel restart.
+  They now keep the diagonal, and the restarts share one set of read-only inputs. Its off-diagonal
+  terms were exact zeros, so labels, centres and saved files are byte-identical (the same 285
+  digests, every betula arm of the benchmark, and `scripts/thread_determinism.py`). Heap requested
+  by `gmm_full` on 1 800 one-row leaves of 64 coordinates: 258 MB → 8.4 MB at eight threads. Peak
+  RSS of a Rust `gmm-full` fit on `digits`: 259 MB → 15 MB, against linfa's 10 MB. On 784-D data at
+  2 000 leaves that is 9.6 GB a restart less. `feature="full"` keeps its dense matrices.
 - **`leaf_refit` routes its rows on the thread pool.** Each refit round re-routed every row serially,
   the only full-data route that did not go through the parallel row map; it now forks from 4 096 rows
   like the others, and the fold into the new entries stays serial in row order. Labels, centres and

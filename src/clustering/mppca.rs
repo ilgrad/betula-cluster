@@ -16,13 +16,13 @@
 //! The expected-log E-step of the other mixture heads carries a within-leaf correction
 //! `−½ tr(Σ_c⁻¹ Σ_i)`, and the same Woodbury form turns it into
 //! `(tr Σ_i − tr(M_c⁻¹ W_cᵀ Σ_i W_c)) / σ_c²` — which an `FdSketch` leaf answers in `O(ℓ·d·q)` from
-//! its sketch rows, against `O(ℓ·d²)` for the full-covariance head. That gap is the point of the
-//! head: at `d = 784` and `max_leaves = 2000` the full head's per-leaf dense scatters are the
-//! measured ~35 GB hazard, and here they never exist.
+//! its sketch rows, against `O(ℓ·d²)` for the full-covariance head on `Full` leaves. That gap is the
+//! point of the head: at `d = 784` and `max_leaves = 2000` dense per-leaf scatters are
+//! 1 962 × 784² × 8 B = 9.6 GB, and here they never exist.
 //!
 //! With a leaf model whose `second_moment` is `Dense` the per-leaf storage is the dense one again —
-//! only the *component* parameters shrink (`k·d·q` against `k·d²`). The head is built for
-//! `feature="fd"`.
+//! only the *component* parameters shrink (`k·d·q` against `k·d²`). A `Spherical` or `Diagonal`
+//! leaf is read as its diagonal. The head is built for `feature="fd"`.
 //!
 //! What the head costs is measured, and it is a trade against *compression*, not against dimension.
 //! The `−½ tr(Σ_c⁻¹ Σ_i)` correction is a sum of within-leaf scatters that are locally oriented and
@@ -37,10 +37,10 @@
 //! approaches 1 as `σ²/λ → 0`. `max_iter` therefore earns more here than in the diagonal or full
 //! head, where the M-step is a closed-form re-estimate rather than a fixed-point iteration.
 
-use crate::clustering::gmm::{best_of_restarts, bic, chol_regularized, total_weight};
+use crate::clustering::gmm::{LeafCov, best_of_restarts, bic, chol_regularized, total_weight};
 use crate::clustering::kmeans::kmeans;
 use crate::clustering::rng::SplitMix64;
-use crate::feature::{ClusterFeature, SecondMoment};
+use crate::feature::ClusterFeature;
 use crate::mixture::Mixture;
 use crate::types::Real;
 
@@ -79,7 +79,7 @@ pub struct Mppca<R: Real> {
 /// product the subspace init and the M-step take of a scatter matrix.
 fn accumulate_scatter_rows<R: Real>(
     v: &[Vec<R>],
-    sig: &SecondMoment<R>,
+    sig: &LeafCov<R>,
     delta: &[R],
     w: R,
     out: &mut [Vec<R>],
@@ -150,11 +150,50 @@ pub(super) fn mean_variance<R: Real>(mu: &[Vec<R>], n: &[R], tr_sig: &[R], dim: 
     }
 }
 
+/// What every restart reads and none writes: built once per fit and borrowed by the restarts, so
+/// the parallel restarts hold one copy of the leaf inputs instead of four.
+struct MppcaInputs<R: Real> {
+    mu: Vec<Vec<R>>,
+    n: Vec<R>,
+    sig: Vec<LeafCov<R>>,
+    tr_sig: Vec<R>,
+}
+
+impl<R: Real> MppcaInputs<R> {
+    fn of<C: ClusterFeature<R>>(features: &[C]) -> Self {
+        let mu: Vec<Vec<R>> = features.iter().map(|f| f.mean().to_vec()).collect();
+        let n: Vec<R> = features.iter().map(|f| f.weight()).collect();
+        let sig: Vec<LeafCov<R>> = features.iter().map(LeafCov::of).collect();
+        let tr_sig: Vec<R> = sig.iter().map(|s| s.trace()).collect();
+        Self { mu, n, sig, tr_sig }
+    }
+}
+
+/// One restart with its own inputs: the tests' single-restart reference.
+#[cfg(test)]
+fn mppca_once<R: Real, C: ClusterFeature<R>>(
+    features: &[C],
+    k: usize,
+    rank: usize,
+    max_iter: usize,
+    seed: u64,
+) -> Mppca<R> {
+    mppca_restart(
+        features,
+        &MppcaInputs::of(features),
+        k,
+        rank,
+        max_iter,
+        seed,
+    )
+}
+
 /// Fit a `k`-component MPPCA with subspace rank `q`, warm-started from k-means and a per-cluster
 /// subspace iteration.
 #[allow(clippy::needless_range_loop)] // component/rank/dimension indices read clearest explicitly
-fn mppca_once<R: Real, C: ClusterFeature<R>>(
+fn mppca_restart<R: Real, C: ClusterFeature<R>>(
     features: &[C],
+    inputs: &MppcaInputs<R>,
     k: usize,
     rank: usize,
     max_iter: usize,
@@ -167,16 +206,13 @@ fn mppca_once<R: Real, C: ClusterFeature<R>>(
     // `q = d` would leave no isotropic residual for σ² to explain, so the rank is capped one below
     // the dimension; `q = 0` is the spherical rung and stays reachable.
     let q = rank.min(dim.saturating_sub(1));
-    let mu: Vec<Vec<R>> = features.iter().map(|f| f.mean().to_vec()).collect();
-    let n: Vec<R> = features.iter().map(|f| f.weight()).collect();
-    let sig: Vec<SecondMoment<R>> = features.iter().map(|f| f.second_moment()).collect();
-    let tr_sig: Vec<R> = sig.iter().map(|s| s.trace()).collect();
+    let MppcaInputs { mu, n, sig, tr_sig } = inputs;
 
     let half = R::from_f64(0.5).unwrap();
     let log_two_pi = R::from_f64(std::f64::consts::TAU).unwrap().ln();
     let dimr = R::from_usize(dim).unwrap();
 
-    let scale = mean_variance(&mu, &n, &tr_sig, dim);
+    let scale = mean_variance(mu, n, tr_sig, dim);
     let noise_floor = R::from_f64(1e-6).unwrap() * scale;
     // Without a floor on the loading scale, a cluster whose leading eigenvalue does not exceed σ²
     // gets `W_c = 0` — and `W = 0` is a fixed point of the M-step (`SW = 0 ⇒ W_new = 0`), so the
@@ -488,11 +524,12 @@ pub fn mppca<R: Real, C: ClusterFeature<R>>(
     max_iter: usize,
     seed: u64,
 ) -> Mppca<R> {
+    let inputs = MppcaInputs::of(features);
     best_of_restarts(
         MPPCA_N_INIT,
         seed,
         |g: &Mppca<R>| g.loglik,
-        |s| mppca_once(features, k, rank, max_iter, s),
+        |s| mppca_restart(features, &inputs, k, rank, max_iter, s),
     )
 }
 

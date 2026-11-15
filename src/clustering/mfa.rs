@@ -56,12 +56,15 @@
 //! rather than below it. Cost is a wash: 30.9 s against `mppca`'s 37.6 s on MNIST at `rank=2`.
 //! `docs/USAGE.md` carries the tables. This is not a strictly better `mppca`, and on an already
 //! standardised table it is usually not a better `gmm` either.
+//!
+//! [`SecondMoment::apply_rows`]: crate::feature::SecondMoment::apply_rows
+//! [`SecondMoment::add_diagonal_scaled`]: crate::feature::SecondMoment::add_diagonal_scaled
 
-use crate::clustering::gmm::{best_of_restarts, bic, chol_regularized, total_weight};
+use crate::clustering::gmm::{LeafCov, best_of_restarts, bic, chol_regularized, total_weight};
 use crate::clustering::kmeans::kmeans;
 use crate::clustering::mppca::mean_variance;
 use crate::clustering::rng::SplitMix64;
-use crate::feature::{ClusterFeature, SecondMoment};
+use crate::feature::ClusterFeature;
 use crate::mixture::Mixture;
 use crate::types::Real;
 
@@ -118,7 +121,7 @@ fn chol_spd<R: Real>(a: &[Vec<R>], scale: R) -> (Vec<Vec<R>>, R) {
 /// `out[r] += w · (Σ + δδᵀ) v_r` for every row of `v` — one leaf's contribution to `S V`.
 fn accumulate_scatter_rows<R: Real>(
     v: &[Vec<R>],
-    sig: &SecondMoment<R>,
+    sig: &LeafCov<R>,
     delta: &[R],
     w: R,
     out: &mut [Vec<R>],
@@ -134,11 +137,65 @@ fn accumulate_scatter_rows<R: Real>(
     }
 }
 
+/// What every restart reads and none writes: built once per fit and borrowed by the restarts, so
+/// the parallel restarts hold one copy of the leaf inputs instead of four.
+struct MfaInputs<R: Real> {
+    mu: Vec<Vec<R>>,
+    n: Vec<R>,
+    sig: Vec<LeafCov<R>>,
+    diag_sig: Vec<Vec<R>>,
+    tr_sig: Vec<R>,
+}
+
+impl<R: Real> MfaInputs<R> {
+    fn of<C: ClusterFeature<R>>(features: &[C]) -> Self {
+        let dim = features[0].dim();
+        let mu: Vec<Vec<R>> = features.iter().map(|f| f.mean().to_vec()).collect();
+        let n: Vec<R> = features.iter().map(|f| f.weight()).collect();
+        let sig: Vec<LeafCov<R>> = features.iter().map(LeafCov::of).collect();
+        // The per-leaf diagonal, read once. Every component's E-step needs `Σ_j Σ_i[j][j]/ψ_cj`, and on
+        // an `FdSketch` leaf recovering it costs `O(ℓ·d)` — paid `m` times here rather than `m·k` times
+        // inside the loop.
+        let diag_sig: Vec<Vec<R>> = sig
+            .iter()
+            .map(|s| {
+                let mut v = vec![R::zero(); dim];
+                s.add_diagonal_scaled(&mut v, R::one());
+                v
+            })
+            .collect();
+        let tr_sig: Vec<R> = diag_sig
+            .iter()
+            .map(|d| d.iter().copied().fold(R::zero(), |a, b| a + b))
+            .collect();
+        Self {
+            mu,
+            n,
+            sig,
+            diag_sig,
+            tr_sig,
+        }
+    }
+}
+
+/// One restart with its own inputs: the tests' single-restart reference.
+#[cfg(test)]
+fn mfa_once<R: Real, C: ClusterFeature<R>>(
+    features: &[C],
+    k: usize,
+    rank: usize,
+    max_iter: usize,
+    seed: u64,
+) -> Mfa<R> {
+    mfa_restart(features, &MfaInputs::of(features), k, rank, max_iter, seed)
+}
+
 /// Fit a `k`-component MFA with `q` factors, warm-started from k-means and a per-cluster subspace
 /// iteration.
 #[allow(clippy::needless_range_loop)] // component/factor/dimension indices read clearest explicitly
-fn mfa_once<R: Real, C: ClusterFeature<R>>(
+fn mfa_restart<R: Real, C: ClusterFeature<R>>(
     features: &[C],
+    inputs: &MfaInputs<R>,
     k: usize,
     rank: usize,
     max_iter: usize,
@@ -151,30 +208,19 @@ fn mfa_once<R: Real, C: ClusterFeature<R>>(
     // `q = d` leaves no residual for `Ψ` to explain; `q = 0` is the diagonal-Gaussian rung and stays
     // reachable, which is the honest lower end of this ladder.
     let q = rank.min(dim.saturating_sub(1));
-    let mu: Vec<Vec<R>> = features.iter().map(|f| f.mean().to_vec()).collect();
-    let n: Vec<R> = features.iter().map(|f| f.weight()).collect();
-    let sig: Vec<SecondMoment<R>> = features.iter().map(|f| f.second_moment()).collect();
-    // The per-leaf diagonal, read once. Every component's E-step needs `Σ_j Σ_i[j][j]/ψ_cj`, and on
-    // an `FdSketch` leaf recovering it costs `O(ℓ·d)` — paid `m` times here rather than `m·k` times
-    // inside the loop.
-    let diag_sig: Vec<Vec<R>> = sig
-        .iter()
-        .map(|s| {
-            let mut v = vec![R::zero(); dim];
-            s.add_diagonal_scaled(&mut v, R::one());
-            v
-        })
-        .collect();
-    let tr_sig: Vec<R> = diag_sig
-        .iter()
-        .map(|d| d.iter().copied().fold(R::zero(), |a, b| a + b))
-        .collect();
+    let MfaInputs {
+        mu,
+        n,
+        sig,
+        diag_sig,
+        tr_sig,
+    } = inputs;
 
     let half = R::from_f64(0.5).unwrap();
     let log_two_pi = R::from_f64(std::f64::consts::TAU).unwrap().ln();
     let dimr = R::from_usize(dim).unwrap();
 
-    let scale = mean_variance(&mu, &n, &tr_sig, dim);
+    let scale = mean_variance(mu, n, tr_sig, dim);
     let noise_floor = R::from_f64(1e-6).unwrap() * scale;
     // Without a floor on the loading scale a component whose leading eigenvalue does not clear its
     // noise gets `W_c = 0`, and `W = 0` is a fixed point of the M-step, so it would stay diagonal
@@ -536,11 +582,12 @@ pub fn mfa<R: Real, C: ClusterFeature<R>>(
     max_iter: usize,
     seed: u64,
 ) -> Mfa<R> {
+    let inputs = MfaInputs::of(features);
     best_of_restarts(
         MFA_N_INIT,
         seed,
         |g: &Mfa<R>| g.loglik,
-        |s| mfa_once(features, k, rank, max_iter, s),
+        |s| mfa_restart(features, &inputs, k, rank, max_iter, s),
     )
 }
 

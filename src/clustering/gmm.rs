@@ -35,9 +35,42 @@ pub struct Gmm<R: Real> {
     pub mixture: Mixture,
 }
 
-/// Fit a `k`-component diagonal GMM to `features`, warm-started from k-means.
+/// One restart of the diagonal head, with its own inputs: the tests' single-restart reference.
+#[cfg(test)]
 fn gmm_diagonal_once<R: Real, C: ClusterFeature<R>>(
     features: &[C],
+    k: usize,
+    max_iter: usize,
+    seed: u64,
+) -> Gmm<R> {
+    gmm_diagonal_restart(features, &DiagonalInputs::of(features), k, max_iter, seed)
+}
+
+/// What every restart of the diagonal head reads and none writes.
+struct DiagonalInputs<R: Real> {
+    mu: Vec<Vec<R>>,
+    n: Vec<R>,
+    var: Vec<Vec<R>>,
+    gvar: Vec<R>,
+}
+
+impl<R: Real> DiagonalInputs<R> {
+    fn of<C: ClusterFeature<R>>(features: &[C]) -> Self {
+        let dim = features[0].dim();
+        let mu: Vec<Vec<R>> = features.iter().map(|f| f.mean().to_vec()).collect();
+        let n: Vec<R> = features.iter().map(|f| f.weight()).collect();
+        let var: Vec<Vec<R>> = features
+            .iter()
+            .map(|f| (0..dim).map(|d| f.variance(d)).collect())
+            .collect();
+        let gvar = global_variance(&mu, &n, &var, dim);
+        Self { mu, n, var, gvar }
+    }
+}
+
+fn gmm_diagonal_restart<R: Real, C: ClusterFeature<R>>(
+    features: &[C],
+    inputs: &DiagonalInputs<R>,
     k: usize,
     max_iter: usize,
     seed: u64,
@@ -46,18 +79,12 @@ fn gmm_diagonal_once<R: Real, C: ClusterFeature<R>>(
     assert!(features.len() >= k, "need at least k features");
     let dim = features[0].dim();
     let m = features.len();
-    let mu: Vec<Vec<R>> = features.iter().map(|f| f.mean().to_vec()).collect();
-    let n: Vec<R> = features.iter().map(|f| f.weight()).collect();
-    let var: Vec<Vec<R>> = features
-        .iter()
-        .map(|f| (0..dim).map(|d| f.variance(d)).collect())
-        .collect();
+    let DiagonalInputs { mu, n, var, gvar } = inputs;
 
     let half = R::from_f64(0.5).unwrap();
     let two_pi = R::from_f64(std::f64::consts::TAU).unwrap();
     let reg = R::from_f64(1e-3).unwrap();
     let tiny = R::from_f64(1e-12).unwrap();
-    let gvar = global_variance(&mu, &n, &var, dim);
     // Variance floor, in two parts. The per-dimension part (`1e-3·gvar_d`) keeps a variance from
     // collapsing relative to the spread that dimension actually has — a collapsed diagonal variance
     // makes the E-step wildly over-confident on one dimension and the mixture over-fits away from the
@@ -272,11 +299,12 @@ pub fn gmm_diagonal<R: Real, C: ClusterFeature<R>>(
     max_iter: usize,
     seed: u64,
 ) -> Gmm<R> {
+    let inputs = DiagonalInputs::of(features);
     best_of_restarts(
         GMM_N_INIT,
         seed,
         |g: &Gmm<R>| g.loglik,
-        |s| gmm_diagonal_once(features, k, max_iter, s),
+        |s| gmm_diagonal_restart(features, &inputs, k, max_iter, s),
     )
 }
 
@@ -321,6 +349,86 @@ fn argmax<R: Real>(v: &[R]) -> usize {
     best
 }
 
+/// A leaf's covariance as the full-covariance, MPPCA and MFA heads read it. A leaf whose model keeps
+/// only a diagonal is held as that diagonal: the dense form is `d²` numbers standing for `d`, and
+/// each of four parallel restarts held its own copy (257 MB on `digits` at one row per leaf). Both
+/// arms return, bit for bit, what [`SecondMoment::Dense`] returns for the same matrix, because every
+/// term the dense loops add off the diagonal is an exact zero, and a sum that starts at `+0` is left
+/// unchanged by adding one. That needs finite operands: `inf · 0` is NaN in the dense loop only.
+pub(super) enum LeafCov<R: Real> {
+    Diagonal(Vec<R>),
+    Moment(SecondMoment<R>),
+}
+
+impl<R: Real> LeafCov<R> {
+    pub(super) fn of<C: ClusterFeature<R>>(f: &C) -> Self {
+        if f.cov_is_diagonal() {
+            Self::Diagonal((0..f.dim()).map(|d| f.variance(d)).collect())
+        } else {
+            Self::Moment(f.second_moment())
+        }
+    }
+
+    pub(super) fn trace_under(&self, chol: &[Vec<R>], inv: &[Vec<R>]) -> R {
+        match self {
+            Self::Diagonal(v) => {
+                let mut s = R::zero();
+                for (i, &vi) in v.iter().enumerate() {
+                    s = s + inv[i][i] * vi;
+                }
+                s
+            }
+            Self::Moment(m) => m.trace_under(chol, inv),
+        }
+    }
+
+    pub(super) fn add_scaled(&self, target: &mut [Vec<R>], w: R) {
+        match self {
+            Self::Diagonal(v) => {
+                for (a, &va) in v.iter().enumerate() {
+                    target[a][a] = target[a][a] + w * va;
+                }
+            }
+            Self::Moment(m) => m.add_scaled(target, w),
+        }
+    }
+
+    /// [`SecondMoment::trace`].
+    pub(super) fn trace(&self) -> R {
+        match self {
+            Self::Diagonal(v) => v.iter().copied().fold(R::zero(), |a, b| a + b),
+            Self::Moment(m) => m.trace(),
+        }
+    }
+
+    /// [`SecondMoment::apply_rows`]: `out[r] += w · Σ v_r`. The dense row sum is `+0` plus the one
+    /// diagonal product, so it is written that way, `-0` included.
+    pub(super) fn apply_rows(&self, v: &[Vec<R>], out: &mut [Vec<R>], w: R) {
+        match self {
+            Self::Diagonal(d) => {
+                for (vr, o) in v.iter().zip(out.iter_mut()) {
+                    for ((oa, &da), &x) in o.iter_mut().zip(d).zip(vr) {
+                        *oa = *oa + w * (R::zero() + da * x);
+                    }
+                }
+            }
+            Self::Moment(m) => m.apply_rows(v, out, w),
+        }
+    }
+
+    /// [`SecondMoment::add_diagonal_scaled`].
+    pub(super) fn add_diagonal_scaled(&self, out: &mut [R], w: R) {
+        match self {
+            Self::Diagonal(d) => {
+                for (o, &v) in out.iter_mut().zip(d) {
+                    *o = *o + w * v;
+                }
+            }
+            Self::Moment(m) => m.add_diagonal_scaled(out, w),
+        }
+    }
+}
+
 /// Result of a full-covariance GMM-EM run over features.
 pub struct GmmFull<R: Real> {
     /// Hard label (argmax responsibility) per input feature.
@@ -343,8 +451,57 @@ pub struct GmmFull<R: Real> {
 /// correlated clusters that the diagonal model cannot. Same expected-log E-step with the full
 /// within-feature correction `−½ tr(Σ_k⁻¹ Σ_i)`; component covariances are factored (Cholesky)
 /// for a stable log-determinant, quadratic form and inverse.
+#[cfg(test)]
 fn gmm_full_once<R: Real, C: ClusterFeature<R>>(
     features: &[C],
+    k: usize,
+    max_iter: usize,
+    seed: u64,
+) -> GmmFull<R> {
+    gmm_full_restart(features, &FullInputs::of(features), k, max_iter, seed)
+}
+
+/// What every restart of the full-covariance head reads and none writes.
+struct FullInputs<R: Real> {
+    mu: Vec<Vec<R>>,
+    n: Vec<R>,
+    sig: Vec<LeafCov<R>>,
+    gcov: Vec<Vec<R>>,
+    scale: R,
+}
+
+impl<R: Real> FullInputs<R> {
+    fn of<C: ClusterFeature<R>>(features: &[C]) -> Self {
+        // Per-leaf covariance in GMM-ready form: FD features stay low-rank (ℓ×d) and diagonal ones
+        // diagonal, so the E/M-steps never materialise a d×d matrix for a leaf that has none.
+        Self::with(features, features.iter().map(LeafCov::of).collect())
+    }
+
+    fn with<C: ClusterFeature<R>>(features: &[C], sig: Vec<LeafCov<R>>) -> Self {
+        let dim = features[0].dim();
+        let mu: Vec<Vec<R>> = features.iter().map(|f| f.mean().to_vec()).collect();
+        let n: Vec<R> = features.iter().map(|f| f.weight()).collect();
+        let gcov = global_cov(&mu, &n, &sig, dim);
+        let scale = {
+            let mut t = R::zero();
+            for (d, row) in gcov.iter().enumerate() {
+                t = t + row[d];
+            }
+            (t / R::from_usize(dim).unwrap()).max(R::from_f64(1e-12).unwrap())
+        };
+        Self {
+            mu,
+            n,
+            sig,
+            gcov,
+            scale,
+        }
+    }
+}
+
+fn gmm_full_restart<R: Real, C: ClusterFeature<R>>(
+    features: &[C],
+    inputs: &FullInputs<R>,
     k: usize,
     max_iter: usize,
     seed: u64,
@@ -353,23 +510,18 @@ fn gmm_full_once<R: Real, C: ClusterFeature<R>>(
     assert!(features.len() >= k, "need at least k features");
     let dim = features[0].dim();
     let m = features.len();
-    let mu: Vec<Vec<R>> = features.iter().map(|f| f.mean().to_vec()).collect();
-    let n: Vec<R> = features.iter().map(|f| f.weight()).collect();
-    // Per-leaf covariance in GMM-ready form: FD features stay low-rank (ℓ×d) instead of dense d×d,
-    // so the E/M-steps never materialise a d×d matrix per leaf (preserving FD's O(ℓ·d) memory).
-    let sig: Vec<SecondMoment<R>> = features.iter().map(|f| f.second_moment()).collect();
+    let FullInputs {
+        mu,
+        n,
+        sig,
+        gcov,
+        scale,
+    } = inputs;
+    let scale = *scale;
 
     let half = R::from_f64(0.5).unwrap();
     let log_two_pi = R::from_f64(std::f64::consts::TAU).unwrap().ln();
     let dimr = R::from_usize(dim).unwrap();
-    let gcov = global_cov(&mu, &n, &sig, dim);
-    let scale = {
-        let mut t = R::zero();
-        for (d, row) in gcov.iter().enumerate() {
-            t = t + row[d];
-        }
-        (t / dimr).max(R::from_f64(1e-12).unwrap())
-    };
     let ridge = R::from_f64(1e-6).unwrap();
     let reg = R::from_f64(1e-3).unwrap();
 
@@ -542,16 +694,17 @@ pub fn gmm_full<R: Real, C: ClusterFeature<R>>(
     max_iter: usize,
     seed: u64,
 ) -> GmmFull<R> {
+    let inputs = FullInputs::of(features);
     best_of_restarts(
         GMM_N_INIT,
         seed,
         |g: &GmmFull<R>| g.loglik,
-        |s| gmm_full_once(features, k, max_iter, s),
+        |s| gmm_full_restart(features, &inputs, k, max_iter, s),
     )
 }
 
 /// Total per-pair covariance of the underlying points (between-feature + within-feature).
-fn global_cov<R: Real>(mu: &[Vec<R>], n: &[R], sig: &[SecondMoment<R>], dim: usize) -> Vec<Vec<R>> {
+fn global_cov<R: Real>(mu: &[Vec<R>], n: &[R], sig: &[LeafCov<R>], dim: usize) -> Vec<Vec<R>> {
     let wtot: R = n.iter().copied().sum();
     let mut g = vec![vec![R::zero(); dim]; dim];
     if wtot <= R::zero() {
@@ -1108,7 +1261,7 @@ mod tests {
         // diagonal, `1e-3·gcov_dd`, keeps every Σ_k well-conditioned. Tight, well-separated blobs in
         // 10-D: within each blob the variance is ~0 in every dimension, so the raw component covariance
         // is ~0 while the global variance is large along the axes that separate the blobs.
-        use crate::feature::{ClusterFeature, SecondMoment, Spherical};
+        use crate::feature::{ClusterFeature, Spherical};
         let dim = 10;
         let k = 5;
         let mut rng = SplitMix64::new(101);
@@ -1149,7 +1302,7 @@ mod tests {
         // the raw component covariances here are ~1e-8, far below `1e-3·gcov_dd` on the separating axes).
         let mu: Vec<Vec<f64>> = micros.iter().map(|f| f.mean().to_vec()).collect();
         let n: Vec<f64> = micros.iter().map(|f| f.weight()).collect();
-        let sig: Vec<SecondMoment<f64>> = micros.iter().map(|f| f.second_moment()).collect();
+        let sig: Vec<LeafCov<f64>> = micros.iter().map(LeafCov::of).collect();
         let gcov = global_cov(&mu, &n, &sig, dim);
         let mut floor_bound = false;
         for cov in &g.covs {
@@ -1539,7 +1692,7 @@ mod tests {
         let m = features.len();
         let mu: Vec<Vec<f64>> = features.iter().map(|f| f.mean().to_vec()).collect();
         let n: Vec<f64> = features.iter().map(|f| f.weight()).collect();
-        let sig: Vec<SecondMoment<f64>> = features.iter().map(|f| f.second_moment()).collect();
+        let sig: Vec<LeafCov<f64>> = features.iter().map(LeafCov::of).collect();
         let gcov = global_cov(&mu, &n, &sig, dim);
         let scale = ((0..dim).map(|d| gcov[d][d]).sum::<f64>() / dim as f64).max(1e-12);
         let (ridge, reg, dfloor) = (1e-6, 1e-3, 1e-3);
@@ -1863,7 +2016,7 @@ mod tests {
         let feats = [a, b];
         let mu: Vec<Vec<f64>> = feats.iter().map(|f| f.mean().to_vec()).collect();
         let n: Vec<f64> = feats.iter().map(|f| f.weight()).collect();
-        let sig: Vec<SecondMoment<f64>> = feats.iter().map(|f| f.second_moment()).collect();
+        let sig: Vec<LeafCov<f64>> = feats.iter().map(LeafCov::of).collect();
         let g = global_cov(&mu, &n, &sig, 2);
 
         let wtot: f64 = n.iter().sum();
@@ -2057,5 +2210,114 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Leaves of a diagonal model with and without scatter, at a width that is not a multiple of
+    /// four: `(rows per leaf, leaf)`.
+    fn diagonal_leaves<C: ClusterFeature<f64>>(seed: u64) -> Vec<C> {
+        let mut rng = SplitMix64::new(seed);
+        let dim = 5;
+        (0..24)
+            .map(|i| {
+                let mut f = C::new(dim);
+                let centre = (i % 3) as f64 * 4.0;
+                for _ in 0..1 + i % 4 {
+                    let x: Vec<f64> = (0..dim).map(|_| centre + rng.gauss()).collect();
+                    f.push(&x, 1.0 + (i % 2) as f64);
+                }
+                f
+            })
+            .collect()
+    }
+
+    /// Every operation the mixture heads take of a leaf covariance, through the diagonal arm and
+    /// through the dense matrix the arm stands for, compared by `to_bits()`. Operands carry exact
+    /// zeros and negative values, so a dropped `+0` or a reordered sum shows.
+    fn assert_arms_agree<C: ClusterFeature<f64>>(leaves: &[C]) {
+        let mut rng = SplitMix64::new(17);
+        let dim = leaves[0].dim();
+        let mut draw = || {
+            let v = rng.gauss();
+            if v.abs() < 0.3 { 0.0 } else { v }
+        };
+        let inv: Vec<Vec<f64>> = (0..dim)
+            .map(|_| (0..dim).map(|_| draw()).collect())
+            .collect();
+        let rows: Vec<Vec<f64>> = (0..3).map(|_| (0..dim).map(|_| draw()).collect()).collect();
+        let start: Vec<Vec<f64>> = (0..3).map(|_| (0..dim).map(|_| draw()).collect()).collect();
+        let square: Vec<Vec<f64>> = (0..dim)
+            .map(|_| (0..dim).map(|_| draw()).collect())
+            .collect();
+        let bits =
+            |m: &[Vec<f64>]| -> Vec<u64> { m.iter().flatten().map(|v| v.to_bits()).collect() };
+        for (i, f) in leaves.iter().enumerate() {
+            let diagonal = LeafCov::of(f);
+            assert!(
+                matches!(diagonal, LeafCov::Diagonal(_)),
+                "leaf {i}: not read as a diagonal"
+            );
+            let dense = LeafCov::Moment(f.second_moment());
+            assert!(matches!(dense, LeafCov::Moment(SecondMoment::Dense(_))));
+            assert_eq!(
+                diagonal.trace().to_bits(),
+                dense.trace().to_bits(),
+                "leaf {i}: trace"
+            );
+            assert_eq!(
+                diagonal.trace_under(&inv, &inv).to_bits(),
+                dense.trace_under(&inv, &inv).to_bits(),
+                "leaf {i}: trace_under"
+            );
+            let (mut a, mut b) = (square.clone(), square.clone());
+            diagonal.add_scaled(&mut a, -1.5);
+            dense.add_scaled(&mut b, -1.5);
+            assert_eq!(bits(&a), bits(&b), "leaf {i}: add_scaled");
+            let (mut a, mut b) = (start.clone(), start.clone());
+            diagonal.apply_rows(&rows, &mut a, 0.75);
+            dense.apply_rows(&rows, &mut b, 0.75);
+            assert_eq!(bits(&a), bits(&b), "leaf {i}: apply_rows");
+            let (mut a, mut b) = (start[0].clone(), start[0].clone());
+            diagonal.add_diagonal_scaled(&mut a, 2.0);
+            dense.add_diagonal_scaled(&mut b, 2.0);
+            assert_eq!(bits(&[a]), bits(&[b]), "leaf {i}: add_diagonal_scaled");
+        }
+    }
+
+    #[test]
+    fn a_diagonal_leaf_covariance_gives_what_its_dense_matrix_gives_to_the_bit() {
+        assert_arms_agree(&diagonal_leaves::<Spherical<f64>>(3));
+        assert_arms_agree(&diagonal_leaves::<Diagonal<f64>>(4));
+    }
+
+    /// The whole full-covariance fit, once from the diagonal arm and once from the dense matrices
+    /// the head read before: the same mixture, to the bit, on leaves with and without scatter.
+    #[test]
+    fn the_full_head_fits_the_same_mixture_from_the_diagonal_arm_and_the_dense_one() {
+        fn check<C: ClusterFeature<f64>>(leaves: &[C]) {
+            let dense = FullInputs::with(
+                leaves,
+                leaves
+                    .iter()
+                    .map(|f| LeafCov::Moment(f.second_moment()))
+                    .collect(),
+            );
+            let a = gmm_full_restart(leaves, &FullInputs::of(leaves), 3, 25, 7);
+            let b = gmm_full_restart(leaves, &dense, 3, 25, 7);
+            let bits =
+                |m: &[Vec<f64>]| -> Vec<u64> { m.iter().flatten().map(|v| v.to_bits()).collect() };
+            assert_eq!(a.labels, b.labels);
+            assert_eq!(a.loglik.to_bits(), b.loglik.to_bits());
+            assert_eq!(
+                bits(std::slice::from_ref(&a.weights)),
+                bits(std::slice::from_ref(&b.weights))
+            );
+            assert_eq!(bits(&a.means), bits(&b.means));
+            assert_eq!(bits(&a.resp), bits(&b.resp));
+            for (ca, cb) in a.covs.iter().zip(&b.covs) {
+                assert_eq!(bits(ca), bits(cb));
+            }
+        }
+        check(&diagonal_leaves::<Spherical<f64>>(5));
+        check(&diagonal_leaves::<Diagonal<f64>>(6));
     }
 }

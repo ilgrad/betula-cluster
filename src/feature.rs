@@ -222,6 +222,11 @@ pub trait ClusterFeature<R: Real>: Clone + Send + Sync {
     fn second_moment(&self) -> SecondMoment<R> {
         SecondMoment::Dense(self.cov_dense())
     }
+    /// Whether [`ClusterFeature::cov_dense`] is `diag(variance(i))`, with exact zeros elsewhere.
+    #[doc(hidden)]
+    fn cov_is_diagonal(&self) -> bool {
+        false
+    }
     /// Are this feature's own arrays mutually consistent?
     ///
     /// Dead weight on every path but one. A feature built by [`ClusterFeature::new`],
@@ -311,6 +316,9 @@ impl<R: Real> ClusterFeature<R> for Spherical<R> {
             narrow(self.ssd / self.w / self.mean.len() as f64)
         }
     }
+    fn cov_is_diagonal(&self) -> bool {
+        true
+    }
     fn push(&mut self, x: &[R], w: R) {
         if w <= R::zero() {
             return;
@@ -396,6 +404,9 @@ impl<R: Real> ClusterFeature<R> for Diagonal<R> {
     }
     fn ssd(&self) -> R {
         self.ssd.iter().copied().sum()
+    }
+    fn cov_is_diagonal(&self) -> bool {
+        true
     }
     fn variance(&self, d: usize) -> R {
         if self.w <= 0.0 {
