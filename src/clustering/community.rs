@@ -568,7 +568,7 @@ impl RowGraph {
 /// alone is not enough: at `d = 784` it reaches the nearest leaf for 69 % of MNIST rows, and
 /// starting from it cost 0.04 ARI. The leaf neighbour lists are exact at `degree == 0` and come
 /// from the beam-search index otherwise, as the Leiden graph's do. Ties go to the lower leaf index.
-#[cfg_attr(not(feature = "python"), allow(dead_code))] // only the Python boundary holds the rows
+#[cfg(test)]
 pub(crate) fn row_top_leaves<R: Real, C: ClusterFeature<R>>(
     features: &[C],
     flat: &[R],
@@ -577,45 +577,76 @@ pub(crate) fn row_top_leaves<R: Real, C: ClusterFeature<R>>(
     degree: usize,
     seed: u64,
 ) -> Vec<usize> {
-    let m = features.len();
-    let dim = if hints.is_empty() {
-        0
-    } else {
-        flat.len() / hints.len()
-    };
-    let means: Vec<&[R]> = features.iter().map(|f| f.mean()).collect();
-    let plan = AssignPlan::from_rows(&means, None).ok();
-    let near = leaf_neighbours(features, ROW_GRAPH_CANDIDATES.min(m - 1), degree, seed);
-    let pick = |r: usize| -> Vec<usize> {
-        let x = &flat[r * dim..(r + 1) * dim];
-        let own = plan
-            .as_ref()
-            .map_or(hints[r], |p| p.nearest(x, Some(hints[r])).0);
-        let mut cand: Vec<(R, usize)> = std::iter::once(own)
-            .chain(near[own].iter().copied())
-            .map(|j| (sq_euclidean(x, features[j].mean()), j))
-            .collect();
-        cand.sort_by(|a, b| {
-            a.0.partial_cmp(&b.0)
-                .unwrap_or(Ordering::Equal)
-                .then(a.1.cmp(&b.1))
-        });
-        cand.into_iter().take(per_row).map(|(_, j)| j).collect()
-    };
-    #[cfg(feature = "parallel")]
-    {
-        use rayon::prelude::*;
-        (0..hints.len())
-            .into_par_iter()
-            .flat_map_iter(pick)
-            .collect()
-    }
-    #[cfg(not(feature = "parallel"))]
-    {
-        (0..hints.len()).flat_map(pick).collect()
-    }
+    RowPicker::new(features, per_row, degree, seed).top(flat, hints)
 }
 
+/// What [`RowPicker::top`] reads for every row — the leaf means' assignment plan and each leaf's
+/// nearest leaves — built once, so the rows can arrive a block at a time.
+#[cfg_attr(not(feature = "python"), allow(dead_code))] // only the Python boundary holds the rows
+pub(crate) struct RowPicker<'a, R: Real, C> {
+    features: &'a [C],
+    plan: Option<AssignPlan<R>>,
+    near: Vec<Vec<usize>>,
+    per_row: usize,
+}
+
+#[cfg_attr(not(feature = "python"), allow(dead_code))] // only the Python boundary holds the rows
+impl<'a, R: Real, C: ClusterFeature<R>> RowPicker<'a, R, C> {
+    pub(crate) fn new(features: &'a [C], per_row: usize, degree: usize, seed: u64) -> Self {
+        let m = features.len();
+        let means: Vec<&[R]> = features.iter().map(|f| f.mean()).collect();
+        let plan = AssignPlan::from_rows(&means, None).ok();
+        let near = leaf_neighbours(features, ROW_GRAPH_CANDIDATES.min(m - 1), degree, seed);
+        Self {
+            features,
+            plan,
+            near,
+            per_row,
+        }
+    }
+
+    /// The `per_row` leaves nearest each row of `flat`, whose descent leaves are `hints` (see
+    /// [`row_top_leaves`]). Each row's answer is its own, so blocks of rows concatenate.
+    pub(crate) fn top(&self, flat: &[R], hints: &[usize]) -> Vec<usize> {
+        let dim = if hints.is_empty() {
+            0
+        } else {
+            flat.len() / hints.len()
+        };
+        let pick = |r: usize| -> Vec<usize> {
+            let x = &flat[r * dim..(r + 1) * dim];
+            let own = self
+                .plan
+                .as_ref()
+                .map_or(hints[r], |p| p.nearest(x, Some(hints[r])).0);
+            let mut cand: Vec<(R, usize)> = std::iter::once(own)
+                .chain(self.near[own].iter().copied())
+                .map(|j| (sq_euclidean(x, self.features[j].mean()), j))
+                .collect();
+            cand.sort_by(|a, b| {
+                a.0.partial_cmp(&b.0)
+                    .unwrap_or(Ordering::Equal)
+                    .then(a.1.cmp(&b.1))
+            });
+            cand.into_iter()
+                .take(self.per_row)
+                .map(|(_, j)| j)
+                .collect()
+        };
+        #[cfg(feature = "parallel")]
+        {
+            use rayon::prelude::*;
+            (0..hints.len())
+                .into_par_iter()
+                .flat_map_iter(pick)
+                .collect()
+        }
+        #[cfg(not(feature = "parallel"))]
+        {
+            (0..hints.len()).flat_map(pick).collect()
+        }
+    }
+}
 /// Each leaf's `k` nearest other leaves by mean, nearest first: the exact scan at `degree == 0`,
 /// the beam-search index at `max(k, degree)` neighbours otherwise.
 #[cfg_attr(not(feature = "python"), allow(dead_code))] // only the Python boundary holds the rows

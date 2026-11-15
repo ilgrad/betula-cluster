@@ -161,12 +161,17 @@ const ROBUST_MIN_WEIGHT: f64 = 5.0;
 const REFIT_REBALANCE_ROUNDS: usize = 1;
 
 /// Rows from which the refit route forks: the cutoff `map_rows` uses for the other full-data routes.
-#[cfg(feature = "parallel")]
-const REFIT_PAR_MIN: usize = 4096;
+/// The Python boundary sizes its blocks of mapped rows to hold at least this many.
+#[cfg(any(feature = "parallel", feature = "python"))]
+pub(crate) const REFIT_PAR_MIN: usize = 4096;
 
 /// Rows per block of [`CFTree::nearest_entries`]: enough that a block puts tens of rows on each leaf
 /// of a 2 000-leaf tree, few enough that 20 000 rows still split across eight threads.
 const ROUTE_BLOCK: usize = 1024;
+
+/// Rows that arrive a block at a time: each call hands every row to the visitor once, as
+/// consecutive blocks in index order.
+pub(crate) type RowBlocks<'a, R> = dyn Fn(&mut dyn FnMut(&[R])) + 'a;
 
 impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> CFTree<R, C, D, A> {
     /// New empty tree. `branching` = max children per internal node, `leaf_cap` = max entries
@@ -694,19 +699,26 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> CF
     /// one more: `refit_leaves` is public API in a module frozen under semver, so a parameter added
     /// to it would break every caller that has one.
     pub fn refit_leaves_beam(&mut self, flat: &[R], n: usize, beam: usize) {
+        let dim = self.dim;
+        self.refit_leaves_blocks(n, beam, &|visit| visit(&flat[..n * dim]));
+    }
+
+    /// [`refit_leaves_beam`](Self::refit_leaves_beam) over `n` rows that `blocks` hands its visitor
+    /// as consecutive blocks, in index order, every time it is called. Each block is routed on its
+    /// own and folded in row order, so any split of the rows gives the same bits as one block.
+    pub(crate) fn refit_leaves_blocks(&mut self, n: usize, beam: usize, blocks: &RowBlocks<'_, R>) {
         if self.entries.is_empty() || n == 0 || self.dim == 0 {
             return;
         }
-        // The pass replaces every entry with the exact statistic of the rows in `flat`, so those
-        // rows, and not the ones inserted, are what the leaves now summarise.
-        let mut seen = RowMoments::new(self.dim);
-        for row in flat[..n * self.dim].chunks_exact(self.dim) {
-            seen.push(row);
-        }
+        // The pass replaces every entry with the exact statistic of the rows given, so those rows,
+        // and not the ones inserted, are what the leaves now summarise.
+        let dim = self.dim;
+        let mut seen = RowMoments::new(dim);
+        blocks(&mut |block| block.chunks_exact(dim).for_each(|row| seen.push(row)));
         self.inserted = Some(seen);
         let mut rebalances = 0usize;
         loop {
-            let alive = self.reaccumulate(flat, n, beam);
+            let alive = self.reaccumulate(blocks, beam);
             if alive.iter().all(|&a| a) {
                 break;
             }
@@ -727,36 +739,38 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> CF
     /// Route every row against the tree as it stands and replace each entry with the exact
     /// sufficient statistic of the rows it won, returning which entries won any.
     ///
-    /// The route reads the tree only, so it runs in parallel past [`REFIT_PAR_MIN`] rows; an indexed
-    /// `collect` keeps row order, and the fold into `fresh` stays serial in that order, so every
-    /// entry's CF is the same bits either way.
-    fn reaccumulate(&mut self, flat: &[R], n: usize, beam: usize) -> Vec<bool> {
+    /// The route reads the tree only, so it runs in parallel past [`REFIT_PAR_MIN`] rows of a block;
+    /// an indexed `collect` keeps row order, and the fold into `fresh` stays serial in that order,
+    /// so every entry's CF is the same bits either way.
+    fn reaccumulate(&mut self, blocks: &RowBlocks<'_, R>, beam: usize) -> Vec<bool> {
         let dim = self.dim;
-        let route = |i: usize| self.nearest_entry_beam(&flat[i * dim..(i + 1) * dim], beam);
-        #[cfg(feature = "parallel")]
-        let assign: Vec<usize> = if beam <= 1 {
-            self.nearest_entries(flat, n)
-        } else if n >= REFIT_PAR_MIN {
-            use rayon::prelude::*;
-            (0..n).into_par_iter().map(route).collect()
-        } else {
-            (0..n).map(route).collect()
-        };
-        #[cfg(not(feature = "parallel"))]
-        let assign: Vec<usize> = if beam <= 1 {
-            self.nearest_entries(flat, n)
-        } else {
-            (0..n).map(route).collect()
-        };
         let mut fresh: Vec<C> = (0..self.entries.len()).map(|_| C::new(dim)).collect();
-        for (i, &e) in assign.iter().enumerate() {
-            fresh[e].push(&flat[i * dim..(i + 1) * dim], R::one());
-        }
+        blocks(&mut |flat| {
+            let n = flat.len() / dim;
+            let route = |i: usize| self.nearest_entry_beam(&flat[i * dim..(i + 1) * dim], beam);
+            #[cfg(feature = "parallel")]
+            let assign: Vec<usize> = if beam <= 1 {
+                self.nearest_entries(flat, n)
+            } else if n >= REFIT_PAR_MIN {
+                use rayon::prelude::*;
+                (0..n).into_par_iter().map(route).collect()
+            } else {
+                (0..n).map(route).collect()
+            };
+            #[cfg(not(feature = "parallel"))]
+            let assign: Vec<usize> = if beam <= 1 {
+                self.nearest_entries(flat, n)
+            } else {
+                (0..n).map(route).collect()
+            };
+            for (row, &e) in flat.chunks_exact(dim).zip(&assign) {
+                fresh[e].push(row, R::one());
+            }
+        });
         let alive: Vec<bool> = fresh.iter().map(|c| c.weight() > R::zero()).collect();
         self.entries = fresh;
         alive
     }
-
     /// Insert an existing feature (used when rebuilding with a larger threshold).
     pub fn insert_cf(&mut self, cf: C) {
         if let Some(m) = self.inserted.as_mut() {

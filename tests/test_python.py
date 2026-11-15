@@ -4655,6 +4655,79 @@ def test_a_float64_chunk_past_float32_is_refused_by_a_float32_model(blobs):
         est.partial_fit(_with_row_7(x, np.float64, 1e39))
 
 
+@pytest.mark.parametrize("dtype", [np.float32, np.float64])
+def test_a_row_past_the_bound_only_in_the_float32_frame_is_refused_before_any_insert(blobs, dtype):
+    """Every row is inside the bound as given, with column 1 at ``0.6 * edge``, and so is the
+    float32 origin (the median). Row 2000 flips to ``-0.6 * edge``, past the bound once the origin
+    is taken off, which only the float32 frame does. The check reads the shifted rows in a pass of
+    its own, so the refusal names that row and the tree has taken none of the 2000 rows before it.
+    `gmm`, because the wrapper answers a `kmeans` `predict_proba` without the engine."""
+    x, _ = blobs
+    edge = math.sqrt(float(np.finfo(np.float32).max) / 2.0**56)
+    good = x.astype(np.float32)
+    good[:, 1] = 0.6 * edge
+    bad = good.copy()
+    bad[2000, 1] = -0.6 * edge
+    with pytest.raises(ValueError, match=r"^row 2000 has squared norm .* a float32 fit can square"):
+        betula_cluster.Betula(n_clusters=4, method="gmm", threshold=0.0).fit(bad)
+    est = betula_cluster.Betula(n_clusters=4, method="gmm", threshold=0.0).fit(good)
+    leaves, weights = est.n_leaves_, np.array(est.microcluster_weights_)
+    for call in (est.partial_fit, est.predict, est.predict_proba):
+        with pytest.raises(ValueError, match=r"^row 2000 has squared norm"):
+            call(bad.astype(dtype))
+    assert est.n_leaves_ == leaves
+    np.testing.assert_array_equal(est.microcluster_weights_, weights)
+
+
+_FIT_EXTRA_SCRIPT = r"""
+import betula_cluster
+import numpy as np
+
+
+def status(key):
+    with open("/proc/self/status") as f:
+        for line in f:
+            if line.startswith(key + ":"):
+                return int(line.split()[1]) * 1024
+    raise KeyError(key)
+
+
+rng = np.random.default_rng(0)
+n, d = 64_000, 800
+centres = rng.normal(100.0, 4.0, (10, d)).astype(np.float32)
+x = np.empty((n, d), dtype=np.float32)
+for lo in range(0, n, 4_000):
+    x[lo : lo + 4_000] = centres[rng.integers(0, 10, 4_000)]
+    x[lo : lo + 4_000] += rng.standard_normal((4_000, d), dtype=np.float32)
+est = betula_cluster.Betula(n_clusters=10, method="kmeans", max_leaves=200, threshold=0.0, seed=0)
+with open("/proc/self/clear_refs", "w") as f:
+    f.write("5")
+base = status("VmRSS")
+est.fit(x)
+print(status("VmHWM") - base, x.nbytes)
+"""
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="reads /proc/self/status")
+def test_a_float32_fit_holds_no_copy_of_its_rows(tmp_path):
+    """A float32 fit works in a frame shifted by the per-coordinate median. Each phase that read the
+    rows used to write the shifted rows out first, a copy of the whole array grown by doubling, so
+    a fit's own peak was ~2x the array. Mapped a block at a time, the peak is the tree and a block.
+
+    A subprocess, because the high-water mark is per process and is reset here once the rows exist.
+    """
+    script = tmp_path / "fit_extra.py"
+    script.write_text(_FIT_EXTRA_SCRIPT)
+    done = subprocess.run(
+        [sys.executable, str(script)], capture_output=True, text=True, timeout=600, check=True
+    )
+    extra, nbytes = map(int, done.stdout.split())
+    assert nbytes >= 200 * 10**6
+    assert extra < nbytes // 2, (
+        f"fit-extra {extra / 2**20:.1f} MiB for a {nbytes / 2**20:.1f} MiB array"
+    )
+
+
 def test_a_sparse_row_a_fit_cannot_square_is_refused(blobs):
     sparse = pytest.importorskip("scipy.sparse")
     x, _ = blobs

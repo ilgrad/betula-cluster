@@ -137,6 +137,18 @@ All notable changes to this project are documented here. The format follows
   draws per cell the default tree reads 0.61–0.65 at every `φ`.
 
 ### Performance
+- **A float32 fit keeps no copy of its rows.** A float32 tree is built in a frame shifted by the
+  per-coordinate median, and every phase that read the rows — the build, `canonical_order`,
+  `leaf_refit`, the rows graph, constrained fits, `predict`, `predict_proba`, `outlier_scores`,
+  `assign_microclusters` — first wrote the shifted rows out as a copy of the whole array; float64
+  rows given to a float32 model, and float32 rows to a float64 one, were cast into one. The rows are
+  now mapped into the frame a row at a time, or a block of at least 4 096 rows, by the same
+  expression, so labels, posteriors and saved files are byte-identical (579 digests over 57
+  configurations on MNIST and on data far from zero, both dtypes, every betula arm of the
+  benchmark). Memory a fit adds to its input, MNIST 70 000 × 784 float32 at 7 378 leaves: `kmeans`
+  289 808 kB → 76 580 kB, `leiden` with `leaf_graph="rows"` 312 868 kB → 112 628 kB. A row past the
+  norm bound is still refused before the first insert. Strided arrays, `normalize=True` and the
+  directional heads copy as before, and so does the one-shot `fit_predict` function.
 - **The tree's scans dispatch the distance kernel once per scan, not once per candidate.** An AVX2
   kernel cannot inline into a caller built without AVX2, so every candidate of the descent, the leaf
   lookups, absorption and the nearest-centre scans paid the run-time dispatch and two calls: 83

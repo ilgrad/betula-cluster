@@ -131,28 +131,50 @@ pub fn canonical_permutation<R: Real>(
     n: usize,
     dim: usize,
 ) -> Result<Vec<u32>, &'static str> {
+    let row = |i: usize| &flat[i * dim..(i + 1) * dim];
+    canonical_permutation_by(
+        n,
+        dim,
+        |visit| (0..n).for_each(|i| visit(row(i))),
+        |a, b| lex_order(row(a).iter().copied().zip(row(b).iter().copied())),
+    )
+}
+
+/// [`canonical_permutation`] over rows that are produced rather than stored: `rows` hands each of
+/// the `n` rows to its visitor once, in index order, and `tie` orders two rows by index as
+/// [`lex_order`] orders their values. The caller that maps rows into a frame as it reads them
+/// gets the order of the mapped rows without writing them out.
+pub(crate) fn canonical_permutation_by<R: Real>(
+    n: usize,
+    dim: usize,
+    rows: impl FnOnce(&mut dyn FnMut(&[R])),
+    mut tie: impl FnMut(usize, usize) -> std::cmp::Ordering,
+) -> Result<Vec<u32>, &'static str> {
     let mut idx: Vec<u32> = (0..rank_count(n)?).collect();
     if n <= 1 || dim == 0 {
         return Ok(idx);
     }
-    let codes = morton_codes(flat, n, dim);
+    let codes = morton_codes_by(n, dim, rows);
+    // A code collision falls back on the rows themselves. Common enough to matter, rare enough not
+    // to cost: without it the order inside a collision is the caller's, and the whole guarantee
+    // evaporates.
     idx.sort_unstable_by(|&a, &b| {
         let (a, b) = (a as usize, b as usize);
-        codes[a].cmp(&codes[b]).then_with(|| {
-            // Only reached on a code collision, which the quantisation makes common enough to
-            // matter and rare enough not to cost: without this the order inside a collision is the
-            // caller's, and the whole guarantee evaporates.
-            let (ra, rb) = (&flat[a * dim..(a + 1) * dim], &flat[b * dim..(b + 1) * dim]);
-            ra.iter()
-                .zip(rb)
-                .find_map(|(x, y)| match x.partial_cmp(y) {
-                    Some(std::cmp::Ordering::Equal) | None => None,
-                    Some(ord) => Some(ord),
-                })
-                .unwrap_or(std::cmp::Ordering::Equal)
-        })
+        codes[a].cmp(&codes[b]).then_with(|| tie(a, b))
     });
     Ok(idx)
+}
+
+/// Two rows' values, paired by column, in lexicographic order: the first pair that compares
+/// unequal decides, and an unordered (NaN) pair is passed over.
+pub(crate) fn lex_order<R: Real>(pairs: impl Iterator<Item = (R, R)>) -> std::cmp::Ordering {
+    pairs
+        .map(|(x, y)| x.partial_cmp(&y))
+        .find_map(|ord| match ord {
+            Some(std::cmp::Ordering::Equal) | None => None,
+            Some(ord) => Some(ord),
+        })
+        .unwrap_or(std::cmp::Ordering::Equal)
 }
 
 /// The canonical permutation for CSR rows — the sparse twin of [`canonical_permutation`].
@@ -324,17 +346,28 @@ fn quantise(z: Vec<f64>, n: usize) -> Vec<u64> {
 }
 
 /// One `u64` Morton code per dense row.
+#[cfg(test)]
 fn morton_codes<R: Real>(flat: &[R], n: usize, dim: usize) -> Vec<u64> {
+    morton_codes_by(n, dim, |visit| {
+        flat.chunks_exact(dim).take(n).for_each(visit);
+    })
+}
+
+/// One `u64` Morton code for each of the `n` rows `rows` hands its visitor, in that order.
+fn morton_codes_by<R: Real>(
+    n: usize,
+    dim: usize,
+    rows: impl FnOnce(&mut dyn FnMut(&[R])),
+) -> Vec<u64> {
     let proj = projections::<R>(dim);
-    let mut z = vec![0.0f64; n * PROJECTIONS];
-    for i in 0..n {
-        let row = &flat[i * dim..(i + 1) * dim];
-        for j in 0..PROJECTIONS {
-            z[i * PROJECTIONS + j] = crate::kernels::dot(row, &proj[j * dim..(j + 1) * dim])
+    let mut z = Vec::with_capacity(n * PROJECTIONS);
+    rows(&mut |row| {
+        z.extend((0..PROJECTIONS).map(|j| {
+            crate::kernels::dot(row, &proj[j * dim..(j + 1) * dim])
                 .to_f64()
-                .unwrap_or(0.0);
-        }
-    }
+                .unwrap_or(0.0)
+        }));
+    });
     quantise(z, n)
 }
 

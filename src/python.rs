@@ -27,7 +27,7 @@ use crate::bregman::{
     BregmanCentroid, BregmanCf, BregmanDivergence, BregmanIncrease, ItakuraSaito, KullbackLeibler,
     Logistic, SquaredEuclidean,
 };
-use crate::clustering::community::{ROW_GRAPH_LEAVES, RowGraph, row_top_leaves};
+use crate::clustering::community::{ROW_GRAPH_LEAVES, RowGraph, RowPicker};
 use crate::clustering::hdbscan::hdbscan_with;
 use crate::clustering::hyperbolic::lorentz_dot;
 use crate::clustering::nmf::{Projection, ProjectionKind, ProjectionSpec};
@@ -51,7 +51,10 @@ use crate::model::{
     Centres, HeadOptions, Method, Model, RowEdges, Rule, assignment_rule, auto_k_ceiling, fit_head,
     refinable, refine_centers,
 };
-use crate::order::{canonical_permutation, canonical_permutation_csr, canonical_shards};
+use crate::order::{
+    canonical_permutation, canonical_permutation_by, canonical_permutation_csr, canonical_shards,
+    lex_order,
+};
 use crate::sparse::{SparseCentroids, normalize_csr_rows, summarize_sparse};
 use crate::stats::chi2_quantile;
 use crate::stream::{DbStream, DenStream, DriftReport};
@@ -688,18 +691,19 @@ fn parse_head_options(
 /// The `leaf_graph` value that counts the Leiden graph from the training rows ([`RowGraph`]).
 const ROWS_GRAPH: &str = "rows";
 
-/// The rows graph of `tree` over the `n` rows of `flat`, each row starting from its leaf
-/// `entries[r]` — the leaf `predict` labels it by, so a training row's label is its leaf's
-/// community.
+/// The rows graph over the leaves `features` and the rows of `rows`, each row starting from the
+/// leaf `entries` gives it — the leaf `predict` labels it by, so a training row's label is its
+/// leaf's community.
 fn row_graph<R: Real, C: ClusterFeature<R>>(
     features: &[C],
-    flat: &[R],
-    entries: &[usize],
+    rows: RowView<'_, R>,
+    entries: impl Fn(&[R]) -> Vec<usize>,
     graph_degree: usize,
     seed: u64,
 ) -> RowGraph {
     let per_row = ROW_GRAPH_LEAVES.min(features.len());
-    let top = row_top_leaves(features, flat, entries, per_row, graph_degree, seed);
+    let picker = RowPicker::new(features, per_row, graph_degree, seed);
+    let top = rows.concat(|block| picker.top(block, &entries(block)));
     RowGraph::from_top(&top, per_row, features.len())
 }
 
@@ -1478,6 +1482,7 @@ fn compute_cluster_stats<R: Real, C: ClusterFeature<R>>(
 /// The two are calibrated against each other rather than merely both being "a z-score": with an
 /// isotropic pooled covariance `Σ = (R²/d)·I`, `Whitened` returns exactly what `Radius` does, so the
 /// refinement changes an answer only where the cluster is actually anisotropic.
+#[derive(Clone, Copy)]
 enum OutlierScale<'a> {
     /// One RMS radius per cluster — the trace of the pooled covariance, so a cluster's short axis is
     /// judged by the length of its long one.
@@ -1645,6 +1650,24 @@ fn to_rows<R: Real + Element>(
     data: PyReadonlyArray2<'_, R>,
     prep: RowPrep,
 ) -> PyResult<(Rows<'_, R>, usize, usize)> {
+    let (rows, n, dim) = finite_rows(data)?;
+    if prep == RowPrep::None {
+        check_norms(rows.as_slice(), dim)?;
+        return Ok((rows, n, dim));
+    }
+    let mut flat = match rows {
+        Rows::Owned(v) => v,
+        borrowed => borrowed.as_slice().to_vec(),
+    };
+    prepare_checked(&mut flat, n, dim, prep)?;
+    Ok((Rows::Owned(flat), n, dim))
+}
+
+/// A non-empty, finite 2-D array as flat row-major rows, unprepared and in its own float width:
+/// the caller's buffer when it is C-contiguous, a copy when it is not.
+fn finite_rows<S: Real + Element>(
+    data: PyReadonlyArray2<'_, S>,
+) -> PyResult<(Rows<'_, S>, usize, usize)> {
     let (n, dim) = {
         let arr = data.as_array();
         (arr.shape()[0], arr.shape()[1])
@@ -1654,7 +1677,7 @@ fn to_rows<R: Real + Element>(
     }
     // Validate at the boundary: a NaN/Inf would silently corrupt the tree (mean/scatter become NaN
     // and every downstream label is garbage), so reject it loudly here.
-    fn finite<R: Real>(s: &[R]) -> PyResult<()> {
+    fn finite<S: Real>(s: &[S]) -> PyResult<()> {
         if s.iter().any(|v| !v.is_finite()) {
             return Err(PyValueError::new_err(
                 "data contains NaN or infinite values",
@@ -1667,22 +1690,14 @@ fn to_rows<R: Real + Element>(
     // it would hand the tree a scrambled dataset with no error anywhere. Row-major is the layout
     // this whole module indexes by, so the borrow is gated on it explicitly rather than on
     // contiguity; `ndarray`'s standard layout is exactly that condition.
-    if prep == RowPrep::None && data.as_array().is_standard_layout() {
+    if data.as_array().is_standard_layout() {
         if let Ok(s) = data.as_slice() {
             finite(s)?;
-            check_norms(s, dim)?;
             return Ok((Rows::Borrowed(data), n, dim));
         }
     }
-    let arr = data.as_array();
-    // A C-contiguous array exposes its backing slice, so the copy is a single memcpy and the
-    // finiteness check one tight auto-vectorized pass — strided `arr[[i, j]]` indexing is neither.
-    let mut flat: Vec<R> = match arr.as_slice() {
-        Some(s) => s.to_vec(),
-        None => arr.iter().copied().collect(), // non-contiguous (e.g. a transposed view)
-    };
+    let flat: Vec<S> = data.as_array().iter().copied().collect(); // e.g. a transposed view
     finite(&flat)?;
-    prepare_checked(&mut flat, n, dim, prep)?;
     Ok((Rows::Owned(flat), n, dim))
 }
 
@@ -2113,9 +2128,10 @@ fn cluster<R: Real, C: ClusterFeature<R>>(
                 let counted;
                 let opts = match opts.rows {
                     RowEdges::Requested => {
-                        let entries = tree.nearest_entries(flat, n);
+                        let rows = RowView::of(flat, n, dim);
+                        let entries = |b: &[R]| tree.nearest_entries(b, b.len() / dim);
                         let degree = opts.graph_degree;
-                        counted = row_graph(tree.leaf_features(), flat, &entries, degree, seed);
+                        counted = row_graph(tree.leaf_features(), rows, entries, degree, seed);
                         HeadOptions {
                             rows: RowEdges::Counted(&counted),
                             ..opts
@@ -2689,12 +2705,13 @@ impl<R: Real> TreeState<R> {
     }
 
     /// `beam` is the descent width the pass routes with; `0` and `1` are both the plain descent.
-    fn refit_leaves(&mut self, flat: &[R], n: usize, beam: usize) {
+    fn refit_leaves(&mut self, rows: RowView<'_, R>, beam: usize) {
+        let blocks = |visit: &mut dyn FnMut(&[R])| rows.for_each_block(visit);
         match self {
-            TreeState::Spherical(t) => t.refit_leaves_beam(flat, n, beam),
-            TreeState::Diagonal(t) => t.refit_leaves_beam(flat, n, beam),
-            TreeState::Full(t) => t.refit_leaves_beam(flat, n, beam),
-            TreeState::Fd(t) => t.refit_leaves_beam(flat, n, beam),
+            TreeState::Spherical(t) => t.refit_leaves_blocks(rows.n, beam, &blocks),
+            TreeState::Diagonal(t) => t.refit_leaves_blocks(rows.n, beam, &blocks),
+            TreeState::Full(t) => t.refit_leaves_blocks(rows.n, beam, &blocks),
+            TreeState::Fd(t) => t.refit_leaves_blocks(rows.n, beam, &blocks),
         }
     }
 
@@ -2856,17 +2873,16 @@ impl<R: Real> TreeState<R> {
         }
     }
 
-    /// Stream `n` rows of `flat` into the tree, lazily creating it (and resolving the gate) on the
-    /// first call, applying EWMA decay first. `slot` is the estimator's per-dtype tree.
-    #[allow(clippy::too_many_arguments)]
+    /// Stream the rows of `rows` into the tree, in the order `order` names or else in arrival
+    /// order, lazily creating it (and resolving the gate) on the first call, applying EWMA decay
+    /// first. `slot` is the estimator's per-dtype tree.
     fn stream_chunk(
         slot: &mut Option<Self>,
         cfg: &StreamCfg<'_>,
-        flat: &[R],
-        n: usize,
-        dim: usize,
+        rows: RowView<'_, R>,
         order: Option<&[u32]>,
     ) -> Result<(), &'static str> {
+        let dim = rows.dim;
         if cfg.decay < 1.0 {
             if let Some(tree) = slot.as_mut() {
                 tree.decay(R::from_f64(cfg.decay).unwrap());
@@ -2890,10 +2906,7 @@ impl<R: Real> TreeState<R> {
             )?);
         }
         let tree = slot.as_mut().unwrap();
-        for rank in 0..n {
-            let i = order.map_or(rank, |o| o[rank] as usize);
-            tree.insert(&flat[i * dim..(i + 1) * dim]);
-        }
+        rows.visit_rows(order, &mut |row| tree.insert(row));
         Ok(())
     }
 
@@ -2923,24 +2936,16 @@ impl<R: Real> TreeState<R> {
         })
     }
 
-    /// The rows graph of this tree over the rows of `flat`, each row starting from the leaf
+    /// The rows graph of this tree over the rows of `rows`, each row starting from the leaf
     /// [`route`](Self::route) gives it.
-    #[allow(clippy::too_many_arguments)]
-    fn row_graph(
-        &self,
-        flat: &[R],
-        n: usize,
-        dim: usize,
-        beam: usize,
-        degree: usize,
-        seed: u64,
-    ) -> RowGraph {
-        let entries = self.entries(flat, n, dim, beam);
+    fn row_graph(&self, rows: RowView<'_, R>, beam: usize, degree: usize, seed: u64) -> RowGraph {
+        let dim = rows.dim;
+        let entries = |block: &[R]| self.entries(block, block.len() / dim, dim, beam);
         match self {
-            TreeState::Spherical(t) => row_graph(t.leaf_features(), flat, &entries, degree, seed),
-            TreeState::Diagonal(t) => row_graph(t.leaf_features(), flat, &entries, degree, seed),
-            TreeState::Full(t) => row_graph(t.leaf_features(), flat, &entries, degree, seed),
-            TreeState::Fd(t) => row_graph(t.leaf_features(), flat, &entries, degree, seed),
+            TreeState::Spherical(t) => row_graph(t.leaf_features(), rows, entries, degree, seed),
+            TreeState::Diagonal(t) => row_graph(t.leaf_features(), rows, entries, degree, seed),
+            TreeState::Full(t) => row_graph(t.leaf_features(), rows, entries, degree, seed),
+            TreeState::Fd(t) => row_graph(t.leaf_features(), rows, entries, degree, seed),
         }
     }
 
@@ -3320,9 +3325,7 @@ fn pairs_from(arr: &PyReadonlyArray2<'_, i64>) -> PyResult<Vec<(i64, i64)>> {
 #[allow(clippy::too_many_arguments)]
 fn constrained_labels<R: Real>(
     tree: &TreeState<R>,
-    flat: &[R],
-    n: usize,
-    dim: usize,
+    rows: RowView<'_, R>,
     must: &[(i64, i64)],
     cannot: &[(i64, i64)],
     k: usize,
@@ -3330,14 +3333,15 @@ fn constrained_labels<R: Real>(
     n_init: usize,
     seed: u64,
 ) -> PyResult<Vec<i64>> {
-    let leaf_of = |idx: i64| -> PyResult<usize> {
+    let n = rows.n;
+    let mut buf = vec![R::zero(); rows.dim];
+    let mut leaf_of = |idx: i64| -> PyResult<usize> {
         if idx < 0 || idx as usize >= n {
             return Err(PyValueError::new_err(format!(
                 "constraint row index {idx} is out of range for {n} samples"
             )));
         }
-        let i = idx as usize;
-        Ok(tree.nearest_entry(&flat[i * dim..(i + 1) * dim], 1))
+        Ok(tree.nearest_entry(rows.row(idx as usize, &mut buf), 1))
     };
     let mut leaf_must: Vec<(usize, usize)> = Vec::with_capacity(must.len());
     for &(a, b) in must {
@@ -3614,41 +3618,281 @@ fn flat_as<'py, R: Real + Element>(
     Ok((Rows::Owned(flat), n, dim))
 }
 
-/// [`flat_as`] in the frame of a model built around `origin`: each row enters as `R(x − origin)`,
-/// the difference taken in `f64` before the narrowing, so a row loses nothing to the frame that it
-/// would not lose to `R` anyway. Without an origin this is [`flat_as`] itself.
+/// The rows of `data` as an `R` tree reads them, in the frame of a model built around `origin`:
+/// each row enters as `R(x − origin)`, the difference taken in `f64` before the narrowing, so a row
+/// loses nothing to the frame that it would not lose to `R` anyway. Without an origin this is
+/// [`flat_as`], except that unprepared rows of the other float width are read as `R(x)` in place
+/// rather than cast into a copy.
 ///
-/// The norm check runs on the shifted rows, because those are what the tree squares.
+/// The norm check runs on the mapped rows, because those are what the tree squares, and it runs
+/// here, as a pass of its own: a row it refuses has reached no consumer.
 fn frame_rows<'py, R: Real + Element>(
     data: &Bound<'py, PyAny>,
     prep: RowPrep,
     origin: Option<&[f64]>,
-) -> PyResult<(Rows<'py, R>, usize, usize)> {
-    let Some(origin) = origin else {
-        return flat_as::<R>(data, prep);
+) -> PyResult<FrameRows<'py, R>> {
+    let flat = |(rows, n, dim)| FrameRows {
+        frame: Frame::Flat(rows),
+        origin: None,
+        n,
+        dim,
     };
-    // Read in whichever float type arrived, so a float32 array is copied once, into the shifted
-    // buffer, rather than widened first.
-    let (shifted, n, dim) = if let Ok(a) = data.extract::<PyReadonlyArray2<'py, f32>>() {
-        shift_checked(to_rows(a, prep)?, origin)?
-    } else {
-        shift_checked(flat_as::<f64>(data, prep)?, origin)?
+    let (src, n, dim) = match origin {
+        Some(origin) => {
+            // Read in whichever float type arrived, so a float32 array is never widened first.
+            let (src, n, dim) = if let Ok(a) = data.extract::<PyReadonlyArray2<'py, f32>>() {
+                let (rows, n, dim) = to_rows(a, prep)?;
+                (Source::F32(rows), n, dim)
+            } else {
+                let (rows, n, dim) = flat_as::<f64>(data, prep)?;
+                (Source::F64(rows), n, dim)
+            };
+            if dim != origin.len() {
+                return Err(PyValueError::new_err(
+                    "dimension mismatch with previously fitted data",
+                ));
+            }
+            (src, n, dim)
+        }
+        None => {
+            if let Ok(a) = data.extract::<PyReadonlyArray2<'py, R>>() {
+                return Ok(flat(to_rows(a, prep)?));
+            }
+            // A prepared row is written to, so it needs a buffer of its own either way.
+            if prep != RowPrep::None {
+                return Ok(flat(flat_as::<R>(data, prep)?));
+            }
+            if let Ok(a) = data.extract::<PyReadonlyArray2<'py, f64>>() {
+                let (rows, n, dim) = finite_rows(a)?;
+                (Source::F64(rows), n, dim)
+            } else if let Ok(a) = data.extract::<PyReadonlyArray2<'py, f32>>() {
+                let (rows, n, dim) = finite_rows(a)?;
+                (Source::F32(rows), n, dim)
+            } else {
+                return Err(PyValueError::new_err(
+                    "data must be a 2-D float32 or float64 array",
+                ));
+            }
+        }
     };
-    Ok((Rows::Owned(shifted), n, dim))
+    let rows = FrameRows {
+        frame: Frame::Mapped(src),
+        origin: origin.map(<[f64]>::to_vec),
+        n,
+        dim,
+    };
+    rows.view().check_norms()?;
+    Ok(rows)
 }
 
-fn shift_checked<S: Real + Element, R: Real>(
-    (src, n, dim): (Rows<'_, S>, usize, usize),
-    origin: &[f64],
-) -> PyResult<(Vec<R>, usize, usize)> {
-    if dim != origin.len() {
-        return Err(PyValueError::new_err(
-            "dimension mismatch with previously fitted data",
-        ));
+/// The caller's rows in the float width they arrived in.
+enum Source<'py> {
+    F32(Rows<'py, f32>),
+    F64(Rows<'py, f64>),
+}
+
+/// How [`FrameRows`] holds its rows.
+enum Frame<'py, R: Element> {
+    /// Rows the tree reads as they stand: the caller's own buffer, or one prepared copy.
+    Flat(Rows<'py, R>),
+    /// Rows still to be mapped into the tree's frame, a row or a block at a time ([`RowView`]).
+    Mapped(Source<'py>),
+}
+
+/// The `n × dim` rows of an array in an `R` tree's frame: what [`Betula::rows_of`] returns.
+///
+/// A float32 fit works in a frame shifted by the origin, and a model of one width reads rows of the
+/// other. Writing those rows out cost an owned copy of the input in every phase that read them —
+/// 219.5 MB at 70 000 × 784 float32, requested as 411 MB by a vector growing by doubling — so they
+/// are mapped on demand instead, through [`FrameRows::view`].
+struct FrameRows<'py, R: Element> {
+    frame: Frame<'py, R>,
+    origin: Option<Vec<f64>>,
+    n: usize,
+    dim: usize,
+}
+
+impl<R: Real + Element> FrameRows<'_, R> {
+    /// The rows as plain slices, which is what crosses `Python::detach`: the array guard does not.
+    fn view(&self) -> RowView<'_, R> {
+        let origin = self.origin.as_deref();
+        let src = match &self.frame {
+            Frame::Flat(rows) => ViewSrc::Flat(rows.as_slice()),
+            Frame::Mapped(Source::F32(rows)) => ViewSrc::F32(rows.as_slice(), origin),
+            Frame::Mapped(Source::F64(rows)) => ViewSrc::F64(rows.as_slice(), origin),
+        };
+        RowView {
+            src,
+            n: self.n,
+            dim: self.dim,
+        }
     }
-    Ok((shift_rows(src.as_slice(), origin)?, n, dim))
 }
 
+/// Rows a reader takes as they are, or rows of either float width still to be mapped by
+/// [`frame_value`].
+#[derive(Clone, Copy)]
+enum ViewSrc<'a, R> {
+    Flat(&'a [R]),
+    F32(&'a [f32], Option<&'a [f64]>),
+    F64(&'a [f64], Option<&'a [f64]>),
+}
+
+/// Bytes of mapped rows one block of [`RowView::for_each_block`] holds.
+const FRAME_BLOCK_BYTES: usize = 16 << 20;
+
+/// `n × dim` rows in a tree's frame, read one row or one block of rows at a time.
+///
+/// Every mapped element is [`frame_value`], the expression the whole-array copy used, so a reader
+/// sees the same bits whichever way it asks. Readers that answer each row on its own (a route, a
+/// label, a posterior) give the same output block by block, and readers that fold over the rows
+/// visit them in index order, as they did over the copy.
+#[derive(Clone, Copy)]
+struct RowView<'a, R> {
+    src: ViewSrc<'a, R>,
+    n: usize,
+    dim: usize,
+}
+
+/// `R(x − o)` with the difference taken in `f64`, or `R(x)` without an origin.
+#[inline]
+fn frame_value<S: Real, R: Real>(x: S, o: Option<f64>) -> R {
+    let x = x.to_f64().unwrap();
+    R::from_f64(o.map_or(x, |o| x - o)).unwrap()
+}
+
+/// Map whole rows of `src` into `out`, row-major, the origin repeating every `dim` elements.
+fn frame_into<S: Real, R: Real>(src: &[S], origin: Option<&[f64]>, dim: usize, out: &mut [R]) {
+    match origin {
+        Some(o) => {
+            for (dst, row) in out.chunks_exact_mut(dim).zip(src.chunks_exact(dim)) {
+                for ((v, &x), &o) in dst.iter_mut().zip(row).zip(o) {
+                    *v = frame_value(x, Some(o));
+                }
+            }
+        }
+        None => {
+            for (v, &x) in out.iter_mut().zip(src) {
+                *v = frame_value(x, None);
+            }
+        }
+    }
+}
+
+impl<'a, R: Real> RowView<'a, R> {
+    /// `n × dim` rows stored as they are read.
+    fn of(flat: &'a [R], n: usize, dim: usize) -> Self {
+        Self {
+            src: ViewSrc::Flat(flat),
+            n,
+            dim,
+        }
+    }
+
+    /// The rows themselves, when nothing has to be mapped.
+    fn flat(&self) -> Option<&'a [R]> {
+        match self.src {
+            ViewSrc::Flat(f) => Some(&f[..self.n * self.dim]),
+            _ => None,
+        }
+    }
+
+    /// Rows `first..first + out.len() / dim`, mapped into `out`.
+    fn map_rows(&self, first: usize, out: &mut [R]) {
+        let span = first * self.dim..first * self.dim + out.len();
+        match self.src {
+            ViewSrc::Flat(f) => out.copy_from_slice(&f[span]),
+            ViewSrc::F32(s, o) => frame_into(&s[span], o, self.dim, out),
+            ViewSrc::F64(s, o) => frame_into(&s[span], o, self.dim, out),
+        }
+    }
+
+    /// Element `j` of row `i`.
+    fn at(&self, i: usize, j: usize) -> R {
+        let k = i * self.dim + j;
+        match self.src {
+            ViewSrc::Flat(f) => f[k],
+            ViewSrc::F32(s, o) => frame_value(s[k], o.map(|o| o[j])),
+            ViewSrc::F64(s, o) => frame_value(s[k], o.map(|o| o[j])),
+        }
+    }
+
+    /// Row `i`: borrowed when nothing has to be mapped, else mapped into `buf` (`dim` long).
+    fn row<'b>(&self, i: usize, buf: &'b mut [R]) -> &'b [R]
+    where
+        'a: 'b,
+    {
+        match self.src {
+            ViewSrc::Flat(f) => &f[i * self.dim..(i + 1) * self.dim],
+            _ => {
+                self.map_rows(i, buf);
+                buf
+            }
+        }
+    }
+
+    /// Hand every row to `visit` through one reused row buffer, in the order `order` names, or
+    /// else in index order.
+    fn visit_rows(&self, order: Option<&[u32]>, visit: &mut dyn FnMut(&[R])) {
+        let mut buf = match self.src {
+            ViewSrc::Flat(_) => Vec::new(),
+            _ => vec![R::zero(); self.dim],
+        };
+        for rank in 0..self.n {
+            let i = order.map_or(rank, |o| o[rank] as usize);
+            visit(self.row(i, &mut buf));
+        }
+    }
+
+    /// Hand consecutive blocks of rows to `each`, in index order: all of them at once when nothing
+    /// has to be mapped, else blocks of about [`FRAME_BLOCK_BYTES`] mapped into one reused buffer.
+    ///
+    /// A block holds at least `REFIT_PAR_MIN` rows, because below that the batched descent its
+    /// readers run stays on one thread. The blocks split `n` evenly, so no short tail falls under it.
+    fn for_each_block(&self, each: &mut dyn FnMut(&[R])) {
+        if let Some(f) = self.flat() {
+            each(f);
+            return;
+        }
+        let per = (FRAME_BLOCK_BYTES / (self.dim * std::mem::size_of::<R>()).max(1))
+            .max(crate::tree::REFIT_PAR_MIN);
+        let blocks = (self.n / per).max(1);
+        let mut buf = vec![R::zero(); self.n.div_ceil(blocks) * self.dim];
+        for b in 0..blocks {
+            let (lo, hi) = (b * self.n / blocks, (b + 1) * self.n / blocks);
+            let out = &mut buf[..(hi - lo) * self.dim];
+            self.map_rows(lo, out);
+            each(out);
+        }
+    }
+
+    /// What `each` returns for every block, concatenated: the per-row answers of all `n` rows.
+    fn concat<T>(&self, mut each: impl FnMut(&[R]) -> Vec<T>) -> Vec<T> {
+        if let Some(f) = self.flat() {
+            return each(f);
+        }
+        let mut out = Vec::new();
+        self.for_each_block(&mut |b| out.extend(each(b)));
+        out
+    }
+
+    /// The order [`canonical_permutation`] gives these rows as they are in the frame, read a row
+    /// at a time rather than from a stored copy.
+    fn canonical_permutation(&self) -> Result<Vec<u32>, &'static str> {
+        canonical_permutation_by(
+            self.n,
+            self.dim,
+            |visit| self.visit_rows(None, visit),
+            |a, b| lex_order((0..self.dim).map(|j| (self.at(a, j), self.at(b, j)))),
+        )
+    }
+
+    /// Refuse the first row past [`max_sq_norm`], as [`check_norms`] refuses it in a stored copy.
+    fn check_norms(&self) -> PyResult<()> {
+        let mut buf = vec![R::zero(); self.dim];
+        (0..self.n).try_for_each(|i| check_norm(i, self.row(i, &mut buf)))
+    }
+}
 /// `R(x − origin)` for every row of `flat`, the difference taken in `f64`, refused like any other
 /// row past [`max_sq_norm`] — the shifted rows are the ones the tree squares.
 fn shift_rows<S: Real, R: Real>(flat: &[S], origin: &[f64]) -> PyResult<Vec<R>> {
@@ -3748,13 +3992,11 @@ impl Betula {
     /// cut. The estimator documents the asymmetry, exactly as it does for `leaf_refit`.
     fn insertion_order<R: Real>(
         &self,
-        flat: &[R],
-        n: usize,
-        dim: usize,
+        rows: RowView<'_, R>,
         arrival: Arrival,
     ) -> PyResult<Option<Vec<u32>>> {
         (self.canonical_order && arrival == Arrival::Whole)
-            .then(|| canonical_permutation(flat, n, dim))
+            .then(|| rows.canonical_permutation())
             .transpose()
             .map_err(PyValueError::new_err)
     }
@@ -3794,15 +4036,15 @@ impl Betula {
             } else {
                 None
             };
-            let (src, n, dim) = frame_rows::<f32>(data, self.row_prep(), origin.as_deref())?;
-            let flat = src.as_slice();
+            let rows = frame_rows::<f32>(data, self.row_prep(), origin.as_deref())?;
+            let (view, dim) = (rows.view(), rows.dim);
             if self.dim != 0 && self.dim != dim {
                 return Err(PyValueError::new_err(
                     "dimension mismatch with previously fitted data",
                 ));
             }
-            let order = self.insertion_order(flat, n, dim, arrival)?;
-            TreeState::stream_chunk(&mut self.state32, &cfg, flat, n, dim, order.as_deref())
+            let order = self.insertion_order(view, arrival)?;
+            TreeState::stream_chunk(&mut self.state32, &cfg, view, order.as_deref())
                 .map_err(PyValueError::new_err)?;
             if self.resummarize_capped(arrival, &self.state32) {
                 self.state32 = None;
@@ -3811,21 +4053,21 @@ impl Betula {
                     auto_balance: false,
                     ..cfg
                 };
-                TreeState::stream_chunk(&mut self.state32, &capped, flat, n, dim, order.as_deref())
+                TreeState::stream_chunk(&mut self.state32, &capped, view, order.as_deref())
                     .map_err(PyValueError::new_err)?;
             }
             self.dim = dim;
             self.origin = origin;
         } else {
-            let (src, n, dim) = self.rows_of::<f64>(data)?;
-            let flat = src.as_slice();
+            let rows = self.rows_of::<f64>(data)?;
+            let (view, dim) = (rows.view(), rows.dim);
             if self.dim != 0 && self.dim != dim {
                 return Err(PyValueError::new_err(
                     "dimension mismatch with previously fitted data",
                 ));
             }
-            let order = self.insertion_order(flat, n, dim, arrival)?;
-            TreeState::stream_chunk(&mut self.state64, &cfg, flat, n, dim, order.as_deref())
+            let order = self.insertion_order(view, arrival)?;
+            TreeState::stream_chunk(&mut self.state64, &cfg, view, order.as_deref())
                 .map_err(PyValueError::new_err)?;
             if self.resummarize_capped(arrival, &self.state64) {
                 self.state64 = None;
@@ -3834,7 +4076,7 @@ impl Betula {
                     auto_balance: false,
                     ..cfg
                 };
-                TreeState::stream_chunk(&mut self.state64, &capped, flat, n, dim, order.as_deref())
+                TreeState::stream_chunk(&mut self.state64, &capped, view, order.as_deref())
                     .map_err(PyValueError::new_err)?;
             }
             self.dim = dim;
@@ -3979,7 +4221,7 @@ impl Betula {
     fn rows_of<'py, R: Real + Element>(
         &self,
         data: &Bound<'py, PyAny>,
-    ) -> PyResult<(Rows<'py, R>, usize, usize)> {
+    ) -> PyResult<FrameRows<'py, R>> {
         frame_rows(data, self.row_prep(), self.origin.as_deref())
     }
 
@@ -4059,19 +4301,19 @@ impl Betula {
         }
         let (prep, passes, beam) = (self.row_prep(), self.leaf_refit, self.route_beam);
         if let Some(t) = self.state64.as_mut() {
-            let (src, n, _) = flat_as::<f64>(data, prep)?;
-            let flat = src.as_slice();
+            let rows = frame_rows::<f64>(data, prep, self.origin.as_deref())?;
+            let view = rows.view();
             py.detach(|| {
                 for _ in 0..passes {
-                    t.refit_leaves(flat, n, beam);
+                    t.refit_leaves(view, beam);
                 }
             });
         } else if let Some(t) = self.state32.as_mut() {
-            let (src, n, _) = frame_rows::<f32>(data, prep, self.origin.as_deref())?;
-            let flat = src.as_slice();
+            let rows = frame_rows::<f32>(data, prep, self.origin.as_deref())?;
+            let view = rows.view();
             py.detach(|| {
                 for _ in 0..passes {
-                    t.refit_leaves(flat, n, beam);
+                    t.refit_leaves(view, beam);
                 }
             });
         }
@@ -4104,10 +4346,18 @@ impl Betula {
         if self.refine == 0 || !matches!(self.rule, Some(PointRule::Centers { .. })) {
             return Ok(());
         }
-        let (src, n, dim) = self.rows_of::<f64>(data)?;
-        let flat = src.as_slice();
+        let src = self.rows_of::<f64>(data)?;
+        let (view, n, dim) = (src.view(), src.n, src.dim);
         self.check_dim(dim)?;
         let iters = self.refine;
+        let copy;
+        let flat = match view.flat() {
+            Some(flat) => flat,
+            None => {
+                copy = view.concat(<[f64]>::to_vec);
+                &copy
+            }
+        };
         if let Some(PointRule::Centers { rows, .. }) = self.rule.as_mut() {
             py.detach(|| refine_centers(rows, flat, n, dim, unit, iters));
         }
@@ -4208,13 +4458,13 @@ impl Betula {
         };
         let (beam, degree, seed) = (self.route_beam, self.graph_degree, self.seed);
         if let Some(t) = &self.state64 {
-            let (src, n, dim) = self.rows_of::<f64>(data)?;
-            let flat = src.as_slice();
-            Ok(py.detach(|| t.row_graph(flat, n, dim, beam, degree, seed)))
+            let rows = self.rows_of::<f64>(data)?;
+            let view = rows.view();
+            Ok(py.detach(|| t.row_graph(view, beam, degree, seed)))
         } else if let Some(t) = &self.state32 {
-            let (src, n, dim) = self.rows_of::<f32>(data)?;
-            let flat = src.as_slice();
-            Ok(py.detach(|| t.row_graph(flat, n, dim, beam, degree, seed)))
+            let rows = self.rows_of::<f32>(data)?;
+            let view = rows.view();
+            Ok(py.detach(|| t.row_graph(view, beam, degree, seed)))
         } else {
             Err(PyValueError::new_err("no data was fitted"))
         }
@@ -4235,13 +4485,11 @@ impl Betula {
             self.seed,
         );
         let labels = if let Some(t) = self.state64.as_ref() {
-            let (src, n, dim) = self.rows_of::<f64>(data)?;
-            let flat = src.as_slice();
-            constrained_labels(t, flat, n, dim, must, cannot, k, mi, ni, seed)?
+            let rows = self.rows_of::<f64>(data)?;
+            constrained_labels(t, rows.view(), must, cannot, k, mi, ni, seed)?
         } else if let Some(t) = self.state32.as_ref() {
-            let (src, n, dim) = self.rows_of::<f32>(data)?;
-            let flat = src.as_slice();
-            constrained_labels(t, flat, n, dim, must, cannot, k, mi, ni, seed)?
+            let rows = self.rows_of::<f32>(data)?;
+            constrained_labels(t, rows.view(), must, cannot, k, mi, ni, seed)?
         } else {
             return Err(PyValueError::new_err("no data was fitted"));
         };
@@ -4263,31 +4511,49 @@ impl Betula {
         })?;
         let (rule, beam) = (self.rule.as_ref(), self.route_beam);
         if let Some(t) = &self.state64 {
-            let (src, n, dim) = self.rows_of::<f64>(data)?;
-            let flat = src.as_slice();
+            let rows = self.rows_of::<f64>(data)?;
+            let (view, dim) = (rows.view(), rows.dim);
             self.check_dim(dim)?;
             Ok(py
                 .detach(|| match rule {
                     Some(PointRule::NearestLeaf) => {
                         let plan = self.leaf_plans.f64.get_or_init(|| t.leaf_plan());
-                        t.nearest_leaf_labels(plan.as_ref(), labels, flat, n, dim, beam)
+                        view.concat(|b| {
+                            t.nearest_leaf_labels(
+                                plan.as_ref(),
+                                labels,
+                                b,
+                                b.len() / dim,
+                                dim,
+                                beam,
+                            )
+                        })
                     }
-                    Some(r) => r.label_rows(flat, n, dim),
-                    None => t.route(labels, flat, n, dim, beam),
+                    Some(r) => view.concat(|b| r.label_rows(b, b.len() / dim, dim)),
+                    None => view.concat(|b| t.route(labels, b, b.len() / dim, dim, beam)),
                 })
                 .into_pyarray(py))
         } else if let Some(t) = &self.state32 {
-            let (src, n, dim) = self.rows_of::<f32>(data)?;
-            let flat = src.as_slice();
+            let rows = self.rows_of::<f32>(data)?;
+            let (view, dim) = (rows.view(), rows.dim);
             self.check_dim(dim)?;
             Ok(py
                 .detach(|| match rule {
                     Some(PointRule::NearestLeaf) => {
                         let plan = self.leaf_plans.f32.get_or_init(|| t.leaf_plan());
-                        t.nearest_leaf_labels(plan.as_ref(), labels, flat, n, dim, beam)
+                        view.concat(|b| {
+                            t.nearest_leaf_labels(
+                                plan.as_ref(),
+                                labels,
+                                b,
+                                b.len() / dim,
+                                dim,
+                                beam,
+                            )
+                        })
                     }
-                    Some(r) => r.label_rows(flat, n, dim),
-                    None => t.route(labels, flat, n, dim, beam),
+                    Some(r) => view.concat(|b| r.label_rows(b, b.len() / dim, dim)),
+                    None => view.concat(|b| t.route(labels, b, b.len() / dim, dim, beam)),
                 })
                 .into_pyarray(py))
         } else {
@@ -4303,13 +4569,26 @@ impl Betula {
         &self,
         py: Python<'_>,
         tree: &TreeState<R>,
-        flat: &[R],
-        n: usize,
-        dim: usize,
+        rows: RowView<'_, R>,
     ) -> PyResult<(Vec<f64>, usize)> {
+        let (n, dim) = (rows.n, rows.dim);
         if let Some(rule) = self.rule.as_ref() {
-            if let Some(out) = py.detach(|| rule.proba_rows(flat, n, dim)) {
-                return Ok(out);
+            // Whether a rule has a posterior is the rule's alone, so every block answers alike.
+            let (mut k, mut scored) = (0, true);
+            let out = py.detach(|| {
+                rows.concat(|b| match rule.proba_rows(b, b.len() / dim, dim) {
+                    Some((p, width)) => {
+                        k = width;
+                        p
+                    }
+                    None => {
+                        scored = false;
+                        Vec::new()
+                    }
+                })
+            });
+            if scored {
+                return Ok((out, k));
             }
         }
         let (leaf, k) = self.proba.as_ref().ok_or_else(|| {
@@ -4317,7 +4596,9 @@ impl Betula {
                 "predict_proba is only available after fit with method='gmm', 'gmm-full', 'mppca', 'mfa', 'vmf', 'watson', 'gmm-toeplitz', 'gmm-toeplitz-full', 'gmm-toeplitz-gs' or 'fuzzy-cmeans'",
             )
         })?;
-        let idx = py.detach(|| tree.assign_microclusters(flat, n, dim, self.route_beam));
+        let beam = self.route_beam;
+        let idx =
+            py.detach(|| rows.concat(|b| tree.assign_microclusters(b, b.len() / dim, dim, beam)));
         let mut out = Vec::with_capacity(n * k);
         for &i in &idx {
             let lo = i as usize * k;
@@ -4652,15 +4933,13 @@ impl Betula {
         data: &Bound<'py, PyAny>,
     ) -> PyResult<Bound<'py, PyArray2<f64>>> {
         let (flat, k) = if let Some(t) = &self.state64 {
-            let (src, n, dim) = self.rows_of::<f64>(data)?;
-            let rows = src.as_slice();
-            self.check_dim(dim)?;
-            self.proba_of(py, t, rows, n, dim)?
+            let rows = self.rows_of::<f64>(data)?;
+            self.check_dim(rows.dim)?;
+            self.proba_of(py, t, rows.view())?
         } else if let Some(t) = &self.state32 {
-            let (src, n, dim) = self.rows_of::<f32>(data)?;
-            let rows = src.as_slice();
-            self.check_dim(dim)?;
-            self.proba_of(py, t, rows, n, dim)?
+            let rows = self.rows_of::<f32>(data)?;
+            self.check_dim(rows.dim)?;
+            self.proba_of(py, t, rows.view())?
         } else {
             return Err(PyValueError::new_err(
                 "call fit() or fit_predict() before predict_proba()",
@@ -5104,11 +5383,16 @@ impl Betula {
             } else {
                 OutlierScale::Radius(&radii)
             };
-            let (src, n, dim) = self.rows_of::<f64>(data)?;
-            let flat = src.as_slice();
+            let rows = self.rows_of::<f64>(data)?;
+            let (view, dim) = (rows.view(), rows.dim);
             self.check_dim(dim)?;
+            let beam = self.route_beam;
             Ok(py
-                .detach(|| t.outlier_scores(labels, &centers, scale, flat, n, dim, self.route_beam))
+                .detach(|| {
+                    view.concat(|b| {
+                        t.outlier_scores(labels, &centers, scale, b, b.len() / dim, dim, beam)
+                    })
+                })
                 .into_pyarray(py))
         } else if let Some(t) = &self.state32 {
             let F64Stats { centers, radii, .. } = t.cluster_stats(labels, k);
@@ -5122,11 +5406,16 @@ impl Betula {
             } else {
                 OutlierScale::Radius(&radii)
             };
-            let (src, n, dim) = self.rows_of::<f32>(data)?;
-            let flat = src.as_slice();
+            let rows = self.rows_of::<f32>(data)?;
+            let (view, dim) = (rows.view(), rows.dim);
             self.check_dim(dim)?;
+            let beam = self.route_beam;
             Ok(py
-                .detach(|| t.outlier_scores(labels, &centers, scale, flat, n, dim, self.route_beam))
+                .detach(|| {
+                    view.concat(|b| {
+                        t.outlier_scores(labels, &centers, scale, b, b.len() / dim, dim, beam)
+                    })
+                })
                 .into_pyarray(py))
         } else {
             Err(PyValueError::new_err("call fit() before outlier_scores()"))
@@ -5140,18 +5429,20 @@ impl Betula {
         data: &Bound<'py, PyAny>,
     ) -> PyResult<Bound<'py, PyArray1<i64>>> {
         if let Some(t) = &self.state64 {
-            let (src, n, dim) = self.rows_of::<f64>(data)?;
-            let flat = src.as_slice();
+            let rows = self.rows_of::<f64>(data)?;
+            let (view, dim) = (rows.view(), rows.dim);
             self.check_dim(dim)?;
+            let beam = self.route_beam;
             Ok(py
-                .detach(|| t.assign_microclusters(flat, n, dim, self.route_beam))
+                .detach(|| view.concat(|b| t.assign_microclusters(b, b.len() / dim, dim, beam)))
                 .into_pyarray(py))
         } else if let Some(t) = &self.state32 {
-            let (src, n, dim) = self.rows_of::<f32>(data)?;
-            let flat = src.as_slice();
+            let rows = self.rows_of::<f32>(data)?;
+            let (view, dim) = (rows.view(), rows.dim);
             self.check_dim(dim)?;
+            let beam = self.route_beam;
             Ok(py
-                .detach(|| t.assign_microclusters(flat, n, dim, self.route_beam))
+                .detach(|| view.concat(|b| t.assign_microclusters(b, b.len() / dim, dim, beam)))
                 .into_pyarray(py))
         } else {
             Err(PyValueError::new_err(
@@ -7289,9 +7580,12 @@ fn canonical_pilot_rows<'py>(
     if cap == 0 {
         return Err(PyValueError::new_err("cap must be at least 1"));
     }
-    let (rows, n, dim) = flat_as::<f64>(data, RowPrep::None)?;
-    let order = canonical_permutation(rows.as_slice(), n, dim).map_err(PyValueError::new_err)?;
-    let take = cap.min(n);
+    let rows = frame_rows::<f64>(data, RowPrep::None, None)?;
+    let order = rows
+        .view()
+        .canonical_permutation()
+        .map_err(PyValueError::new_err)?;
+    let (n, take) = (rows.n, cap.min(rows.n));
     // `i * n / take` walks the order in equal strides and lands on `take` distinct positions for
     // every `take <= n`, without the rounding drift a floating-point step would accumulate.
     let picked: Vec<u32> = (0..take).map(|i| order[i * n / take]).collect();
