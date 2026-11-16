@@ -1391,18 +1391,19 @@ the wider of the two cells' three-seed spreads is not a result. Tables with no s
 single runs by construction and fall back to a per-axis tolerance.
 
 ```
-## quality — 34 win · 99 tie · 29 loss
+## quality — 35 win · 100 tie · 29 loss
 ## speed   — 28 win · 1 tie · 5 loss
-## memory  — 118 win · 5 tie · 2 loss
+## memory  — 118 win · 7 tie · 2 loss
 ```
 
-`bench/scoreboard.json` records those 321 verdicts: the 140 of the 2026-10-29 edition, which it
+`bench/scoreboard.json` records those 325 verdicts: the 140 of the 2026-10-29 edition, which it
 re-derives unchanged (three of them renamed on 2026-11-15), 166 `vs-rival` cells added with the
 census on 2026-11-14 (eight of them re-paired on 2026-11-15), and five memory cells added on
 2026-11-15 (both below; two memory verdicts moved on the `VmHWM` re-read the same day). On
 2026-11-16 the external contest's re-run (*Specialist baselines*) dropped its four speed cells,
 which carry no time until F-18, and added eight quality cells: the shuffled rows and the count-free
-contest. The same day DBSCAN joined the density census and added six cells. `--check` re-derives them and exits non-zero if any cell got worse or vanished, and
+contest. The same day DBSCAN joined the density census and added six cells, and k-modes and aeon's
+KASBA joined the head references with four. `--check` re-derives them and exits non-zero if any cell got worse or vanished, and
 `--update` is the deliberate act of accepting a new board. Seven of the quality losses are the
 `covtype` and `digits` rows discussed above, the raw-TF-IDF `20news` row, and the four `fast_hdbscan`
 cells; the other 22, and the two memory losses (scikit-fuzzy by 4 MB, and `vmf` on `news-minilm`
@@ -1528,12 +1529,18 @@ accepted deliberately rather than overwritten:
   scikit-learn's `DBSCAN` reads 0.921, 0.911 and 0.998 on moons, circles and `highdim`, against
   betula's `hdbscan` head at 1.000: wins on the rings, a tie on `highdim`, and three memory wins
   (167–175 MB against 191–433 MB). Quality went to **34/99/29**, memory to **118/5/2**.
+- **2026-11-16, k-modes and aeon's KASBA in the head references: four cells added, none moved.**
+  betula's k-modes ties `kmodes.KModes` on soybean in quality and memory. `gmm-toeplitz` beats KASBA
+  on the AR mixture (0.764 against 0.207); the memory cell is a tie, because KASBA's numba compile
+  on its first seed widens its spread to 249 MB. Re-running the k-means and k-medoids rows to record
+  their objective re-read the rival rows' memory with `VmHWM`; no verdict moved. Quality went to
+  **35/100/29**, memory to **118/7/2**.
 
 ## The census — every method a user would reach for, not only scikit-learn (2026-11-14)
 
 The tables above answer "betula or scikit-learn?". A user choosing a clustering method also has
 UMAP, PaCMAP or openTSNE + k-means, UMAP + HDBSCAN, EVoC, BERTopic's defaults, a kNN graph +
-Leiden (the scanpy recipe), PhenoGraph, FasterPAM, scikit-fuzzy, kmodes, tslearn, and the density
+Leiden (the scanpy recipe), PhenoGraph, FasterPAM, scikit-fuzzy, kmodes, tslearn, aeon, and the density
 and hierarchy specialists. Three harnesses run them on the same rows and seeds, each method in its
 own process. Each rival is pulled per invocation (`--with`), so none of them is a dependency, the
 GPL ones (leidenalg, python-igraph) included:
@@ -1541,7 +1548,7 @@ GPL ones (leidenalg, python-igraph) included:
 | harness | contest | CSV |
 |---|---|---|
 | `bench/rivals.py` | manifold and embedding pipelines, graph clustering: raw MNIST (/255) at 20 000 and 70 000 rows, 20 newsgroups as all-MiniLM-L6-v2 embeddings (17 901 posts, `bench/embed_news.py`) | `results_rivals.csv` |
-| `bench/head_references.py` | one outside implementation per betula head that had none: k-medoids, fuzzy c-means, k-prototypes, the Toeplitz mixture | `results_head_refs.csv` |
+| `bench/head_references.py` | one outside implementation per betula head that had none: k-medoids, fuzzy c-means, k-prototypes, k-modes, the Toeplitz mixture | `results_head_refs.csv` |
 | `bench/density_rivals.py` | density and hierarchy heads against `hdbscan`, `fast_hdbscan`, OPTICS, DBSCAN (scikit-learn and the `dbscan` package), CLASSIX, DenMune, FINCH, genieclust, lumbermark, on the quality fixtures at 30 000 rows and `digits` | `results_density_rivals.csv` |
 
 Four more stand apart and enter no board total, at the end of this section: `bench/gpu_rivals.py`
@@ -1554,7 +1561,8 @@ Versions, as `--with` resolved them on 2026-11-14: scikit-learn 1.9.1, umap-lear
 hdbscan 0.8.44, fast_hdbscan 0.3.4, EVoC 0.3.2, leidenalg 0.12.0, python-igraph 1.0.0,
 pynndescent 0.7.0, PaCMAP 0.9.1, openTSNE 1.0.4, PhenoGraph 1.5.7, BERTopic 0.17.4,
 CLASSIX 1.5.3, DenMune 1.17.1, FINCH 0.2.3, genieclust 1.3.0, lumbermark 0.9.1, kmedoids 0.5.5,
-scikit-fuzzy 0.5.0, kmodes 0.12.2, tslearn 0.10.0, numba 0.68.1; dbscan 1.0.0 on 2026-11-16.
+scikit-fuzzy 0.5.0, kmodes 0.12.2, tslearn 0.10.0, numba 0.68.1; dbscan 1.0.0, aeon 1.6.0 (on numba
+0.63.1, which it pins) and PyOD 3.6.8 on 2026-11-16.
 
 **Read these rules first.**
 
@@ -1612,7 +1620,7 @@ scikit-fuzzy 0.5.0, kmodes 0.12.2, tslearn 0.10.0, numba 0.68.1; dbscan 1.0.0 on
   were ties until the `VmHWM` re-read of 2026-11-15.
 
 **Each rival reproduces its own documentation first** (`bench/rival_reproductions.py`): the example
-the package publishes, called as published, against the published output. Eight of ten match. The
+the package publishes, called as published, against the published output. Nine of eleven match. The
 two that do not are stable across runs and are traced to the documentation, not to the call.
 lumbermark and EVoC publish no numeric output, so they have no row; read theirs with that in mind.
 The other census packages have no check either, and are not exempt by any rule: umap-learn, PaCMAP,
@@ -1631,6 +1639,7 @@ kmodes and tslearn. Their rows rest on the documented call alone.
 | PhenoGraph 1.5.7 | (3, 0.66) | (3, 0.66) | yes |
 | scikit-learn 1.9.1 DBSCAN | (3, 18, 0.952) | (3, 18, 0.952) | yes |
 | dbscan 1.0.0 | 3 | 3 | yes |
+| PyOD 3.6.8 KNN | (0.9992, 0.95) | (0.9992, 0.95) | yes |
 
 **Rival families with no row, and why.** Every rival a user would reach for is named, measured or
 not. These have no row in any committed CSV:
@@ -1638,8 +1647,6 @@ not. These have no row in any committed CSV:
 | family | named, not measured | reason |
 |---|---|---|
 | no CPython 3.14 wheel | fastcluster, scikit-learn-extra, trimap, SuperKMeans, ClustPy | the bench runs on CPython 3.14, and without a wheel the arm needs a compiler; fastcluster's Ward enters only as a published vector of Gagolewski's suite |
-| stationary signals | aeon | not yet run; tslearn's k-Shape has rows |
-| outliers | PyOD | not yet run; the outlier table holds IsolationForest and LOF |
 | streaming | scikit-learn's `partial_fit` learners, BICO | not yet run; the memory table compares the stream with one-shot k-means |
 | GPU | cuML `DBSCAN`, cuML `HDBSCAN` on the raw rows, `cuml.accel`, cuVS k-means, FAISS on a GPU, fastkmeans, flash-kmeans, rapids-singlecell, TorchDR | not yet run; the GPU table holds cuML's k-means and UMAP pipelines |
 | Rust | `kno10/fuel` (Schubert; PyO3 bindings, AGPL-3.0; GMM, von Mises–Fisher, spherical k-means, HDBSCAN, FasterPAM; no CF-tree) | not yet run; the Rust table holds linfa-clustering, clump and the `hdbscan` crate |
@@ -1710,9 +1717,11 @@ not. These have no row in any committed CSV:
   fails, both libraries' alike.
 - **The heads with an outside reference.** `kmedoids` matches FasterPAM (0.651 against 0.650);
   `fuzzy-cmeans` ties scikit-fuzzy (0.206 against 0.216, both unstable over seeds); `KPrototypes`
-  ties kmodes' Huang implementation on mixed covtype (0.028 against 0.022, both near 0).
-  `gmm-toeplitz` recovers the AR mixture (0.764) where tslearn's k-Shape (0.057) and a diagonal GMM
-  (0.018) do not.
+  ties kmodes' Huang implementation on mixed covtype (0.028 against 0.022, both near 0), and on the
+  all-categorical soybean table, where it is k-modes, ties `kmodes.KModes` (both 1.000 at the
+  median). `gmm-toeplitz` recovers the AR mixture (0.764) where aeon's KASBA (0.207), tslearn's
+  k-Shape (0.057) and a diagonal GMM (0.018) do not. On the cost both sides minimise, FasterPAM and
+  scikit-learn's `KMeans` land 0.07 % and 0.04 % below betula.
 - **Told k on small and medium benchmark sets.** On Gagolewski's suite `leiden` with
   `resolution="auto"` is level with the best of 387 published configurations, and loses its
   `graves`, `other`, `sipu` and MNIST batteries. For a K it cannot reach, use `spectral` (rank 21,
@@ -2057,15 +2066,15 @@ Bold rows are betula's. `bench/rivals.py --arms=a,b` and `bench/density_rivals.p
 
 **digits, n = 1 797, told k**
 
-| method | ARI median (min–max) | clusters | noise | peak RSS MB |
-|---|---|---|---|---|
-| **betula-kmeans** | 0.668 (0.660–0.671) | 10 | 0.00 | 167 |
-| sklearn-kmeans | 0.664 (0.657–0.667) | 10 | 0.00 | 181 |
-| **betula-kmedoids** | 0.651 (0.651–0.651) | 10 | 0.00 | 166 |
-| kmedoids (fasterpam) | 0.650 (0.650–0.650) | 10 | 0.00 | 203 |
-| sklearn-bisecting-kmeans | 0.548 (0.544–0.569) | 10 | 0.00 | 180 |
-| skfuzzy-cmeans | 0.216 (0.156–0.244) | 6 | 0.00 | 163 |
-| **betula-fuzzy-cmeans** | 0.206 (0.187–0.225) | 5 | 0.00 | 166 |
+| method | ARI median (min–max) | clusters | noise | peak RSS MB | objective, median |
+|---|---|---|---|---|---|
+| **betula-kmeans** | 0.668 (0.660–0.671) | 10 | 0.00 | 167 | 1 165 751.1 |
+| sklearn-kmeans | 0.664 (0.657–0.667) | 10 | 0.00 | 181 | 1 165 248.4 |
+| **betula-kmedoids** | 0.651 (0.651–0.651) | 10 | 0.00 | 166 | 51 228.4 |
+| kmedoids (fasterpam) | 0.650 (0.650–0.650) | 10 | 0.00 | 217 | 51 194.7 |
+| sklearn-bisecting-kmeans | 0.548 (0.544–0.569) | 10 | 0.00 | 181 | 1 222 568.3 |
+| skfuzzy-cmeans | 0.216 (0.156–0.244) | 6 | 0.00 | 163 | |
+| **betula-fuzzy-cmeans** | 0.206 (0.187–0.225) | 5 | 0.00 | 166 | |
 
 **covtype-mixed, n = 10 000, told k**
 
@@ -2074,14 +2083,31 @@ Bold rows are betula's. `bench/rivals.py --arms=a,b` and `bench/density_rivals.p
 | **betula-kprototypes** | 0.028 (0.020–0.035) | 7 | 0.00 | 166 |
 | kmodes-kprototypes | 0.022 (0.022–0.034) | 7 | 0.00 | 171 |
 
+**soybean, n = 47, told k**
+
+| method | ARI median (min–max) | clusters | noise | peak RSS MB | objective, median |
+|---|---|---|---|---|---|
+| **betula-kmodes** | 1.000 (0.770–1.000) | 4 | 0.00 | 162 | 199.0 |
+| kmodes-kmodes | 1.000 (1.000–1.000) | 4 | 0.00 | 159 | 199.0 |
+
 **ar-mixture, n = 90, told k**
 
 | method | ARI median (min–max) | clusters | noise | peak RSS MB |
 |---|---|---|---|---|
 | **betula-gmm-toeplitz** | 0.764 (0.764–0.764) | 3 | 0.00 | 177 |
 | **betula-gmm-toeplitz-full** | 0.566 (0.566–0.566) | 3 | 0.00 | 178 |
+| aeon-kasba | 0.207 (0.116–0.335) | 3 | 0.00 | 320 |
 | tslearn-kshape | 0.057 (0.012–0.177) | 3 | 0.00 | 461 |
 | sklearn-gmm-diag | 0.018 (0.006–0.031) | 3 | 0.00 | 174 |
+
+`objective` is the partition's cost with each cluster's best representative, computed from the
+labels alone for the methods that optimise it: the within-cluster sum of squares (k-means), the sum
+of distances to the best medoid (k-medoids), mismatches to the per-column mode (k-modes). It equals
+what scikit-learn's `inertia_`, FasterPAM's `inertia_` and kmodes' `cost_` report for the same fit.
+Lower is better: FasterPAM's partition costs 0.07 % less than betula's, scikit-learn's k-means
+partition 0.04 % less, and on soybean both k-modes implementations reach 199 at the median (betula's
+seed 1 stops in a worse optimum, ARI 0.770). aeon's KASBA compiles with numba on its first fit; seed
+0 carries that compile in its 569 MB, the other seeds read 320 MB.
 
 ### Every verdict, rival by rival
 
@@ -2092,6 +2118,9 @@ side of every cell is the one head its contest chose (see the rules above).
 
 <!-- --8<-- [start:claims] -->
 <!-- claims:begin -->
+- **aeon-kasba** — 1 win · 1 tie · 0 loss
+  - win, quality, `ar-mixture/90/told-k` (head_refs): betula 0.764 ARI (`betula-gmm-toeplitz`) against 0.207 ARI
+  - tie, memory, `ar-mixture/90/told-k` (head_refs): betula 177 MB (`betula-gmm-toeplitz`) against 320 MB
 - **bertopic default (umap+hdbscan mcs=10)** — 2 win · 0 tie · 0 loss
   - win, memory, `news-minilm/17901/no-k` (rivals): betula 243 MB (`betula-leiden-rows`) against 640 MB
   - win, quality, `news-minilm/17901/no-k` (rivals): betula 0.330 ARI (`betula-leiden-rows`) against 0.086 ARI
@@ -2184,8 +2213,11 @@ side of every cell is the one head its contest chose (see the rules above).
   - loss, quality, `blobs/30000/no-k` (density_rivals): betula 0.376 ARI (`betula-hdbscan`) against 0.472 ARI
   - loss, quality, `varied/30000/no-k` (density_rivals): betula 0.302 ARI (`betula-hdbscan`) against 0.505 ARI
 - **kmedoids (fasterpam)** — 1 win · 1 tie · 0 loss
-  - win, memory, `digits/1797/told-k` (head_refs): betula 166 MB (`betula-kmedoids`) against 203 MB
+  - win, memory, `digits/1797/told-k` (head_refs): betula 166 MB (`betula-kmedoids`) against 217 MB
   - tie, quality, `digits/1797/told-k` (head_refs): betula 0.651 ARI (`betula-kmedoids`) against 0.650 ARI
+- **kmodes-kmodes** — 0 win · 2 tie · 0 loss
+  - tie, memory, `soybean/47/told-k` (head_refs): betula 162 MB (`betula-kmodes`) against 159 MB
+  - tie, quality, `soybean/47/told-k` (head_refs): betula 1.000 ARI (`betula-kmodes`) against 1.000 ARI
 - **kmodes-kprototypes** — 1 win · 1 tie · 0 loss
   - win, memory, `covtype-mixed/10000/told-k` (head_refs): betula 166 MB (`betula-kprototypes`) against 171 MB
   - tie, quality, `covtype-mixed/10000/told-k` (head_refs): betula 0.028 ARI (`betula-kprototypes`) against 0.022 ARI
@@ -2258,7 +2290,7 @@ side of every cell is the one head its contest chose (see the rules above).
   - tie, quality, `mnist/20000` (real): betula 0.411 ARI (`betula-leiden`) against 0.426 ARI
   - loss, quality, `covtype/20000` (real): betula 0.091 ARI (`betula-ward`) against 0.131 ARI
 - **sklearn-bisecting-kmeans** — 2 win · 0 tie · 0 loss
-  - win, memory, `digits/1797/told-k` (head_refs): betula 167 MB (`betula-kmeans`) against 180 MB
+  - win, memory, `digits/1797/told-k` (head_refs): betula 167 MB (`betula-kmeans`) against 181 MB
   - win, quality, `digits/1797/told-k` (head_refs): betula 0.668 ARI (`betula-kmeans`) against 0.548 ARI
 - **sklearn-dbscan-kdist** — 5 win · 1 tie · 0 loss
   - win, memory, `circles/30000/no-k` (density_rivals): betula 167 MB (`betula-hdbscan`) against 191 MB
@@ -3969,19 +4001,31 @@ score under test is `outlier_scores` — `dist(x, its cluster centroid) ÷ that 
 per-cluster z-score, so it is local by construction where a global distance-to-mean is not.
 
 Three fixtures, `N = 4000`, 5% contamination, median of seeds 0/1/2; betula at `n_clusters=5`,
-`feature="full"`, `max_leaves=0.05` (200 leaves), IsolationForest and LOF at their sklearn defaults.
-Not in a CSV: the harness is `local/scratch/outlier_dami.py`, untracked.
+`feature="full"`, `max_leaves=0.05` (200 leaves); every other detector at its defaults
+(`bench/outliers.py`, `results_outliers.csv`, 2026-11-16, PyOD 3.6.8).
 
-| fixture | betula | IsolationForest | LOF |
+| detector | blobs + uniform noise (8-D, global outliers) | clusters of unequal density (4-D, local outliers) | elongated / sheared clusters (6-D) |
 |---|---|---|---|
-| blobs + uniform noise (8-D, global outliers) | 0.991 / 0.940 | **1.000 / 1.000** | 0.969 / 0.877 |
-| clusters of unequal density (4-D, local outliers) | **1.000 / 0.998** | 0.887 / 0.175 | 0.993 / 0.915 |
-| elongated / sheared clusters (6-D) | 0.596 / 0.059 | **0.980 / 0.698** | 0.874 / 0.600 |
+| **betula**, `metric="radius"` | 0.990 / 0.943 | **1.000 / 0.998** | 0.635 / 0.070 |
+| **betula**, `metric="mahalanobis"` | 0.994 / 0.958 | **1.000 / 0.998** | 0.711 / 0.154 |
+| scikit-learn `IsolationForest` | **1.000 / 1.000** | 0.887 / 0.175 | 0.980 / 0.698 |
+| scikit-learn `LocalOutlierFactor` | 0.969 / 0.877 | 0.993 / 0.915 | 0.874 / 0.600 |
+| PyOD `CBLOF` (cluster-based) | **1.000 / 1.000** | 0.557 / 0.055 | 0.992 / 0.907 |
+| PyOD `ECOD` | 0.975 / 0.875 | 0.760 / 0.369 | 0.934 / 0.498 |
+| PyOD `KNN` | **1.000 / 1.000** | 0.530 / 0.051 | **1.000 / 0.999** |
 
-ROC-AUC / average precision. The middle row is the case the per-cluster normalisation exists for: the
-planted outliers sit just outside a *tight* cluster and are closer to the data mean than most members
-of the diffuse one, so a global score has to fail — IsolationForest's AUC stays respectable at 0.887
-while its average precision collapses to **0.175**, i.e. its top-ranked points are the wrong ones.
+ROC-AUC / average precision. The middle column is the case the per-cluster normalisation exists for:
+the planted outliers sit just outside a *tight* cluster and are closer to the data mean than most
+members of the diffuse one, so a global score has to fail. IsolationForest's AUC stays respectable at
+0.887 while its average precision collapses to **0.175**, i.e. its top-ranked points are the wrong
+ones; PyOD's `KNN` and its cluster-based `CBLOF` fall to 0.53–0.56. On the sheared clusters every
+outside detector beats betula, PyOD's `KNN` at 1.000 / 0.999.
+
+IsolationForest and LOF reproduce the 0.8.0 run of this table (2026-09-07, then in the untracked
+`local/scratch/outlier_dami.py`) to three decimals. betula's cells moved since: `radius` read
+0.991 / 0.940 and 0.596 / 0.059 on blobs and sheared clusters, `mahalanobis` 0.995 / 0.960 and
+0.748 / 0.181. The change is not bisected. PyOD first reproduces its README's `KNN` example
+(`bench/rival_reproductions.py`). The resilience and filter tables below are still that 0.8.0 run.
 
 Resilience, ROC-AUC over a 12-cell `n_clusters × max_leaves` sweep (betula), 4 `n_estimators`
 (IsolationForest), 5 `n_neighbors` (LOF):
@@ -4015,7 +4059,8 @@ Davies–Bouldin is the better-correlated index overall and is the one to reach 
 rather than picking one.
 
 The `elongated` loss has a mechanism, and it is measured rather than asserted. Refitting the same
-fixture at `feature="diagonal"` and `feature="full"` gives **the same 0.596** — the score divides by a
+fixture at `feature="diagonal"` and `feature="full"` gives **the same 0.596** (0.635 and 0.635 on the
+current tree) — the score divides by a
 single scalar RMS radius, so the per-dimension covariance the tree already carries is provably unused,
 and a sheared cluster's short axis is judged by the length of its long one. Replacing the scalar with
 a Mahalanobis radius on the *same* partition (oracle, computed outside the crate) lifts it to 0.762:
@@ -4034,7 +4079,8 @@ the leaves — `Σ = Σ_l w_l (Σ_l + δ_l δ_lᵀ) / W` — whose *trace* is th
 metrics are calibrated: on an exactly isotropic cluster they return the same number (verified on the
 `2⁵` hypercube corners, and in 1-D, to floating point).
 
-Same three fixtures, same protocol as the section above:
+Same three fixtures, same protocol as the section above (the 0.8.0 run; the current tree's cells
+are in the table there):
 
 | fixture | `metric="radius"` | `metric="mahalanobis"` |
 |---|---|---|
@@ -4043,7 +4089,8 @@ Same three fixtures, same protocol as the section above:
 | elongated / sheared clusters | 0.596 / 0.059 | **0.748 / 0.181** |
 
 ROC-AUC / average precision, medians of seeds 0/1/2. Nothing regresses, and the anisotropic case
-recovers almost all of the oracle's 0.762. Over the same 12-cell `n_clusters × max_leaves` sweep the
+recovered almost all of the oracle's 0.762; on the current tree the step is 0.635 → 0.711. Over the
+same 12-cell `n_clusters × max_leaves` sweep the
 median cell moves 0.779 → 0.966 on `blobs+uniform` and 0.630 → 0.761 on `elongated`, with the best
 cell going 0.892 → 0.976 there; the spread is essentially unchanged (0.442 → 0.448, 0.368 → 0.404),
 so this buys accuracy rather than parameter-robustness.

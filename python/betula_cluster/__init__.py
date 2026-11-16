@@ -1445,7 +1445,7 @@ class Betula(_Clusterer):
 
         ``metric="radius"`` (the default) divides by the cluster's scalar RMS radius. That radius is
         the *trace* of the pooled covariance, so an elongated cluster's short axis is judged by the
-        length of its long one — measured on sheared 6-D clusters, ROC-AUC 0.596, and identical at
+        length of its long one — measured on sheared 6-D clusters, ROC-AUC 0.635, and identical at
         ``feature="diagonal"`` and ``feature="full"`` because the per-dimension scatter is never
         consulted.
 

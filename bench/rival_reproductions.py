@@ -7,7 +7,7 @@ they have no row here, and that is stated where their rows are read.
 
     uv run --no-sync --with scikit-learn --with classixclustering --with denmune \\
         --with finch-clust --with genieclust --with hdbscan --with fast-hdbscan \\
-        --with phenograph --with dbscan python bench/rival_reproductions.py
+        --with phenograph --with dbscan --with pyod python bench/rival_reproductions.py
 
 Two examples need the authors' data files, fetched once into scikit-learn's data home: `jain`
 from the clustering benchmark suite (genieclust, DenMune) and FINCH's `gestalt_clusters.txt`.
@@ -150,6 +150,20 @@ def dbscan_pkg():
     return 3, len(set(labels.tolist())) - (1 if -1 in labels else 0)
 
 
+def pyod_knn():
+    """PyOD README, the `KNN` quick start: ROC 0.9992 and precision @ rank n 0.95 on training data."""
+    from pyod.models.knn import KNN
+    from pyod.utils.data import generate_data
+    from pyod.utils.utility import precision_n_scores
+    from sklearn.metrics import roc_auc_score
+
+    x, _, y, _ = generate_data(
+        n_train=200, n_test=100, n_features=2, contamination=0.1, random_state=42
+    )
+    s = KNN().fit(x).decision_scores_
+    return (0.9992, 0.95), (round(roc_auc_score(y, s), 4), round(precision_n_scores(y, s), 4))
+
+
 def phenograph():
     """PhenoGraph examples/example-using-random-data-points.ipynb: three communities, Q = 0.664858.
 
@@ -179,6 +193,7 @@ CHECKS = {
     "PhenoGraph 1.5.7": phenograph,
     "scikit-learn 1.9.1 DBSCAN": sklearn_dbscan,
     "dbscan 1.0.0": dbscan_pkg,
+    "PyOD 3.6.8 KNN": pyod_knn,
 }
 
 

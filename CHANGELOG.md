@@ -333,6 +333,22 @@ All notable changes to this project are documented here. The format follows
   on the Gaussian fixtures and `digits` (mean 0.405 over seven). Against it betula's `hdbscan` head
   wins the rings, ties `highdim` and wins memory three times. The board goes to 34 / 99 / 29 on
   quality and 118 / 5 / 2 on memory.
+- **The outlier table is a tracked harness with PyOD beside it** (`bench/outliers.py`,
+  `results_outliers.csv`). PyOD's `CBLOF`, `ECOD` and `KNN` join IsolationForest and LOF, after
+  PyOD reproduces its README example. On clusters of unequal density betula reads 1.000 / 0.998
+  (ROC-AUC / average precision) against `CBLOF` 0.557 / 0.055 and `KNN` 0.530 / 0.051; on sheared
+  clusters `KNN` reads 1.000 / 0.999 against betula's 0.711 / 0.154 with `metric="mahalanobis"`.
+  IsolationForest and LOF reproduce the 0.8.0 table; betula's cells moved since (sheared clusters,
+  `radius` 0.596 → 0.635, `mahalanobis` 0.748 → 0.711), not bisected. The `outlier_scores`
+  docstring, FEATURES and COMPARISON quote the current figures.
+- **k-modes and aeon join the head references** (`bench/head_references.py`). On kmodes' own
+  soybean table betula's `KPrototypes` with no numeric column ties `kmodes.KModes` (ARI 1.000 at
+  the median, cost 199 for both). On the AR mixture aeon's `KASBA` reads 0.207 against
+  `gmm-toeplitz`'s 0.764. A new `objective` column holds the cost both sides minimise, computed from
+  the labels and checked against each library's own `inertia_` / `cost_`: FasterPAM lands 0.07 %
+  and scikit-learn's `KMeans` 0.04 % below betula. Unpinned, `aeon` next to pandas 3.1 resolves to
+  an empty `aeon 0.0.0`, so the harness asks for `aeon>=1.6`. Re-running one arm no longer rewrites
+  the others: pandas 2 parsed some kept floats one ulp off, so kept rows now pass through as text.
 
 ## [1.5.0] — 2026-10-28
 

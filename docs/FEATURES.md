@@ -246,9 +246,9 @@ A capability-by-capability reference. For runnable code see [`USAGE.md`](USAGE.m
     precision 0.998 against IsolationForest's 0.887 / **0.175**, at the smallest parameter spread of
     the three detectors (0.001 over a 12-cell sweep). Its default `metric="radius"` divides by a
     single scalar RMS radius, so a sheared cluster's short axis is judged by the length of its long
-    one (ROC-AUC 0.596, and identical at `feature="diagonal"` and `feature="full"` because that
+    one (ROC-AUC 0.635, and identical at `feature="diagonal"` and `feature="full"` because that
     radius is the covariance's *trace*); `metric="mahalanobis"` whitens by the cluster's pooled
-    covariance instead and lifts the same case to 0.748, at `O(k·d³)` once plus `O(d²)` per row. The
+    covariance instead and lifts the same case to 0.711, at `O(k·d³)` once plus `O(d²)` per row. The
     two are calibrated — on an isotropic cluster they return the same number — so the refinement
     moves a score only where the cluster has a shape. And the parameter cell can be chosen
     without labels: taking the largest `validity()["calinski_harabasz"]` over the sweep lands within
