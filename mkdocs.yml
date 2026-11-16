@@ -66,4 +66,5 @@ nav:
       - "ADR 003 — AVX2 kernels and the first unsafe": adr/003-avx2-kernels-unsafe.md
       - "ADR 004 — Bregman as a second estimator": adr/004-bregman-public-api.md
       - "ADR 005 — the canonical order's projection constant": adr/005-canonical-order-projection-seed.md
+      - "ADR 006 — one exact kernel for nearest-centre assignment": adr/006-assignment-kernel.md
   - Changelog: changelog.md
