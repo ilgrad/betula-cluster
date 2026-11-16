@@ -12,7 +12,8 @@ Two parts, both written to be *fair* and *reproducible*:
 Outputs CSVs + seaborn plots into `bench/` and `bench/plots/`. Honest by construction: every cell is
 guarded, failures are recorded (not hidden), and both wins and losses are reported.
 
-Run: `.venv/bin/python bench/comprehensive.py [--quick]`
+Run: `.venv/bin/python bench/comprehensive.py [--quick]`; the memory suite's BICO row needs
+`uv run --no-sync --with bico` around it.
 """
 
 from __future__ import annotations
@@ -414,15 +415,26 @@ def run_scaling(sizes: list[int], dataset: str = "blobs") -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+# The rivals that learn in chunks, for the memory suite. BICO is GPL-3.0: pulled per invocation.
+STREAM_RIVALS = ("sklearn-minibatch", "sklearn-birch", "bico")
+
+
 def run_memory(sizes: list[int], d: int = 20, chunk: int = 50_000) -> pd.DataFrame:
     """Peak RSS at large N: betula streaming (chunked `partial_fit`), and betula and sklearn KMeans
     one-shot, each holding the whole array — the streaming row alone would credit the library with
-    what the access pattern saves."""
+    what the access pattern saves. The rivals that also learn in chunks get the same chunks."""
     rows = []
     for label, argv in [
         ("betula (streaming)", lambda n: ["stream", str(n), str(d), str(chunk)]),
         ("betula (one-shot)", lambda n: ["oneshot_betula", str(n), str(d)]),
         ("sklearn-kmeans (one-shot)", lambda n: ["oneshot_km", str(n), str(d)]),
+        *(
+            (
+                f"{rival} (streaming)",
+                lambda n, r=rival: ["stream_rival", r, str(n), str(d), str(chunk)],
+            )
+            for rival in STREAM_RIVALS
+        ),
     ]:
         for n in sizes:
             res = _run_worker(argv(n), TIMEOUT * 3)

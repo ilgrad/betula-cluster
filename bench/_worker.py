@@ -8,6 +8,7 @@ the measured peak RSS reflects what that method actually costs.
 Usage (prints one JSON line):
     python _worker.py fit        <method> <dataset> <n>
     python _worker.py stream     <n> <d> <chunk>      # betula chunked partial_fit (bounded memory)
+    python _worker.py stream_rival <method> <n> <d> <chunk>  # a rival's partial_fit, same chunks
     python _worker.py oneshot_betula <n> <d>          # the same betula estimator, whole array in
     python _worker.py oneshot_km <n> <d>              # sklearn KMeans, must hold the whole array
     python _worker.py real_fit   <method> <dataset>   # full real dataset (time · RSS · ARI)
@@ -208,6 +209,43 @@ def main() -> dict:
             est.partial_fit(rng.standard_normal((c, d)))
             done += c
         est.partial_fit()
+        return {"time_s": time.perf_counter() - t0, "rss_mb": peak.mb()}
+    if kind == "stream_rival":  # the rows betula's stream gets, in the same chunks
+        method, n, d, chunk = sys.argv[2], int(sys.argv[3]), int(sys.argv[4]), int(sys.argv[5])
+        if method == "sklearn-minibatch":
+            from sklearn.cluster import MiniBatchKMeans
+
+            est = MiniBatchKMeans(8, random_state=0)
+        elif method == "sklearn-birch":
+            from sklearn.cluster import Birch
+
+            # The tree alone during the stream: with a count set, every chunk would rerun the
+            # agglomerative global step over every subcluster.
+            est = Birch(n_clusters=None)
+        elif method == "bico":
+            from bico import BICO
+
+            est = BICO(n_clusters=8, random_state=0, fit_coreset=True)
+        else:
+            raise ValueError(method)
+        rng = np.random.default_rng(0)
+        t0 = time.perf_counter()
+        done = 0
+        while done < n:
+            c = min(chunk, n - done)
+            est.partial_fit(rng.standard_normal((c, d)))
+            done += c
+        if method == "sklearn-birch":
+            # The tree's own peak, kept even when the global step over its subclusters cannot run.
+            tree = {"subclusters": len(est.subcluster_centers_), "tree_rss_mb": peak.mb()}
+            est.set_params(n_clusters=8)
+            try:
+                est.partial_fit()
+            except MemoryError:
+                return {"error": "OOM in the global step", **tree}
+            return {"time_s": time.perf_counter() - t0, "rss_mb": peak.mb(), **tree}
+        if method == "bico":
+            est.partial_fit()  # the coreset and its k-means
         return {"time_s": time.perf_counter() - t0, "rss_mb": peak.mb()}
     if kind == "oneshot_km":
         n, d = int(sys.argv[2]), int(sys.argv[3])

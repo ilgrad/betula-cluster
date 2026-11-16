@@ -402,6 +402,16 @@ All notable changes to this project are documented here. The format follows
   111–139 clusters, reads 0.510 and 0.462 on MNIST, and beats the rows graph on the news embeddings
   (0.360 against 0.330). `density_rivals.py` writes the `version` column. The board goes to
   49 / 102 / 33 on quality and 138 / 7 / 2 on memory.
+- **The learners that stream are measured against betula's stream** (`bench/stream_vs_refit.py`,
+  `bench/comprehensive.py`). On the 20 newsgroups stream, scikit-learn's `MiniBatchKMeans` and
+  `Birch`, BICO, BERTopic's online recipe and River's `DBSTREAM` and `DenStream` learn chunk by chunk
+  beside betula's `partial_fit`, after each reproduces its documented example. Every one reads below
+  betula at every checkpoint of every row order: BICO, the closest, reads 0.345–0.364 against
+  0.383–0.398. River finds no topics at its defaults and reads 0.18 at best at a radius tuned on
+  the labels. In the memory suite `MiniBatchKMeans` and BICO stay flat in N at 180 and 175 MB, most
+  of it their imports; `Birch` at its defaults keeps one subcluster per row and finishes no size
+  within the harness's time cap. `stream_vs_refit.py` gains `--arms`, and the timing harness times
+  the new stream arms.
 
 ## [1.5.0] — 2026-10-28
 

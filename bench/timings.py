@@ -168,17 +168,9 @@ def cases(stage: str) -> list[Case]:
 
         return [Case(stage, arm, d, len(hr.load(d)[0])) for arm, (d, _) in hr.ARMS.items()]
     if stage == "stream":
-        return [
-            Case(stage, arm, "news-minilm", 17_901)
-            for arm in (
-                "betula-stream",
-                "betula-refit",
-                "sklearn-kmeans",
-                "umap+kmeans",
-                "umap+hdbscan",
-                "evoc",
-            )
-        ]
+        import stream_vs_refit as sr
+
+        return [Case(stage, arm, "news-minilm", 17_901) for arm in sr.ARMS]
     if stage == "scale":
         return [Case(stage, arm, "synthetic-384", SCALE_ROWS) for arm in _scale_arms()]
     if stage == "out-of-core":
@@ -268,7 +260,8 @@ def child(case: Case, seed: int) -> dict:
 def child_stream(arm: str, seed: int) -> dict:
     """Every checkpoint of `stream_vs_refit.py`, the stream run twice in this process. The betula
     stream's time at a checkpoint is its `partial_fit` on the new chunk, the global step and a
-    `predict` of every row seen; every other arm refits on every row seen."""
+    `predict` of every row seen; a rival that streams pays its own step on the new chunk and the
+    labels of every row seen; every other arm refits on every row seen."""
     import stream_vs_refit as sr
 
     x, y = sr.cached()
@@ -312,13 +305,18 @@ def child_stream(arm: str, seed: int) -> dict:
 
     passes = []
     for _ in range(2):
-        times, est, start = [], vmf(), 0
+        times, start = [], 0
+        est = sr.STREAMERS[arm](seed) if arm in sr.STREAMERS else vmf()
         for cp in cuts:
             t0 = time.perf_counter()
             if arm == "betula-stream":
                 est.partial_fit(x[start:cp])
                 est.partial_fit()
                 labels = est.predict(x[:cp])
+                start = cp
+            elif arm in sr.STREAMERS:
+                est.learn(x[start:cp])
+                labels = est.labels(x[:cp])
                 start = cp
             else:
                 labels = refit(x[:cp])

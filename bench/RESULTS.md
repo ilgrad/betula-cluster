@@ -526,12 +526,24 @@ estimator handed the whole array, and an in-core KMeans that must hold all of `X
 2026-11-15, measured on that day's tree) fits the same `Betula` on the same rows, held in memory as
 scikit-learn's `KMeans` holds them: it costs the `N × 20 × 8`-byte array plus 47 MB at every
 size, and scikit-learn's one-shot holds about three times that. Like for like, betula is
-3.0–3.2× lighter in memory. scikit-learn's own streaming estimators (`MiniBatchKMeans.partial_fit`,
-`Birch.partial_fit`) have no row here. Both betula columns were re-read with `VmHWM` on
+3.0–3.2× lighter in memory. The learners of other libraries that stream are in the next paragraph.
+Both betula columns were re-read with `VmHWM` on
 2026-11-15, three runs a size, at most 0.33 % apart. The one-shot column moved by under 0.6 MB; the
 streaming one fell by about 1 MB, the sampling thread's own pages (55.8–55.9 → 54.8–55.1 MB), which
 moves the 10 M ratio from 89× to 91×. The one-shot column's
 time cells are empty: the machine was not quiet, and the board reads a time it is given.
+
+**The chunked learners of scikit-learn and BICO are flat in N too** (`results_memory.csv`, the same
+chunks; added 2026-11-16, with no times, because the machine was not quiet). `MiniBatchKMeans` with
+`partial_fit` peaks at 180–188 MB at every size, and BICO (`partial_fit`, then its coreset k-means)
+at 175 MB. Most of each peak is the import: in the worker, importing scikit-learn's
+`MiniBatchKMeans` alone peaks at 134 MB, BICO at 118 MB and betula at 38 MB. The work itself then
+holds about 46, 57 and 17 MB. Streaming bounds the memory of all three; the 91× above is against a
+method that does not stream. `Birch.partial_fit` at its defaults has no cell: it did not finish
+500 000 rows within the harness's 540 s cap per run, at any size. Its CF tree has no leaf budget, and
+at the default threshold (0.5) every row of this 20-D noise becomes its own subcluster. A probe
+outside the CSV read 100 000 subclusters and a 241 MB peak at 100 000 rows, and then the default global step
+(agglomerative clustering over the subclusters) ran out of memory.
 
 betula's footprint is **flat in N** — the CF-tree is bounded by `max_leaves`, so it clusters streams
 larger than RAM. Any in-core method's memory grows linearly with `N` (it must hold `X`), and
@@ -1641,7 +1653,7 @@ versions are the ones listed here.
   were ties until the `VmHWM` re-read of 2026-11-15.
 
 **Each rival reproduces its own documentation first** (`bench/rival_reproductions.py`): the example
-the package publishes, called as published, against the published output. Nine of eleven match. The
+the package publishes, called as published, against the published output. 14 of 16 match. The
 two that do not are stable across runs and are traced to the documentation, not to the call.
 lumbermark, EVoC, DelTriC (`deltric`) and CoreSPECT (`cplearn`) publish no numeric output, so they
 have no row; read theirs with that in mind. The DelTriC and CoreSPECT papers report numbers on
@@ -1664,6 +1676,11 @@ kmodes and tslearn. Their rows rest on the documented call alone.
 | scikit-learn 1.9.1 DBSCAN | (3, 18, 0.952) | (3, 18, 0.952) | yes |
 | dbscan 1.0.0 | 3 | 3 | yes |
 | PyOD 3.6.8 KNN | (0.9992, 0.95) | (0.9992, 0.95) | yes |
+| scikit-learn 1.9.1 MiniBatchKMeans | (((3.375, 3.0), (0.75, 0.5)), [1, 0]) | (((3.375, 3.0), (0.75, 0.5)), [1, 0]) | yes |
+| scikit-learn 1.9.1 Birch | [0, 0, 0, 1, 1, 1] | [0, 0, 0, 1, 1, 1] | yes |
+| BICO 0.1.8 | (0.46892639, 0.41968333, 0.47302945, 0.51782955, 0.39390839, 0.56209413, 0.4481691, 0.49521457, 0.31394509, 0.5104331) | (0.46892639, 0.41968333, 0.47302945, 0.51782955, 0.39390839, 0.56209413, 0.4481691, 0.49521457, 0.31394509, 0.5104331) | yes |
+| River 0.27.0 DBSTREAM | [0, 1, 2] | [0, 1, 2] | yes |
+| River 0.27.0 DenStream | [0, 2, 1, 3] | [0, 2, 1, 3] | yes |
 
 **Rival families with no row, and why.** Every rival a user would reach for is named, measured or
 not. These have no row in any committed CSV:
@@ -1671,7 +1688,6 @@ not. These have no row in any committed CSV:
 | family | named, not measured | reason |
 |---|---|---|
 | no CPython 3.14 wheel | fastcluster, scikit-learn-extra, trimap, SuperKMeans, ClustPy | the bench runs on CPython 3.14, and without a wheel the arm needs a compiler; fastcluster's Ward enters only as a published vector of Gagolewski's suite |
-| streaming | scikit-learn's `partial_fit` learners, BICO | not yet run; the memory table compares the stream with one-shot k-means |
 | GPU | cuML `DBSCAN`, cuML `HDBSCAN` on the raw rows, `cuml.accel`, cuVS k-means, FAISS on a GPU, fastkmeans, flash-kmeans, rapids-singlecell, TorchDR | not yet run; the GPU table holds cuML's k-means and UMAP pipelines |
 | Rust | `kno10/fuel` (Schubert; PyO3 bindings, AGPL-3.0; GMM, von Mises–Fisher, spherical k-means, HDBSCAN, FasterPAM; no CF-tree) | not yet run; the Rust table holds linfa-clustering, clump and the `hdbscan` crate |
 | deep clustering | ClustPy, the deep methods of CLUBench | by design: a deep method learns the representation, and betula clusters vectors it is given. The fair contest is the same embedding with another clusterer, which the news rows run. CLUBench (arXiv 2605.29933; 24 algorithms, 131 datasets) reports that deep clustering does not clearly beat the best conventional methods on average |
@@ -1781,6 +1797,9 @@ not. These have no row in any committed CSV:
 - **A stream of embeddings.** `partial_fit` reads what a refit reads at every checkpoint, with no
   refit; UMAP + k-means refitted at each checkpoint wins from 60 % of the stream on (0.448 against
   0.383 at the end), and UMAP + HDBSCAN degrades as the stream grows (*A stream against refits*).
+  Every rival that learns in chunks reads below it at every checkpoint: BICO 0.345–0.364,
+  `MiniBatchKMeans` 0.320–0.347, `Birch` 0.299–0.349, BERTopic's online recipe 0.21–0.22, River
+  0.18 at best.
 
 ### The tables
 
@@ -2200,6 +2219,12 @@ side of every cell is the one head its contest chose (see the rules above).
 - **bertopic default (umap+hdbscan mcs=10)** — 2 win · 0 tie · 0 loss
   - win, memory, `news-minilm/17901/no-k` (rivals): betula 243 MB (`betula-leiden-rows`) against 640 MB
   - win, quality, `news-minilm/17901/no-k` (rivals): betula 0.330 ARI (`betula-leiden-rows`) against 0.086 ARI
+- **bico (streaming)** — 5 win · 0 tie · 0 loss
+  - win, memory, `1000000` (memory): betula 55 MB (`betula (streaming)`) against 175 MB
+  - win, memory, `10000000` (memory): betula 55 MB (`betula (streaming)`) against 175 MB
+  - win, memory, `2000000` (memory): betula 55 MB (`betula (streaming)`) against 175 MB
+  - win, memory, `500000` (memory): betula 55 MB (`betula (streaming)`) against 175 MB
+  - win, memory, `5000000` (memory): betula 55 MB (`betula (streaming)`) against 175 MB
 - **classix** — 1 win · 1 tie · 0 loss
   - win, memory, `highdim/30000/no-k` (density_rivals): betula 175 MB (`betula-hdbscan`) against 188 MB
   - tie, quality, `highdim/30000/no-k` (density_rivals): betula 1.000 ARI (`betula-hdbscan`) against 1.000 ARI
@@ -2518,12 +2543,7 @@ side of every cell is the one head its contest chose (see the rules above).
   - loss, memory, `news-minilm/17901/told-k` (rivals): betula 279 MB (`betula-vmf-shared`) against 259 MB
   - loss, quality, `20news/betula-sparse` (sparse): betula 0.038 ARI (`betula-sparse`) against 0.056 ARI
   - loss, speed, `20news/betula-sparse` (sparse): betula 1.62 s (`betula-sparse`) against 0.56 s
-- **sklearn-kmeans (one-shot)** — 23 win · 0 tie · 2 loss
-  - win, memory, `1000000` (memory): betula 55 MB (`betula (streaming)`) against 649 MB
-  - win, memory, `10000000` (memory): betula 55 MB (`betula (streaming)`) against 4969 MB
-  - win, memory, `2000000` (memory): betula 55 MB (`betula (streaming)`) against 1129 MB
-  - win, memory, `500000` (memory): betula 55 MB (`betula (streaming)`) against 409 MB
-  - win, memory, `5000000` (memory): betula 55 MB (`betula (streaming)`) against 2569 MB
+- **sklearn-kmeans (one-shot)** — 18 win · 0 tie · 2 loss
   - win, memory, `1000000/betula (one-shot)` (memory): betula 207 MB (`betula (one-shot)`) against 649 MB
   - win, memory, `1000000/betula (streaming)` (memory): betula 55 MB (`betula (streaming)`) against 649 MB
   - win, memory, `10000000/betula (one-shot)` (memory): betula 1647 MB (`betula (one-shot)`) against 4969 MB
@@ -2698,13 +2718,22 @@ matrix, which gives the 1.2.0 value exactly (300 random cases, largest differenc
   (0.636, rank 97). On the `uci` battery `gmm` is level with scikit-learn's `GaussianMixture`, the
   best published configuration there (0.525 against 0.515).
 
-### A stream against refits — 20 newsgroups in arrival order (`results_stream_refit.csv`)
+### A stream against refits and other streams — 20 newsgroups (`results_stream_refit.csv`)
 
 `bench/stream_vs_refit.py` feeds the MiniLM embeddings of 20 newsgroups in five random orders. At
-20, 40, 60, 80 and 100 % of the stream every arm labels the rows seen so far: betula's `vmf`
-(`kappa="shared"`, 20 clusters, 4 000 leaves) by `partial_fit` on the new chunk and no refit, and
-the rivals, none of which streams, refitted from scratch. Seeds 0, 1, 2; each cell is the median
-over seeds, then the median (min–max) over the five orders. Quality only.
+20, 40, 60, 80 and 100 % of the stream every arm labels the rows seen so far. betula's `vmf`
+(`kappa="shared"`, 20 clusters, 4 000 leaves) does it by `partial_fit` on the new chunk and no
+refit. The rivals that cannot stream are refitted from scratch. The rivals that learn in chunks
+are fed the new chunk as their documentation streams, then asked for the labels of every row seen:
+scikit-learn's `MiniBatchKMeans` (`partial_fit` per mini-batch of its 1 024 rows) and `Birch` (its
+defaults and the told count), BICO (its README's recipe, 200 coreset points per cluster), BERTopic's
+online recipe (`IncrementalPCA` to 5 dimensions, then `MiniBatchKMeans`, in chunks of 1 000) and
+River's `DBSTREAM` and `DenStream`. River runs at its defaults and at the setting that read the best
+ARI on the first chunk of order 0 (an oracle choice, generous to River; the grid is in the harness).
+Each streaming rival first reproduces its documented example (*Each rival reproduces its own
+documentation first*). Seeds 0, 1, 2, and one run per order for an arm with no seed; each cell is
+the median over seeds, then the median (min–max) over the five orders. Quality only: the streaming
+arms' cost waits for the timing campaign.
 
 | arm | 20 % (3 580) | 40 % | 60 % | 80 % | 100 % (17 901) | clusters | noise |
 |---|---|---|---|---|---|---|---|
@@ -2714,6 +2743,14 @@ over seeds, then the median (min–max) over the five orders. Quality only.
 | scikit-learn k-means, refitted | 0.364 (0.331–0.375) | 0.376 (0.368–0.384) | 0.372 (0.346–0.384) | 0.376 (0.371–0.378) | 0.369 (0.359–0.380) | 20 | 0.00 |
 | UMAP + HDBSCAN, refitted | 0.186 (0.020–0.207) | 0.136 (0.117–0.138) | 0.120 (0.080–0.155) | 0.085 (0.082–0.106) | 0.089 (0.082–0.090) | 43 → 213 | 0.29–0.37 |
 | EVoC, refitted | 0.215 (0.193–0.234) | 0.197 (0.173–0.265) | 0.184 (0.156–0.202) | 0.208 (0.187–0.222) | 0.202 (0.163–0.212) | 11–18 | 0.27–0.33 |
+| BICO, `partial_fit` | 0.364 (0.331–0.375) | 0.356 (0.336–0.361) | 0.348 (0.330–0.376) | 0.345 (0.343–0.382) | 0.359 (0.324–0.369) | 20 | 0.00 |
+| scikit-learn `MiniBatchKMeans`, `partial_fit` | 0.320 (0.288–0.334) | 0.331 (0.308–0.347) | 0.343 (0.317–0.353) | 0.343 (0.320–0.358) | 0.347 (0.324–0.363) | 20 | 0.00 |
+| scikit-learn `Birch`, `partial_fit` | 0.299 (0.289–0.347) | 0.322 (0.316–0.342) | 0.325 (0.314–0.333) | 0.319 (0.306–0.331) | 0.349 (0.339–0.365) | 20 | 0.00 |
+| BERTopic's online recipe | 0.216 (0.188–0.221) | 0.209 (0.192–0.235) | 0.218 (0.162–0.239) | 0.222 (0.184–0.239) | 0.218 (0.192–0.238) | 19–20 | 0.00 |
+| River `DenStream`, radius 0.5 | 0.159 (0.125–0.181) | 0.175 (0.138–0.188) | 0.174 (0.147–0.185) | 0.170 (0.158–0.200) | 0.181 (0.162–0.192) | 14–68 | 0.00 |
+| River `DBSTREAM`, radius 0.9, fading 0.0001 | 0.031 (0.015–0.071) | 0.017 (0.011–0.063) | 0.088 (0.004–0.128) | 0.063 (0.007–0.098) | 0.044 (0.009–0.082) | 2–11 | 0.00 |
+| River `DBSTREAM`, defaults | 0.015 (0.004–0.024) | 0.020 (0.007–0.044) | 0.019 (0.013–0.040) | 0.016 (0.005–0.025) | 0.031 (0.000–0.067) | 2–4 | 0.00 |
+| River `DenStream`, defaults | 0.000 (0.000–0.000) | 0.000 (0.000–0.000) | 0.000 (0.000–0.000) | 0.000 (0.000–0.000) | 0.000 (0.000–0.000) | 0–1 | 0.00–1.00 |
 
 - **Streaming costs nothing in quality here.** At all 75 checkpoints (five orders, three seeds,
   five fractions) `partial_fit` gives the same ARI as a refit on every row seen, to the last digit:
@@ -2724,6 +2761,16 @@ over seeds, then the median (min–max) over the five orders. Quality only.
   43 to 213 and its ARI falls from 0.186 to 0.089. betula is ahead of it, and of EVoC, at every
   checkpoint. scikit-learn's k-means is level with betula at four checkpoints and behind it at 40 %
   (0.376 against 0.398).
+- **Every rival that learns in chunks reads below betula's stream, at every checkpoint of every
+  order** (25 of 25 cells, each the median over seeds). BICO is the closest: 0.031–0.045 behind at
+  the five medians, 0.002–0.061 in any one order. `MiniBatchKMeans` is 0.046–0.076 behind and
+  `Birch` 0.044–0.085. BERTopic's online recipe reads 0.21–0.22, ahead of its batch cluster step
+  (UMAP + HDBSCAN) at every checkpoint but 0.17 behind betula.
+- **River's density streams find no topics here.** At their defaults `DBSTREAM` keeps 2–4 clusters
+  (ARI at most 0.067) and `DenStream` marks almost every row noise. The best setting on the first
+  chunk lifts `DenStream` to 0.16–0.18 with 14–68 clusters; no `DBSTREAM` setting tried found more
+  than 11. Their defaults are sized for low-dimensional streams, where the River reference table
+  (*The streaming heads against River*) runs them.
 
 ### Rust crates — linfa-clustering, clump, `hdbscan` (`results_rust_rivals.csv`)
 

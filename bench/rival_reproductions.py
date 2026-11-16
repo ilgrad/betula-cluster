@@ -7,7 +7,8 @@ numeric output, so they have no row here, and that is stated where their rows ar
 
     uv run --no-sync --with scikit-learn --with classixclustering --with denmune \\
         --with finch-clust --with genieclust --with hdbscan --with fast-hdbscan \\
-        --with phenograph --with dbscan --with pyod python bench/rival_reproductions.py
+        --with phenograph --with dbscan --with pyod --with bico --with river \\
+        python bench/rival_reproductions.py
 
 Two examples need the authors' data files, fetched once into scikit-learn's data home: `jain`
 from the clustering benchmark suite (genieclust, DenMune) and FINCH's `gestalt_clusters.txt`.
@@ -182,6 +183,75 @@ def phenograph():
     return (3, 0.66), (len(np.unique(communities)), round(float(q), 2))
 
 
+def minibatch_kmeans():
+    """scikit-learn, the MiniBatchKMeans docstring: centres (3.375, 3) and (0.75, 0.5) after two
+    `partial_fit` batches, and `predict` [1, 0]."""
+    from sklearn.cluster import MiniBatchKMeans
+
+    x = np.array([[1, 2], [1, 4], [1, 0], [4, 2], [4, 0], [4, 4]])
+    x = np.vstack([x, [[4, 5], [0, 1], [2, 2], [3, 2], [5, 5], [1, -1]]])
+    km = MiniBatchKMeans(n_clusters=2, random_state=0, batch_size=6, n_init="auto")
+    km.partial_fit(x[0:6]).partial_fit(x[6:12])
+    centres = tuple(tuple(round(float(v), 3) for v in c) for c in km.cluster_centers_)
+    return (((3.375, 3.0), (0.75, 0.5)), [1, 0]), (centres, km.predict([[0, 0], [4, 4]]).tolist())
+
+
+def birch():
+    """scikit-learn, the Birch docstring: `predict` [0, 0, 0, 1, 1, 1] with `n_clusters=None`."""
+    from sklearn.cluster import Birch
+
+    x = [[0, 1], [0.3, 1], [-0.3, 1], [0, -1], [0.3, -1], [-0.3, -1]]
+    return [0, 0, 0, 1, 1, 1], Birch(n_clusters=None).fit(x).predict(x).tolist()
+
+
+def bico():
+    """BICO README, the first example: its first cluster centre, printed to eight decimals."""
+    from bico import BICO
+
+    np.random.seed(42)
+    data = np.random.rand(10000, 10)
+    model = BICO(n_clusters=3, random_state=0, fit_coreset=True).fit(data)
+    want = (0.46892639, 0.41968333, 0.47302945, 0.51782955, 0.39390839)
+    want += (0.56209413, 0.4481691, 0.49521457, 0.31394509, 0.5104331)
+    return want, tuple(round(float(v), 8) for v in model.cluster_centers_[0])
+
+
+def river_dbstream():
+    """River, the DBSTREAM docstring: `predict_one` 0 and 1 on its two probes, two clusters."""
+    from river import cluster
+
+    points = [[1, 0.5], [1, 0.625], [1, 0.75], [1, 1.125], [1, 1.5], [1, 1.75]]
+    points += [[4, 1.5], [4, 2.25], [4, 2.5], [4, 3], [4, 3.25], [4, 3.5]]
+    model = cluster.DBSTREAM(
+        clustering_threshold=1.5,
+        fading_factor=0.05,
+        cleanup_interval=4,
+        intersection_factor=0.5,
+        minimum_weight=1,
+    )
+    for row in points:
+        model.learn_one(dict(enumerate(row)))
+    got = [model.predict_one(dict(enumerate(q))) for q in ([1, 2], [5, 2])]
+    return [0, 1, 2], [*got, model._n_clusters]
+
+
+def river_denstream():
+    """River, the DenStream docstring: `predict_one` 0, 2 and 1 on its three probes, three clusters."""
+    from river import cluster
+
+    points = [[-1, -0.5], [-1, -0.625], [-1, -0.75], [-1, -1], [-1, -1.125], [-1, -1.25]]
+    points += [[-1.5, -0.5], [-1.5, -0.625], [-1.5, -0.75], [-1.5, -1], [-1.5, -1.125]]
+    points += [[-1.5, -1.25], [1, 1.5], [1, 1.75], [1, 2], [4, 1.25], [4, 1.5], [4, 2.25]]
+    points += [[4, 2.5], [4, 3], [4, 3.25], [4, 3.5], [4, 3.75], [4, 4]]
+    model = cluster.DenStream(
+        decaying_factor=0.01, beta=0.5, mu=2.5, epsilon=1.0, n_samples_init=10
+    )
+    for row in points:
+        model.learn_one(dict(enumerate(row)))
+    got = [model.predict_one(dict(enumerate(q))) for q in ([-1, -2], [5, 4], [1, 1])]
+    return [0, 2, 1, 3], [*got, model.n_clusters]
+
+
 CHECKS = {
     "CLASSIX 1.5.3": classix,
     "genieclust 1.3.0": genie,
@@ -194,6 +264,11 @@ CHECKS = {
     "scikit-learn 1.9.1 DBSCAN": sklearn_dbscan,
     "dbscan 1.0.0": dbscan_pkg,
     "PyOD 3.6.8 KNN": pyod_knn,
+    "scikit-learn 1.9.1 MiniBatchKMeans": minibatch_kmeans,
+    "scikit-learn 1.9.1 Birch": birch,
+    "BICO 0.1.8": bico,
+    "River 0.27.0 DBSTREAM": river_dbstream,
+    "River 0.27.0 DenStream": river_denstream,
 }
 
 
