@@ -30,6 +30,8 @@ Rules (the plan's 12.4, kept here so the CSV can be read without it):
   included, so it would measure the preprocessing rather than the clusterer.
 - Wall time is recorded, and is only a result when `~/.claude/scripts/bench-ready.sh` passed
   before the run; the CSV records whether it did.
+- Every row records the libraries its arm ran, with their versions (`version`, read in the arm's
+  own process). Rows written before the column existed leave it empty.
 
 Writes `bench/results_rivals.csv` (one row per arm, dataset and seed).
 """
@@ -48,6 +50,7 @@ import numpy as np
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
+from _provenance import versions
 from _worker import Peak, cap_memory
 
 SEEDS = (0, 1, 2)
@@ -208,6 +211,23 @@ ARMS = {
 }
 
 
+# The libraries each rival arm runs, written into its rows' `version` column. A betula arm runs
+# betula.
+RIVAL_DISTS = {
+    "sklearn-kmeans": ("scikit-learn",),
+    "umap+kmeans": ("umap-learn", "pynndescent", "scikit-learn"),
+    "umap-0.6+kmeans": ("umap-learn", "pynndescent", "scikit-learn"),
+    "pacmap+kmeans": ("pacmap", "scikit-learn"),
+    "opentsne+kmeans": ("openTSNE", "scikit-learn"),
+    "umap+hdbscan (umap docs' mnist recipe)": ("umap-learn", "pynndescent", "hdbscan"),
+    "bertopic default (umap+hdbscan mcs=10)": ("umap-learn", "pynndescent", "hdbscan"),
+    "evoc": ("evoc",),
+    "knn+leiden (scanpy recipe)": ("pynndescent", "leidenalg", "python-igraph"),
+    "phenograph": ("PhenoGraph", "leidenalg"),
+}
+assert set(RIVAL_DISTS) == {a for a in ARMS if not a.startswith("betula")}
+
+
 def _hdbscan(z, **kw):
     import hdbscan
 
@@ -264,7 +284,8 @@ def one(arm: str, dataset: str, n: int, seed: int) -> dict:
     t0 = time.perf_counter()
     labels = ARMS[arm][2](x, k, seed, dataset, n)
     dt = time.perf_counter() - t0
-    return {"time_s": dt, "rss_mb": peak.mb(), **score(y, labels)}
+    dists = ("betula-cluster",) if arm.startswith("betula") else RIVAL_DISTS[arm]
+    return {"time_s": dt, "rss_mb": peak.mb(), **score(y, labels), "version": versions(*dists)}
 
 
 def run_child(arm, dataset, n, seed) -> dict:

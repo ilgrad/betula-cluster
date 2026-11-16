@@ -19,7 +19,9 @@ seeds 0, 1, 2; the deterministic ones once. Quality and peak RSS only.
 
     uv run --no-sync --with scikit-learn --with pandas python bench/rust_rivals.py [--arms=a,b]
 
-Writes `bench/results_rust_rivals.csv` (schema of `bench/rivals.py`).
+Writes `bench/results_rust_rivals.csv` (schema of `bench/rivals.py`); `version` names the crate
+each arm ran, as the build's `Cargo.lock` resolved it, and rows written before the column existed
+leave it empty.
 """
 
 from __future__ import annotations
@@ -30,6 +32,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import tomllib
 from pathlib import Path
 
 import numpy as np
@@ -56,6 +59,34 @@ ARMS = {
     "hdbscan-crate": (False, False),
     "clump-hdbscan": (False, False),
 }
+
+
+# The crate each arm runs, written into its rows' `version` column.
+CRATES = {
+    "betula-kmeans": "betula-cluster",
+    "betula-gmm": "betula-cluster",
+    "betula-gmm-full": "betula-cluster",
+    "linfa-kmeans": "linfa-clustering",
+    "linfa-gmm": "linfa-clustering",
+    "clump-kmeans": "clump",
+    "hdbscan-crate": "hdbscan",
+    "clump-hdbscan": "clump",
+}
+assert set(CRATES) == set(ARMS)
+
+
+def crate_versions() -> dict[str, str]:
+    """`crate version` for every arm's crate, as the lockfile `build()` just wrote resolved it."""
+    lock = tomllib.loads((CRATE / "Cargo.lock").read_text())
+    resolved: dict[str, list[str]] = {}
+    for package in lock["package"]:
+        resolved.setdefault(package["name"], []).append(package["version"])
+    rev = os.environ.get("BETULA_GIT_REV", "")
+    out = {}
+    for arm, crate in CRATES.items():
+        (v,) = resolved[crate]  # one version per arm's crate, or the row could not name it
+        out[arm] = f"{crate} {v}+{rev}" if crate == "betula-cluster" and rev else f"{crate} {v}"
+    return out
 
 
 def build() -> None:
@@ -106,8 +137,15 @@ def main(argv: list[str]) -> int:
 
     only = next((a.split("=", 1)[1].split(",") for a in argv if a.startswith("--arms=")), None)
     build()
+    version = crate_versions()
     csv = HERE / "results_rust_rivals.csv"
-    kept = pd.read_csv(csv) if only and csv.exists() else pd.DataFrame()
+    # Kept rows pass through as text: pandas 2 parses some floats one ulp off, and a re-run of
+    # one arm would then rewrite every other arm's row.
+    kept = (
+        pd.read_csv(csv, dtype=str, keep_default_na=False)
+        if only and csv.exists()
+        else pd.DataFrame()
+    )
     if only and len(kept):
         kept = kept[~kept["arm"].isin(only)]
     rows = []
@@ -123,7 +161,7 @@ def main(argv: list[str]) -> int:
                 for seed in SEEDS if seeded else SEEDS[:1]:
                     res = run(arm, path, k, seed, mcs)
                     row = {"dataset": dataset, "n": len(x), "arm": arm, "told_k": told_k}
-                    row |= {"seed": seed, "timing_valid": False}
+                    row |= {"seed": seed, "timing_valid": False, "version": version[arm]}
                     if "error" in res:
                         row["dnf"] = res["error"]
                         shown = res["error"]

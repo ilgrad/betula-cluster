@@ -21,7 +21,8 @@ varies only the methods' initialisation. Same subprocess isolation, scoring and 
 Where both sides optimise one objective, the `objective` column holds it, computed from the labels
 alone with each cluster's best representative: the within-cluster sum of squares (k-means), the sum
 of distances to the best medoid (k-medoids), the sum of mismatches to the per-column mode (k-modes).
-Lower is better. Two methods that land on the same partition get the same value.
+Lower is better. Two methods that land on the same partition get the same value. The `version`
+column names the libraries each arm ran; rows written before the column existed leave it empty.
 
 None of the references is a project dependency:
 
@@ -48,6 +49,7 @@ import numpy as np
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
+from _provenance import versions
 from _worker import Peak, cap_memory
 from rivals import score
 
@@ -192,6 +194,22 @@ ARMS = {
 }
 
 
+# The libraries each reference arm runs, written into its rows' `version` column. A betula arm
+# runs betula.
+REFERENCE_DISTS = {
+    "kmedoids (fasterpam)": ("kmedoids",),
+    "skfuzzy-cmeans": ("scikit-fuzzy",),
+    "sklearn-kmeans": ("scikit-learn",),
+    "sklearn-bisecting-kmeans": ("scikit-learn",),
+    "kmodes-kprototypes": ("kmodes",),
+    "kmodes-kmodes": ("kmodes",),
+    "tslearn-kshape": ("tslearn",),
+    "aeon-kasba": ("aeon",),
+    "sklearn-gmm-diag": ("scikit-learn",),
+}
+assert set(REFERENCE_DISTS) == {a for a in ARMS if not a.startswith("betula")}
+
+
 # The objective an arm optimises, where its reference optimises the same one.
 OBJECTIVE = {
     "betula-kmeans": "sse",
@@ -237,7 +255,8 @@ def one(arm: str, seed: int) -> dict:
     t0 = time.perf_counter()
     labels = np.asarray(fit(x, k, seed, extra))
     dt = time.perf_counter() - t0
-    out = {"time_s": dt, "rss_mb": peak.mb(), **score(y, labels)}
+    dists = ("betula-cluster",) if arm.startswith("betula") else REFERENCE_DISTS[arm]
+    out = {"time_s": dt, "rss_mb": peak.mb(), **score(y, labels), "version": versions(*dists)}
     if arm in OBJECTIVE:
         out["objective"] = objective(OBJECTIVE[arm], x, labels)
     return out

@@ -16,7 +16,8 @@ cuML is not a dependency of anything here. It lives in a scratch environment:
 
 Before any row (or alone, with `--check`) it reproduces the `cuml.KMeans` docstring example
 (labels [0, 0, 1, 1], centres (1, 1.5) and (3.5, 2.5)). Writes `bench/results_gpu_rivals.csv`
-(schema of `rivals.py`, plus `device_mb`).
+(schema of `rivals.py`, plus `device_mb`); `version` names the cuML release, and rows written before
+the column existed leave it empty.
 """
 
 from __future__ import annotations
@@ -33,6 +34,7 @@ import numpy as np
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
+from _provenance import versions
 from _worker import Peak
 from rivals import SEEDS, TIMEOUT, load, score
 
@@ -135,7 +137,13 @@ def one(arm: str, dataset: str, n: int, seed: int) -> dict:
     t0 = time.perf_counter()
     labels = _as_host(ARMS[arm][1](x, k, seed, dataset))
     dt = time.perf_counter() - t0
-    return {"time_s": dt, "rss_mb": host.mb(), "device_mb": device.mb(), **score(y, labels)}
+    return {
+        "time_s": dt,
+        "rss_mb": host.mb(),
+        "device_mb": device.mb(),
+        **score(y, labels),
+        "version": versions("cuml-cu12"),
+    }
 
 
 def main(argv: list[str]) -> int:
@@ -143,7 +151,13 @@ def main(argv: list[str]) -> int:
 
     only = next((a.split("=", 1)[1].split(",") for a in argv if a.startswith("--arms=")), None)
     csv = HERE / "results_gpu_rivals.csv"
-    kept = pd.read_csv(csv) if only and csv.exists() else pd.DataFrame()
+    # Kept rows pass through as text: pandas 2 parses some floats one ulp off, and a re-run of
+    # one arm would then rewrite every other arm's row.
+    kept = (
+        pd.read_csv(csv, dtype=str, keep_default_na=False)
+        if only and csv.exists()
+        else pd.DataFrame()
+    )
     if only:
         kept = kept[~kept["arm"].isin(only)] if len(kept) else kept
     check()

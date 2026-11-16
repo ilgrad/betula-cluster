@@ -359,6 +359,16 @@ All notable changes to this project are documented here. The format follows
   neighbours after the head gains 0.011 at the median, a seventh of the seed range, and is
   refuted as a recipe. `rivals.py` keeps the rows it does not re-run as text, as
   `head_references.py` does.
+- **Every rival harness row names the library versions that produced it** (`bench/_provenance.py`).
+  `rivals.py`, `head_references.py`, `outliers.py`, `stream_reference.py`, `stream_vs_refit.py`,
+  `gpu_rivals.py`, `rust_rivals.py` and `clustbench_suite.py` write a `version` column, read in the
+  arm's own process (a Rust arm's crate from the bench crate's lockfile); rows written before the
+  column existed leave it empty. The outlier table was re-run with it, and all 63 rows reproduce.
+  River 0.27.0 changed DenStream's labels, so the stream table's River `DenStream` rows were
+  re-run: at the shared radius it reads 0.36 where 0.26.1 read 0.26, and at its own best radius
+  it now recovers to 0.576 after the +50 jump, where 0.26.1 went to 0.000. Its cost waits for the
+  timing campaign. `stream_reference.py` gains `--methods` and a `timing_valid` column, and four
+  harnesses that re-read kept rows as numbers now pass them through as text.
 
 ## [1.5.0] — 2026-10-28
 

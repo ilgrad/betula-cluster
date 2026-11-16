@@ -1570,7 +1570,10 @@ hdbscan 0.8.44, fast_hdbscan 0.3.4, EVoC 0.3.2, leidenalg 0.12.0, python-igraph 
 pynndescent 0.7.0, PaCMAP 0.9.1, openTSNE 1.0.4, PhenoGraph 1.5.7, BERTopic 0.17.4,
 CLASSIX 1.5.3, DenMune 1.17.1, FINCH 0.2.3, genieclust 1.3.0, lumbermark 0.9.1, kmedoids 0.5.5,
 scikit-fuzzy 0.5.0, kmodes 0.12.2, tslearn 0.10.0, numba 0.68.1; dbscan 1.0.0, aeon 1.6.0 (on numba
-0.63.1, which it pins) and PyOD 3.6.8 on 2026-11-16.
+0.63.1, which it pins) and PyOD 3.6.8 on 2026-11-16. From 2026-11-16 every harness row also
+records the libraries its arm ran, read in the arm's own process (`version`; betula's carries the
+build's commit when `BETULA_GIT_REV` names it). Rows written before the column existed leave it
+empty, and their versions are the ones listed here.
 
 **Read these rules first.**
 
@@ -4810,17 +4813,22 @@ clustering under it was any good, because nothing was there to compare it to. Ri
 DBSTREAM and CluStream from the same papers, so `bench/stream_reference.py` runs
 implementation-against-implementation: a 4000-point 2-D stream, stationary for 2000 points and then
 changed, learned in chunks of 250, each chunk's own points labelled by the model that just saw them.
-River is pulled per invocation and is not a dependency.
+River is pulled per invocation and is not a dependency. The CSV rows were measured on River 0.26.1,
+and the DenStream rows were re-run on 0.27.0 (2026-11-16). That release fixed DenStream's
+micro-cluster radius and let `predict_one` grow a cluster past its first micro-cluster's direct
+neighbours; it has no entry for DBSTREAM or CluStream. The two printed tables below are 0.27.0's
+throughout.
 
 **At the shared radius the table is a units mismatch, not a quality gap.** At `eps = 1.0` — the
 settled value `drift.py` uses — this library's heads read ARI 0.69 (DenStream) and 0.88 (DbStream)
-against River's 0.26 and 0.19, and River answers 16–25 clusters where the truth has 3. Sweeping the
-radius shows why that number means nothing on its own (stationary, seed 0, ARI / clusters):
+against River's 0.36 and 0.19 (DenStream read 0.26 on 0.26.1), and River answers 12–25 clusters
+where the truth has 3. Sweeping the radius shows why that number means nothing on its own
+(stationary, seed 0, ARI / clusters):
 
 | radius | 0.5 | 1.0 | 2.0 | 4.0 | 8.0 |
 |---|---|---|---|---|---|
 | betula `DenStream` | 0.628 / 12 | 0.731 / 3 | 0.790 / 3 | **1.000 / 3** | 0.000 / 1 |
-| river `DenStream` | 0.245 / 17 | 0.227 / 18 | 0.377 / 10 | 0.873 / 4 | **1.000 / 3** |
+| river `DenStream` | 0.087 / 46 | 0.290 / 13 | 0.833 / 5 | 0.992 / 4 | **1.000 / 3** |
 | betula `DbStream` | 0.826 / 24 | 0.886 / 6 | 0.848 / 3 | **1.000 / 3** | 1.000 / 3 |
 | river `DBSTREAM` | 0.088 / 32 | 0.160 / 24 | 0.928 / 4 | **1.000 / 3** | 1.000 / 3 |
 
@@ -4833,18 +4841,19 @@ before → after the change; not in a CSV, `bench/stream_reference.py` prints it
 | head | radius | stationary | jump (+50) | split (each cluster becomes two) |
 |---|---:|---|---|---|
 | betula `DenStream` | 4.0 | 1.000 → 1.000 | **1.000 → 1.000** | 1.000 → 0.120 |
-| river `DenStream` | 8.0 | 1.000 → 1.000 | 1.000 → 0.000 | 1.000 → **0.572** |
+| river `DenStream` | 8.0 | 1.000 → 1.000 | 1.000 → 0.576 | 1.000 → **0.572** |
 | betula `DbStream` | 4.0 | 1.000 → 1.000 | **1.000 → 1.000** | 1.000 → 0.288 |
-| river `DBSTREAM` | 4.0 | 0.975 → 1.000 | 1.000 → 0.955 | 1.000 → **0.569** |
+| river `DBSTREAM` | 4.0 | 0.975 → 1.000 | 0.975 → 0.955 | 0.975 → **0.569** |
 | river `CluStream` | — (`k=3` given) | 1.000 → 1.000 | 1.000 → −0.000 | 1.000 → 0.543 |
 
 Two findings, one each way.
 
 **The translation is followed exactly here and not by two of the three River heads.** A +50 jump is
-the case every drift paper opens with, and River's `DenStream` and `CluStream` both go to zero on it
-within the 2000 points that follow — `CluStream` because its macro k-means sits on micro-clusters
-that predate the jump, `DenStream` because its potential micro-clusters have not decayed away yet at
-λ = 0.001. Both of ours hold 1.000. This is the row `drift.py` implied and never showed.
+the case every drift paper opens with. Within the 2000 points that follow, River's `CluStream` goes
+to zero, because its macro k-means sits on micro-clusters that predate the jump. River's
+`DenStream` reads 0.576: its potential micro-clusters have not decayed away yet at λ = 0.001. On
+0.26.1 it read 0.000; 0.27.0's `predict_one` fix is the difference. Both of ours hold 1.000. This
+is the row `drift.py` implied and never showed.
 
 **The split is a clear loss, and it is the radius that loses it.** At the radius the stationary
 prefix recommends, the two halves of a split cluster (`SEP/2 = 4` apart) fall inside one
@@ -4860,11 +4869,13 @@ chunks per scenario, and the range over the three scenarios):
 |---|---:|
 | betula `DenStream` | **0.11–0.16** |
 | betula `DbStream` | 0.93–1.68 |
-| river `DenStream` | 4.56–4.65 |
+| river `DenStream` | not re-timed on 0.27.0 |
 | river `DBSTREAM` | 21.7–22.1 |
 | river `CluStream` | 144–175 |
 
-That is 28–42× on DenStream and 13–24× on DBSTREAM, scenario by scenario, against a pure-Python reference — the comparison is
+That is 13–24× on DBSTREAM, scenario by scenario, against a pure-Python reference. On 0.26.1
+River's DenStream read 4.56–4.65 µs, 28–42× ours; its 0.27.0 rows were re-run on a busy machine
+(`timing_valid = False`), and their time waits for the timing campaign. The comparison is
 worth exactly what "compiled against interpreted" is worth, and is recorded because the streaming
 path had no cost reference at all, not because it settles anything. Prediction cost is deliberately
 excluded: River re-runs its whole offline step on **every** `predict_one`, which is a different

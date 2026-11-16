@@ -8,7 +8,9 @@ algorithms.
 
 River is **not** a project dependency and may not become one — it is pulled per invocation:
 
-    uv run --no-sync --with river --with pandas python bench/stream_reference.py
+    uv run --no-sync --with river --with pandas python bench/stream_reference.py ['--methods=a,b']
+
+`--methods` re-runs only the named methods and replaces their rows in the existing CSV.
 
 Two numbers per chunk of a 4000-point stream: the ARI of the labels the model gives that chunk's own
 points, and the wall time to learn it. The stream is stationary for 2000 points and then changes, so
@@ -19,12 +21,15 @@ let a caller ask, after the fact, for the clustering of an arbitrary past window
 heads timed here carry one summary at the current time and cannot be rewound. `WindowStream` answers
 past windows by summing per-frame summaries; `bench/window_queries.py` measures it.
 
-Writes `bench/results_stream.csv`.
+Writes `bench/results_stream.csv`. Each row records the library its method ran and its version
+(`version`), and whether `~/.claude/scripts/bench-ready.sh` passed before the run
+(`timing_valid`); rows written before the two columns existed leave both empty.
 """
 
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -38,6 +43,7 @@ import numpy as np
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
+from _provenance import versions
 from drift import AFTER, DIM, K_TRUE, SEP, WARMUP, centres
 
 SEEDS = (0, 1, 2)
@@ -136,6 +142,7 @@ METHODS = {
     "river DBSTREAM": lambda x: run_river("dbstream", x),
     "river CluStream": lambda x: run_river("clustream", x),
 }
+DISTS = {name: ("betula-cluster",) if name.startswith("betula") else ("river",) for name in METHODS}
 
 
 #: Radii the sweep tries, so "matched parameters" can be told apart from "a better implementation".
@@ -205,10 +212,30 @@ def tuned(best: dict[str, float]) -> None:
         print(f"  {name:<20}{radius:>8.1f}" + "".join(f"{c:>22}" for c in cells))
 
 
-def main() -> None:
+def main(argv: list[str]) -> None:
     import pandas as pd
     from sklearn.metrics import adjusted_rand_score as ari
 
+    only = next((a.split("=", 1)[1].split(",") for a in argv if a.startswith("--methods=")), None)
+    csv = HERE / "results_stream.csv"
+    # Kept rows pass through as text: pandas 2 parses some floats one ulp off, and a re-run of
+    # one method would then rewrite every other method's row.
+    kept = (
+        pd.read_csv(csv, dtype=str, keep_default_na=False)
+        if only and csv.exists()
+        else pd.DataFrame()
+    )
+    if only:
+        unknown = sorted(set(only) - set(METHODS))
+        if unknown:
+            raise SystemExit(f"unknown methods: {unknown}")
+        kept = kept[~kept["method"].isin(only)]
+    ready = (
+        subprocess.run(
+            ["bash", str(Path.home() / ".claude/scripts/bench-ready.sh")], capture_output=True
+        ).returncode
+        == 0
+    )
     rows = []
     settled = WARMUP // CHUNK  # the last chunk before the change
     for scenario in SCENARIOS:
@@ -216,6 +243,8 @@ def main() -> None:
             x, y = labelled_stream(scenario, seed)
             chunks = np.array_split(np.arange(len(x)), len(x) // CHUNK)
             for name, fn in METHODS.items():
+                if only and name not in only:
+                    continue
                 preds, times, counts = fn(x)
                 for i, (idx, lab, t, k) in enumerate(
                     zip(chunks, preds, times, counts, strict=True)
@@ -231,10 +260,21 @@ def main() -> None:
                             "learn_s": t,
                             "us_per_point": 1e6 * t / len(idx),
                             "clusters": k,
+                            "timing_valid": ready,
+                            "version": versions(*DISTS[name]),
                         }
                     )
     df = pd.DataFrame(rows)
-    df.to_csv(HERE / "results_stream.csv", index=False)
+    # The file keeps the run's order, scenario → seed → method → chunk, whichever rows were kept.
+    order = {"scenario": list(SCENARIOS), "method": list(METHODS)}
+
+    def key(col):
+        return col.map(order[col.name].index if col.name in order else int)
+
+    out = pd.concat([kept, df]).sort_values(
+        ["scenario", "seed", "method", "chunk"], key=key, kind="stable"
+    )
+    out.to_csv(csv, index=False)
 
     for scenario in SCENARIOS:
         block = df[df.scenario == scenario]
@@ -242,7 +282,7 @@ def main() -> None:
         print(
             f"  {'method':<20}{'ARI before':>12}{'ARI after':>11}{'clusters':>10}{'us/point':>10}"
         )
-        for name in METHODS:
+        for name in df.method.unique():
             m = block[block.method == name]
             before, after = m[m.phase == "before"], m[m.phase == "after"]
             print(
@@ -252,5 +292,5 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    main(sys.argv[1:])
     tuned(sweep())

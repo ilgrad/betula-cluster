@@ -15,7 +15,9 @@ Quality only (ARI over the rows seen), seeds 0, 1, 2. The rivals are pulled per 
     uv run --no-sync --with scikit-learn --with umap-learn --with hdbscan --with evoc \\
         --with pandas python bench/stream_vs_refit.py [order ...]
 
-Writes `bench/results_stream_refit.csv`; orders given on the command line replace their rows.
+Writes `bench/results_stream_refit.csv`; orders given on the command line replace their rows. Each
+row records the libraries its arm ran and their versions (`version`); rows written before the
+column existed leave it empty.
 """
 
 from __future__ import annotations
@@ -28,10 +30,20 @@ import numpy as np
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
+from _provenance import versions
 from embed_news import cached
 
 K, LEAVES, SEEDS, ORDERS = 20, 4000, (0, 1, 2), (0, 1, 2, 3, 4)
 FRACTIONS = (0.2, 0.4, 0.6, 0.8, 1.0)
+# The libraries each arm runs, written into its rows' `version` column.
+DISTS = {
+    "betula-stream": ("betula-cluster",),
+    "betula-refit": ("betula-cluster",),
+    "sklearn-kmeans": ("scikit-learn",),
+    "umap+kmeans": ("umap-learn", "pynndescent", "scikit-learn"),
+    "umap+hdbscan": ("umap-learn", "pynndescent", "hdbscan"),
+    "evoc": ("evoc",),
+}
 
 
 def run(order: int) -> list[dict]:
@@ -60,6 +72,7 @@ def run(order: int) -> list[dict]:
                 "ari": adjusted_rand_score(y[:seen], labels),
                 "n_clusters": len(set(labels[labels >= 0].tolist())),
                 "noise_share": float(np.mean(labels < 0)),
+                "version": versions(*DISTS[arm]),
             }
         )
         print(f"order {order} seen {seen:6d} {arm:15s} seed {seed}  ARI {rows[-1]['ari']:.3f}")
@@ -95,12 +108,22 @@ def main(argv: list[str]) -> int:
 
     orders = [int(a) for a in argv] or list(ORDERS)
     csv = HERE / "results_stream_refit.csv"
-    kept = pd.read_csv(csv) if argv and csv.exists() else pd.DataFrame()
+    # Kept rows pass through as text: pandas 2 parses some floats one ulp off, and a re-run of
+    # one order would then rewrite every other order's row.
+    kept = (
+        pd.read_csv(csv, dtype=str, keep_default_na=False)
+        if argv and csv.exists()
+        else pd.DataFrame()
+    )
     if len(kept):
-        kept = kept[~kept["order"].isin(orders)]
+        kept = kept[~kept["order"].astype(int).isin(orders)]
+
+    def key(col):
+        return col if col.name == "arm" else col.map(int)
+
     for order in orders:
         kept = pd.concat([kept, pd.DataFrame(run(order))])
-        kept.sort_values(["order", "arm", "seed", "seen"]).to_csv(csv, index=False)
+        kept.sort_values(["order", "arm", "seed", "seen"], key=key).to_csv(csv, index=False)
     return 0
 
 

@@ -20,7 +20,8 @@ fit for a loaded machine. Resilience to parameters and the internal-index filter
 
     uv run --no-sync --with scikit-learn --with pandas --with pyod python bench/outliers.py
 
-Writes `bench/results_outliers.csv`, one row per fixture, seed and detector.
+Writes `bench/results_outliers.csv`, one row per fixture, seed and detector, with the libraries
+each detector ran and their versions (`version`).
 """
 
 from __future__ import annotations
@@ -29,6 +30,10 @@ import sys
 from pathlib import Path
 
 import numpy as np
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from _provenance import versions
 
 SEEDS = (0, 1, 2)
 
@@ -117,6 +122,18 @@ def _pyod(name, x, seed):
     return {"ecod": ECOD, "knn": KNN}[name]().fit(x).decision_scores_
 
 
+# The libraries each detector runs, written into its rows' `version` column.
+DISTS = {
+    "betula": ("betula-cluster",),
+    "betula-mahalanobis": ("betula-cluster",),
+    "sklearn-iforest": ("scikit-learn",),
+    "sklearn-lof": ("scikit-learn",),
+    "pyod-cblof": ("pyod", "scikit-learn"),
+    "pyod-ecod": ("pyod",),
+    "pyod-knn": ("pyod", "scikit-learn"),
+}
+
+
 # name → scores(x, seed); higher is more outlying.
 DETECTORS = {
     "betula": lambda x, s: _betula(x, s, "radius"),
@@ -127,6 +144,7 @@ DETECTORS = {
     "pyod-ecod": lambda x, s: _pyod("ecod", x, s),
     "pyod-knn": lambda x, s: _pyod("knn", x, s),
 }
+assert set(DISTS) == set(DETECTORS)
 
 
 def main() -> int:
@@ -148,6 +166,7 @@ def main() -> int:
                         "detector": detector,
                         "roc_auc": roc_auc_score(y, s),
                         "avg_precision": average_precision_score(y, s),
+                        "version": versions(*DISTS[detector]),
                     }
                 )
                 print(

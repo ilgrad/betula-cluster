@@ -13,7 +13,8 @@ Neither the data nor the published results are redistributed here (both are AGPL
     uv run --no-sync --with pandas python bench/clustbench_suite.py summary scores.jsonl
 
 `run` scores every battery; `summary` prints one configuration per method over the whole suite and
-writes betula's own rows to `bench/results_clustbench.csv`.
+writes betula's own rows to `bench/results_clustbench.csv`, each with the betula version that scored
+it (`version`; rows written before the column existed leave it empty).
 
 Data as the framework prescribes: `clustbench.preprocess_data` under seed 123. Each head is told
 every K a dataset's reference partitions name, runs once at seed 0, and a head that returns another
@@ -27,6 +28,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+from _provenance import versions
 
 BATTERIES = ("wut", "fcps", "graves", "uci", "mnist", "sipu", "other")
 HEADS = {
@@ -86,7 +88,13 @@ def run(root: Path) -> None:
                     res[k] = lab + 1  # clustbench labels clusters 1..K
                 if res:
                     s = clustbench.get_score(b.labels, res, metric=nca, warn_if_missing=False)
-                    emit(battery=battery, dataset=name, method=head, score=float(s))
+                    emit(
+                        battery=battery,
+                        dataset=name,
+                        method=head,
+                        score=float(s),
+                        version=versions("betula-cluster"),
+                    )
 
 
 def summary(paths: list[str]) -> None:
