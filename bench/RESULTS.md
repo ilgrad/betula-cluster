@@ -153,15 +153,19 @@ losses** are reported below.
   `hdbscan` average 0.657 and 0.652 ARI over seven fixtures against betula's `hdbscan` head at
   0.616; aniso given k, where lumbermark and Genie read 0.843 and 0.750 against the rows graph's
   0.545; MNIST-70k without k to UMAP + HDBSCAN, EVoC and PhenoGraph (0.777 against 0.920, 0.899 and
-  0.821); 20 newsgroups embeddings to every layout + k-means (0.382 against UMAP + k-means 0.451)
-  and, without k, to PhenoGraph, kNN + Leiden and CoreSPECT. The density fixtures given k tie on the
-  mean: `leiden` on the rows graph averages 0.838 against Genie's 0.839. Wins: `digits` given k
-  against Genie and lumbermark (0.840 against 0.643 and 0.656); MNIST-70k given k against openTSNE +
-  k-means (0.835 against 0.745), with no layout step, where it ties UMAP and PaCMAP + k-means on a
-  wide seed range (0.806–0.884); BERTopic's default pipeline on news (0.330 against 0.086); the AR
-  mixture against tslearn's k-Shape (0.764 against 0.057). MNIST-20k is a tie with every manifold
-  pipeline but one: it beats UMAP + HDBSCAN on the UMAP docs' recipe (0.762 against 0.536). Peak RSS
-  is below every manifold and graph rival's in each MNIST and news contest.
+  0.821); 20 newsgroups embeddings to every layout + k-means under MiniLM (0.374 against UMAP +
+  k-means 0.451) and to both UMAP pipelines under mpnet (0.433 against 0.472 and 0.459), and,
+  without k, to PhenoGraph and kNN + Leiden under both models and to CoreSPECT under MiniLM;
+  CIFAR-100 CLIP embeddings to UMAP and openTSNE + k-means (0.666 against 0.721 and 0.696) and,
+  without k, to CoreSPECT, kNN + Leiden and PhenoGraph (0.370 against 0.626, 0.561 and 0.529). The
+  density fixtures given k tie on the mean: `leiden` on the rows graph averages 0.838 against
+  Genie's 0.839. Wins: `digits` given k against Genie and lumbermark (0.840 against 0.643 and
+  0.656); MNIST-70k given k against openTSNE + k-means (0.835 against 0.745), with no layout step,
+  where it ties UMAP and PaCMAP + k-means on a wide seed range (0.806–0.884); BERTopic's default
+  pipeline on news (0.330 against 0.086); the AR mixture against tslearn's k-Shape (0.764 against
+  0.057). MNIST-20k is a tie with every manifold pipeline but one: it beats UMAP + HDBSCAN on the
+  UMAP docs' recipe (0.762 against 0.536). Peak RSS is below every manifold and graph rival's in
+  each MNIST and embedding contest.
 - **On Gagolewski's clustering benchmark suite (81 datasets, told k), level with the best, not ahead.**
   `leiden` with `resolution="auto"` ranks 6th of 213 configurations scored in every battery (suite
   mean NCA 0.774 against Lumbermark's 0.786 and GIc's 0.784; paired, ahead on 19 datasets and behind
@@ -1403,12 +1407,12 @@ the wider of the two cells' three-seed spreads is not a result. Tables with no s
 single runs by construction and fall back to a per-axis tolerance.
 
 ```
-## quality — 49 win · 102 tie · 33 loss
+## quality — 57 win · 106 tie · 42 loss
 ## speed   — 28 win · 1 tie · 5 loss
-## memory  — 138 win · 7 tie · 2 loss
+## memory  — 160 win · 7 tie · 1 loss
 ```
 
-`bench/scoreboard.json` records those 365 verdicts: the 140 of the 2026-10-29 edition, which it
+`bench/scoreboard.json` records those 407 verdicts: the 140 of the 2026-10-29 edition, which it
 re-derives unchanged (three of them renamed on 2026-11-15), 166 `vs-rival` cells added with the
 census on 2026-11-14 (eight of them re-paired on 2026-11-15), and five memory cells added on
 2026-11-15 (both below; two memory verdicts moved on the `VmHWM` re-read the same day). On
@@ -1416,14 +1420,15 @@ census on 2026-11-14 (eight of them re-paired on 2026-11-15), and five memory ce
 which carry no time until F-18, and added eight quality cells: the shuffled rows and the count-free
 contest. The same day DBSCAN joined the density census and added six cells, and k-modes and aeon's
 KASBA joined the head references with four, MNIST-70k's larger leaf budget moved three verdicts,
-and DelTriC and CoreSPECT joined the census with 40. `--check` re-derives them and exits non-zero
+DelTriC and CoreSPECT joined the census with 40, and the two `evoc_bench_*` embedding
+boards added 42 (one memory verdict moved with them). `--check` re-derives them and exits non-zero
 if any cell got worse or vanished, and `--update` is the deliberate act of accepting a new board.
 Seven of the quality losses are the `covtype` and `digits` rows discussed above, the raw-TF-IDF
-`20news` row, and the four `fast_hdbscan` cells; the other 26, and the two memory losses
-(scikit-fuzzy by 4 MB, and `vmf` on `news-minilm` against scikit-learn's `KMeans`), are census
-cells, listed under *Every verdict, rival by rival*. The five speed losses are the three `20news`
-rows the sparse scans own — 3.4× and 1.5× closer after task #71, but still losses — and the two 10 M
-cells of the memory suite, which are one row counted twice and are discussed under *Memory*.
+`20news` row, and the four `fast_hdbscan` cells; the other 35, and the one memory loss
+(scikit-fuzzy by 4 MB), are census cells, listed under *Every verdict, rival by rival*. The five
+speed losses are the three `20news` rows the sparse scans own — 3.4× and 1.5× closer after task
+#71, but still losses — and the two 10 M cells of the memory suite, which are one row counted twice
+and are discussed under *Memory*.
 
 **The ratchet fired on this edition, and it was right to.** Accepting the new board took one genuine
 demotion and six vanished pairings, listed here because the whole point of the file is that a board is
@@ -1561,6 +1566,20 @@ accepted deliberately rather than overwritten:
   against DelTriC, `highdim` against both) and loses three: `digits` to both (0.164 against 0.727
   and 0.683), and the news embeddings to CoreSPECT (0.330 against 0.360). It wins all 20 memory
   cells. Quality went to **49/102/33**, memory to **138/7/2**.
+- **2026-11-16, two embedding boards and one contest over both sentence models: 42 cells added,
+  one memory verdict moved.** `news-mpnet` (20 newsgroups under all-mpnet-base-v2) and
+  `cifar100-clip` (CIFAR-100 under CLIP) join `results_rivals.csv` with 22 and 20 cells (DelTriC
+  runs out of memory on CIFAR-100): quality 8 win · 4 tie · 9 loss over the two, memory 21 wins.
+  The two sentence-embedding sets are one contest (`KIND` in `bench/scoreboard.py`): a user with
+  20 newsgroups under either model picks one head, and picking `vmf` for one model and the rows
+  graph for the other would need the labels. Told k, the contest's head is now `leiden` with
+  `leaf_graph="rows"` and `resolution="auto"` (worst-seed mean ARI 0.398 over the two models,
+  against `vmf`'s 0.387), which re-pairs the ten told-k `news-minilm` cells. The five quality
+  verdicts stay as they were: a tie with scikit-learn's `KMeans` (0.374 against 0.389, where `vmf`
+  read 0.382) and four losses to the layouts. `news-minilm/told-k` against `KMeans` on memory went
+  **loss → win**: the rows graph peaks at 243 MB against 259 MB, where `vmf` peaked at 279 MB. The
+  move comes from the contest's choice of head, not from a change of code. Quality went to
+  **57/106/42**, memory to **160/7/1**.
 
 ## The census — every method a user would reach for, not only scikit-learn (2026-11-14)
 
@@ -1573,7 +1592,7 @@ GPL ones (leidenalg, python-igraph) included:
 
 | harness | contest | CSV |
 |---|---|---|
-| `bench/rivals.py` | manifold and embedding pipelines, graph clustering: raw MNIST (/255) at 20 000 and 70 000 rows, 20 newsgroups as all-MiniLM-L6-v2 embeddings (17 901 posts, `bench/embed_news.py`) | `results_rivals.csv` |
+| `bench/rivals.py` | manifold and embedding pipelines, graph clustering: raw MNIST (/255) at 20 000 and 70 000 rows; three unit-norm embedding sets: 20 newsgroups as all-MiniLM-L6-v2 embeddings (17 901 posts, `bench/embed_news.py`), and the two `evoc_bench_*` sets of the EVoC benchmark (`bench/embed_evoc.py`): 20 newsgroups under all-mpnet-base-v2 (`news-mpnet`, 18 119 × 768, 20 classes) and CIFAR-100 as CLIP image embeddings (`cifar100-clip`, 59 999 × 1 280, 100 classes) | `results_rivals.csv` |
 | `bench/head_references.py` | one outside implementation per betula head that had none: k-medoids, fuzzy c-means, k-prototypes, k-modes, the Toeplitz mixture | `results_head_refs.csv` |
 | `bench/density_rivals.py` | density and hierarchy heads against `hdbscan`, `fast_hdbscan`, OPTICS, DBSCAN (scikit-learn and the `dbscan` package), CLASSIX, DenMune, FINCH, DelTriC, CoreSPECT, genieclust, lumbermark, on the quality fixtures at 30 000 rows and `digits` | `results_density_rivals.csv` |
 
@@ -1615,8 +1634,9 @@ versions are the ones listed here.
 - **A difference smaller than the wider of the two seed ranges is a tie**, as everywhere on this page.
 - **One betula head per contest.** The board pairs every rival with one betula head per contest,
   the one with the best mean of its worst-seed ARI over the contest's slices, as a user picks one
-  method for one kind of data: for all seven density fixtures, and separately for MNIST and for the
-  news embeddings. Picking the best of a dozen heads afresh for each fixture needs the labels, and
+  method for one kind of data: for all seven density fixtures, and separately for MNIST, for the
+  two sentence-embedding sets (one corpus under two models) and for the CLIP image embeddings.
+  Picking the best of a dozen heads afresh for each fixture needs the labels, and
   under that rule every density fixture read as a betula win while `hdbscan` led on the mean. The
   tables show every head; a better head for one fixture is written as that, not as a win.
 - **The leaf budget is about five rows per leaf.** Every betula arm gets 4 000 leaves at 20 000 rows
@@ -1732,12 +1752,29 @@ not. These have no row in any committed CSV:
   most 0.003. The gain is a seventh of the seed range and it reads every row a second time, so it
   ships as neither a head nor a recipe. Seed 0 alone spreads from 0.805 to 0.882 over five row
   orders: the wide told-k range is the build order as much as the seed.
-- **Sentence embeddings (20 newsgroups, MiniLM). A loss.** Told k, UMAP + k-means (0.451) and every
-  other layout + k-means beat betula's best (`vmf`, 0.382); scikit-learn's k-means on the raw
-  embeddings ties it (0.389). Not told k, PhenoGraph (0.395), kNN + Leiden (0.386) and CoreSPECT
-  (0.360, 36 clusters) beat `leiden` with the rows graph (0.330). BERTopic's default pipeline reads
-  0.086 here, with 37 % of the posts marked noise and 218 topics; EVoC 0.207 with 30 % noise;
-  DelTriC 0.174 with 33 clusters. The USAGE guide shows `vmf` in BERTopic's cluster slot.
+- **Sentence embeddings (20 newsgroups under MiniLM and under mpnet). A loss.** One contest over
+  both models. Told k, the board's rule picks `leiden` with the rows graph and `resolution="auto"`
+  (worst-seed mean 0.398 against `vmf` 0.387 and `spherical-kmeans` 0.384). Under MiniLM, UMAP +
+  k-means (0.451) and every other layout + k-means beat it (0.374); scikit-learn's k-means on the
+  raw embeddings ties it (0.389), and `vmf` reads 0.382. Under mpnet it reads 0.433: both UMAP
+  pipelines beat it (0.472 and 0.459), PaCMAP and openTSNE + k-means tie it (0.443 and 0.429), and
+  it beats scikit-learn's k-means (0.404). Not told k, PhenoGraph and kNN + Leiden beat `leiden`
+  with the rows graph under both models (0.395 and 0.386 against 0.330; 0.429 and 0.397 against
+  0.367).
+  CoreSPECT beats it under MiniLM (0.360, 36 clusters) and loses to it under mpnet (0.354, 50
+  clusters). BERTopic's default pipeline reads 0.086 and 0.081, with 37 % and 34 % of the posts
+  marked noise and 218 and 252 topics; EVoC 0.207 and 0.252, with 30 % and 25 % noise; DelTriC
+  0.174 and 0.213, with 33 and 43 clusters. The USAGE guide shows `vmf` in BERTopic's cluster slot.
+- **Image embeddings (CIFAR-100 under CLIP, 59 999 × 1 280, 100 classes). Told k: a loss to two
+  layouts; not told k: a loss.** Told k, `leiden` with the rows graph and `resolution="auto"` reads
+  0.666. UMAP + k-means (0.721) and openTSNE + k-means (0.696) beat it; UMAP 0.6 + k-means (0.667)
+  and scikit-learn's k-means (0.637, seeds 0.601–0.644) tie it; it beats PaCMAP + k-means (0.634).
+  betula's own `kmeans`, `vmf` and `spherical-kmeans` read 0.55–0.59. Not told k, CoreSPECT (0.626,
+  125 clusters), kNN + Leiden (0.561) and PhenoGraph (0.529) beat the rows graph (0.370), which
+  stops at 51 communities for 100 classes. EVoC reads 0.198 over all rows with 21 % marked noise,
+  and 0.835 over the rows it clusters; BERTopic's pipeline 0.176. DelTriC does not finish: it runs
+  out of memory under the run's 13 GB cap. betula's process peaks at 689–690 MB against
+  1 052–1 649 MB for every rival.
 - **Density, k not given. A loss on the mean.** One method over all seven fixtures, mean ARI:
   DelTriC 0.657, `hdbscan` 0.652, `fast_hdbscan` 0.638, betula's `hdbscan` head 0.616, `scale-space`
   0.609, the `gmm-full` BIC sweep 0.556, DenMune 0.540, the `gmm` BIC sweep 0.498, FINCH 0.484,
@@ -1895,6 +1932,76 @@ Bold rows are betula's. `bench/rivals.py --arms=a,b` and `bench/density_rivals.p
 | deltric | 0.485 (0.485–0.485) | 93 | 0.01 | 10590 |
 | cplearn-corespect | 0.462 (0.460–0.463) | 36 | 0.00 | 1083 |
 | **betula-hdbscan** | 0.024 (0.024–0.024) | 2722 | 0.12 | 574 |
+
+The two `evoc_bench_*` boards below were added on 2026-11-16 with the same arms, seeds and versions;
+betula's rows ran on build `3772c4a`, with DelTriC and CoreSPECT added the same day. Their leaf
+budget keeps about five rows per leaf: 4 000 leaves at 18 119 rows, 12 000 at 59 999. The CIFAR-100
+file publishes 60 000 rows, of which the last is all zeros; the cache drops it. Every row of these
+two boards, the rivals' included, reads peak RSS as `VmHWM`; on the boards above only betula's rows
+do (*Isolation*, under *Methodology*), so a memory cell here is the first in which both sides are
+read by the same instrument.
+
+**news-mpnet, n = 18 119, told k**
+
+| method | ARI median (min–max) | clusters | noise | peak RSS MB |
+|---|---|---|---|---|
+| umap+kmeans | 0.472 (0.470–0.477) | 20 | 0.00 | 694 |
+| umap-0.6+kmeans | 0.459 (0.458–0.464) | 20 | 0.00 | 927 |
+| pacmap+kmeans | 0.443 (0.439–0.456) | 20 | 0.00 | 489 |
+| **betula-leiden-rows-auto** | 0.433 (0.429–0.433) | 20 | 0.00 | 276 |
+| opentsne+kmeans | 0.429 (0.423–0.430) | 20 | 0.00 | 605 |
+| **betula-spherical-kmeans** | 0.408 (0.403–0.421) | 20 | 0.00 | 308 |
+| sklearn-kmeans | 0.404 (0.388–0.409) | 20 | 0.00 | 343 |
+| **betula-vmf-shared** | 0.400 (0.399–0.447) | 20 | 0.00 | 394 |
+| **betula-kmeans** | 0.378 (0.365–0.381) | 20 | 0.00 | 272 |
+
+**news-mpnet, n = 18 119, k not given**
+
+| method | ARI median (min–max) | clusters | noise | peak RSS MB |
+|---|---|---|---|---|
+| phenograph | 0.429 (0.419–0.430) | 30 | 0.00 | 417 |
+| knn+leiden (scanpy recipe) | 0.397 (0.392–0.398) | 45 | 0.00 | 606 |
+| **betula-leiden-rows** | 0.367 (0.366–0.370) | 14 | 0.00 | 275 |
+| cplearn-corespect | 0.354 (0.351–0.356) | 50 | 0.00 | 590 |
+| **betula-leiden** | 0.353 (0.351–0.357) | 12 | 0.00 | 267 |
+| **betula-leiden-mass** | 0.267 (0.267–0.272) | 8 | 0.00 | 267 |
+| evoc | 0.252 (0.233–0.263) | 11 | 0.25 | 956 |
+| deltric | 0.213 (0.213–0.213) | 43 | 0.00 | 3125 |
+| **betula-hdbscan** | 0.093 (0.093–0.093) | 494 | 0.14 | 267 |
+| bertopic default (umap+hdbscan mcs=10) | 0.081 (0.051–0.084) | 252 | 0.34 | 695 |
+
+**cifar100-clip, n = 59 999, told k**
+
+| method | ARI median (min–max) | clusters | noise | peak RSS MB |
+|---|---|---|---|---|
+| umap+kmeans | 0.721 (0.697–0.721) | 100 | 0.00 | 1369 |
+| opentsne+kmeans | 0.696 (0.694–0.711) | 100 | 0.00 | 1533 |
+| umap-0.6+kmeans | 0.667 (0.660–0.670) | 100 | 0.00 | 1649 |
+| **betula-leiden-rows-auto** | 0.666 (0.664–0.672) | 100 | 0.00 | 690 |
+| sklearn-kmeans | 0.637 (0.601–0.644) | 100 | 0.00 | 1098 |
+| pacmap+kmeans | 0.634 (0.628–0.642) | 100 | 0.00 | 1296 |
+| **betula-kmeans** | 0.592 (0.583–0.625) | 100 | 0.00 | 664 |
+| **betula-vmf-shared** | 0.572 (0.566–0.573) | 100 | 0.00 | 1391 |
+| **betula-spherical-kmeans** | 0.551 (0.529–0.579) | 100 | 0.00 | 962 |
+
+**cifar100-clip, n = 59 999, k not given**
+
+| method | ARI median (min–max) | clusters | noise | peak RSS MB |
+|---|---|---|---|---|
+| cplearn-corespect | 0.626 (0.624–0.635) | 125 | 0.00 | 1556 |
+| knn+leiden (scanpy recipe) | 0.561 (0.556–0.580) | 78 | 0.00 | 1052 |
+| phenograph | 0.529 (0.505–0.540) | 75 | 0.00 | 1109 |
+| **betula-leiden-rows** | 0.370 (0.358–0.386) | 51 | 0.00 | 689 |
+| **betula-leiden-mass** | 0.322 (0.321–0.323) | 47 | 0.00 | 722 |
+| **betula-leiden** | 0.230 (0.219–0.273) | 34 | 0.00 | 721 |
+| evoc | 0.198 (0.193–0.238) | 106 | 0.21 | 1347 |
+| bertopic default (umap+hdbscan mcs=10) | 0.176 (0.173–0.195) | 331 | 0.19 | 1368 |
+| **betula-hdbscan** | 0.164 (0.164–0.164) | 1345 | 0.11 | 720 |
+| deltric | DNF (rc=1: numpy._core._exceptions._ArrayMemoryError: Unable to allocate 1.72 GiB for an array with shape (179972, 1280) and data type float64) | | | |
+
+On CIFAR-100 `spherical-kmeans` peaks 298 MB above `kmeans` and `vmf` 727 MB above it (a float32
+copy of the rows is 307 MB): the directional heads put the rows on the sphere in a copy of their
+own, so the float32 fit that maps the rows without copying them does not reach them.
 
 #### Density and hierarchy contests (`results_density_rivals.csv`)
 
@@ -2216,9 +2323,13 @@ side of every cell is the one head its contest chose (see the rules above).
 - **aeon-kasba** — 1 win · 1 tie · 0 loss
   - win, quality, `ar-mixture/90/told-k` (head_refs): betula 0.764 ARI (`betula-gmm-toeplitz`) against 0.207 ARI
   - tie, memory, `ar-mixture/90/told-k` (head_refs): betula 177 MB (`betula-gmm-toeplitz`) against 320 MB
-- **bertopic default (umap+hdbscan mcs=10)** — 2 win · 0 tie · 0 loss
+- **bertopic default (umap+hdbscan mcs=10)** — 6 win · 0 tie · 0 loss
+  - win, memory, `cifar100-clip/59999/no-k` (rivals): betula 689 MB (`betula-leiden-rows`) against 1368 MB
   - win, memory, `news-minilm/17901/no-k` (rivals): betula 243 MB (`betula-leiden-rows`) against 640 MB
+  - win, memory, `news-mpnet/18119/no-k` (rivals): betula 275 MB (`betula-leiden-rows`) against 695 MB
+  - win, quality, `cifar100-clip/59999/no-k` (rivals): betula 0.370 ARI (`betula-leiden-rows`) against 0.176 ARI
   - win, quality, `news-minilm/17901/no-k` (rivals): betula 0.330 ARI (`betula-leiden-rows`) against 0.086 ARI
+  - win, quality, `news-mpnet/18119/no-k` (rivals): betula 0.367 ARI (`betula-leiden-rows`) against 0.081 ARI
 - **bico (streaming)** — 5 win · 0 tie · 0 loss
   - win, memory, `1000000` (memory): betula 55 MB (`betula (streaming)`) against 175 MB
   - win, memory, `10000000` (memory): betula 55 MB (`betula (streaming)`) against 175 MB
@@ -2228,7 +2339,7 @@ side of every cell is the one head its contest chose (see the rules above).
 - **classix** — 1 win · 1 tie · 0 loss
   - win, memory, `highdim/30000/no-k` (density_rivals): betula 175 MB (`betula-hdbscan`) against 188 MB
   - tie, quality, `highdim/30000/no-k` (density_rivals): betula 1.000 ARI (`betula-hdbscan`) against 1.000 ARI
-- **cplearn-corespect** — 17 win · 1 tie · 2 loss
+- **cplearn-corespect** — 20 win · 1 tie · 3 loss
   - win, memory, `aniso/30000/no-k` (density_rivals): betula 166 MB (`betula-hdbscan`) against 839 MB
   - win, memory, `blobs/30000/no-k` (density_rivals): betula 166 MB (`betula-hdbscan`) against 779 MB
   - win, memory, `circles/30000/no-k` (density_rivals): betula 167 MB (`betula-hdbscan`) against 858 MB
@@ -2236,9 +2347,11 @@ side of every cell is the one head its contest chose (see the rules above).
   - win, memory, `highdim/30000/no-k` (density_rivals): betula 175 MB (`betula-hdbscan`) against 635 MB
   - win, memory, `moons/30000/no-k` (density_rivals): betula 167 MB (`betula-hdbscan`) against 856 MB
   - win, memory, `varied/30000/no-k` (density_rivals): betula 166 MB (`betula-hdbscan`) against 766 MB
+  - win, memory, `cifar100-clip/59999/no-k` (rivals): betula 689 MB (`betula-leiden-rows`) against 1556 MB
   - win, memory, `mnist/20000/no-k` (rivals): betula 292 MB (`betula-leiden-rows`) against 558 MB
   - win, memory, `mnist/70000/no-k` (rivals): betula 563 MB (`betula-leiden-rows`) against 1083 MB
   - win, memory, `news-minilm/17901/no-k` (rivals): betula 243 MB (`betula-leiden-rows`) against 540 MB
+  - win, memory, `news-mpnet/18119/no-k` (rivals): betula 275 MB (`betula-leiden-rows`) against 590 MB
   - win, quality, `aniso/30000/no-k` (density_rivals): betula 0.469 ARI (`betula-hdbscan`) against 0.031 ARI
   - win, quality, `blobs/30000/no-k` (density_rivals): betula 0.376 ARI (`betula-hdbscan`) against 0.084 ARI
   - win, quality, `circles/30000/no-k` (density_rivals): betula 1.000 ARI (`betula-hdbscan`) against 0.018 ARI
@@ -2246,10 +2359,12 @@ side of every cell is the one head its contest chose (see the rules above).
   - win, quality, `varied/30000/no-k` (density_rivals): betula 0.302 ARI (`betula-hdbscan`) against 0.031 ARI
   - win, quality, `mnist/20000/no-k` (rivals): betula 0.762 ARI (`betula-leiden-rows`) against 0.510 ARI
   - win, quality, `mnist/70000/no-k` (rivals): betula 0.777 ARI (`betula-leiden-rows`) against 0.462 ARI
+  - win, quality, `news-mpnet/18119/no-k` (rivals): betula 0.367 ARI (`betula-leiden-rows`) against 0.354 ARI
   - tie, quality, `highdim/30000/no-k` (density_rivals): betula 1.000 ARI (`betula-hdbscan`) against 1.000 ARI
   - loss, quality, `digits/1797/no-k` (density_rivals): betula 0.164 ARI (`betula-hdbscan`) against 0.683 ARI
+  - loss, quality, `cifar100-clip/59999/no-k` (rivals): betula 0.370 ARI (`betula-leiden-rows`) against 0.626 ARI
   - loss, quality, `news-minilm/17901/no-k` (rivals): betula 0.330 ARI (`betula-leiden-rows`) against 0.360 ARI
-- **deltric** — 17 win · 2 tie · 1 loss
+- **deltric** — 19 win · 2 tie · 1 loss
   - win, memory, `aniso/30000/no-k` (density_rivals): betula 166 MB (`betula-hdbscan`) against 453 MB
   - win, memory, `blobs/30000/no-k` (density_rivals): betula 166 MB (`betula-hdbscan`) against 454 MB
   - win, memory, `circles/30000/no-k` (density_rivals): betula 167 MB (`betula-hdbscan`) against 454 MB
@@ -2260,6 +2375,7 @@ side of every cell is the one head its contest chose (see the rules above).
   - win, memory, `mnist/20000/no-k` (rivals): betula 292 MB (`betula-leiden-rows`) against 3452 MB
   - win, memory, `mnist/70000/no-k` (rivals): betula 563 MB (`betula-leiden-rows`) against 10590 MB
   - win, memory, `news-minilm/17901/no-k` (rivals): betula 243 MB (`betula-leiden-rows`) against 1907 MB
+  - win, memory, `news-mpnet/18119/no-k` (rivals): betula 275 MB (`betula-leiden-rows`) against 3125 MB
   - win, quality, `blobs/30000/no-k` (density_rivals): betula 0.376 ARI (`betula-hdbscan`) against 0.276 ARI
   - win, quality, `circles/30000/no-k` (density_rivals): betula 1.000 ARI (`betula-hdbscan`) against 0.943 ARI
   - win, quality, `moons/30000/no-k` (density_rivals): betula 1.000 ARI (`betula-hdbscan`) against 0.924 ARI
@@ -2267,6 +2383,7 @@ side of every cell is the one head its contest chose (see the rules above).
   - win, quality, `mnist/20000/no-k` (rivals): betula 0.762 ARI (`betula-leiden-rows`) against 0.483 ARI
   - win, quality, `mnist/70000/no-k` (rivals): betula 0.777 ARI (`betula-leiden-rows`) against 0.485 ARI
   - win, quality, `news-minilm/17901/no-k` (rivals): betula 0.330 ARI (`betula-leiden-rows`) against 0.174 ARI
+  - win, quality, `news-mpnet/18119/no-k` (rivals): betula 0.367 ARI (`betula-leiden-rows`) against 0.213 ARI
   - tie, quality, `aniso/30000/no-k` (density_rivals): betula 0.469 ARI (`betula-hdbscan`) against 0.461 ARI
   - tie, quality, `highdim/30000/no-k` (density_rivals): betula 1.000 ARI (`betula-hdbscan`) against 1.000 ARI
   - loss, quality, `digits/1797/no-k` (density_rivals): betula 0.164 ARI (`betula-hdbscan`) against 0.727 ARI
@@ -2279,10 +2396,14 @@ side of every cell is the one head its contest chose (see the rules above).
   - tie, quality, `highdim/30000/no-k` (density_rivals): betula 1.000 ARI (`betula-hdbscan`) against 0.999 ARI
   - tie, quality, `moons/30000/no-k` (density_rivals): betula 1.000 ARI (`betula-hdbscan`) against 0.997 ARI
   - loss, quality, `digits/1797/no-k` (density_rivals): betula 0.164 ARI (`betula-hdbscan`) against 0.786 ARI
-- **evoc** — 3 win · 2 tie · 1 loss
+- **evoc** — 7 win · 2 tie · 1 loss
+  - win, memory, `cifar100-clip/59999/no-k` (rivals): betula 689 MB (`betula-leiden-rows`) against 1347 MB
   - win, memory, `mnist/20000/no-k` (rivals): betula 292 MB (`betula-leiden-rows`) against 1028 MB
   - win, memory, `mnist/70000/no-k` (rivals): betula 563 MB (`betula-leiden-rows`) against 1408 MB
   - win, memory, `news-minilm/17901/no-k` (rivals): betula 243 MB (`betula-leiden-rows`) against 929 MB
+  - win, memory, `news-mpnet/18119/no-k` (rivals): betula 275 MB (`betula-leiden-rows`) against 956 MB
+  - win, quality, `cifar100-clip/59999/no-k` (rivals): betula 0.370 ARI (`betula-leiden-rows`) against 0.198 ARI
+  - win, quality, `news-mpnet/18119/no-k` (rivals): betula 0.367 ARI (`betula-leiden-rows`) against 0.252 ARI
   - tie, quality, `mnist/20000/no-k` (rivals): betula 0.762 ARI (`betula-leiden-rows`) against 0.815 ARI
   - tie, quality, `news-minilm/17901/no-k` (rivals): betula 0.330 ARI (`betula-leiden-rows`) against 0.207 ARI
   - loss, quality, `mnist/70000/no-k` (rivals): betula 0.777 ARI (`betula-leiden-rows`) against 0.899 ARI
@@ -2364,13 +2485,17 @@ side of every cell is the one head its contest chose (see the rules above).
 - **kmodes-kprototypes** — 1 win · 1 tie · 0 loss
   - win, memory, `covtype-mixed/10000/told-k` (head_refs): betula 166 MB (`betula-kprototypes`) against 171 MB
   - tie, quality, `covtype-mixed/10000/told-k` (head_refs): betula 0.028 ARI (`betula-kprototypes`) against 0.022 ARI
-- **knn+leiden (scanpy recipe)** — 4 win · 1 tie · 1 loss
+- **knn+leiden (scanpy recipe)** — 6 win · 1 tie · 3 loss
+  - win, memory, `cifar100-clip/59999/no-k` (rivals): betula 689 MB (`betula-leiden-rows`) against 1052 MB
   - win, memory, `mnist/20000/no-k` (rivals): betula 292 MB (`betula-leiden-rows`) against 619 MB
   - win, memory, `mnist/70000/no-k` (rivals): betula 563 MB (`betula-leiden-rows`) against 962 MB
   - win, memory, `news-minilm/17901/no-k` (rivals): betula 243 MB (`betula-leiden-rows`) against 575 MB
+  - win, memory, `news-mpnet/18119/no-k` (rivals): betula 275 MB (`betula-leiden-rows`) against 606 MB
   - win, quality, `mnist/70000/no-k` (rivals): betula 0.777 ARI (`betula-leiden-rows`) against 0.711 ARI
   - tie, quality, `mnist/20000/no-k` (rivals): betula 0.762 ARI (`betula-leiden-rows`) against 0.687 ARI
+  - loss, quality, `cifar100-clip/59999/no-k` (rivals): betula 0.370 ARI (`betula-leiden-rows`) against 0.561 ARI
   - loss, quality, `news-minilm/17901/no-k` (rivals): betula 0.330 ARI (`betula-leiden-rows`) against 0.386 ARI
+  - loss, quality, `news-mpnet/18119/no-k` (rivals): betula 0.367 ARI (`betula-leiden-rows`) against 0.397 ARI
 - **lumbermark** — 9 win · 4 tie · 1 loss
   - win, memory, `aniso/30000/told-k` (density_rivals): betula 172 MB (`betula-leiden-rows-auto`) against 207 MB
   - win, memory, `blobs/30000/told-k` (density_rivals): betula 172 MB (`betula-leiden-rows-auto`) against 207 MB
@@ -2386,27 +2511,39 @@ side of every cell is the one head its contest chose (see the rules above).
   - tie, quality, `highdim/30000/told-k` (density_rivals): betula 1.000 ARI (`betula-leiden-rows-auto`) against 1.000 ARI
   - tie, quality, `moons/30000/told-k` (density_rivals): betula 1.000 ARI (`betula-leiden-rows-auto`) against 1.000 ARI
   - loss, quality, `aniso/30000/told-k` (density_rivals): betula 0.545 ARI (`betula-leiden-rows-auto`) against 0.843 ARI
-- **opentsne+kmeans** — 4 win · 1 tie · 1 loss
+- **opentsne+kmeans** — 6 win · 2 tie · 2 loss
+  - win, memory, `cifar100-clip/59999/told-k` (rivals): betula 690 MB (`betula-leiden-rows-auto`) against 1533 MB
   - win, memory, `mnist/20000/told-k` (rivals): betula 293 MB (`betula-leiden-rows-auto`) against 626 MB
   - win, memory, `mnist/70000/told-k` (rivals): betula 562 MB (`betula-leiden-rows-auto`) against 1272 MB
-  - win, memory, `news-minilm/17901/told-k` (rivals): betula 279 MB (`betula-vmf-shared`) against 537 MB
+  - win, memory, `news-minilm/17901/told-k` (rivals): betula 243 MB (`betula-leiden-rows-auto`) against 537 MB
+  - win, memory, `news-mpnet/18119/told-k` (rivals): betula 276 MB (`betula-leiden-rows-auto`) against 605 MB
   - win, quality, `mnist/70000/told-k` (rivals): betula 0.835 ARI (`betula-leiden-rows-auto`) against 0.745 ARI
   - tie, quality, `mnist/20000/told-k` (rivals): betula 0.762 ARI (`betula-leiden-rows-auto`) against 0.740 ARI
-  - loss, quality, `news-minilm/17901/told-k` (rivals): betula 0.382 ARI (`betula-vmf-shared`) against 0.416 ARI
-- **pacmap+kmeans** — 3 win · 2 tie · 1 loss
+  - tie, quality, `news-mpnet/18119/told-k` (rivals): betula 0.433 ARI (`betula-leiden-rows-auto`) against 0.429 ARI
+  - loss, quality, `cifar100-clip/59999/told-k` (rivals): betula 0.666 ARI (`betula-leiden-rows-auto`) against 0.696 ARI
+  - loss, quality, `news-minilm/17901/told-k` (rivals): betula 0.374 ARI (`betula-leiden-rows-auto`) against 0.416 ARI
+- **pacmap+kmeans** — 6 win · 3 tie · 1 loss
+  - win, memory, `cifar100-clip/59999/told-k` (rivals): betula 690 MB (`betula-leiden-rows-auto`) against 1296 MB
   - win, memory, `mnist/20000/told-k` (rivals): betula 293 MB (`betula-leiden-rows-auto`) against 514 MB
   - win, memory, `mnist/70000/told-k` (rivals): betula 562 MB (`betula-leiden-rows-auto`) against 1046 MB
-  - win, memory, `news-minilm/17901/told-k` (rivals): betula 279 MB (`betula-vmf-shared`) against 397 MB
+  - win, memory, `news-minilm/17901/told-k` (rivals): betula 243 MB (`betula-leiden-rows-auto`) against 397 MB
+  - win, memory, `news-mpnet/18119/told-k` (rivals): betula 276 MB (`betula-leiden-rows-auto`) against 489 MB
+  - win, quality, `cifar100-clip/59999/told-k` (rivals): betula 0.666 ARI (`betula-leiden-rows-auto`) against 0.634 ARI
   - tie, quality, `mnist/20000/told-k` (rivals): betula 0.762 ARI (`betula-leiden-rows-auto`) against 0.751 ARI
   - tie, quality, `mnist/70000/told-k` (rivals): betula 0.835 ARI (`betula-leiden-rows-auto`) against 0.795 ARI
-  - loss, quality, `news-minilm/17901/told-k` (rivals): betula 0.382 ARI (`betula-vmf-shared`) against 0.412 ARI
-- **phenograph** — 3 win · 1 tie · 2 loss
+  - tie, quality, `news-mpnet/18119/told-k` (rivals): betula 0.433 ARI (`betula-leiden-rows-auto`) against 0.443 ARI
+  - loss, quality, `news-minilm/17901/told-k` (rivals): betula 0.374 ARI (`betula-leiden-rows-auto`) against 0.412 ARI
+- **phenograph** — 5 win · 1 tie · 4 loss
+  - win, memory, `cifar100-clip/59999/no-k` (rivals): betula 689 MB (`betula-leiden-rows`) against 1109 MB
   - win, memory, `mnist/20000/no-k` (rivals): betula 292 MB (`betula-leiden-rows`) against 447 MB
   - win, memory, `mnist/70000/no-k` (rivals): betula 563 MB (`betula-leiden-rows`) against 1104 MB
   - win, memory, `news-minilm/17901/no-k` (rivals): betula 243 MB (`betula-leiden-rows`) against 386 MB
+  - win, memory, `news-mpnet/18119/no-k` (rivals): betula 275 MB (`betula-leiden-rows`) against 417 MB
   - tie, quality, `mnist/20000/no-k` (rivals): betula 0.762 ARI (`betula-leiden-rows`) against 0.766 ARI
+  - loss, quality, `cifar100-clip/59999/no-k` (rivals): betula 0.370 ARI (`betula-leiden-rows`) against 0.529 ARI
   - loss, quality, `mnist/70000/no-k` (rivals): betula 0.777 ARI (`betula-leiden-rows`) against 0.821 ARI
   - loss, quality, `news-minilm/17901/no-k` (rivals): betula 0.330 ARI (`betula-leiden-rows`) against 0.395 ARI
+  - loss, quality, `news-mpnet/18119/no-k` (rivals): betula 0.367 ARI (`betula-leiden-rows`) against 0.429 ARI
 - **skfuzzy-cmeans** — 0 win · 1 tie · 1 loss
   - tie, quality, `digits/1797/told-k` (head_refs): betula 0.206 ARI (`betula-fuzzy-cmeans`) against 0.216 ARI
   - loss, memory, `digits/1797/told-k` (head_refs): betula 166 MB (`betula-fuzzy-cmeans`) against 163 MB
@@ -2499,12 +2636,15 @@ side of every cell is the one head its contest chose (see the rules above).
   - tie, quality, `highdim/betula-hdbscan` (quality): betula 1.000 ARI (`betula-hdbscan`) against 1.000 ARI
   - tie, quality, `moons/betula-hdbscan` (quality): betula 1.000 ARI (`betula-hdbscan`) against 1.000 ARI
   - tie, quality, `varied/betula-hdbscan` (quality): betula 0.568 ARI (`betula-hdbscan`) against 0.802 ARI
-- **sklearn-kmeans** — 21 win · 19 tie · 3 loss
+- **sklearn-kmeans** — 25 win · 20 tie · 2 loss
   - win, memory, `digits/1797/told-k` (head_refs): betula 167 MB (`betula-kmeans`) against 181 MB
   - win, memory, `covtype` (real_scale): betula 897 MB (`betula-kmeans`) against 934 MB
   - win, memory, `covtype/betula-kmeans` (real_scale): betula 897 MB (`betula-kmeans`) against 934 MB
+  - win, memory, `cifar100-clip/59999/told-k` (rivals): betula 690 MB (`betula-leiden-rows-auto`) against 1098 MB
   - win, memory, `mnist/20000/told-k` (rivals): betula 293 MB (`betula-leiden-rows-auto`) against 365 MB
   - win, memory, `mnist/70000/told-k` (rivals): betula 562 MB (`betula-leiden-rows-auto`) against 836 MB
+  - win, memory, `news-minilm/17901/told-k` (rivals): betula 243 MB (`betula-leiden-rows-auto`) against 259 MB
+  - win, memory, `news-mpnet/18119/told-k` (rivals): betula 276 MB (`betula-leiden-rows-auto`) against 343 MB
   - win, memory, `10000/betula-kmeans` (scaling): betula 50 MB (`betula-kmeans`) against 173 MB
   - win, memory, `1000000/betula-kmeans` (scaling): betula 91 MB (`betula-kmeans`) against 320 MB
   - win, memory, `200000/betula-kmeans` (scaling): betula 57 MB (`betula-kmeans`) against 202 MB
@@ -2514,6 +2654,7 @@ side of every cell is the one head its contest chose (see the rules above).
   - win, quality, `covtype/betula-kmeans` (real_scale): betula 0.087 ARI (`betula-kmeans`) against 0.049 ARI
   - win, quality, `mnist/20000/told-k` (rivals): betula 0.762 ARI (`betula-leiden-rows-auto`) against 0.359 ARI
   - win, quality, `mnist/70000/told-k` (rivals): betula 0.835 ARI (`betula-leiden-rows-auto`) against 0.367 ARI
+  - win, quality, `news-mpnet/18119/told-k` (rivals): betula 0.433 ARI (`betula-leiden-rows-auto`) against 0.404 ARI
   - win, speed, `covtype` (real_scale): betula 0.71 s (`betula-kmeans`) against 3.97 s
   - win, speed, `covtype/betula-kmeans` (real_scale): betula 0.71 s (`betula-kmeans`) against 3.97 s
   - win, speed, `1000000` (scaling): betula 0.21 s (`betula-kmeans`) against 2.09 s
@@ -2539,8 +2680,8 @@ side of every cell is the one head its contest chose (see the rules above).
   - tie, quality, `covtype/20000/16000/betula-kmeans` (real_hires): betula 0.064 ARI (`betula-kmeans`) against 0.054 ARI
   - tie, quality, `digits/1797/1797/betula-kmeans` (real_hires): betula 0.467 ARI (`betula-kmeans`) against 0.468 ARI
   - tie, quality, `mnist/20000/16000/betula-kmeans` (real_hires): betula 0.313 ARI (`betula-kmeans`) against 0.324 ARI
-  - tie, quality, `news-minilm/17901/told-k` (rivals): betula 0.382 ARI (`betula-vmf-shared`) against 0.389 ARI
-  - loss, memory, `news-minilm/17901/told-k` (rivals): betula 279 MB (`betula-vmf-shared`) against 259 MB
+  - tie, quality, `cifar100-clip/59999/told-k` (rivals): betula 0.666 ARI (`betula-leiden-rows-auto`) against 0.637 ARI
+  - tie, quality, `news-minilm/17901/told-k` (rivals): betula 0.374 ARI (`betula-leiden-rows-auto`) against 0.389 ARI
   - loss, quality, `20news/betula-sparse` (sparse): betula 0.038 ARI (`betula-sparse`) against 0.056 ARI
   - loss, speed, `20news/betula-sparse` (sparse): betula 1.62 s (`betula-sparse`) against 0.56 s
 - **sklearn-kmeans (one-shot)** — 18 win · 0 tie · 2 loss
@@ -2604,20 +2745,28 @@ side of every cell is the one head its contest chose (see the rules above).
   - win, memory, `mnist/70000/no-k` (rivals): betula 563 MB (`betula-leiden-rows`) against 1096 MB
   - win, quality, `mnist/20000/no-k` (rivals): betula 0.762 ARI (`betula-leiden-rows`) against 0.536 ARI
   - loss, quality, `mnist/70000/no-k` (rivals): betula 0.777 ARI (`betula-leiden-rows`) against 0.920 ARI
-- **umap+kmeans** — 3 win · 2 tie · 1 loss
+- **umap+kmeans** — 5 win · 2 tie · 3 loss
+  - win, memory, `cifar100-clip/59999/told-k` (rivals): betula 690 MB (`betula-leiden-rows-auto`) against 1369 MB
   - win, memory, `mnist/20000/told-k` (rivals): betula 293 MB (`betula-leiden-rows-auto`) against 678 MB
   - win, memory, `mnist/70000/told-k` (rivals): betula 562 MB (`betula-leiden-rows-auto`) against 1097 MB
-  - win, memory, `news-minilm/17901/told-k` (rivals): betula 279 MB (`betula-vmf-shared`) against 640 MB
+  - win, memory, `news-minilm/17901/told-k` (rivals): betula 243 MB (`betula-leiden-rows-auto`) against 640 MB
+  - win, memory, `news-mpnet/18119/told-k` (rivals): betula 276 MB (`betula-leiden-rows-auto`) against 694 MB
   - tie, quality, `mnist/20000/told-k` (rivals): betula 0.762 ARI (`betula-leiden-rows-auto`) against 0.734 ARI
   - tie, quality, `mnist/70000/told-k` (rivals): betula 0.835 ARI (`betula-leiden-rows-auto`) against 0.769 ARI
-  - loss, quality, `news-minilm/17901/told-k` (rivals): betula 0.382 ARI (`betula-vmf-shared`) against 0.451 ARI
-- **umap-0.6+kmeans** — 3 win · 2 tie · 1 loss
+  - loss, quality, `cifar100-clip/59999/told-k` (rivals): betula 0.666 ARI (`betula-leiden-rows-auto`) against 0.721 ARI
+  - loss, quality, `news-minilm/17901/told-k` (rivals): betula 0.374 ARI (`betula-leiden-rows-auto`) against 0.451 ARI
+  - loss, quality, `news-mpnet/18119/told-k` (rivals): betula 0.433 ARI (`betula-leiden-rows-auto`) against 0.472 ARI
+- **umap-0.6+kmeans** — 5 win · 3 tie · 2 loss
+  - win, memory, `cifar100-clip/59999/told-k` (rivals): betula 690 MB (`betula-leiden-rows-auto`) against 1649 MB
   - win, memory, `mnist/20000/told-k` (rivals): betula 293 MB (`betula-leiden-rows-auto`) against 889 MB
   - win, memory, `mnist/70000/told-k` (rivals): betula 562 MB (`betula-leiden-rows-auto`) against 1115 MB
-  - win, memory, `news-minilm/17901/told-k` (rivals): betula 279 MB (`betula-vmf-shared`) against 737 MB
+  - win, memory, `news-minilm/17901/told-k` (rivals): betula 243 MB (`betula-leiden-rows-auto`) against 737 MB
+  - win, memory, `news-mpnet/18119/told-k` (rivals): betula 276 MB (`betula-leiden-rows-auto`) against 927 MB
+  - tie, quality, `cifar100-clip/59999/told-k` (rivals): betula 0.666 ARI (`betula-leiden-rows-auto`) against 0.667 ARI
   - tie, quality, `mnist/20000/told-k` (rivals): betula 0.762 ARI (`betula-leiden-rows-auto`) against 0.731 ARI
   - tie, quality, `mnist/70000/told-k` (rivals): betula 0.835 ARI (`betula-leiden-rows-auto`) against 0.804 ARI
-  - loss, quality, `news-minilm/17901/told-k` (rivals): betula 0.382 ARI (`betula-vmf-shared`) against 0.430 ARI
+  - loss, quality, `news-minilm/17901/told-k` (rivals): betula 0.374 ARI (`betula-leiden-rows-auto`) against 0.430 ARI
+  - loss, quality, `news-mpnet/18119/told-k` (rivals): betula 0.433 ARI (`betula-leiden-rows-auto`) against 0.459 ARI
 <!-- claims:end -->
 <!-- --8<-- [end:claims] -->
 

@@ -13,7 +13,13 @@ and nothing in `python/betula_cluster` imports them:
     uv run --no-sync --with scikit-learn --with pandas --with umap-learn --with hdbscan \\
         --with evoc --with leidenalg --with python-igraph --with pacmap --with openTSNE \\
         --with phenograph --with deltric --with cplearn python bench/rivals.py [--quick] \\
-        [--arms=a,b]
+        [--arms=a,b] [--datasets=a,b]
+
+`--arms=` and `--datasets=` re-run only the named arms, the named datasets, or both, and keep every
+other row of the CSV. The embedding boards read caches that `bench/embed_*.py` build once:
+`news-minilm` (20 newsgroups under all-MiniLM-L6-v2, `bench/embed_news.py`), and the two
+`evoc_bench_*` sets of the EVoC benchmark (`bench/embed_evoc.py`): `news-mpnet` (the same corpus
+under all-mpnet-base-v2) and `cifar100-clip` (CIFAR-100 as CLIP image embeddings, 100 classes).
 
 Rules (the plan's 12.4, kept here so the CSV can be read without it):
 
@@ -61,12 +67,16 @@ TIMEOUT = 3600.0
 # §11 of the research plan measured the leaf partition's purity at 0.95. MNIST-70k also runs the two
 # rows-graph arms at 8 000 and 20 000 leaves (`BUDGET_STUDY`), so the page can state what the budget
 # buys and what it costs.
-BUDGET = {20_000: 4_000, 70_000: 14_000, 17_901: 4_000}
+BUDGET = {20_000: 4_000, 70_000: 14_000, 17_901: 4_000, 18_119: 4_000, 59_999: 12_000}
 BUDGET_STUDY = (8_000, 20_000)
+
+# The unit-norm embedding sets. UMAP runs on them with the cosine metric, and the directional heads
+# and BERTopic's pipeline run on them alone.
+EMBEDDINGS = ("news-minilm", "news-mpnet", "cifar100-clip")
 
 
 def load(dataset: str, n: int, seed: int):
-    """`(X float32, y)`: MNIST raw / 255, or the 20 newsgroups MiniLM embeddings."""
+    """`(X float32, y)`: MNIST raw / 255, or one of the `EMBEDDINGS`."""
     if dataset == "mnist":
         from _fixtures import fetch
 
@@ -81,6 +91,10 @@ def load(dataset: str, n: int, seed: int):
         from embed_news import cached
 
         x, y = cached()
+    elif dataset in ("news-mpnet", "cifar100-clip"):
+        from embed_evoc import cached
+
+        x, y = cached(dataset)
     else:
         raise ValueError(dataset)
     return np.ascontiguousarray(x, dtype=np.float32), np.asarray(y)
@@ -97,7 +111,7 @@ def _umap(x, seed, dataset, **kw):
 
     base = (
         {"n_neighbors": 15, "min_dist": 0.0, "n_components": 5, "metric": "cosine"}
-        if dataset == "news-minilm"
+        if dataset in EMBEDDINGS
         else {"n_neighbors": 30, "min_dist": 0.0, "n_components": 2}
     )
     return umap.UMAP(random_state=seed, **{**base, **kw}).fit_transform(x)
@@ -157,9 +171,10 @@ def _betula(x, k, seed, n, **kw):
     return est.fit_predict(x)
 
 
-# name → (told_k, datasets, fit(x, k, seed, dataset, n) → labels). `-1` is noise.
+# name → (told_k, where, fit(x, k, seed, dataset, n) → labels). `-1` is noise. `where` is "all",
+# "embeddings" (every set in `EMBEDDINGS`), one dataset, or one dataset at one size.
 ARMS = {
-    "betula-kmeans": (True, "both", lambda x, k, s, d, n: _betula(x, k, s, n, method="kmeans")),
+    "betula-kmeans": (True, "all", lambda x, k, s, d, n: _betula(x, k, s, n, method="kmeans")),
     "betula-spectral-mass": (
         True,
         "mnist",
@@ -167,33 +182,33 @@ ARMS = {
     ),
     "betula-vmf-shared": (
         True,
-        "news-minilm",
+        "embeddings",
         lambda x, k, s, d, n: _betula(x, k, s, n, method="vmf", kappa="shared"),
     ),
     "betula-spherical-kmeans": (
         True,
-        "news-minilm",
+        "embeddings",
         lambda x, k, s, d, n: _betula(x, k, s, n, method="spherical-kmeans"),
     ),
-    "betula-leiden": (False, "both", lambda x, k, s, d, n: _betula(x, k, s, n, method="leiden")),
+    "betula-leiden": (False, "all", lambda x, k, s, d, n: _betula(x, k, s, n, method="leiden")),
     "betula-leiden-mass": (
         False,
-        "both",
+        "all",
         lambda x, k, s, d, n: _betula(x, k, s, n, method="leiden", leaf_graph="mass"),
     ),
     "betula-leiden-rows": (
         False,
-        "both",
+        "all",
         lambda x, k, s, d, n: _betula(x, k, s, n, method="leiden", leaf_graph="rows"),
     ),
     "betula-leiden-rows-auto": (
         True,
-        "both",
+        "all",
         lambda x, k, s, d, n: _betula(
             x, k, s, n, method="leiden", leaf_graph="rows", resolution="auto"
         ),
     ),
-    "betula-hdbscan": (False, "both", lambda x, k, s, d, n: _betula(x, k, s, n, method="hdbscan")),
+    "betula-hdbscan": (False, "all", lambda x, k, s, d, n: _betula(x, k, s, n, method="hdbscan")),
     **{
         f"betula-leiden-rows{suffix} ({leaves} leaves)": (
             told,
@@ -208,15 +223,15 @@ ARMS = {
             ("-auto", True, {"method": "leiden", "leaf_graph": "rows", "resolution": "auto"}),
         )
     },
-    "sklearn-kmeans": (True, "both", lambda x, k, s, d, n: _kmeans(x, k, s)),
-    "umap+kmeans": (True, "both", lambda x, k, s, d, n: _kmeans(_umap(x, s, d), k, s)),
+    "sklearn-kmeans": (True, "all", lambda x, k, s, d, n: _kmeans(x, k, s)),
+    "umap+kmeans": (True, "all", lambda x, k, s, d, n: _kmeans(_umap(x, s, d), k, s)),
     "umap-0.6+kmeans": (
         True,
-        "both",
+        "all",
         lambda x, k, s, d, n: _kmeans(_umap(x, s, d, compatibility_layout=False), k, s),
     ),
-    "pacmap+kmeans": (True, "both", lambda x, k, s, d, n: _kmeans(_pacmap(x, s), k, s)),
-    "opentsne+kmeans": (True, "both", lambda x, k, s, d, n: _kmeans(_tsne(x, s), k, s)),
+    "pacmap+kmeans": (True, "all", lambda x, k, s, d, n: _kmeans(_pacmap(x, s), k, s)),
+    "opentsne+kmeans": (True, "all", lambda x, k, s, d, n: _kmeans(_tsne(x, s), k, s)),
     "umap+hdbscan (umap docs' mnist recipe)": (
         False,
         "mnist",
@@ -224,14 +239,14 @@ ARMS = {
     ),
     "bertopic default (umap+hdbscan mcs=10)": (
         False,
-        "news-minilm",
+        "embeddings",
         lambda x, k, s, d, n: _hdbscan(_umap(x, s, d), min_cluster_size=10),
     ),
-    "evoc": (False, "both", lambda x, k, s, d, n: _evoc(x, s)),
-    "knn+leiden (scanpy recipe)": (False, "both", lambda x, k, s, d, n: _leiden_knn(x, s)),
-    "phenograph": (False, "both", lambda x, k, s, d, n: _phenograph(x, s)),
-    "deltric": (False, "both", lambda x, k, s, d, n: deltric(x, s)),
-    "cplearn-corespect": (False, "both", lambda x, k, s, d, n: corespect(x, s)),
+    "evoc": (False, "all", lambda x, k, s, d, n: _evoc(x, s)),
+    "knn+leiden (scanpy recipe)": (False, "all", lambda x, k, s, d, n: _leiden_knn(x, s)),
+    "phenograph": (False, "all", lambda x, k, s, d, n: _phenograph(x, s)),
+    "deltric": (False, "all", lambda x, k, s, d, n: deltric(x, s)),
+    "cplearn-corespect": (False, "all", lambda x, k, s, d, n: corespect(x, s)),
 }
 
 
@@ -331,33 +346,44 @@ def main(argv: list[str]) -> int:
     import pandas as pd
 
     quick = "--quick" in argv
-    # `--arms=a,b` re-runs only those arms and replaces their rows in the existing CSV.
-    only = next((a.split("=", 1)[1].split(",") for a in argv if a.startswith("--arms=")), None)
+    plan = [("mnist", 20_000), ("news-minilm", 17_901), ("news-mpnet", 18_119)] + (
+        [] if quick else [("mnist", 70_000), ("cifar100-clip", 59_999)]
+    )
+    # `--arms=a,b` and `--datasets=a,b` re-run only those and replace their rows in the CSV.
+    only, datasets = (
+        next((a.split("=", 1)[1].split(",") for a in argv if a.startswith(flag)), None)
+        for flag in ("--arms=", "--datasets=")
+    )
+    for given, known, what in ((only, ARMS, "arms"), (datasets, dict(plan), "datasets")):
+        unknown = sorted(set(given or ()) - set(known))
+        if unknown:
+            raise SystemExit(f"unknown {what}: {unknown}")
+    plan = [(d, n) for d, n in plan if not datasets or d in datasets]
     out = HERE / "results_rivals.csv"
     # Kept rows pass through as text: pandas 2 parses some floats one ulp off, and a re-run of
     # one arm would then rewrite every other arm's row.
     kept = (
         pd.read_csv(out, dtype=str, keep_default_na=False)
-        if only and out.exists()
+        if (only or datasets) and out.exists()
         else pd.DataFrame()
     )
-    if only:
-        unknown = sorted(set(only) - set(ARMS))
-        if unknown:
-            raise SystemExit(f"unknown arms: {unknown}")
-        kept = kept[~kept["arm"].isin(only)] if len(kept) else kept
+    if len(kept):
+        slices = pd.MultiIndex.from_arrays([kept["dataset"], kept["n"].astype(int)]).isin(plan)
+        kept = kept[~(kept["arm"].isin(only or list(ARMS)) & slices)]
     ready = (
         subprocess.run(
             ["bash", str(Path.home() / ".claude/scripts/bench-ready.sh")], capture_output=True
         ).returncode
         == 0
     )
-    plan = [("mnist", 20_000), ("news-minilm", 17_901)] + ([] if quick else [("mnist", 70_000)])
     seeds = SEEDS[:1] if quick else SEEDS
     rows = []
     for dataset, n in plan:
         for arm, (told_k, where, _) in ARMS.items():
-            if where not in ("both", dataset, f"{dataset}-{n}") or (only and arm not in only):
+            runs_here = where in ("all", dataset, f"{dataset}-{n}") or (
+                where == "embeddings" and dataset in EMBEDDINGS
+            )
+            if not runs_here or (only and arm not in only):
                 continue
             for seed in seeds:
                 res = run_child(arm, dataset, n, seed)

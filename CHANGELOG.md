@@ -412,6 +412,21 @@ All notable changes to this project are documented here. The format follows
   of it their imports; `Birch` at its defaults keeps one subcluster per row and finishes no size
   within the harness's time cap. `stream_vs_refit.py` gains `--arms`, and the timing harness times
   the new stream arms.
+- **Two more embedding boards** (`bench/rivals.py`, `bench/embed_evoc.py`). The two
+  `evoc_bench_*` sets of the EVoC benchmark run every arm at seeds 0/1/2: 20 newsgroups under
+  all-mpnet-base-v2 (`news-mpnet`, 18 119 × 768) and CIFAR-100 under CLIP (`cifar100-clip`, the
+  published 60 000 × 1 280 less one all-zero row). `--datasets=` re-runs only the named sets. Told
+  k, UMAP + k-means wins both (0.472 against betula's 0.433; 0.721 against 0.666); under mpnet
+  PaCMAP and openTSNE + k-means tie betula and scikit-learn's k-means loses to it (0.404). Not told
+  k, PhenoGraph and kNN + Leiden win both (0.429 and 0.397 against 0.367; 0.529 and 0.561 against
+  0.370), and CoreSPECT wins CIFAR-100 (0.626) but loses mpnet (0.354). DelTriC runs out of memory
+  on CIFAR-100 under a 13 GB cap. betula's process peaks at 275–276 MB and 689–690 MB against
+  343–3 125 MB and 1 052–1 649 MB. The two 20 newsgroups sets are one contest on the board, so its
+  told-k head is `leiden` with the rows graph and `resolution="auto"` for both models; this moves
+  `news-minilm` told k against `KMeans` on memory back to a win (243 MB against 259 MB). The board
+  goes to 57 / 106 / 42 on quality and 160 / 7 / 1 on memory. `bench/embed_corpora.py` caches five
+  small labelled corpora (ag_news, bbc, classic3, classic4, dbpedia) under the same MiniLM model,
+  for the neighbour-smoothing guard; none is a board.
 
 ## [1.5.0] — 2026-10-28
 

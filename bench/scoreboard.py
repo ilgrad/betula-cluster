@@ -292,12 +292,18 @@ HEAD_OF_REFERENCE = {
 
 
 # What one contest is, per census table: the slices over which a user would pick one method. The
-# density fixtures are one kind of data; MNIST and the news embeddings are two.
+# density fixtures are one kind of data; MNIST, the sentence embeddings and the CLIP image
+# embeddings are three more.
 CONTEST = {
-    "results_rivals": ("dataset", "told_k"),
+    "results_rivals": ("kind", "told_k"),
     "results_head_refs": ("dataset", "told_k"),
     "results_density_rivals": ("told_k",),
 }
+
+# The kind of data a dataset is, where one kind spans several datasets: 20 newsgroups under two
+# sentence models is one choice for a user, and a head picked per model would need the labels. A
+# dataset not listed is a kind of its own.
+KIND = {"news-minilm": "sentence-embeddings", "news-mpnet": "sentence-embeddings"}
 
 
 # Rows a user gets by composing public calls, not by one `method=`: printed beside the heads, never
@@ -344,6 +350,7 @@ def _rivals(table):
         return []
     if "dnf" in df.columns:
         df = df[df["dnf"].isna()]
+    df = df.assign(kind=df["dataset"].map(lambda d: KIND.get(d, d)))
     champion = _contest_champions(df, CONTEST[table])
     axes = [("quality", "ari", True), ("memory", "rss_mb", False)]
     if "timing_valid" in df.columns and bool(df["timing_valid"].all()):
@@ -356,7 +363,8 @@ def _rivals(table):
         theirs = [a for a in arms if not a.startswith("betula")]
         if not ours:
             continue
-        key = tuple({"dataset": dataset, "told_k": told}[c] for c in CONTEST[table])
+        slice_ = {"dataset": dataset, "kind": KIND.get(dataset, dataset), "told_k": told}
+        key = tuple(slice_[c] for c in CONTEST[table])
         best = champion[key]
         for axis, column, higher in axes:
             col = stats[column]

@@ -83,10 +83,12 @@ with peak RSS read from the process's own `VmHWM` (rows measured before 2026-11-
   mean ARI against 0.616), the anisotropic fixture given the count (lumbermark 0.843 against
   `leiden` 0.545; over all seven density fixtures `leiden` ties Genie, 0.838 against 0.839),
   MNIST-70k without a count (`leiden` 0.777 against UMAP + HDBSCAN 0.920, EVoC 0.899 and PhenoGraph
-  0.821) and sentence embeddings (0.382 against UMAP + k-means 0.451). On Gagolewski's clustering
-  benchmark suite (81 datasets, given the count) `leiden` with `resolution="auto"` is level with the
-  best of 387 published configurations (mean accuracy 0.774 against 0.786), not ahead of them.
-  cuML's GPU pipelines sit in a separate table.
+  0.821), sentence embeddings (0.374 and 0.433 under two models against UMAP + k-means 0.451 and
+  0.472) and CLIP image embeddings of CIFAR-100 (0.666 against 0.721; without a count, 0.370
+  against CoreSPECT's 0.626). On Gagolewski's clustering benchmark suite (81 datasets, given the
+  count) `leiden` with `resolution="auto"` is level with the best of 387 published configurations
+  (mean accuracy 0.774 against 0.786), not ahead of them. cuML's GPU pipelines sit in a separate
+  table.
   The [comparison page](https://github.com/ilgrad/betula-cluster/blob/main/docs/COMPARISON.md) names,
   task by task, the method to use, betula's or the rival's.
 
