@@ -239,25 +239,38 @@ def _external():
     if df is None:
         return []
     cells = []
-    for (dataset, n, contest), grp in df.groupby(["dataset", "n", "contest"], sort=True):
+    for (dataset, n, contest, order), grp in df.groupby(
+        ["dataset", "n", "contest", "order"], sort=True
+    ):
         rows = {str(r["method"]): r for _, r in grp.iterrows()}
-        ours = [m for m in rows if m.startswith("betula")]
-        theirs = [m for m in rows if not m.startswith("betula")]
-        if not ours or not theirs:
-            continue
+        # Label order keeps the key the table had before it ran both orders.
+        where = f"{dataset}/{n}/{contest}" + ("" if order == "label" else f"/{order}")
         for axis, column, higher in (("quality", "ari", True), ("speed", "time_s", False)):
+            # A `--quality-only` run leaves the time empty: no speed cell rather than a NaN verdict.
+            timed = [m for m in rows if pd.notna(rows[m][column])]
+            ours = [m for m in timed if m.startswith("betula")]
+            theirs = [m for m in timed if not m.startswith("betula")]
+            if not ours or not theirs:
+                continue
+            # The quality axis carries each row's seed range: champions are nominated by their
+            # worst seed and judged on medians, the rule `_best_of_breed` states.
+            seeded = axis == "quality" and "ari_min" in grp.columns
+            worst = {m: float(rows[m]["ari_min" if seeded else column]) for m in timed}
             pick = max if higher else min
-            bm = pick(ours, key=lambda m: float(rows[m][column]))
-            rm = pick(theirs, key=lambda m: float(rows[m][column]))
+            bm, rm = pick(ours, key=worst.__getitem__), pick(theirs, key=worst.__getitem__)
+            spread = {
+                m: float(rows[m]["ari_max"] - rows[m]["ari_min"]) if seeded else None
+                for m in (bm, rm)
+            }
             cells.append(
                 Cell(
                     axis,
                     "vs-external",
                     "results_external",
-                    f"{dataset}/{n}/{contest}",
+                    where,
                     float(rows[bm][column]),
                     float(rows[rm][column]),
-                    (None, None),
+                    (spread[bm], spread[rm]),
                     higher,
                     f"{bm}-vs-{rm}",
                 )

@@ -51,9 +51,9 @@ with peak RSS read from the process's own `VmHWM` (rows measured before 2026-11-
   (0.56 s vs 1.62 s) at a better ARI (0.056 vs 0.038), and 3.8× faster on the SVD row (0.38 s vs
   1.45 s), where betula's ARI is higher (0.200 vs 0.130). At 10 M rows the in-core KMeans finishes
   first (5.71 s vs 7.26 s, a timing the bench page calls unreliable). FAISS k-means at its defaults
-  is faster at both sizes measured. `fast-hdbscan` recovers the 100 k-point blobs at **ARI 0.910
-  against our 0.480** — where we are 10× faster on half the memory. A specialist at its own contest
-  is a different claim from a general-purpose library at every size.
+  is faster at both sizes measured, at a median ARI of 0.835 against our 1.000. `fast-hdbscan`
+  recovers the 100 k-point blobs at **ARI 0.910 against our best 0.897**, holding 1.8× our memory. A
+  specialist at its own contest is a different claim from a general-purpose library at every size.
 - 🎯 **Parity with scikit-learn, and higher readings the seeds do not resolve.** betula's k-means
   ties scikit-learn (blobs 0.793 vs 0.794, `digits` 0.467 vs 0.468); full-covariance GMM reads
   **0.961 vs 0.902** on anisotropic data and **0.575 vs 0.463** on real 64-D `digits` (via the
@@ -155,12 +155,11 @@ Three cases, each measured rather than assumed:
   (0.467 against scikit-learn's 0.468) rather than a win — you pay for a summary that summarises
   nothing. Cluster the points directly.
 - **HDBSCAN where the densities overlap** — `fast-hdbscan` recovers the 100 k-point blob fixture at
-  **ARI 0.910 against our 0.480**, and that is the fixture density methods are judged on. We are 10×
-  faster on half the memory, which is the trade, not a rebuttal. Part of that gap is the input order:
-  the benchmark feeds the rows sorted by label, and a screen with shuffled rows or
-  `canonical_order=True` puts the head's defaults within 0.015 of the rival (a screen, one row order
-  per arm, not in a CSV; `bench/RESULTS.md`, *Specialist baselines*). Sorted input costs the `hdbscan` head up to
-  0.10 ARI there. If the density structure *is* the
+  **ARI 0.910 against our best 0.897** (`canonical_order=True`, medians of five seeds), and that is
+  the fixture density methods are judged on. We hold 1.8× less memory, which is the trade, not a
+  rebuttal. The benchmark also feeds the rows sorted by label, which costs the default `hdbscan`
+  head 0.10 ARI there (0.799 against 0.895 on shuffled rows); `canonical_order=True` reads 0.897 in
+  either order (`bench/RESULTS.md`, *Specialist baselines*). If the density structure *is* the
   answer, run the exact algorithm on the points.
 - **A mixture whose likelihood has to be a raw-point likelihood** — the E-step ties responsibilities
   within a leaf and every `ln p` is computed from `(n, μ, S)`, so a per-point density, a BIC

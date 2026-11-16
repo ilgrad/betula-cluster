@@ -311,6 +311,19 @@ All notable changes to this project are documented here. The format follows
   float64 copy of the rows, against 259 MB), and MNIST-20k told k against it is a win (293 MB
   against 365 MB, since a float32 fit no longer copies its rows). Rival cells, and betula's rows of
   the scaling, sparse and real-scale tables, are still sampler readings until they are re-run.
+- **The FAISS / `fast_hdbscan` contest is re-run with seeds and both row orders**
+  (`bench/external_baselines.py`). Each row is now the median of eleven seeds (k-means) or five
+  (density), in label order and on shuffled rows, with the ARI range, the thread count and each
+  library's version beside it; the run carries no times until the timing campaign. The page said
+  FAISS never seeds with k-means++; it has since 1.14.0, and a k-means++ arm with three restarts on
+  FAISS's default 2 048-row subsample reads 1.000 like betula, which withdraws the claim that no
+  FAISS setting answers betula's question faster. FAISS's defaults read a median 0.835 (0.717
+  shuffled). The `hdbscan` arm runs its defaults on 8 000 leaves, plain and with
+  `canonical_order=True`: 0.897 / 0.876 at 100 000 / 500 000 rows against `fast_hdbscan`'s
+  0.910 / 0.892, still a loss, where the old `min_samples=10` arm read 0.480. A new count-free
+  contest on the same fixture: the `gmm-full` BIC sweep reads 0.983 and `xmeans` 0.977. The board
+  goes to 32 / 98 / 29 on quality (eight new cells) and 28 / 1 / 5 on speed (the four timed cells
+  are gone until F-18).
 
 ## [1.5.0] — 2026-10-28
 

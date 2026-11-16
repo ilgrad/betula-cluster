@@ -129,7 +129,8 @@ losses** are reported below.
   bounded-memory compression engine is built to deliver. It is not unconditional. At 10 M rows the
   in-core KMeans is faster than the stream (5.71 s against 7.26 s; one row, two board cells, and a timing *Memory*
   calls unreliable). On sparse 20 newsgroups scikit-learn is faster on raw TF-IDF (0.56 s against 1.62 s) and on the SVD row (0.38 s against 1.45 s; two rows,
-  three board cells). FAISS k-means is faster at both sizes measured (*Specialist baselines*).
+  three board cells). FAISS k-means at its defaults was faster at both sizes measured on 2026-10-20,
+  where it does not recover the partition (*Specialist baselines*).
 - **Quality is at parity on the centroid heads; the structured heads lead by margins the seeds do not
   resolve.** betula's k-means is at parity with scikit-learn (blobs 0.793 vs 0.794, `digits` 0.467 vs
   0.468, and MNIST 0.327 vs 0.324, which was a loss until the distortion-ranked rebuild).
@@ -1139,92 +1140,133 @@ the half the task did not ask for.
 ## Specialist baselines — FAISS and `fast_hdbscan`
 
 Everything above measures betula against scikit-learn, which is the right *default* comparison and
-the wrong *hardest* one. `bench/external_baselines.py` asks two questions of the strongest specialist
-on each axis instead. Neither library is a project dependency and neither may become one; both are
-pulled per invocation:
+the wrong *hardest* one. `bench/external_baselines.py` asks three questions of the strongest
+specialist on each axis instead. Neither library is a project dependency and neither may become one;
+both are pulled per invocation:
 
 ```bash
 uv run --with faiss-cpu --with fast-hdbscan --with scikit-learn --with pandas \
-    python bench/external_baselines.py
+    python bench/external_baselines.py [--quality-only]
 ```
 
-Seed 0, `max_leaves = 2000`, one subprocess per row so peak RSS is that method's own.
-`min_samples = 10` and `min_cluster_size = n/400` are handed to every method identically, in points.
-The run was not single-threaded. The harness sets `OMP_NUM_THREADS=1` only when it is unset
-(`os.environ.setdefault`), and the shell set it to 8, so FAISS and scikit-learn ran with eight OpenMP
-threads. betula's pool is rayon, which that variable does not reach; `n_shards=1` makes only the tree
-build serial.
+Each row is one contest, size, row order and method, fitted once per seed, each fit in its own
+subprocess so its peak RSS is its own. The CSV keeps the median-ARI fit whole, with the range over
+all seeds beside it: eleven seeds for k-means, five for the two density contests. A seed is the
+method's own (FAISS `seed`, scikit-learn `random_state`, betula `seed`); `fast_hdbscan` has none, so
+its five fits are one fit repeated in label order, and the count-free contest reuses the HDBSCAN
+contest's `fast_hdbscan` fits. `_worker.gen` stacks the clusters one after another, so the rows
+arrive sorted by label. Every case therefore also runs on a seeded shuffle of them (permutation seed
+`1000 + seed`), because the tree is built in row order. Both density methods get
+`min_cluster_size = n/400` points and their own default `min_samples`; betula's `hdbscan` runs on
+8 000 leaves, plain and with `canonical_order=True`. The `threads` column records what each library
+ran with: FAISS and scikit-learn on eight OpenMP threads (the shell exports `OMP_NUM_THREADS=8`, and
+the harness sets it only when it is unset), `fast_hdbscan` on sixteen numba threads, betula on its
+sixteen-thread rayon pool.
 
-| contest | n | method | time | peak RSS | clusters found | ARI |
-|---|---:|---|---:|---:|---:|---:|
-| k-means, `highdim`, k=8 | 200 000 | **betula-kmeans** | 0.11 s | 195 MB | 8 | **1.000** |
-| | 200 000 | faiss-kmeans, defaults | **0.04 s** | 207 MB | 8 | 0.630 |
-| | 200 000 | faiss-kmeans, matched | 0.97 s | 207 MB | 8 | **1.000** |
-| | 200 000 | sklearn-kmeans | 1.13 s | 266 MB | 8 | **1.000** |
-| | 1 000 000 | **betula-kmeans** | 0.42 s | 538 MB | 8 | **1.000** |
-| | 1 000 000 | faiss-kmeans, defaults | **0.07 s** | 538 MB | 8 | 0.624 |
-| | 1 000 000 | faiss-kmeans, matched | 6.04 s | 538 MB | 8 | 0.835 |
-| | 1 000 000 | sklearn-kmeans | 4.15 s | 654 MB | 8 | **1.000** |
-| HDBSCAN, `blobs`, k=6 | 100 000 | **betula-hdbscan** | **0.12 s** | **164 MB** | 24 | 0.480 |
-| | 100 000 | fast-hdbscan | 1.22 s | 309 MB | 6 | **0.910** |
-| | 500 000 | **betula-hdbscan** | **0.21 s** | **177 MB** | 88 | 0.490 |
-| | 500 000 | fast-hdbscan | 2.49 s | 404 MB | 6 | **0.892** |
+| contest | n | rows | method | clusters | noise | ARI, median [range] | peak RSS |
+|---|---:|---|---|---:|---:|---|---:|
+| k-means, `highdim`, k=8, 11 seeds | 200 000 | label | **betula-kmeans** | 8 | 0.0 % | **1.000** [1.000, 1.000] | 199 MB |
+|  |  |  | faiss-kmeans, defaults | 8 | 0.0 % | 0.835 [0.630, 1.000] | 211 MB |
+|  |  |  | faiss-kmeans-pp | 8 | 0.0 % | **1.000** [1.000, 1.000] | 210 MB |
+|  |  |  | sklearn-kmeans | 8 | 0.0 % | **1.000** [1.000, 1.000] | 270 MB |
+|  |  | shuffled | **betula-kmeans** | 8 | 0.0 % | **1.000** [1.000, 1.000] | 224 MB |
+|  |  |  | faiss-kmeans, defaults | 8 | 0.0 % | 0.717 [0.406, 1.000] | 232 MB |
+|  |  |  | faiss-kmeans-pp | 8 | 0.0 % | **1.000** [0.835, 1.000] | 233 MB |
+|  |  |  | sklearn-kmeans | 8 | 0.0 % | **1.000** [1.000, 1.000] | 292 MB |
+|  | 1 000 000 | label | **betula-kmeans** | 8 | 0.0 % | **1.000** [1.000, 1.000] | 542 MB |
+|  |  |  | faiss-kmeans, defaults | 8 | 0.0 % | 0.835 [0.606, 1.000] | 542 MB |
+|  |  |  | faiss-kmeans-pp | 8 | 0.0 % | **1.000** [1.000, 1.000] | 542 MB |
+|  |  |  | sklearn-kmeans | 8 | 0.0 % | **1.000** [1.000, 1.000] | 657 MB |
+|  |  | shuffled | **betula-kmeans** | 8 | 0.0 % | **1.000** [1.000, 1.000] | 542 MB |
+|  |  |  | faiss-kmeans, defaults | 8 | 0.0 % | 0.717 [0.497, 0.836] | 542 MB |
+|  |  |  | faiss-kmeans-pp | 8 | 0.0 % | **1.000** [0.835, 1.000] | 542 MB |
+|  |  |  | sklearn-kmeans | 8 | 0.0 % | **1.000** [1.000, 1.000] | 666 MB |
+| HDBSCAN, `blobs`, k=6, 5 seeds | 100 000 | label | betula-hdbscan | 5 | 2.9 % | 0.799 [0.799, 0.799] | 171 MB |
+|  |  |  | betula-hdbscan-canonical | 6 | 7.8 % | 0.897 [0.897, 0.897] | 171 MB |
+|  |  |  | fast-hdbscan | 6 | 6.7 % | **0.910** [0.910, 0.910] | 314 MB |
+|  |  | shuffled | betula-hdbscan | 6 | 8.1 % | 0.895 [0.892, 0.901] | 172 MB |
+|  |  |  | betula-hdbscan-canonical | 6 | 7.8 % | 0.897 [0.897, 0.897] | 172 MB |
+|  |  |  | fast-hdbscan | 6 | 6.7 % | **0.910** [0.910, 0.910] | 315 MB |
+|  | 500 000 | label | betula-hdbscan | 5 | 3.2 % | 0.796 [0.796, 0.796] | 184 MB |
+|  |  |  | betula-hdbscan-canonical | 6 | 9.6 % | 0.876 [0.876, 0.876] | 184 MB |
+|  |  |  | fast-hdbscan | 6 | 8.5 % | **0.892** [0.892, 0.892] | 421 MB |
+|  |  | shuffled | betula-hdbscan | 6 | 9.1 % | 0.883 [0.798, 0.891] | 188 MB |
+|  |  |  | betula-hdbscan-canonical | 6 | 9.6 % | 0.876 [0.876, 0.876] | 188 MB |
+|  |  |  | fast-hdbscan | 6 | 8.5 % | **0.892** [0.892, 0.892] | 424 MB |
+| no count given, `blobs`, k=6, 5 seeds | 100 000 | label | **betula-gmm-full-bic** | 6 | 0.0 % | **0.983** [0.983, 0.983] | 170 MB |
+|  |  |  | betula-xmeans | 6 | 0.0 % | 0.977 [0.977, 0.977] | 167 MB |
+|  |  |  | fast-hdbscan | 6 | 6.7 % | 0.910 [0.910, 0.910] | 314 MB |
+|  |  | shuffled | **betula-gmm-full-bic** | 6 | 0.0 % | **0.983** [0.983, 0.983] | 173 MB |
+|  |  |  | betula-xmeans | 6 | 0.0 % | 0.977 [0.977, 0.977] | 168 MB |
+|  |  |  | fast-hdbscan | 6 | 6.7 % | 0.910 [0.910, 0.910] | 315 MB |
+|  | 500 000 | label | **betula-gmm-full-bic** | 6 | 0.0 % | **0.983** [0.983, 0.983] | 183 MB |
+|  |  |  | betula-xmeans | 6 | 0.0 % | 0.977 [0.977, 0.977] | 180 MB |
+|  |  |  | fast-hdbscan | 6 | 8.5 % | 0.892 [0.892, 0.892] | 421 MB |
+|  |  | shuffled | **betula-gmm-full-bic** | 6 | 0.0 % | **0.983** [0.983, 0.983] | 188 MB |
+|  |  |  | betula-xmeans | 6 | 0.0 % | 0.977 [0.977, 0.977] | 184 MB |
+|  |  |  | fast-hdbscan | 6 | 8.5 % | 0.892 [0.892, 0.892] | 424 MB |
 
-One contest is a win once both sides answer the same question; the other is a loss on quality and a
-win on cost. Both are recorded as such rather than dropped.
+The table is the 2026-11-16 run on `e984f2c` with the new harness not yet committed (the `version`
+column's `.dirty`; no file under `src/` differed), faiss-cpu 1.16.0, fast-hdbscan 0.3.4 and
+scikit-learn 1.9.1. **It carries no times.** It ran with `--quality-only` on a loaded machine, and
+the times are re-taken in the timing campaign (task F-18). The previous edition (2026-10-20, the
+1.1.0 tree) was one seed in label order. Its arms differed: a FAISS arm fed every row with ten
+random restarts, and a betula `hdbscan` arm at `min_samples = 10` on 2 000 leaves, which read
+0.480 and 0.490. Its times belong to those arms and are not carried forward; FAISS's default arm and
+betula's `kmeans` arm are unchanged, and the default arm was 3.1× and 6.1× faster then.
 
-The table is the 2026-10-20 run on the 1.1.0 tree (faiss-cpu 1.15.1, fast-hdbscan 0.3.2 on numba
-0.67.0, scikit-learn 1.9.1, numpy 2.5.2), one run per row, governor `performance`. The previous edition
-was the 2026-08-25 run on the tree before 1.0.0's cost-ranked rebuild, where `betula-hdbscan` read
-ARI 0.478 with three clusters at both sizes; on the rebuild it fragments the overlap instead of
-chaining it (24 and 88 clusters). `min_samples = 10` is below the leaf mass at both sizes, so the head
-is single linkage over leaf centroids on either tree, and the verdict is the same loss. Every rival's
-ARI reproduced to four decimals; the rival times moved by −26 % to +12 % between the two runs (FAISS's
-default row 0.07 → 0.04 s, a timing of a few tens of milliseconds), which is the size of a single-run
-timing on this machine. A second run on a build carrying the crate's
-`--inline-threshold` hint (which the run above lacked) read 0.12 / 0.43 s for `betula-kmeans` and
-0.13 / 0.20 s for `betula-hdbscan`: these rows do not depend on it.
+The three contests give three answers:
 
-**The contest's betula arm reads its rows in label order, and that order costs the `hdbscan` head
-most of the gap.** `_worker.gen` stacks the six blobs one after another, so the tree sees every row of
-one cluster before the first row of the next. A screen on the current tree (one fixture draw, seeds
-0/1/2 of the head, one row order per column; not in a CSV,
-`local/scratch/research-2026-11-15/probes/ext_blobs*.out`) reads, at 100 000 / 500 000 rows:
+- **k-means: a tie on quality.** betula reads 1.000 on every seed, in both orders and at both sizes,
+  as does scikit-learn's `KMeans`. FAISS at its defaults does not recover the partition: median
+  0.835 in label order and 0.717 on shuffled rows, as low as 0.406. With k-means++ seeding and three
+  restarts (`faiss-kmeans-pp`, next section) it reads 1.000 at the median, though a shuffled seed
+  still lands at 0.835. Which of the three arms that recover the partition is fastest is open until
+  F-18.
+- **HDBSCAN: a loss, by 0.013–0.015.** `fast_hdbscan` reads 0.910 at 100 000 rows and 0.892 at
+  500 000. betula's best arm is `canonical_order=True`: 0.897 and 0.876, the same in either order.
+  The default arm reads 0.799 and 0.796 in label order, where it finds five clusters, and 0.895 and
+  0.883 on shuffled rows, where one 500 000-row seed falls to 0.798. The board nominates each side
+  by its worst seed, so the canonical arm is betula's champion in all four cells. betula's peak RSS
+  is 171–188 MB against `fast_hdbscan`'s 314–424 MB.
+- **No count given: a win, by 0.07–0.09.** The `gmm-full` BIC sweep reads 0.983 and `xmeans` 0.977,
+  six clusters each, at both sizes in both orders, against `fast_hdbscan`'s 0.910 and 0.892. The
+  fixture is six Gaussian blobs, which is the mixture's own model. On the census's `circles` and
+  `moons` the same sweep reads 0.105 and 0.114 (`results_density_rivals.csv`), so the win does not
+  make it a density method.
 
-| betula arm | label order | shuffled rows |
-|---|---:|---:|
-| `hdbscan`, `min_samples=10`, 2 000 leaves (the contest arm) | 0.480 / 0.490 | 0.568 / 0.567 |
-| `hdbscan` at its default `min_samples`, 8 000 leaves | 0.799 / 0.796 | 0.895 / 0.890 |
-| the same, `canonical_order=True` | 0.897 / not run | 0.897 / not run |
-| `gmm-full`, BIC sweep (no count given) | 0.983 / 0.983 | 0.983 / 0.983 |
-| `xmeans` (no count given) | 0.977 / 0.977 | 0.977 / 0.977 |
+Sorted input costs the default `hdbscan` arm 0.096 ARI at 100 000 rows and 0.087 at 500 000.
+`canonical_order=True` cannot see the order: it reads 0.002 above the default arm's shuffled
+median at 100 000 rows and 0.006 below it at 500 000. The k-means and count-free heads move by less
+than 0.001.
 
-Sorted input costs the `hdbscan` head up to 0.10 ARI at its defaults and 0.09 at the contest's
-settings. On shuffled rows its defaults come within 0.015 of `fast_hdbscan`'s 0.910 at 100 000 rows
-and level with its 0.892 at 500 000. `canonical_order=True` removes the order effect: it reads 0.897
-in the label order and in four shuffles. Two heads that need no count read above the rival in either
-order. The contest row above stays as measured until the harness is re-run.
+### The FAISS rows: its defaults, and k-means++ on the same subsample
 
-### The FAISS row is two rows, because FAISS's defaults are not a like-for-like fit
-
-**At its own defaults FAISS is 3.1×–6.1× faster and does not recover the partition** (0.62–0.63
-against betula's 1.000). Task #73 asked whether that is a throughput gap worth closing. It is not,
-and the reason is that two of the three things making the default row fast are quality-costing
-shortcuts rather than engineering:
+**At its own defaults FAISS does not recover the partition**: median 0.835 in label order and 0.717
+on shuffled rows, against betula's 1.000. Task #73 asked whether the default row's speed is a
+throughput gap worth closing. It is not, because two of the three things that make that row fast
+are quality-costing shortcuts rather than engineering:
 
 - **`faiss.Kmeans` defaults to `max_points_per_centroid = 256`.** At `k = 8` it trains on **2 048 of
-  the 200 000 rows** and then assigns the rest. The 0.04 s is a fit on 1% of the data.
-- **It seeds from a random subset, never k-means++**, and runs `nredo = 1` — a single random init.
-- Only the third — a fixed 25 Lloyd iterations over float32 with hand-written SIMD kernels — is
+  the n rows** and then assigns the rest: at 200 000 rows, a fit on 1 % of the data.
+- **It seeds each restart from a random sample of the rows**, and runs `nredo = 1`, one restart.
+- Only the third — at most 25 Lloyd iterations over float32 with hand-written SIMD kernels — is
   throughput.
 
-The `matched` row hands FAISS every row and ten restarts, the cheapest setting whose *median* ARI
-reaches betula's on this fixture. It costs **0.97 s at 200 000 (9.0× betula) and 6.04 s at 1 000 000
-(14× betula), and at 1 M it still lands at 0.835.** So there is no budget at which FAISS answers
-betula's question faster than betula does.
+**The previous editions said FAISS never seeds with k-means++. That was wrong.**
+`ClusteringParameters.init_method` has taken `KMEANS_PLUS_PLUS` since FAISS 1.14.0
+([`Clustering.h`](https://github.com/facebookresearch/faiss/blob/v1.16.0/faiss/Clustering.h#L62-L66)),
+so the 1.15.1 wheel of the 2026-10-20 run had it too. The `faiss-kmeans-pp` arm sets it with
+`nredo = 3`, the cheapest setting whose median reaches betula's on this fixture, and keeps the
+2 048-row subsample. It reads 1.000 at the median in every cell, and 1.000 on all eleven seeds in
+label order. It replaces the previous edition's `matched` arm, which fed FAISS every row with ten
+random restarts and still read 0.835 at 1 000 000 rows. **The previous conclusion, that no budget
+lets FAISS answer betula's question faster than betula does, rested on the `matched` arm and is
+withdrawn.** k-means++ on 2 048 rows is a far smaller job than ten restarts on all of them, and it
+is not yet timed (task F-18).
 
 The ceiling is initialisation, and sklearn is the control that proves it. Same fixture, same `k`,
-every row used, medians over seeds 0/1/2 (`local/scratch/faiss_mechanism.py`):
+every row used, medians over seeds 0/1/2 (`local/scratch/faiss_mechanism.py`, not in a CSV):
 
 | method | median time | median ARI | across seeds |
 |---|---:|---:|---|
@@ -1244,12 +1286,14 @@ climb out of. Adding data does not help (all-rows `nredo=1` is no better than th
 adding iterations does not help (ARI is flat from `niter = 25` to `niter = 300`); only the seeding
 rule helps.
 
-That is the whole finding. betula's advantage here is not a faster kernel — it is that it runs
-k-means++ on the exact CF potential (`8cb3439`), on a leaf summary small enough that ten restarts are
-free. **Task #73 is closed by measurement: the gap was never throughput.**
+That is the whole finding, and the `faiss-kmeans-pp` arm confirms it from the other side. betula's
+quality here comes from the seeding rule, not from a faster kernel: it runs k-means++ on the exact
+CF potential (`8cb3439`), on a leaf summary small enough that ten restarts are free. FAISS given the
+same rule finds the same partition, so the quality contest is a tie and only the cost is left to
+measure. **Task #73 is closed: the quality gap was never throughput.**
 
-**`fast_hdbscan` finds all six clusters at every setting; betula needs a much larger `min_samples`
-and a much larger leaf budget to get there.** The `blobs` fixture is not the easy case its name
+**Why the contest's betula arm changed: below the mass of one leaf, `min_samples` does nothing.**
+The `blobs` fixture is not the easy case its name
 suggests: six centres drawn uniformly from `[-10, 10]²` with unit spread, then standardized, leaves
 the closest pair **0.37 apart at unit width** — heavily overlapping, which is the regime this page
 already credits raw HDBSCAN with owning. Swept on n = 100 000 with `min_cluster_size = 250`:
@@ -1260,12 +1304,12 @@ already credits raw HDBSCAN with owning. Swept on n = 100 000 with `min_cluster_
 | betula, `max_leaves` 2 000 | 0.480 (24) | 0.477 (24) | 0.784 (5) | 0.761 (6) |
 | betula, `max_leaves` 8 000 | 0.569 (4) | 0.800 (5) | **0.849** (6) | 0.762 (5) |
 
-The sweep is a probe, not in a CSV, and its rows are in label order like the contest's.
+The sweep is a probe, not in a CSV, and its rows are in label order like the contest's label rows.
 
 The betula rows are the 1.0.0 tree; before its cost-ranked rebuild they read 0.478 (3), 0.566 (4),
-0.785 (5), 0.762 (5) and 0.566 (4), 0.799 (5), 0.843 (6), 0.764 (5). So best-against-best the gap is
-0.910 against 0.849 (timed at ~1.4 s against 2.1 s on the earlier tree), not the 0.910 against ~0.48
-the contest row shows — and the shape of the table is the mechanism. HDBSCAN\* separates overlapping
+0.785 (5), 0.762 (5) and 0.566 (4), 0.799 (5), 0.843 (6), 0.764 (5). So best-against-best in this sweep
+the gap was 0.910 against 0.849, not the 0.910 against ~0.48 the previous contest arm showed — and
+the shape of the table is the mechanism. HDBSCAN\* separates overlapping
 densities through the core distance, the radius enclosing `min_samples` points. Over raw points that
 radius is small and varies with local density; over leaf centroids a single leaf already holds
 n/`max_leaves` = 50 points, so any `min_samples` below that is enclosed at **distance zero**, every
@@ -1302,10 +1346,11 @@ and 0.717 for the fixed ten and `fast_hdbscan`'s 0.910 over the same seeds; not 
 release. Only the 8 000-leaf median moved, but seed 0 fell at both budgets — 0.790 → 0.561 at
 2 000 and 0.896 → 0.799 at 8 000 — losing one cluster at each. The plateau is still wide: 5 to 40
 leaves are all inside the seed spread at both budgets, so the ten is the shape of the rule and not a
-fit to this fixture.
+fit to this fixture. The contest now runs this default at 8 000 leaves: 0.799 and 0.796 in label
+order, 0.895 and 0.883 on shuffled rows (medians of five seeds, the table above).
 
 Checked against the six published quality fixtures at N = 30 000 (median of seeds 0/1/2, 1.0.0
-tree; not in a CSV — the published quality, real and external tables run `min_samples=10`), the rule
+tree; not in a CSV — the published quality and real tables run `min_samples=10`), the rule
 costs nothing anywhere — `moons` 0.9999 → 0.9996, `circles` 1.0000 → 0.9999,
 `highdim` 1.0000 → 1.0000, `aniso` 0.568 → 0.565, `blobs` 0.423 → 0.429 — and gains on `varied`,
 **0.568 → 0.839**. (On the earlier tree the fixed ten also failed on `blobs`, 0.142 against the
@@ -1328,10 +1373,12 @@ point-level value a scikit-learn user passes — 1 250 at n = 500 000 — theref
 since the threshold changed meaning whenever `max_leaves` did. Both arguments now count points. The
 n = 500 000 row moved 0.000 → 0.478, which was exactly the n = 100 000 row: the same question got the
 same answer at both scales. (On the 1.0.0 tree the two read 0.490 and 0.480 — one failure below the
-leaf mass, fragmented differently at each scale; see the note under the contest table.)
+leaf mass, fragmented differently at each scale. The contest has run the default `min_samples` since
+the 2026-11-16 edition.)
 
-One caveat on the timings: `fast_hdbscan` is numba-compiled, so its first call in a cold process pays
-JIT — measured at 9.0 s against 0.3 s once the on-disk cache is warm. The table above is warm-cache.
+One caveat for the timing campaign: `fast_hdbscan` is numba-compiled, so its first call in a fresh
+environment pays the compile into its on-disk cache. The harness makes one unrecorded fit before the
+first row, so every recorded row is warm-cache.
 
 ### The scoreboard
 
@@ -1344,23 +1391,25 @@ the wider of the two cells' three-seed spreads is not a result. Tables with no s
 single runs by construction and fall back to a per-axis tolerance.
 
 ```
-## quality — 28 win · 96 tie · 27 loss
-## speed   — 30 win · 1 tie · 7 loss
+## quality — 32 win · 98 tie · 29 loss
+## speed   — 28 win · 1 tie · 5 loss
 ## memory  — 115 win · 5 tie · 2 loss
 ```
 
-`bench/scoreboard.json` records those 311 verdicts: the 140 of the 2026-10-29 edition, which it
+`bench/scoreboard.json` records those 315 verdicts: the 140 of the 2026-10-29 edition, which it
 re-derives unchanged (three of them renamed on 2026-11-15), 166 `vs-rival` cells added with the
 census on 2026-11-14 (eight of them re-paired on 2026-11-15), and five memory cells added on
-2026-11-15 (both below; two memory verdicts moved on the `VmHWM` re-read the same day). `--check`
-re-derives them and exits non-zero if
-any cell got worse or vanished, and `--update` is the deliberate act of accepting a new board. Five
-of the quality losses are the `covtype` and `digits` rows discussed above, the raw-TF-IDF `20news` row,
-and the two `fast_hdbscan` cells; the other 22, and the two memory losses (scikit-fuzzy by 4 MB, and
-`vmf` on `news-minilm` against scikit-learn's `KMeans`), are
-census cells, listed under *Every verdict, rival by rival*; the seven speed losses are the two FAISS cells, the three `20news`
-rows the sparse scans own — 3.4× and 1.5× closer after task #71, but still losses — and the two
-10 M cells of the memory suite, which are one row counted twice and are discussed under *Memory*.
+2026-11-15 (both below; two memory verdicts moved on the `VmHWM` re-read the same day). On
+2026-11-16 the external contest's re-run (*Specialist baselines*) dropped its four speed cells,
+which carry no time until F-18, and added eight quality cells: the shuffled rows and the count-free
+contest. `--check` re-derives them and exits non-zero if any cell got worse or vanished, and
+`--update` is the deliberate act of accepting a new board. Seven of the quality losses are the
+`covtype` and `digits` rows discussed above, the raw-TF-IDF `20news` row, and the four `fast_hdbscan`
+cells; the other 22, and the two memory losses (scikit-fuzzy by 4 MB, and `vmf` on `news-minilm`
+against scikit-learn's `KMeans`), are census cells, listed under *Every verdict, rival by rival*. The
+five speed losses are the three `20news` rows the sparse scans own — 3.4× and 1.5× closer after task
+#71, but still losses — and the two 10 M cells of the memory suite, which are one row counted twice
+and are discussed under *Memory*.
 
 **The ratchet fired on this edition, and it was right to.** Accepting the new board took one genuine
 demotion and six vanished pairings, listed here because the whole point of the file is that a board is
@@ -1466,6 +1515,14 @@ accepted deliberately rather than overwritten:
   the same rival went **tie → win**: the rows graph read 365.0 MB against 364.9 MB and now peaks at
   293 MB, because a float32 fit no longer copies its rows. Memory went 115/6/1 → **115/5/2**. The
   rival cells are still sampler readings.
+- **2026-11-16, the external contest re-run with seeds and both row orders: four speed cells gone,
+  eight quality cells added, no verdict demoted** (*Specialist baselines*). The four timed cells — two
+  losses to FAISS's defaults, two wins over `fast_hdbscan` — vanished, because the run carries no
+  times until the timing campaign. The two label-order k-means cells stay ties, now against
+  `faiss-kmeans-pp`. The two label-order HDBSCAN cells stay losses, now by 0.013 and 0.015 instead
+  of 0.43 and 0.40, with the `canonical_order=True` arm as betula's champion. New are the four
+  shuffled-row cells (two k-means ties, two HDBSCAN losses) and the four count-free cells, wins by
+  0.07–0.09. Quality went 28/96/27 → **32/98/29**, speed 30/1/7 → **28/1/5**.
 
 ## The census — every method a user would reach for, not only scikit-learn (2026-11-14)
 
@@ -2016,12 +2073,10 @@ side of every cell is the one head its contest chose (see the rules above).
   - tie, quality, `mnist/20000/no-k` (rivals): betula 0.762 ARI (`betula-leiden-rows`) against 0.815 ARI
   - tie, quality, `news-minilm/17901/no-k` (rivals): betula 0.330 ARI (`betula-leiden-rows`) against 0.207 ARI
   - loss, quality, `mnist/70000/no-k` (rivals): betula 0.769 ARI (`betula-leiden-rows`) against 0.899 ARI
-- **faiss-kmeans** — 0 win · 0 tie · 2 loss
-  - loss, speed, `highdim/1000000/kmeans-speed` (external): betula 0.42 s (`betula-kmeans`) against 0.07 s
-  - loss, speed, `highdim/200000/kmeans-speed` (external): betula 0.11 s (`betula-kmeans`) against 0.04 s
-- **faiss-kmeans-matched** — 0 win · 1 tie · 0 loss
+- **faiss-kmeans-pp** — 0 win · 2 tie · 0 loss
+  - tie, quality, `highdim/1000000/kmeans-speed` (external): betula 1.000 ARI (`betula-kmeans`) against 1.000 ARI
   - tie, quality, `highdim/200000/kmeans-speed` (external): betula 1.000 ARI (`betula-kmeans`) against 1.000 ARI
-- **fast-hdbscan** — 11 win · 3 tie · 4 loss
+- **fast-hdbscan** — 13 win · 3 tie · 6 loss
   - win, memory, `aniso/30000/no-k` (density_rivals): betula 166 MB (`betula-hdbscan`) against 326 MB
   - win, memory, `blobs/30000/no-k` (density_rivals): betula 166 MB (`betula-hdbscan`) against 326 MB
   - win, memory, `circles/30000/no-k` (density_rivals): betula 167 MB (`betula-hdbscan`) against 326 MB
@@ -2031,15 +2086,19 @@ side of every cell is the one head its contest chose (see the rules above).
   - win, memory, `varied/30000/no-k` (density_rivals): betula 166 MB (`betula-hdbscan`) against 325 MB
   - win, quality, `aniso/30000/no-k` (density_rivals): betula 0.469 ARI (`betula-hdbscan`) against 0.447 ARI
   - win, quality, `digits/1797/no-k` (density_rivals): betula 0.164 ARI (`betula-hdbscan`) against 0.087 ARI
-  - win, speed, `blobs/100000/hdbscan-scale` (external): betula 0.12 s (`betula-hdbscan`) against 1.22 s
-  - win, speed, `blobs/500000/hdbscan-scale` (external): betula 0.21 s (`betula-hdbscan`) against 2.49 s
+  - win, quality, `blobs/100000/countfree-scale` (external): betula 0.983 ARI (`betula-gmm-full-bic`) against 0.910 ARI
+  - win, quality, `blobs/100000/countfree-scale/shuffled` (external): betula 0.983 ARI (`betula-gmm-full-bic`) against 0.910 ARI
+  - win, quality, `blobs/500000/countfree-scale` (external): betula 0.983 ARI (`betula-gmm-full-bic`) against 0.892 ARI
+  - win, quality, `blobs/500000/countfree-scale/shuffled` (external): betula 0.983 ARI (`betula-gmm-full-bic`) against 0.892 ARI
   - tie, quality, `circles/30000/no-k` (density_rivals): betula 1.000 ARI (`betula-hdbscan`) against 1.000 ARI
   - tie, quality, `highdim/30000/no-k` (density_rivals): betula 1.000 ARI (`betula-hdbscan`) against 1.000 ARI
   - tie, quality, `moons/30000/no-k` (density_rivals): betula 1.000 ARI (`betula-hdbscan`) against 1.000 ARI
   - loss, quality, `blobs/30000/no-k` (density_rivals): betula 0.376 ARI (`betula-hdbscan`) against 0.432 ARI
   - loss, quality, `varied/30000/no-k` (density_rivals): betula 0.302 ARI (`betula-hdbscan`) against 0.503 ARI
-  - loss, quality, `blobs/100000/hdbscan-scale` (external): betula 0.480 ARI (`betula-hdbscan`) against 0.910 ARI
-  - loss, quality, `blobs/500000/hdbscan-scale` (external): betula 0.490 ARI (`betula-hdbscan`) against 0.892 ARI
+  - loss, quality, `blobs/100000/hdbscan-scale` (external): betula 0.897 ARI (`betula-hdbscan-canonical`) against 0.910 ARI
+  - loss, quality, `blobs/100000/hdbscan-scale/shuffled` (external): betula 0.897 ARI (`betula-hdbscan-canonical`) against 0.910 ARI
+  - loss, quality, `blobs/500000/hdbscan-scale` (external): betula 0.876 ARI (`betula-hdbscan-canonical`) against 0.892 ARI
+  - loss, quality, `blobs/500000/hdbscan-scale/shuffled` (external): betula 0.876 ARI (`betula-hdbscan-canonical`) against 0.892 ARI
 - **finch** — 7 win · 1 tie · 4 loss
   - win, memory, `aniso/30000/no-k` (density_rivals): betula 166 MB (`betula-hdbscan`) against 1883 MB
   - win, memory, `blobs/30000/no-k` (density_rivals): betula 166 MB (`betula-hdbscan`) against 2012 MB
@@ -2217,7 +2276,7 @@ side of every cell is the one head its contest chose (see the rules above).
   - tie, quality, `highdim/betula-hdbscan` (quality): betula 1.000 ARI (`betula-hdbscan`) against 1.000 ARI
   - tie, quality, `moons/betula-hdbscan` (quality): betula 1.000 ARI (`betula-hdbscan`) against 1.000 ARI
   - tie, quality, `varied/betula-hdbscan` (quality): betula 0.568 ARI (`betula-hdbscan`) against 0.802 ARI
-- **sklearn-kmeans** — 21 win · 18 tie · 3 loss
+- **sklearn-kmeans** — 21 win · 19 tie · 3 loss
   - win, memory, `digits/1797/told-k` (head_refs): betula 167 MB (`betula-kmeans`) against 181 MB
   - win, memory, `covtype` (real_scale): betula 897 MB (`betula-kmeans`) against 934 MB
   - win, memory, `covtype/betula-kmeans` (real_scale): betula 897 MB (`betula-kmeans`) against 934 MB
@@ -2240,7 +2299,8 @@ side of every cell is the one head its contest chose (see the rules above).
   - win, speed, `200000/betula-kmeans` (scaling): betula 0.07 s (`betula-kmeans`) against 0.88 s
   - win, speed, `50000/betula-kmeans` (scaling): betula 0.04 s (`betula-kmeans`) against 0.69 s
   - tie, memory, `20news/betula-sparse` (sparse): betula 335 MB (`betula-sparse`) against 335 MB
-  - tie, quality, `highdim/1000000/kmeans-speed` (external): betula 1.000 ARI (`betula-kmeans`) against 1.000 ARI
+  - tie, quality, `highdim/1000000/kmeans-speed/shuffled` (external): betula 1.000 ARI (`betula-kmeans`) against 1.000 ARI
+  - tie, quality, `highdim/200000/kmeans-speed/shuffled` (external): betula 1.000 ARI (`betula-kmeans`) against 1.000 ARI
   - tie, quality, `digits/1797/told-k` (head_refs): betula 0.668 ARI (`betula-kmeans`) against 0.664 ARI
   - tie, quality, `highdim` (quality): betula 1.000 ARI (`betula-kmeans`) against 1.000 ARI
   - tie, quality, `aniso/betula-kmeans` (quality): betula 0.545 ARI (`betula-kmeans`) against 0.545 ARI
@@ -4726,15 +4786,16 @@ answered exactly.
   point-level algorithm with no compression — at small `N` the two-phase overhead removes betula's
   speed edge, and raw HDBSCAN is stronger on overlapping density.
 - **Use FAISS** if k-means throughput is the only criterion and an approximate partition is
-  acceptable — at its defaults it fits 256·k sampled rows from one random init, which is 3.1×–6.1×
-  faster than betula and lands at ARI 0.62. Configured to recover the same partition it is 9×–14×
-  *slower* than betula and still misses at 1 M, so it is not the choice when the partition matters.
+  acceptable — at its defaults it fits 256·k sampled rows from one random init, which was 3.1×–6.1×
+  faster than betula on 2026-10-20 and reads a median ARI of 0.835 (0.717 on shuffled rows). Seeded
+  with k-means++ and three restarts on the same subsample it recovers the partition as betula does;
+  that arm is not yet timed, so whether it is also the choice when the partition matters is open.
   Use **`fast_hdbscan`** for density clustering in low dimension when the data fits in memory and the
-  densities overlap: it beats betula's published arm on that axis, where betula needs `min_samples`
-  above the mass of a single leaf — the summary erases the small-radius density estimate HDBSCAN\*
-  runs on. That arm also reads its rows sorted by label; on shuffled rows, or with
-  `canonical_order=True`, a screen puts the head's defaults within 0.015 of the rival
-  (*Specialist baselines*).
+  densities overlap: it beats betula's best `hdbscan` arm there by 0.013–0.015 ARI (0.910 against
+  0.897 at 100 000 rows, 0.892 against 0.876 at 500 000; medians of five seeds), at about twice
+  betula's peak memory. Rows sorted by label cost betula's default arm another 0.09–0.10;
+  `canonical_order=True` removes that. If the clusters are Gaussian, `gmm-full` with
+  `n_clusters=0` beats it on the same fixture, 0.983 (*Specialist baselines*).
 - **Use `sklearn-birch`** if `covtype`-like all-methods quality at ~20 k rows is the only criterion and
   no summary is needed: it beats every betula head there, and the compression-ratio defence does not
   hold. Its higher MNIST reading, a tie under the seed rule, comes with no compression at all (20 000 subclusters for 20 000 points), so it

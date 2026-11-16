@@ -1077,10 +1077,10 @@ On the same fixture it reads 0.821 at `max_leaves = 2 000` and 0.822 at 8 000 (m
 points. The plateau is wide — five to forty leaves are all inside the seed spread there — so the
 constant is the shape of the rule rather than a fit to it.
 
-**The order of the rows matters as well.** This fixture feeds its rows sorted by label. A screen on
-the current tree reads 0.895 with the rows shuffled, at the automatic `min_samples` and 8 000
-leaves, where label order reads 0.799; `canonical_order=True` reads 0.897 in any order (one row
-order per arm, not in a CSV; `bench/RESULTS.md`, *Specialist baselines*). Before a density fit,
+**The order of the rows matters as well.** This fixture feeds its rows sorted by label. At the
+automatic `min_samples` and 8 000 leaves the head reads 0.799 in that order and 0.895 with the rows
+shuffled; `canonical_order=True` reads 0.897 in either order (medians of five seeds,
+`bench/results_external.csv`; `bench/RESULTS.md`, *Specialist baselines*). Before a density fit,
 shuffle rows that arrive sorted, or pass `canonical_order=True`.
 
 On the six published quality fixtures at N = 30 000 (median of seeds 0/1/2, the 1.0.0 tree, not in
