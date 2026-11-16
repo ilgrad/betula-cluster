@@ -349,6 +349,16 @@ All notable changes to this project are documented here. The format follows
   and scikit-learn's `KMeans` 0.04 % below betula. Unpinned, `aeon` next to pandas 3.1 resolves to
   an empty `aeon 0.0.0`, so the harness asks for `aeon>=1.6`. Re-running one arm no longer rewrites
   the others: pandas 2 parsed some kept floats one ulp off, so kept rows now pass through as text.
+- **MNIST-70k runs at five rows per leaf** (`bench/rivals.py`). The harness gave 70 000 rows 8 000
+  leaves under a comment that said five rows per leaf; it now gives them 14 000, and runs the two
+  rows-graph arms at 8 000 and 20 000 leaves too. Told the count, `leiden` with
+  `resolution="auto"` reads 0.788 / 0.835 / 0.881 at 8 000 / 14 000 / 20 000 leaves, peak RSS
+  496 / 562 / 620 MB; not told it, the rows graph reads 0.769 / 0.777 / 0.788. Every median rose,
+  but three verdicts moved on the seed spreads: UMAP + k-means win → tie, PhenoGraph tie → loss,
+  kNN + Leiden tie → win; the board goes to 35 / 99 / 30 on quality. A label vote among 15 row
+  neighbours after the head gains 0.011 at the median, a seventh of the seed range, and is
+  refuted as a recipe. `rivals.py` keeps the rows it does not re-run as text, as
+  `head_references.py` does.
 
 ## [1.5.0] — 2026-10-28
 

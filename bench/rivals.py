@@ -53,9 +53,12 @@ from _worker import Peak, cap_memory
 SEEDS = (0, 1, 2)
 TIMEOUT = 3600.0
 
-# The leaf budget each betula arm gets, per dataset size: about five rows per leaf at 20 000 rows,
-# the regime where §11 of the research plan measured the leaf partition's purity at 0.95.
-BUDGET = {20_000: 4_000, 70_000: 8_000, 17_901: 4_000}
+# The leaf budget each betula arm gets, per dataset size: about five rows per leaf, the regime where
+# §11 of the research plan measured the leaf partition's purity at 0.95. MNIST-70k also runs the two
+# rows-graph arms at 8 000 and 20 000 leaves (`BUDGET_STUDY`), so the page can state what the budget
+# buys and what it costs.
+BUDGET = {20_000: 4_000, 70_000: 14_000, 17_901: 4_000}
+BUDGET_STUDY = (8_000, 20_000)
 
 
 def load(dataset: str, n: int, seed: int):
@@ -124,7 +127,8 @@ def _betula(x, k, seed, n, **kw):
     import betula_cluster as bc
 
     # The estimator, not `fit_predict`: its defaults (feature, method options) are what users get.
-    est = bc.Betula(n_clusters=k, max_leaves=BUDGET[n], threshold=0.0, seed=seed, **kw)
+    kw = {"max_leaves": BUDGET[n], **kw}
+    est = bc.Betula(n_clusters=k, threshold=0.0, seed=seed, **kw)
     return est.fit_predict(x)
 
 
@@ -165,6 +169,20 @@ ARMS = {
         ),
     ),
     "betula-hdbscan": (False, "both", lambda x, k, s, d, n: _betula(x, k, s, n, method="hdbscan")),
+    **{
+        f"betula-leiden-rows{suffix} ({leaves} leaves)": (
+            told,
+            "mnist-70000",
+            lambda x, k, s, d, n, leaves=leaves, kw=kw: _betula(
+                x, k, s, n, max_leaves=leaves, **kw
+            ),
+        )
+        for leaves in BUDGET_STUDY
+        for suffix, told, kw in (
+            ("", False, {"method": "leiden", "leaf_graph": "rows"}),
+            ("-auto", True, {"method": "leiden", "leaf_graph": "rows", "resolution": "auto"}),
+        )
+    },
     "sklearn-kmeans": (True, "both", lambda x, k, s, d, n: _kmeans(x, k, s)),
     "umap+kmeans": (True, "both", lambda x, k, s, d, n: _kmeans(_umap(x, s, d), k, s)),
     "umap-0.6+kmeans": (
@@ -269,7 +287,13 @@ def main(argv: list[str]) -> int:
     # `--arms=a,b` re-runs only those arms and replaces their rows in the existing CSV.
     only = next((a.split("=", 1)[1].split(",") for a in argv if a.startswith("--arms=")), None)
     out = HERE / "results_rivals.csv"
-    kept = pd.read_csv(out) if only and out.exists() else pd.DataFrame()
+    # Kept rows pass through as text: pandas 2 parses some floats one ulp off, and a re-run of
+    # one arm would then rewrite every other arm's row.
+    kept = (
+        pd.read_csv(out, dtype=str, keep_default_na=False)
+        if only and out.exists()
+        else pd.DataFrame()
+    )
     if only:
         unknown = sorted(set(only) - set(ARMS))
         if unknown:
@@ -286,7 +310,7 @@ def main(argv: list[str]) -> int:
     rows = []
     for dataset, n in plan:
         for arm, (told_k, where, _) in ARMS.items():
-            if where not in ("both", dataset) or (only and arm not in only):
+            if where not in ("both", dataset, f"{dataset}-{n}") or (only and arm not in only):
                 continue
             for seed in seeds:
                 res = run_child(arm, dataset, n, seed)
