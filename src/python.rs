@@ -44,7 +44,7 @@ use crate::distance::{
     LorentzCentroid, MahalanobisChi2, Radius, SubspaceChi2, VarianceIncrease,
 };
 use crate::feature::{ClusterFeature, Diagonal, FdSketch, Full, Spherical};
-use crate::kernels::Lead;
+use crate::kernels::{Lead, nearest_sq_euclidean, sq_euclidean};
 use crate::linalg::{cholesky_lower, mahalanobis_sq_from_chol};
 use crate::mixture::{Mixture, SparseAssigner};
 use crate::model::{
@@ -1123,17 +1123,13 @@ enum PointRule {
 /// distance so a row sitting on a centre does not raise `1/d` to a large power and overflow. A row
 /// exactly on one or more centres splits its membership over exactly those, which is the constrained
 /// minimum and the only finite answer — the same singleton rule the leaf-level head uses.
-fn fuzzy_memberships<R: Real>(x: &[R], rows: &[f64], dim: usize, m: f64, u: &mut [f64]) {
+///
+/// Each `d` is the one [`nearest_centre`]'s full scan compares, so the membership peaks at the
+/// centre `predict` names.
+fn fuzzy_memberships(x: &[f64], rows: &[f64], m: f64, u: &mut [f64]) {
     let mut dmin = f64::INFINITY;
-    for (c, v) in u.iter_mut().enumerate() {
-        *v = rows[c * dim..(c + 1) * dim]
-            .iter()
-            .enumerate()
-            .map(|(j, &mu)| {
-                let t = x[j].to_f64().unwrap_or(0.0) - mu;
-                t * t
-            })
-            .sum();
+    for (v, c) in u.iter_mut().zip(rows.chunks_exact(x.len())) {
+        *v = sq_euclidean(c, x);
         dmin = dmin.min(*v);
     }
     if dmin <= 0.0 {
@@ -1233,26 +1229,24 @@ fn projected_rule<R: Real>(
     })
 }
 
+/// Index of the centre of `rows` (flat, `x.len()` wide) nearest `x`, the lower index of two at
+/// equal distance. One full scan, whatever the number of rows or centres: with no previous label
+/// to start from, an [`AssignPlan`] retired more instructions than this scan on sentence
+/// embeddings (`docs/adr/006-assignment-kernel.md`).
+fn nearest_centre(x: &[f64], rows: &[f64]) -> usize {
+    nearest_sq_euclidean(x, rows.chunks_exact(x.len()).enumerate(), Lead::Infinity)
+        .map_or(0, |(c, _)| c)
+}
+
 impl PointRule {
-    /// Label one dense row. `scratch` is a reusable buffer for the posterior path.
+    /// Label one dense row. `scratch` is a reusable buffer: the row in `f64` for a centre rule,
+    /// the posterior for a mixture.
     fn label_of<R: Real>(&self, x: &[R], scratch: &mut Vec<f64>) -> i64 {
         match self {
             PointRule::Centers { labels, rows } | PointRule::Fuzzy { labels, rows, .. } => {
-                let dim = x.len();
-                let mut best = labels[0];
-                let mut bd = f64::INFINITY;
-                for (c, &id) in labels.iter().enumerate() {
-                    let mut d = 0.0;
-                    for (j, &m) in rows[c * dim..(c + 1) * dim].iter().enumerate() {
-                        let t = x[j].to_f64().unwrap_or(0.0) - m;
-                        d += t * t;
-                    }
-                    if d < bd {
-                        bd = d;
-                        best = id;
-                    }
-                }
-                best
+                scratch.clear();
+                scratch.extend(x.iter().map(|v| v.to_f64().unwrap_or(0.0)));
+                labels[nearest_centre(scratch, rows)]
             }
             PointRule::Lorentz { labels, rows } => {
                 let dim = x.len();
@@ -1283,9 +1277,8 @@ impl PointRule {
 
     /// Label each of `n` dense rows — the partition the head *is*, rather than a tree descent.
     fn label_rows<R: Real>(&self, flat: &[R], n: usize, dim: usize) -> Vec<i64> {
-        map_rows(n, |i| {
-            let mut scratch = Vec::new();
-            self.label_of(&flat[i * dim..(i + 1) * dim], &mut scratch)
+        map_rows_with(n, Vec::new, |scratch, i| {
+            self.label_of(&flat[i * dim..(i + 1) * dim], scratch)
         })
     }
 
@@ -1369,9 +1362,11 @@ impl PointRule {
             let k = labels.len();
             let mut out = Vec::with_capacity(n * k);
             let mut u = vec![0.0; k];
-            for i in 0..n {
-                let x = &flat[i * dim..(i + 1) * dim];
-                fuzzy_memberships(x, rows, dim, *m, &mut u);
+            let mut x = Vec::with_capacity(dim);
+            for row in flat[..n * dim].chunks_exact(dim) {
+                x.clear();
+                x.extend(row.iter().map(|v| v.to_f64().unwrap_or(0.0)));
+                fuzzy_memberships(&x, rows, *m, &mut u);
                 out.extend_from_slice(&u);
             }
             return Some((out, k));
@@ -1762,14 +1757,26 @@ where
     T: Send,
     F: Fn(usize) -> T + Sync + Send,
 {
+    map_rows_with(n, || (), |_, i| f(i))
+}
+
+/// [`map_rows`] with a scratch value `init` makes once per worker's share of the rows, not once
+/// per row.
+fn map_rows_with<S, T, I, F>(n: usize, init: I, f: F) -> Vec<T>
+where
+    T: Send,
+    I: Fn() -> S + Sync + Send,
+    F: Fn(&mut S, usize) -> T + Sync + Send,
+{
     #[cfg(feature = "parallel")]
     {
         const PAR_MIN: usize = 4096;
         if n >= PAR_MIN {
-            return (0..n).into_par_iter().map(f).collect();
+            return (0..n).into_par_iter().map_init(init, f).collect();
         }
     }
-    (0..n).map(f).collect()
+    let mut scratch = init();
+    (0..n).map(|i| f(&mut scratch, i)).collect()
 }
 
 /// Which manifold a row is put on before it reaches the tree.
@@ -7638,4 +7645,150 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
         "Fast, numerically stable BETULA clustering (Rust core).",
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::clustering::rng::SplitMix64;
+
+    /// FNV-1a over the labels' little-endian bytes.
+    fn digest(labels: &[i64]) -> u64 {
+        labels
+            .iter()
+            .flat_map(|l| l.to_le_bytes())
+            .fold(0xcbf2_9ce4_8422_2325, |h, b| {
+                (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
+            })
+    }
+
+    fn narrow<R: Real>(v: &[f64]) -> Vec<R> {
+        v.iter().map(|&x| R::from_f64(x).unwrap()).collect()
+    }
+
+    /// Two anchor rows on an integer lattice, so every distance below is exact in either dtype.
+    /// Centres 1 and 2 are the same point, one unit from `x`; centres 3 and 4 sit at `y ± δ`, two
+    /// units from `y`; every other centre is far from both. Each tied pair carries its labels in
+    /// the opposite order to its indices, so the lower index and the lower label disagree.
+    fn tied_rule(dim: usize, k: usize) -> (PointRule, Vec<f64>, Vec<f64>) {
+        let x: Vec<f64> = (0..dim).map(|j| (j % 9) as f64 - 4.0).collect();
+        let mut y = x.clone();
+        y[1] += 50.0;
+        let at = |base: &[f64], moves: &[(usize, f64)]| {
+            let mut c = base.to_vec();
+            for &(j, v) in moves {
+                c[j] += v;
+            }
+            c
+        };
+        let mut centres = vec![
+            at(&x, &[(2, 100.0)]),
+            at(&x, &[(0, 1.0)]),
+            at(&x, &[(0, 1.0)]),
+            at(&y, &[(0, 1.0), (2, 1.0)]),
+            at(&y, &[(0, -1.0), (2, -1.0)]),
+        ];
+        for c in 5..k {
+            centres.push(at(&x, &[(c % dim, 70.0), ((c + 1) % dim, -70.0)]));
+        }
+        let mut labels = vec![10, 21, 20, 31, 30];
+        labels.extend((5..k as i64).map(|c| 100 + c));
+        let rule = PointRule::Centers {
+            labels,
+            rows: centres.concat(),
+        };
+        (rule, x, y)
+    }
+
+    fn ties_go_to_the_lower_index<R: Real>(dim: usize, k: usize, n: usize) {
+        let (rule, x, y) = tied_rule(dim, k);
+        let rows: Vec<f64> = (0..n)
+            .flat_map(|i| if i % 2 == 0 { x.clone() } else { y.clone() })
+            .collect();
+        let flat: Vec<R> = narrow(&rows);
+        let want: Vec<i64> = (0..n).map(|i| if i % 2 == 0 { 21 } else { 31 }).collect();
+        assert_eq!(
+            rule.label_rows(&flat, n, dim),
+            want,
+            "dense, d = {dim}, k = {k}"
+        );
+        let indices: Vec<i64> = (0..n).flat_map(|_| 0..dim as i64).collect();
+        let indptr: Vec<i64> = (0..=n as i64).map(|i| i * dim as i64).collect();
+        assert_eq!(
+            rule.label_csr(&rows, &indices, &indptr, dim),
+            want,
+            "sparse, d = {dim}, k = {k}"
+        );
+    }
+
+    /// A row as near two identical centres, or two centres at equal distance, takes the lower
+    /// index, in both row dtypes and through both arms of the kernel: the scalar fold below 16
+    /// coordinates and the packed sum above. The first case is long enough to run in parallel.
+    #[test]
+    fn a_centre_rule_gives_a_tied_row_to_the_lower_index() {
+        for (dim, k, n) in [(8, 5, 4100), (40, 12, 2), (160, 300, 2)] {
+            ties_go_to_the_lower_index::<f32>(dim, k, n);
+            ties_go_to_the_lower_index::<f64>(dim, k, n);
+        }
+    }
+
+    /// 300 centres in 160 dimensions and 2 000 rows: most rows near one centre, some midway
+    /// between two, some far from every centre.
+    fn wide_rule() -> (PointRule, Vec<f64>, usize, usize) {
+        let (dim, k, n) = (160, 300, 2000);
+        let mut rng = SplitMix64::new(31);
+        let centres: Vec<f64> = (0..k * dim).map(|_| 3.0 * rng.gauss()).collect();
+        let centre = |c: usize| &centres[c * dim..(c + 1) * dim];
+        let mut flat = Vec::with_capacity(n * dim);
+        for r in 0..n {
+            let (a, b) = ((r * 7) % k, (r * 13 + 5) % k);
+            for j in 0..dim {
+                flat.push(match r % 4 {
+                    0 | 1 => centre(a)[j] + rng.gauss(),
+                    2 => 0.5 * (centre(a)[j] + centre(b)[j]) + 0.3 * rng.gauss(),
+                    _ => 4.0 * rng.gauss(),
+                });
+            }
+        }
+        let labels = (0..k as i64).map(|c| 3 * c + 1).collect();
+        let rule = PointRule::Centers {
+            labels,
+            rows: centres,
+        };
+        (rule, flat, n, dim)
+    }
+
+    /// The labels of a wide centre rule are pinned by digest, in both row dtypes, labelled in one
+    /// call and one row per call. The digest was recorded from the serial float64 scan the rule
+    /// ran before the shared kernel, on the same fixture. The pruned plan the tree answers a
+    /// nearest-leaf rule with names the same centres while skipping coordinates, so the two exact
+    /// searches agree here too.
+    #[test]
+    fn a_wide_centre_rule_keeps_its_labels() {
+        const DIGEST: u64 = 0x2c73_772a_9c90_82de;
+        let (rule, flat, n, dim) = wide_rule();
+        let PointRule::Centers { labels, rows } = &rule else {
+            unreachable!("the wide rule is a centre rule")
+        };
+        let centres: Vec<&[f64]> = rows.chunks_exact(dim).collect();
+        let plan = AssignPlan::from_rows(&centres, None).expect("300 centres of 160 coordinates");
+        let mut nearest = vec![0u32; n];
+        let read = plan
+            .assign_many(&flat, n, None, &mut nearest)
+            .read_fraction();
+        assert!(read < 0.8, "the plan read {read} of the coordinates");
+        let planned: Vec<i64> = nearest.iter().map(|&c| labels[c as usize]).collect();
+        assert_eq!(digest(&planned), DIGEST);
+        let one_by_one = |flat: &[f64]| -> Vec<i64> {
+            flat.chunks_exact(dim)
+                .flat_map(|x| rule.label_rows(x, 1, dim))
+                .collect()
+        };
+        let flat32 = narrow::<f32>(&flat);
+        assert_eq!(digest(&rule.label_rows(&flat, n, dim)), DIGEST);
+        assert_eq!(digest(&rule.label_rows(&flat32, n, dim)), DIGEST);
+        assert_eq!(digest(&one_by_one(&flat)), DIGEST);
+        let widened: Vec<f64> = flat32.iter().map(|&v| f64::from(v)).collect();
+        assert_eq!(digest(&one_by_one(&widened)), DIGEST);
+    }
 }

@@ -176,6 +176,25 @@ All notable changes to this project are documented here. The format follows
   compile and behave as before.
   [ADR 003](https://github.com/ilgrad/betula-cluster/blob/main/docs/adr/003-avx2-kernels-unsafe.md)
   has the addendum.
+- **`predict` on a nearest-centre rule runs the shared distance kernel.** `kmeans`, `xmeans`,
+  `kmedoids`, `spherical-kmeans` and `fuzzy-cmeans` labelled each row of `predict` by a serial
+  scalar float64 loop over the centres, dense and CSR alike. Each row is now widened to float64 and
+  scanned by the same kernel as the tree's scans (above), which the one-shot `fit_predict` already
+  used, and `fuzzy-cmeans` reads its memberships off the same distances. Retired instructions of one
+  `predict` of the training rows, float32, one thread: MNIST-20k 32.5 G → 4.18 G at 256 centres and
+  129.2 G → 15.9 G at 1 024; 20 newsgroups (MiniLM, 17 901 rows) 14.3 G → 1.91 G and 56.9 G →
+  7.29 G; at the sets' own 10 and 20 centres 1.49 G → 0.41 G and 1.21 G → 0.26 G. **Labels:** the
+  order of the sum changes from 16 coordinates, so a distance moves by a few ulp; an argmin decided
+  by less than about 1e-13 relative can flip; exact ties keep the lower index. On MNIST-20k and
+  20 newsgroups the label digests are unchanged in both dtypes through every `predict` route
+  (`fit_predict`, `fit().predict`, held-out rows, one row per call, a pickled model, CSR rows,
+  `fit_predict_sparse` with a projection), and the smallest relative gap between a row's two nearest
+  centres there is 2.5e-7 (`xmeans` on float32 MNIST). `predict_proba` of `fuzzy-cmeans` moves by at
+  most 6.7e-16. The pruned `AssignPlan` was measured on these rules and is not used: with no
+  previous label to start from it retires more instructions than the scan on MiniLM at every centre
+  count measured up to 1 024, and on MPNet up to 256.
+  [ADR 006](https://github.com/ilgrad/betula-cluster/blob/main/docs/adr/006-assignment-kernel.md)
+  records the decision.
 - **`gmm-full`, `mppca` and `mfa` read a diagonal leaf as its diagonal.** The default
   `feature="diagonal"` (and `"spherical"`) leaf holds no off-diagonal moment, yet the three heads
   asked every leaf for a dense `d × d` covariance, and built that set again in each parallel restart.
