@@ -7,7 +7,7 @@ they have no row here, and that is stated where their rows are read.
 
     uv run --no-sync --with scikit-learn --with classixclustering --with denmune \\
         --with finch-clust --with genieclust --with hdbscan --with fast-hdbscan \\
-        --with phenograph python bench/rival_reproductions.py
+        --with phenograph --with dbscan python bench/rival_reproductions.py
 
 Two examples need the authors' data files, fetched once into scikit-learn's data home: `jain`
 from the clustering benchmark suite (genieclust, DenMune) and FINCH's `gestalt_clusters.txt`.
@@ -117,6 +117,39 @@ def optics():
     return [0, 0, 0, 1, 1, 1], OPTICS(min_samples=2).fit(x).labels_.tolist()
 
 
+def _dbscan_blobs():
+    """The fixture of scikit-learn's `plot_dbscan.py`, which the `dbscan` README copies."""
+    from sklearn.preprocessing import StandardScaler
+
+    x, y = make_blobs(
+        n_samples=750, centers=[[1, 1], [-1, -1], [1, -1]], cluster_std=0.4, random_state=0
+    )
+    return StandardScaler().fit_transform(x), y
+
+
+def sklearn_dbscan():
+    """scikit-learn, plot_dbscan.py as rendered for 1.9.1: 3 clusters, 18 noise points, ARI 0.952."""
+    from sklearn.cluster import DBSCAN
+
+    x, y = _dbscan_blobs()
+    labels = DBSCAN(eps=0.3, min_samples=10).fit(x).labels_
+    found = len(set(labels)) - (1 if -1 in labels else 0)
+    return (3, 18, 0.952), (
+        found,
+        int((labels == -1).sum()),
+        round(adjusted_rand_score(y, labels), 3),
+    )
+
+
+def dbscan_pkg():
+    """dbscan (Wang, Gu, Shun), the README example: the plot's title reads 3 clusters."""
+    from dbscan import DBSCAN
+
+    x, _ = _dbscan_blobs()
+    labels, _ = DBSCAN(x, eps=0.3, min_samples=10)
+    return 3, len(set(labels.tolist())) - (1 if -1 in labels else 0)
+
+
 def phenograph():
     """PhenoGraph examples/example-using-random-data-points.ipynb: three communities, Q = 0.664858.
 
@@ -144,6 +177,8 @@ CHECKS = {
     "fast_hdbscan 0.3.4 (PLSCAN)": plscan,
     "scikit-learn 1.9.1 OPTICS": optics,
     "PhenoGraph 1.5.7": phenograph,
+    "scikit-learn 1.9.1 DBSCAN": sklearn_dbscan,
+    "dbscan 1.0.0": dbscan_pkg,
 }
 
 

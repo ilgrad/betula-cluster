@@ -324,6 +324,15 @@ All notable changes to this project are documented here. The format follows
   contest on the same fixture: the `gmm-full` BIC sweep reads 0.983 and `xmeans` 0.977. The board
   goes to 32 / 98 / 29 on quality (eight new cells) and 28 / 1 / 5 on speed (the four timed cells
   are gone until F-18).
+- **DBSCAN joins the density census** (`bench/density_rivals.py`). scikit-learn's `DBSCAN` and the
+  `dbscan` package each first reproduce their documented example (`bench/rival_reproductions.py`:
+  3 clusters, 18 noise points, ARI 0.952). At the default `eps = 0.5` neither finds structure on
+  any fixture: one cluster on the 2-D sets, every row noise on `highdim`; the package refuses
+  64-D `digits`. A third arm sets `minPts = 2·d` and `eps` at the elbow of the sorted
+  k-distance curve: 0.921, 0.911 and 0.998 on moons, circles and `highdim`, and ARI 0.002 or less
+  on the Gaussian fixtures and `digits` (mean 0.405 over seven). Against it betula's `hdbscan` head
+  wins the rings, ties `highdim` and wins memory three times. The board goes to 34 / 99 / 29 on
+  quality and 118 / 5 / 2 on memory.
 
 ## [1.5.0] — 2026-10-28
 

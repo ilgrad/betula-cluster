@@ -1391,18 +1391,18 @@ the wider of the two cells' three-seed spreads is not a result. Tables with no s
 single runs by construction and fall back to a per-axis tolerance.
 
 ```
-## quality — 32 win · 98 tie · 29 loss
+## quality — 34 win · 99 tie · 29 loss
 ## speed   — 28 win · 1 tie · 5 loss
-## memory  — 115 win · 5 tie · 2 loss
+## memory  — 118 win · 5 tie · 2 loss
 ```
 
-`bench/scoreboard.json` records those 315 verdicts: the 140 of the 2026-10-29 edition, which it
+`bench/scoreboard.json` records those 321 verdicts: the 140 of the 2026-10-29 edition, which it
 re-derives unchanged (three of them renamed on 2026-11-15), 166 `vs-rival` cells added with the
 census on 2026-11-14 (eight of them re-paired on 2026-11-15), and five memory cells added on
 2026-11-15 (both below; two memory verdicts moved on the `VmHWM` re-read the same day). On
 2026-11-16 the external contest's re-run (*Specialist baselines*) dropped its four speed cells,
 which carry no time until F-18, and added eight quality cells: the shuffled rows and the count-free
-contest. `--check` re-derives them and exits non-zero if any cell got worse or vanished, and
+contest. The same day DBSCAN joined the density census and added six cells. `--check` re-derives them and exits non-zero if any cell got worse or vanished, and
 `--update` is the deliberate act of accepting a new board. Seven of the quality losses are the
 `covtype` and `digits` rows discussed above, the raw-TF-IDF `20news` row, and the four `fast_hdbscan`
 cells; the other 22, and the two memory losses (scikit-fuzzy by 4 MB, and `vmf` on `news-minilm`
@@ -1523,6 +1523,11 @@ accepted deliberately rather than overwritten:
   of 0.43 and 0.40, with the `canonical_order=True` arm as betula's champion. New are the four
   shuffled-row cells (two k-means ties, two HDBSCAN losses) and the four count-free cells, wins by
   0.07–0.09. Quality went 28/96/27 → **32/98/29**, speed 30/1/7 → **28/1/5**.
+- **2026-11-16, DBSCAN on the density census: six cells added, none moved.** At its default `eps`
+  neither implementation finds structure on any fixture, so they add no cell. At a k-distance `eps`
+  scikit-learn's `DBSCAN` reads 0.921, 0.911 and 0.998 on moons, circles and `highdim`, against
+  betula's `hdbscan` head at 1.000: wins on the rings, a tie on `highdim`, and three memory wins
+  (167–175 MB against 191–433 MB). Quality went to **34/99/29**, memory to **118/5/2**.
 
 ## The census — every method a user would reach for, not only scikit-learn (2026-11-14)
 
@@ -1537,7 +1542,7 @@ GPL ones (leidenalg, python-igraph) included:
 |---|---|---|
 | `bench/rivals.py` | manifold and embedding pipelines, graph clustering: raw MNIST (/255) at 20 000 and 70 000 rows, 20 newsgroups as all-MiniLM-L6-v2 embeddings (17 901 posts, `bench/embed_news.py`) | `results_rivals.csv` |
 | `bench/head_references.py` | one outside implementation per betula head that had none: k-medoids, fuzzy c-means, k-prototypes, the Toeplitz mixture | `results_head_refs.csv` |
-| `bench/density_rivals.py` | density and hierarchy heads against `hdbscan`, `fast_hdbscan`, OPTICS, CLASSIX, DenMune, FINCH, genieclust, lumbermark, on the quality fixtures at 30 000 rows and `digits` | `results_density_rivals.csv` |
+| `bench/density_rivals.py` | density and hierarchy heads against `hdbscan`, `fast_hdbscan`, OPTICS, DBSCAN (scikit-learn and the `dbscan` package), CLASSIX, DenMune, FINCH, genieclust, lumbermark, on the quality fixtures at 30 000 rows and `digits` | `results_density_rivals.csv` |
 
 Four more stand apart and enter no board total, at the end of this section: `bench/gpu_rivals.py`
 runs cuML on the GPU (a different hardware budget); `bench/clustbench_suite.py` runs the told-k
@@ -1549,7 +1554,7 @@ Versions, as `--with` resolved them on 2026-11-14: scikit-learn 1.9.1, umap-lear
 hdbscan 0.8.44, fast_hdbscan 0.3.4, EVoC 0.3.2, leidenalg 0.12.0, python-igraph 1.0.0,
 pynndescent 0.7.0, PaCMAP 0.9.1, openTSNE 1.0.4, PhenoGraph 1.5.7, BERTopic 0.17.4,
 CLASSIX 1.5.3, DenMune 1.17.1, FINCH 0.2.3, genieclust 1.3.0, lumbermark 0.9.1, kmedoids 0.5.5,
-scikit-fuzzy 0.5.0, kmodes 0.12.2, tslearn 0.10.0, numba 0.68.1.
+scikit-fuzzy 0.5.0, kmodes 0.12.2, tslearn 0.10.0, numba 0.68.1; dbscan 1.0.0 on 2026-11-16.
 
 **Read these rules first.**
 
@@ -1585,16 +1590,29 @@ scikit-fuzzy 0.5.0, kmodes 0.12.2, tslearn 0.10.0, numba 0.68.1.
   of every fixture here, and so does this harness. CLASSIX's documentation says to tune `radius`
   down from 1 until the count is slightly above the expected one: that needs the count, so CLASSIX
   runs at its default `radius=0.5` and is reported as such.
+- **DBSCAN has no default that fits.** Its `eps` is an absolute distance. At the default 0.5 both
+  scikit-learn's `DBSCAN` and the `dbscan` package return one cluster on the five 2-D fixtures and
+  mark every row noise on `highdim` (scikit-learn's also on `digits`; the package refuses more than
+  20 dimensions). Both run with `min_samples = min_points(n)`, as OPTICS does. A third arm,
+  `sklearn-dbscan-kdist`, derives both parameters from the data as the DBSCAN literature does:
+  `minPts = 2·d` (Schubert et al., TODS 2017) and `eps` at the elbow of the sorted distances to the
+  `minPts`-th neighbour. That rule is the harness's own, not a package default. On scikit-learn's
+  DBSCAN example it finds 5 clusters at ARI 0.860, where the example's hand-set parameters find 3
+  at 0.952 (not in a CSV).
 - **A rival that finds no structure is not scored.** A rival whose median ARI on a slice is below
-  0.01 gives no board cell there. That removes 14 (rival, slice) pairs, all in the density contest
-  without k. In 10 the rival returns one cluster (CLASSIX on five fixtures, OPTICS on four, DenMune
-  on one); in the other 4 it returns two or three clusters at ARI 0.004 or less (CLASSIX on
-  `digits`, DenMune on blobs and aniso, FINCH on circles). That measures a default against data it
-  was not set for, not the method, so those cells are in the tables and not on the board. The rule
-  removes 14 betula quality wins; of the 14 memory cells it removes, 8 would be wins and 6 ties.
+  0.01 gives no board cell there. That removes 31 (rival, slice) pairs, all in the density contest
+  without k. In 21 the rival returns one cluster (CLASSIX on five fixtures, OPTICS on four, DenMune
+  on one, DBSCAN at its default `eps` on five in each implementation, DBSCAN at a k-distance `eps`
+  on `digits`). In 3 it marks every row noise (DBSCAN at its default `eps` on `highdim` in both
+  implementations, and scikit-learn's on `digits`). In the other 7 it returns two or more clusters
+  at ARI 0.004 or less (CLASSIX on `digits`, DenMune on blobs and aniso, FINCH on circles, DBSCAN at
+  a k-distance `eps` on blobs, aniso and `varied` with 19–74 clusters). That measures a parameter
+  against data it was not set for, not the method, so those cells are in the tables and not on the
+  board. The rule removes 31 betula quality wins and 31 memory wins; 6 of the first 14 memory cells
+  were ties until the `VmHWM` re-read of 2026-11-15.
 
 **Each rival reproduces its own documentation first** (`bench/rival_reproductions.py`): the example
-the package publishes, called as published, against the published output. Six of eight match. The
+the package publishes, called as published, against the published output. Eight of ten match. The
 two that do not are stable across runs and are traced to the documentation, not to the call.
 lumbermark and EVoC publish no numeric output, so they have no row; read theirs with that in mind.
 The other census packages have no check either, and are not exempt by any rule: umap-learn, PaCMAP,
@@ -1611,6 +1629,8 @@ kmodes and tslearn. Their rows rest on the documented call alone.
 | fast_hdbscan 0.3.4 (PLSCAN) | 1 | 3 | no — the docstring's output is wrong: 3 layers on every run |
 | scikit-learn 1.9.1 OPTICS | [0, 0, 0, 1, 1, 1] | [0, 0, 0, 1, 1, 1] | yes |
 | PhenoGraph 1.5.7 | (3, 0.66) | (3, 0.66) | yes |
+| scikit-learn 1.9.1 DBSCAN | (3, 18, 0.952) | (3, 18, 0.952) | yes |
+| dbscan 1.0.0 | 3 | 3 | yes |
 
 **Rival families with no row, and why.** Every rival a user would reach for is named, measured or
 not. These have no row in any committed CSV:
@@ -1618,7 +1638,6 @@ not. These have no row in any committed CSV:
 | family | named, not measured | reason |
 |---|---|---|
 | no CPython 3.14 wheel | fastcluster, scikit-learn-extra, trimap, SuperKMeans, ClustPy | the bench runs on CPython 3.14, and without a wheel the arm needs a compiler; fastcluster's Ward enters only as a published vector of Gagolewski's suite |
-| density | scikit-learn `DBSCAN` | not yet run |
 | stationary signals | aeon | not yet run; tslearn's k-Shape has rows |
 | outliers | PyOD | not yet run; the outlier table holds IsolationForest and LOF |
 | streaming | scikit-learn's `partial_fit` learners, BICO | not yet run; the memory table compares the stream with one-shot k-means |
@@ -1651,7 +1670,8 @@ not. These have no row in any committed CSV:
 - **Density, k not given. A loss on the mean.** One method over all seven fixtures, mean ARI:
   `hdbscan` 0.652, `fast_hdbscan` 0.638, betula's `hdbscan` head 0.616, `scale-space` 0.609,
   the `gmm-full` BIC sweep 0.556, DenMune 0.540, the `gmm` BIC sweep 0.498, FINCH 0.484,
-  `BayesianGaussianMixture` 0.417, `leiden` 0.413, `leiden` on the rows graph 0.399. The board's
+  `BayesianGaussianMixture` 0.417, `leiden` 0.413, DBSCAN at a k-distance `eps` 0.405, `leiden`
+  on the rows graph 0.399, DBSCAN at its default `eps` 0.000 (both implementations). The board's
   rule keeps betula's `hdbscan` head (worst-seed mean 0.616 against `scale-space` 0.609 and the
   `gmm-full` sweep 0.556). It loses blobs, aniso and `varied` to `hdbscan` (0.376, 0.469 and 0.302
   against 0.472, 0.500 and 0.505), wins `digits` (0.164 against 0.087), and ties moons, circles and
@@ -1806,6 +1826,9 @@ Bold rows are betula's. `bench/rivals.py --arms=a,b` and `bench/density_rivals.p
 | denmune | 0.000 | 2 | 0.00 | 672 |
 | sklearn-optics | 0.000 | 1 | 0.00 | 255 |
 | classix | 0.000 | 1 | 0.00 | 172 |
+| sklearn-dbscan | 0.000 | 1 | 0.00 | 1544 |
+| dbscan | 0.000 | 1 | 0.00 | 188 |
+| sklearn-dbscan-kdist | 0.000 | 74 | 0.02 | 197 |
 
 **blobs, n = 30 000, told k**
 
@@ -1838,6 +1861,9 @@ Bold rows are betula's. `bench/rivals.py --arms=a,b` and `bench/density_rivals.p
 | denmune | 0.000 | 2 | 0.00 | 672 |
 | sklearn-optics | 0.000 | 1 | 0.00 | 237 |
 | classix | 0.000 | 1 | 0.00 | 172 |
+| sklearn-dbscan | 0.000 | 1 | 0.00 | 2670 |
+| dbscan | 0.000 | 1 | 0.00 | 188 |
+| sklearn-dbscan-kdist | 0.000 | 19 | 0.01 | 208 |
 
 **aniso, n = 30 000, told k**
 
@@ -1866,10 +1892,13 @@ Bold rows are betula's. `bench/rivals.py --arms=a,b` and `bench/density_rivals.p
 | sklearn-bgmm | 0.248 (0.244–0.257) | 20 | 0.00 | 216 |
 | **betula-leiden-rows** | 0.194 (0.168–0.208) | 16 | 0.00 | 173 |
 | **betula-leiden** | 0.184 (0.176–0.225) | 19 | 0.00 | 166 |
+| sklearn-dbscan-kdist | 0.002 | 44 | 0.02 | 268 |
 | denmune | 0.000 | 1 | 0.00 | 672 |
 | **betula-scale-space** | 0.000 (0.000–0.000) | 2 | 0.00 | 165 |
 | sklearn-optics | 0.000 | 1 | 0.00 | 247 |
 | classix | 0.000 | 1 | 0.00 | 172 |
+| sklearn-dbscan | 0.000 | 1 | 0.01 | 1641 |
+| dbscan | 0.000 | 1 | 0.01 | 187 |
 
 **varied, n = 30 000, told k**
 
@@ -1894,6 +1923,7 @@ Bold rows are betula's. `bench/rivals.py --arms=a,b` and `bench/density_rivals.p
 | **betula-hdbscan** | 1.000 (1.000–1.000) | 2 | 0.00 | 167 |
 | fast-hdbscan | 1.000 | 2 | 0.00 | 326 |
 | denmune | 0.997 | 2 | 0.00 | 671 |
+| sklearn-dbscan-kdist | 0.921 | 61 | 0.03 | 191 |
 | finch | 0.451 | 2 | 0.00 | 1858 |
 | **betula-leiden** | 0.122 (0.113–0.142) | 18 | 0.00 | 165 |
 | **betula-gmm-bic** | 0.118 (0.117–0.118) | 20 | 0.00 | 170 |
@@ -1902,6 +1932,8 @@ Bold rows are betula's. `bench/rivals.py --arms=a,b` and `bench/density_rivals.p
 | sklearn-bgmm | 0.108 (0.101–0.109) | 19 | 0.00 | 216 |
 | **betula-xmeans** | 0.104 (0.104–0.104) | 20 | 0.00 | 166 |
 | classix | 0.000 | 1 | 0.00 | 172 |
+| sklearn-dbscan | 0.000 | 1 | 0.00 | 1411 |
+| dbscan | 0.000 | 1 | 0.00 | 187 |
 
 **moons, n = 30 000, told k**
 
@@ -1926,6 +1958,7 @@ Bold rows are betula's. `bench/rivals.py --arms=a,b` and `bench/density_rivals.p
 | **betula-hdbscan** | 1.000 (1.000–1.000) | 2 | 0.00 | 167 |
 | fast-hdbscan | 1.000 | 2 | 0.00 | 326 |
 | denmune | 0.999 | 2 | 0.00 | 671 |
+| sklearn-dbscan-kdist | 0.911 | 69 | 0.03 | 191 |
 | **betula-gmm-bic** | 0.126 (0.126–0.126) | 20 | 0.00 | 172 |
 | **betula-leiden** | 0.109 (0.107–0.110) | 20 | 0.00 | 166 |
 | **betula-gmm-full-bic** | 0.105 (0.101–0.105) | 20 | 0.00 | 173 |
@@ -1934,6 +1967,8 @@ Bold rows are betula's. `bench/rivals.py --arms=a,b` and `bench/density_rivals.p
 | finch | 0.004 | 3 | 0.00 | 1849 |
 | classix | 0.000 | 1 | 0.00 | 172 |
 | **betula-xmeans** | -0.000 (-0.000–-0.000) | 4 | 0.00 | 166 |
+| sklearn-dbscan | 0.000 | 1 | 0.00 | 924 |
+| dbscan | 0.000 | 1 | 0.00 | 187 |
 
 **circles, n = 30 000, told k**
 
@@ -1964,8 +1999,11 @@ Bold rows are betula's. `bench/rivals.py --arms=a,b` and `bench/density_rivals.p
 | **betula-gmm-full-bic** | 1.000 (1.000–1.000) | 8 | 0.00 | 181 |
 | **betula-leiden-rows** | 1.000 (1.000–1.000) | 8 | 0.00 | 184 |
 | denmune | 0.999 | 8 | 0.00 | 688 |
+| sklearn-dbscan-kdist | 0.998 | 8 | 0.00 | 433 |
 | sklearn-bgmm | 0.997 (0.997–0.998) | 20 | 0.00 | 224 |
 | **betula-xmeans** | 0.964 (0.926–0.964) | 9 | 0.00 | 174 |
+| sklearn-dbscan | 0.000 | 0 | 1.00 | 194 |
+| dbscan | 0.000 | 0 | 1.00 | 220 |
 
 **highdim, n = 30 000, told k**
 
@@ -1998,6 +2036,9 @@ Bold rows are betula's. `bench/rivals.py --arms=a,b` and `bench/density_rivals.p
 | classix | 0.001 | 2 | 0.00 | 173 |
 | sklearn-optics | 0.001 | 1 | 0.99 | 187 |
 | **betula-scale-space** | 0.000 (0.000–0.000) | 3 | 0.00 | 168 |
+| sklearn-dbscan | 0.000 | 0 | 1.00 | 183 |
+| sklearn-dbscan-kdist | 0.000 | 1 | 0.02 | 261 |
+| dbscan | DNF (ValueError: DBSCAN: dimension >20 is not supported) | | | |
 
 **digits, n = 1 797, told k**
 
@@ -2219,6 +2260,13 @@ side of every cell is the one head its contest chose (see the rules above).
 - **sklearn-bisecting-kmeans** — 2 win · 0 tie · 0 loss
   - win, memory, `digits/1797/told-k` (head_refs): betula 167 MB (`betula-kmeans`) against 180 MB
   - win, quality, `digits/1797/told-k` (head_refs): betula 0.668 ARI (`betula-kmeans`) against 0.548 ARI
+- **sklearn-dbscan-kdist** — 5 win · 1 tie · 0 loss
+  - win, memory, `circles/30000/no-k` (density_rivals): betula 167 MB (`betula-hdbscan`) against 191 MB
+  - win, memory, `highdim/30000/no-k` (density_rivals): betula 175 MB (`betula-hdbscan`) against 433 MB
+  - win, memory, `moons/30000/no-k` (density_rivals): betula 167 MB (`betula-hdbscan`) against 191 MB
+  - win, quality, `circles/30000/no-k` (density_rivals): betula 1.000 ARI (`betula-hdbscan`) against 0.911 ARI
+  - win, quality, `moons/30000/no-k` (density_rivals): betula 1.000 ARI (`betula-hdbscan`) against 0.921 ARI
+  - tie, quality, `highdim/30000/no-k` (density_rivals): betula 1.000 ARI (`betula-hdbscan`) against 0.998 ARI
 - **sklearn-gmm** — 18 win · 23 tie · 0 loss
   - win, memory, `10000/betula-gmm` (scaling): betula 54 MB (`betula-gmm`) against 176 MB
   - win, memory, `10000/betula-gmm-full` (scaling): betula 57 MB (`betula-gmm-full`) against 176 MB

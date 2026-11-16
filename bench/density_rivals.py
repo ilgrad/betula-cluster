@@ -6,7 +6,7 @@ pick when the number of clusters is unknown, or when clusters are not convex, ha
 
 | family | rivals |
 |---|---|
-| density, count chosen | `hdbscan` (scikit-learn-contrib), `fast_hdbscan`, scikit-learn `OPTICS`, CLASSIX, DenMune, FINCH |
+| density, count chosen | `hdbscan` (scikit-learn-contrib), `fast_hdbscan`, scikit-learn `OPTICS` and `DBSCAN` (at its defaults and at a k-distance `eps`), the `dbscan` package, CLASSIX, DenMune, FINCH |
 | hierarchy, count given | genieclust (`Genie`), lumbermark |
 | count chosen under a bound | scikit-learn `BayesianGaussianMixture` |
 
@@ -28,7 +28,7 @@ None of the rivals is a project dependency:
 
     uv run --no-sync --with scikit-learn --with pandas --with hdbscan --with fast-hdbscan \\
         --with classixclustering --with denmune --with finch-clust --with genieclust \\
-        --with lumbermark --with pynndescent python bench/density_rivals.py
+        --with lumbermark --with pynndescent --with dbscan python bench/density_rivals.py
 
 Writes `bench/results_density_rivals.csv` (schema of `bench/rivals.py`). `--arms=a,b` re-runs only
 those arms and replaces their rows in the existing CSV.
@@ -112,6 +112,33 @@ def _bgmm(x, seed):
     from sklearn.mixture import BayesianGaussianMixture
 
     return BayesianGaussianMixture(n_components=K_BOUND, random_state=seed).fit_predict(x)
+
+
+def _dbscan(x):
+    from dbscan import DBSCAN
+
+    # The README's call, at its default `eps`; the package supports at most 20 dimensions.
+    labels, _ = DBSCAN(x, min_samples=min_points(len(x)))
+    return labels
+
+
+def _dbscan_kdist(x):
+    """DBSCAN with the parameters its literature derives from the data, since no default fits.
+
+    `minPts = 2·d` (Schubert et al., TODS 2017); `eps` at the elbow of the sorted distances to the
+    `minPts`-th neighbour, the point farthest below the chord of the normalised curve (Kneedle's
+    difference curve). The rule is ours to state, not a package's default.
+    """
+    from sklearn.cluster import DBSCAN
+    from sklearn.neighbors import NearestNeighbors
+
+    min_pts = 2 * x.shape[1]
+    dist = NearestNeighbors(n_neighbors=min_pts).fit(x).kneighbors(x)[0][:, -1]
+    curve = np.sort(dist)
+    span = curve[-1] - curve[0]
+    t = np.linspace(0.0, 1.0, len(curve))
+    eps = float(curve[np.argmax(t - (curve - curve[0]) / span)]) if span > 0 else float(curve[0])
+    return DBSCAN(eps=eps, min_samples=min_pts).fit_predict(x)
 
 
 def _classix(x):
@@ -209,6 +236,16 @@ ARMS = {
             .fit_predict(x)
         ),
     ),
+    "sklearn-dbscan": (
+        False,
+        lambda x, k, s: (
+            __import__("sklearn.cluster", fromlist=["DBSCAN"])
+            .DBSCAN(min_samples=min_points(len(x)))
+            .fit_predict(x)
+        ),
+    ),
+    "dbscan": (False, lambda x, k, s: _dbscan(x)),
+    "sklearn-dbscan-kdist": (False, lambda x, k, s: _dbscan_kdist(x)),
     "sklearn-bgmm": (False, lambda x, k, s: _bgmm(x, s)),
     "classix": (False, lambda x, k, s: _classix(x)),
     "denmune": (False, lambda x, k, s: _denmune(x)),
