@@ -76,16 +76,17 @@ with peak RSS read from the process's own `VmHWM` (rows measured before 2026-11-
   [`bench/RESULTS.md`](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md) reports
   both rather than hiding them.
 - 🧭 **Against the rest of the field, not only scikit-learn.** The bench page's *census* runs UMAP,
-  PaCMAP and openTSNE pipelines, EVoC, BERTopic's defaults, kNN + Leiden, PhenoGraph, the density and
-  hierarchy specialists and one outside reference per head on the same rows. It lists every win,
+  PaCMAP and openTSNE pipelines, EVoC, BERTopic's defaults, kNN + Leiden, PhenoGraph, the density
+  and hierarchy specialists and one outside reference per head on the same rows. It lists every win,
   tie and loss by rival, generated from the CSVs, with one betula head per contest. There are more
-  losses than wins on quality: density clustering without a count (`hdbscan` 0.652 mean ARI against
-  0.616), the anisotropic fixture given the count (lumbermark 0.843 against `leiden` 0.545; over
-  all seven density fixtures `leiden` ties Genie, 0.838 against 0.839), MNIST-70k without a count
-  (`leiden` 0.777 against UMAP + HDBSCAN 0.920, EVoC 0.899 and PhenoGraph 0.821) and sentence
-  embeddings (0.382 against UMAP + k-means 0.451). On Gagolewski's clustering benchmark suite (81 datasets, given the
-  count) `leiden` with `resolution="auto"` is level with the best of 387 published configurations
-  (mean accuracy 0.774 against 0.786), not ahead of them. cuML's GPU pipelines sit in a separate table.
+  losses than wins on quality: density clustering without a count (DelTriC 0.657 and `hdbscan` 0.652
+  mean ARI against 0.616), the anisotropic fixture given the count (lumbermark 0.843 against
+  `leiden` 0.545; over all seven density fixtures `leiden` ties Genie, 0.838 against 0.839),
+  MNIST-70k without a count (`leiden` 0.777 against UMAP + HDBSCAN 0.920, EVoC 0.899 and PhenoGraph
+  0.821) and sentence embeddings (0.382 against UMAP + k-means 0.451). On Gagolewski's clustering
+  benchmark suite (81 datasets, given the count) `leiden` with `resolution="auto"` is level with the
+  best of 387 published configurations (mean accuracy 0.774 against 0.786), not ahead of them.
+  cuML's GPU pipelines sit in a separate table.
   The [comparison page](https://github.com/ilgrad/betula-cluster/blob/main/docs/COMPARISON.md) names,
   task by task, the method to use, betula's or the rival's.
 

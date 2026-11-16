@@ -12,7 +12,8 @@ and nothing in `python/betula_cluster` imports them:
 
     uv run --no-sync --with scikit-learn --with pandas --with umap-learn --with hdbscan \\
         --with evoc --with leidenalg --with python-igraph --with pacmap --with openTSNE \\
-        --with phenograph python bench/rivals.py [--quick] [--arms=a,b]
+        --with phenograph --with deltric --with cplearn python bench/rivals.py [--quick] \\
+        [--arms=a,b]
 
 Rules (the plan's 12.4, kept here so the CSV can be read without it):
 
@@ -126,6 +127,27 @@ def _leiden_knn(x, seed, n_neighbors=15):
     return np.asarray(part.membership)
 
 
+def deltric(x, seed):
+    from deltric import DelTriC
+
+    # DelTriC takes no seed; its UMAP projection draws from numpy's global generator.
+    np.random.seed(seed)
+    return DelTriC().fit_predict(x)
+
+
+def corespect(x, seed):
+    import random
+
+    from cplearn.corespect import CorespectModel
+    from cplearn.corespect.config import CoreSpectConfig
+
+    # CoreSPECT takes no seed either; its quickstart runs `fine_grained=True, propagate=True`.
+    np.random.seed(seed)
+    random.seed(seed)
+    cfg = CoreSpectConfig().configure()
+    return CorespectModel(x, **cfg.unpack()).run(fine_grained=True, propagate=True).labels_
+
+
 def _betula(x, k, seed, n, **kw):
     import betula_cluster as bc
 
@@ -208,6 +230,8 @@ ARMS = {
     "evoc": (False, "both", lambda x, k, s, d, n: _evoc(x, s)),
     "knn+leiden (scanpy recipe)": (False, "both", lambda x, k, s, d, n: _leiden_knn(x, s)),
     "phenograph": (False, "both", lambda x, k, s, d, n: _phenograph(x, s)),
+    "deltric": (False, "both", lambda x, k, s, d, n: deltric(x, s)),
+    "cplearn-corespect": (False, "both", lambda x, k, s, d, n: corespect(x, s)),
 }
 
 
@@ -224,6 +248,8 @@ RIVAL_DISTS = {
     "evoc": ("evoc",),
     "knn+leiden (scanpy recipe)": ("pynndescent", "leidenalg", "python-igraph"),
     "phenograph": ("PhenoGraph", "leidenalg"),
+    "deltric": ("deltric", "umap-learn"),
+    "cplearn-corespect": ("cplearn",),
 }
 assert set(RIVAL_DISTS) == {a for a in ARMS if not a.startswith("betula")}
 

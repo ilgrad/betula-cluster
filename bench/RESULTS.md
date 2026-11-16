@@ -149,19 +149,19 @@ losses** are reported below.
   blobs; both are ties, because the betula head's seeds span 0.042–0.757 and 0.142–0.456. It
   collapses outright on MNIST (0.003).
 - **Against the rest of the field, more losses than wins on quality** (*The census*: quality and
-  peak RSS only, one betula head per contest). Losses: density without k, where `hdbscan` averages
-  0.652 ARI over seven fixtures against betula's `hdbscan` head at 0.616; aniso given k, where
-  lumbermark and Genie read 0.843 and 0.750 against the rows graph's 0.545; MNIST-70k without k to
-  UMAP + HDBSCAN, EVoC and PhenoGraph (0.777 against 0.920, 0.899 and 0.821); 20 newsgroups
-  embeddings to every layout + k-means (0.382 against UMAP + k-means 0.451) and, without k, to
-  PhenoGraph and kNN + Leiden. The density fixtures given k are a tie on the mean: `leiden` on the
-  rows graph averages 0.838 against Genie's 0.839. Wins: `digits` given k against Genie and
-  lumbermark (0.840 against 0.643 and 0.656); MNIST-70k given k against openTSNE + k-means (0.835
-  against 0.745), with no layout step, where it ties UMAP and PaCMAP + k-means on a wide seed range
-  (0.806–0.884); BERTopic's default pipeline on news (0.330 against 0.086); the AR mixture against
-  tslearn's k-Shape (0.764 against 0.057). MNIST-20k is a tie with every manifold pipeline but one:
-  it beats UMAP + HDBSCAN on the UMAP docs' recipe (0.762 against 0.536). Peak RSS is below every
-  manifold and graph rival's in each MNIST and news contest.
+  peak RSS only, one betula head per contest). Losses: density without k, where DelTriC and
+  `hdbscan` average 0.657 and 0.652 ARI over seven fixtures against betula's `hdbscan` head at
+  0.616; aniso given k, where lumbermark and Genie read 0.843 and 0.750 against the rows graph's
+  0.545; MNIST-70k without k to UMAP + HDBSCAN, EVoC and PhenoGraph (0.777 against 0.920, 0.899 and
+  0.821); 20 newsgroups embeddings to every layout + k-means (0.382 against UMAP + k-means 0.451)
+  and, without k, to PhenoGraph, kNN + Leiden and CoreSPECT. The density fixtures given k tie on the
+  mean: `leiden` on the rows graph averages 0.838 against Genie's 0.839. Wins: `digits` given k
+  against Genie and lumbermark (0.840 against 0.643 and 0.656); MNIST-70k given k against openTSNE +
+  k-means (0.835 against 0.745), with no layout step, where it ties UMAP and PaCMAP + k-means on a
+  wide seed range (0.806–0.884); BERTopic's default pipeline on news (0.330 against 0.086); the AR
+  mixture against tslearn's k-Shape (0.764 against 0.057). MNIST-20k is a tie with every manifold
+  pipeline but one: it beats UMAP + HDBSCAN on the UMAP docs' recipe (0.762 against 0.536). Peak RSS
+  is below every manifold and graph rival's in each MNIST and news contest.
 - **On Gagolewski's clustering benchmark suite (81 datasets, told k), level with the best, not ahead.**
   `leiden` with `resolution="auto"` ranks 6th of 213 configurations scored in every battery (suite
   mean NCA 0.774 against Lumbermark's 0.786 and GIc's 0.784; paired, ahead on 19 datasets and behind
@@ -1391,27 +1391,27 @@ the wider of the two cells' three-seed spreads is not a result. Tables with no s
 single runs by construction and fall back to a per-axis tolerance.
 
 ```
-## quality — 35 win · 99 tie · 30 loss
+## quality — 49 win · 102 tie · 33 loss
 ## speed   — 28 win · 1 tie · 5 loss
-## memory  — 118 win · 7 tie · 2 loss
+## memory  — 138 win · 7 tie · 2 loss
 ```
 
-`bench/scoreboard.json` records those 325 verdicts: the 140 of the 2026-10-29 edition, which it
+`bench/scoreboard.json` records those 365 verdicts: the 140 of the 2026-10-29 edition, which it
 re-derives unchanged (three of them renamed on 2026-11-15), 166 `vs-rival` cells added with the
 census on 2026-11-14 (eight of them re-paired on 2026-11-15), and five memory cells added on
 2026-11-15 (both below; two memory verdicts moved on the `VmHWM` re-read the same day). On
 2026-11-16 the external contest's re-run (*Specialist baselines*) dropped its four speed cells,
 which carry no time until F-18, and added eight quality cells: the shuffled rows and the count-free
 contest. The same day DBSCAN joined the density census and added six cells, and k-modes and aeon's
-KASBA joined the head references with four, and MNIST-70k's larger leaf budget moved three
-verdicts. `--check` re-derives them and exits non-zero if any cell got worse or vanished, and
-`--update` is the deliberate act of accepting a new board. Seven of the quality losses are the
-`covtype` and `digits` rows discussed above, the raw-TF-IDF `20news` row, and the four `fast_hdbscan`
-cells; the other 23, and the two memory losses (scikit-fuzzy by 4 MB, and `vmf` on `news-minilm`
-against scikit-learn's `KMeans`), are census cells, listed under *Every verdict, rival by rival*. The
-five speed losses are the three `20news` rows the sparse scans own — 3.4× and 1.5× closer after task
-#71, but still losses — and the two 10 M cells of the memory suite, which are one row counted twice
-and are discussed under *Memory*.
+KASBA joined the head references with four, MNIST-70k's larger leaf budget moved three verdicts,
+and DelTriC and CoreSPECT joined the census with 40. `--check` re-derives them and exits non-zero
+if any cell got worse or vanished, and `--update` is the deliberate act of accepting a new board.
+Seven of the quality losses are the `covtype` and `digits` rows discussed above, the raw-TF-IDF
+`20news` row, and the four `fast_hdbscan` cells; the other 26, and the two memory losses
+(scikit-fuzzy by 4 MB, and `vmf` on `news-minilm` against scikit-learn's `KMeans`), are census
+cells, listed under *Every verdict, rival by rival*. The five speed losses are the three `20news`
+rows the sparse scans own — 3.4× and 1.5× closer after task #71, but still losses — and the two 10 M
+cells of the memory suite, which are one row counted twice and are discussed under *Memory*.
 
 **The ratchet fired on this edition, and it was right to.** Accepting the new board took one genuine
 demotion and six vanished pairings, listed here because the whole point of the file is that a board is
@@ -1543,6 +1543,12 @@ accepted deliberately rather than overwritten:
   (0.769) went **win → tie**. Not told k, it rose from 0.769 to 0.777 and its spread narrowed from
   0.058 to 0.014, so PhenoGraph (0.821) went **tie → loss** and kNN + Leiden (0.711) **tie →
   win**. Quality went to **35/99/30**.
+- **2026-11-16, DelTriC and CoreSPECT in the census: 40 cells added, none moved.** The two newest
+  count-free methods with a package (`deltric` 0.4.2, `cplearn` 0.2.1) ran on the density fixtures,
+  MNIST and the news embeddings. On quality betula wins 14 of the 20 cells, ties three (aniso
+  against DelTriC, `highdim` against both) and loses three: `digits` to both (0.164 against 0.727
+  and 0.683), and the news embeddings to CoreSPECT (0.330 against 0.360). It wins all 20 memory
+  cells. Quality went to **49/102/33**, memory to **138/7/2**.
 
 ## The census — every method a user would reach for, not only scikit-learn (2026-11-14)
 
@@ -1557,7 +1563,7 @@ GPL ones (leidenalg, python-igraph) included:
 |---|---|---|
 | `bench/rivals.py` | manifold and embedding pipelines, graph clustering: raw MNIST (/255) at 20 000 and 70 000 rows, 20 newsgroups as all-MiniLM-L6-v2 embeddings (17 901 posts, `bench/embed_news.py`) | `results_rivals.csv` |
 | `bench/head_references.py` | one outside implementation per betula head that had none: k-medoids, fuzzy c-means, k-prototypes, k-modes, the Toeplitz mixture | `results_head_refs.csv` |
-| `bench/density_rivals.py` | density and hierarchy heads against `hdbscan`, `fast_hdbscan`, OPTICS, DBSCAN (scikit-learn and the `dbscan` package), CLASSIX, DenMune, FINCH, genieclust, lumbermark, on the quality fixtures at 30 000 rows and `digits` | `results_density_rivals.csv` |
+| `bench/density_rivals.py` | density and hierarchy heads against `hdbscan`, `fast_hdbscan`, OPTICS, DBSCAN (scikit-learn and the `dbscan` package), CLASSIX, DenMune, FINCH, DelTriC, CoreSPECT, genieclust, lumbermark, on the quality fixtures at 30 000 rows and `digits` | `results_density_rivals.csv` |
 
 Four more stand apart and enter no board total, at the end of this section: `bench/gpu_rivals.py`
 runs cuML on the GPU (a different hardware budget); `bench/clustbench_suite.py` runs the told-k
@@ -1565,15 +1571,15 @@ heads on Gagolewski's benchmark suite with its own data, metric and published re
 `bench/stream_vs_refit.py` measures a stream against refits; `bench/rust_rivals.py` runs the
 Rust crates.
 
-Versions, as `--with` resolved them on 2026-11-14: scikit-learn 1.9.1, umap-learn 0.6.0,
-hdbscan 0.8.44, fast_hdbscan 0.3.4, EVoC 0.3.2, leidenalg 0.12.0, python-igraph 1.0.0,
-pynndescent 0.7.0, PaCMAP 0.9.1, openTSNE 1.0.4, PhenoGraph 1.5.7, BERTopic 0.17.4,
-CLASSIX 1.5.3, DenMune 1.17.1, FINCH 0.2.3, genieclust 1.3.0, lumbermark 0.9.1, kmedoids 0.5.5,
-scikit-fuzzy 0.5.0, kmodes 0.12.2, tslearn 0.10.0, numba 0.68.1; dbscan 1.0.0, aeon 1.6.0 (on numba
-0.63.1, which it pins) and PyOD 3.6.8 on 2026-11-16. From 2026-11-16 every harness row also
-records the libraries its arm ran, read in the arm's own process (`version`; betula's carries the
-build's commit when `BETULA_GIT_REV` names it). Rows written before the column existed leave it
-empty, and their versions are the ones listed here.
+Versions, as `--with` resolved them on 2026-11-14: scikit-learn 1.9.1, umap-learn 0.6.0, hdbscan
+0.8.44, fast_hdbscan 0.3.4, EVoC 0.3.2, leidenalg 0.12.0, python-igraph 1.0.0, pynndescent 0.7.0,
+PaCMAP 0.9.1, openTSNE 1.0.4, PhenoGraph 1.5.7, BERTopic 0.17.4, CLASSIX 1.5.3, DenMune 1.17.1,
+FINCH 0.2.3, genieclust 1.3.0, lumbermark 0.9.1, kmedoids 0.5.5, scikit-fuzzy 0.5.0, kmodes 0.12.2,
+tslearn 0.10.0, numba 0.68.1; dbscan 1.0.0, aeon 1.6.0 (on numba 0.63.1, which it pins), PyOD 3.6.8,
+deltric 0.4.2 and cplearn 0.2.1 on 2026-11-16. From 2026-11-16 every harness row also records the
+libraries its arm ran, read in the arm's own process (`version`; betula's carries the build's commit
+when `BETULA_GIT_REV` names it). Rows written before the column existed leave it empty, and their
+versions are the ones listed here.
 
 **Read these rules first.**
 
@@ -1637,7 +1643,10 @@ empty, and their versions are the ones listed here.
 **Each rival reproduces its own documentation first** (`bench/rival_reproductions.py`): the example
 the package publishes, called as published, against the published output. Nine of eleven match. The
 two that do not are stable across runs and are traced to the documentation, not to the call.
-lumbermark and EVoC publish no numeric output, so they have no row; read theirs with that in mind.
+lumbermark, EVoC, DelTriC (`deltric`) and CoreSPECT (`cplearn`) publish no numeric output, so they
+have no row; read theirs with that in mind. The DelTriC and CoreSPECT papers report numbers on
+protocols this harness does not run (MNIST at 10 000 rows; averages over 19 datasets), and
+`deltric` states no licence.
 The other census packages have no check either, and are not exempt by any rule: umap-learn, PaCMAP,
 openTSNE, leidenalg with igraph (kNN + Leiden), BERTopic's default pipeline, kmedoids, scikit-fuzzy,
 kmodes and tslearn. Their rows rest on the documented call alone.
@@ -1666,7 +1675,7 @@ not. These have no row in any committed CSV:
 | GPU | cuML `DBSCAN`, cuML `HDBSCAN` on the raw rows, `cuml.accel`, cuVS k-means, FAISS on a GPU, fastkmeans, flash-kmeans, rapids-singlecell, TorchDR | not yet run; the GPU table holds cuML's k-means and UMAP pipelines |
 | Rust | `kno10/fuel` (Schubert; PyO3 bindings, AGPL-3.0; GMM, von Mises–Fisher, spherical k-means, HDBSCAN, FasterPAM; no CF-tree) | not yet run; the Rust table holds linfa-clustering, clump and the `hdbscan` crate |
 | deep clustering | ClustPy, the deep methods of CLUBench | by design: a deep method learns the representation, and betula clusters vectors it is given. The fair contest is the same embedding with another clusterer, which the news rows run. CLUBench (arXiv 2605.29933; 24 algorithms, 131 datasets) reports that deep clustering does not clearly beat the best conventional methods on average |
-| papers with no package | Torque Clustering, DelTriC, CoreSPECT | no package found |
+| papers with no package | Torque Clustering (TPAMI 2025) | no pip package: the official code is MATLAB p-code over an n × n distance matrix, and the Python port is clone-only |
 
 ### Where betula is the right choice, and where it is not
 
@@ -1677,7 +1686,9 @@ not. These have no row in any committed CSV:
   UMAP + HDBSCAN (0.920), EVoC (0.899) and PhenoGraph (0.821) with 0.777 at 14 000 leaves. Its peak
   RSS is below every rival's at both sizes: 292 MB at 20 000 rows, 563 MB at 70 000 against
   1 096–1 408 MB for the three rivals ahead of it. For a 70 000-row image set with an unknown count,
-  use UMAP + HDBSCAN or EVoC if the memory is there.
+  use UMAP + HDBSCAN or EVoC if the memory is there. The two newest count-free methods trail it at
+  both sizes: CoreSPECT reads 0.510 and 0.462 with 23 and 36 clusters, and DelTriC 0.483 and 0.485
+  with 49 and 93 clusters and a peak of 3.5 and 10.6 GB.
 - **Told k.** `leiden` with `resolution="auto"` reads 0.762 on MNIST-20k, level with PaCMAP +
   k-means (0.751), openTSNE + k-means (0.740) and both UMAP pipelines (0.73). At 70 000 rows and
   14 000 leaves it reads 0.835, above every rival's median, but its seeds spread from 0.806 to
@@ -1707,15 +1718,19 @@ not. These have no row in any committed CSV:
   orders: the wide told-k range is the build order as much as the seed.
 - **Sentence embeddings (20 newsgroups, MiniLM). A loss.** Told k, UMAP + k-means (0.451) and every
   other layout + k-means beat betula's best (`vmf`, 0.382); scikit-learn's k-means on the raw
-  embeddings ties it (0.389). Not told k, PhenoGraph (0.395) and kNN + Leiden (0.386) beat `leiden`
-  with the rows graph (0.330). BERTopic's default pipeline reads 0.086 here, with 37 % of the posts
-  marked noise and 218 topics; EVoC 0.207 with 30 % noise. The USAGE guide shows `vmf` in BERTopic's
-  cluster slot.
+  embeddings ties it (0.389). Not told k, PhenoGraph (0.395), kNN + Leiden (0.386) and CoreSPECT
+  (0.360, 36 clusters) beat `leiden` with the rows graph (0.330). BERTopic's default pipeline reads
+  0.086 here, with 37 % of the posts marked noise and 218 topics; EVoC 0.207 with 30 % noise;
+  DelTriC 0.174 with 33 clusters. The USAGE guide shows `vmf` in BERTopic's cluster slot.
 - **Density, k not given. A loss on the mean.** One method over all seven fixtures, mean ARI:
-  `hdbscan` 0.652, `fast_hdbscan` 0.638, betula's `hdbscan` head 0.616, `scale-space` 0.609,
-  the `gmm-full` BIC sweep 0.556, DenMune 0.540, the `gmm` BIC sweep 0.498, FINCH 0.484,
-  `BayesianGaussianMixture` 0.417, `leiden` 0.413, DBSCAN at a k-distance `eps` 0.405, `leiden`
-  on the rows graph 0.399, DBSCAN at its default `eps` 0.000 (both implementations). The board's
+  DelTriC 0.657, `hdbscan` 0.652, `fast_hdbscan` 0.638, betula's `hdbscan` head 0.616, `scale-space`
+  0.609, the `gmm-full` BIC sweep 0.556, DenMune 0.540, the `gmm` BIC sweep 0.498, FINCH 0.484,
+  `BayesianGaussianMixture` 0.417, `leiden` 0.413, DBSCAN at a k-distance `eps` 0.405, `leiden` on
+  the rows graph 0.399, CoreSPECT 0.266, DBSCAN at its default `eps` 0.000 (both implementations).
+  DelTriC's lead is `digits` alone (0.727 against `hdbscan`'s 0.087); it trails `hdbscan` on five of
+  the other six fixtures and ties `highdim`, and betula's head beats it on blobs, `varied`, moons
+  and circles. CoreSPECT, at its quickstart's settings, splits every 2-D fixture into 111–139
+  clusters (0.017–0.084), and reads 1.000 on `highdim` and 0.683 on `digits`. The board's
   rule keeps betula's `hdbscan` head (worst-seed mean 0.616 against `scale-space` 0.609 and the
   `gmm-full` sweep 0.556). It loses blobs, aniso and `varied` to `hdbscan` (0.376, 0.469 and 0.302
   against 0.472, 0.500 and 0.505), wins `digits` (0.164 against 0.087), and ties moons, circles and
@@ -1797,6 +1812,8 @@ Bold rows are betula's. `bench/rivals.py --arms=a,b` and `bench/density_rivals.p
 | **betula-leiden** | 0.687 (0.672–0.694) | 12 | 0.00 | 280 |
 | **betula-leiden-mass** | 0.646 (0.639–0.656) | 12 | 0.00 | 280 |
 | umap+hdbscan (umap docs' mnist recipe) | 0.536 (0.535–0.641) | 6 | 0.00 | 680 |
+| cplearn-corespect | 0.510 (0.505–0.512) | 23 | 0.00 | 558 |
+| deltric | 0.483 (0.483–0.483) | 49 | 0.01 | 3452 |
 | **betula-hdbscan** | 0.037 (0.037–0.037) | 929 | 0.14 | 280 |
 
 **news-minilm, n = 17 901, told k**
@@ -1819,10 +1836,12 @@ Bold rows are betula's. `bench/rivals.py --arms=a,b` and `bench/density_rivals.p
 |---|---|---|---|---|
 | phenograph | 0.395 (0.386–0.404) | 29 | 0.00 | 386 |
 | knn+leiden (scanpy recipe) | 0.386 (0.382–0.400) | 38 | 0.00 | 575 |
+| cplearn-corespect | 0.360 (0.359–0.369) | 36 | 0.00 | 540 |
 | **betula-leiden-rows** | 0.330 (0.321–0.340) | 13 | 0.00 | 243 |
 | **betula-leiden** | 0.292 (0.290–0.293) | 10 | 0.00 | 244 |
 | **betula-leiden-mass** | 0.261 (0.260–0.283) | 8 | 0.00 | 244 |
 | evoc | 0.207 (0.118–0.256) | 15 | 0.30 | 929 |
+| deltric | 0.174 (0.174–0.174) | 33 | 0.00 | 1907 |
 | bertopic default (umap+hdbscan mcs=10) | 0.086 (0.050–0.091) | 218 | 0.37 | 640 |
 | **betula-hdbscan** | 0.070 (0.070–0.070) | 424 | 0.13 | 244 |
 
@@ -1854,6 +1873,8 @@ Bold rows are betula's. `bench/rivals.py --arms=a,b` and `bench/density_rivals.p
 | **betula-leiden** | 0.746 (0.721–0.746) | 11 | 0.00 | 575 |
 | knn+leiden (scanpy recipe) | 0.711 (0.704–0.722) | 19 | 0.00 | 962 |
 | **betula-leiden-mass** | 0.708 (0.693–0.709) | 13 | 0.00 | 575 |
+| deltric | 0.485 (0.485–0.485) | 93 | 0.01 | 10590 |
+| cplearn-corespect | 0.462 (0.460–0.463) | 36 | 0.00 | 1083 |
 | **betula-hdbscan** | 0.024 (0.024–0.024) | 2722 | 0.12 | 574 |
 
 #### Density and hierarchy contests (`results_density_rivals.csv`)
@@ -1873,6 +1894,8 @@ Bold rows are betula's. `bench/rivals.py --arms=a,b` and `bench/density_rivals.p
 | **betula-leiden** | 0.432 (0.380–0.473) | 17 | 0.00 | 165 |
 | fast-hdbscan | 0.432 | 5 | 0.29 | 326 |
 | **betula-hdbscan** | 0.376 (0.376–0.376) | 6 | 0.34 | 166 |
+| deltric | 0.276 (0.276–0.276) | 43 | 0.07 | 454 |
+| cplearn-corespect | 0.084 (0.083–0.084) | 115 | 0.00 | 779 |
 | denmune | 0.000 | 2 | 0.00 | 672 |
 | sklearn-optics | 0.000 | 1 | 0.00 | 255 |
 | classix | 0.000 | 1 | 0.00 | 172 |
@@ -1902,12 +1925,14 @@ Bold rows are betula's. `bench/rivals.py --arms=a,b` and `bench/density_rivals.p
 | finch | 0.522 | 2 | 0.00 | 1883 |
 | hdbscan | 0.500 | 2 | 0.06 | 278 |
 | **betula-hdbscan** | 0.469 (0.469–0.469) | 2 | 0.11 | 166 |
+| deltric | 0.461 (0.461–0.461) | 51 | 0.08 | 453 |
 | fast-hdbscan | 0.447 | 2 | 0.14 | 326 |
 | sklearn-bgmm | 0.300 (0.300–0.314) | 19 | 0.00 | 215 |
 | **betula-leiden** | 0.232 (0.221–0.239) | 17 | 0.00 | 166 |
 | **betula-leiden-rows** | 0.210 (0.207–0.223) | 17 | 0.00 | 172 |
 | **betula-xmeans** | 0.196 (0.195–0.196) | 20 | 0.00 | 165 |
 | **betula-gmm-bic** | 0.180 (0.180–0.180) | 20 | 0.00 | 170 |
+| cplearn-corespect | 0.031 (0.031–0.032) | 134 | 0.00 | 839 |
 | denmune | 0.000 | 2 | 0.00 | 672 |
 | sklearn-optics | 0.000 | 1 | 0.00 | 237 |
 | classix | 0.000 | 1 | 0.00 | 172 |
@@ -1939,9 +1964,11 @@ Bold rows are betula's. `bench/rivals.py --arms=a,b` and `bench/density_rivals.p
 | fast-hdbscan | 0.503 | 3 | 0.48 | 325 |
 | finch | 0.462 | 2 | 0.00 | 1859 |
 | **betula-hdbscan** | 0.302 (0.302–0.302) | 3 | 0.29 | 166 |
+| deltric | 0.270 (0.270–0.270) | 80 | 0.23 | 454 |
 | sklearn-bgmm | 0.248 (0.244–0.257) | 20 | 0.00 | 216 |
 | **betula-leiden-rows** | 0.194 (0.168–0.208) | 16 | 0.00 | 173 |
 | **betula-leiden** | 0.184 (0.176–0.225) | 19 | 0.00 | 166 |
+| cplearn-corespect | 0.031 (0.031–0.031) | 111 | 0.00 | 766 |
 | sklearn-dbscan-kdist | 0.002 | 44 | 0.02 | 268 |
 | denmune | 0.000 | 1 | 0.00 | 672 |
 | **betula-scale-space** | 0.000 (0.000–0.000) | 2 | 0.00 | 165 |
@@ -1973,6 +2000,7 @@ Bold rows are betula's. `bench/rivals.py --arms=a,b` and `bench/density_rivals.p
 | **betula-hdbscan** | 1.000 (1.000–1.000) | 2 | 0.00 | 167 |
 | fast-hdbscan | 1.000 | 2 | 0.00 | 326 |
 | denmune | 0.997 | 2 | 0.00 | 671 |
+| deltric | 0.924 (0.924–0.924) | 16 | 0.03 | 453 |
 | sklearn-dbscan-kdist | 0.921 | 61 | 0.03 | 191 |
 | finch | 0.451 | 2 | 0.00 | 1858 |
 | **betula-leiden** | 0.122 (0.113–0.142) | 18 | 0.00 | 165 |
@@ -1981,6 +2009,7 @@ Bold rows are betula's. `bench/rivals.py --arms=a,b` and `bench/density_rivals.p
 | **betula-leiden-rows** | 0.112 (0.110–0.117) | 19 | 0.00 | 173 |
 | sklearn-bgmm | 0.108 (0.101–0.109) | 19 | 0.00 | 216 |
 | **betula-xmeans** | 0.104 (0.104–0.104) | 20 | 0.00 | 166 |
+| cplearn-corespect | 0.017 (0.017–0.017) | 138 | 0.00 | 856 |
 | classix | 0.000 | 1 | 0.00 | 172 |
 | sklearn-dbscan | 0.000 | 1 | 0.00 | 1411 |
 | dbscan | 0.000 | 1 | 0.00 | 187 |
@@ -2008,12 +2037,14 @@ Bold rows are betula's. `bench/rivals.py --arms=a,b` and `bench/density_rivals.p
 | **betula-hdbscan** | 1.000 (1.000–1.000) | 2 | 0.00 | 167 |
 | fast-hdbscan | 1.000 | 2 | 0.00 | 326 |
 | denmune | 0.999 | 2 | 0.00 | 671 |
+| deltric | 0.943 (0.943–0.943) | 16 | 0.02 | 454 |
 | sklearn-dbscan-kdist | 0.911 | 69 | 0.03 | 191 |
 | **betula-gmm-bic** | 0.126 (0.126–0.126) | 20 | 0.00 | 172 |
 | **betula-leiden** | 0.109 (0.107–0.110) | 20 | 0.00 | 166 |
 | **betula-gmm-full-bic** | 0.105 (0.101–0.105) | 20 | 0.00 | 173 |
 | sklearn-bgmm | 0.104 (0.104–0.110) | 20 | 0.00 | 216 |
 | **betula-leiden-rows** | 0.096 (0.096–0.099) | 22 | 0.00 | 173 |
+| cplearn-corespect | 0.018 (0.018–0.018) | 139 | 0.00 | 858 |
 | finch | 0.004 | 3 | 0.00 | 1849 |
 | classix | 0.000 | 1 | 0.00 | 172 |
 | **betula-xmeans** | -0.000 (-0.000–-0.000) | 4 | 0.00 | 166 |
@@ -2048,6 +2079,8 @@ Bold rows are betula's. `bench/rivals.py --arms=a,b` and `bench/density_rivals.p
 | finch | 1.000 | 8 | 0.00 | 805 |
 | **betula-gmm-full-bic** | 1.000 (1.000–1.000) | 8 | 0.00 | 181 |
 | **betula-leiden-rows** | 1.000 (1.000–1.000) | 8 | 0.00 | 184 |
+| deltric | 1.000 (1.000–1.000) | 8 | 0.00 | 718 |
+| cplearn-corespect | 1.000 (1.000–1.000) | 8 | 0.00 | 635 |
 | denmune | 0.999 | 8 | 0.00 | 688 |
 | sklearn-dbscan-kdist | 0.998 | 8 | 0.00 | 433 |
 | sklearn-bgmm | 0.997 (0.997–0.998) | 20 | 0.00 | 224 |
@@ -2075,6 +2108,8 @@ Bold rows are betula's. `bench/rivals.py --arms=a,b` and `bench/density_rivals.p
 | **betula-leiden** | 0.811 (0.801–0.834) | 13 | 0.00 | 168 |
 | denmune | 0.786 | 10 | 0.01 | 252 |
 | **betula-leiden-rows** | 0.750 (0.749–0.784) | 18 | 0.00 | 170 |
+| deltric | 0.727 (0.727–0.727) | 16 | 0.01 | 473 |
+| cplearn-corespect | 0.683 (0.680–0.686) | 12 | 0.00 | 376 |
 | sklearn-bgmm | 0.617 (0.606–0.665) | 20 | 0.00 | 193 |
 | **betula-xmeans** | 0.587 (0.570–0.611) | 20 | 0.00 | 168 |
 | **betula-gmm-bic** | 0.444 (0.444–0.444) | 20 | 0.00 | 178 |
@@ -2168,6 +2203,48 @@ side of every cell is the one head its contest chose (see the rules above).
 - **classix** — 1 win · 1 tie · 0 loss
   - win, memory, `highdim/30000/no-k` (density_rivals): betula 175 MB (`betula-hdbscan`) against 188 MB
   - tie, quality, `highdim/30000/no-k` (density_rivals): betula 1.000 ARI (`betula-hdbscan`) against 1.000 ARI
+- **cplearn-corespect** — 17 win · 1 tie · 2 loss
+  - win, memory, `aniso/30000/no-k` (density_rivals): betula 166 MB (`betula-hdbscan`) against 839 MB
+  - win, memory, `blobs/30000/no-k` (density_rivals): betula 166 MB (`betula-hdbscan`) against 779 MB
+  - win, memory, `circles/30000/no-k` (density_rivals): betula 167 MB (`betula-hdbscan`) against 858 MB
+  - win, memory, `digits/1797/no-k` (density_rivals): betula 169 MB (`betula-hdbscan`) against 376 MB
+  - win, memory, `highdim/30000/no-k` (density_rivals): betula 175 MB (`betula-hdbscan`) against 635 MB
+  - win, memory, `moons/30000/no-k` (density_rivals): betula 167 MB (`betula-hdbscan`) against 856 MB
+  - win, memory, `varied/30000/no-k` (density_rivals): betula 166 MB (`betula-hdbscan`) against 766 MB
+  - win, memory, `mnist/20000/no-k` (rivals): betula 292 MB (`betula-leiden-rows`) against 558 MB
+  - win, memory, `mnist/70000/no-k` (rivals): betula 563 MB (`betula-leiden-rows`) against 1083 MB
+  - win, memory, `news-minilm/17901/no-k` (rivals): betula 243 MB (`betula-leiden-rows`) against 540 MB
+  - win, quality, `aniso/30000/no-k` (density_rivals): betula 0.469 ARI (`betula-hdbscan`) against 0.031 ARI
+  - win, quality, `blobs/30000/no-k` (density_rivals): betula 0.376 ARI (`betula-hdbscan`) against 0.084 ARI
+  - win, quality, `circles/30000/no-k` (density_rivals): betula 1.000 ARI (`betula-hdbscan`) against 0.018 ARI
+  - win, quality, `moons/30000/no-k` (density_rivals): betula 1.000 ARI (`betula-hdbscan`) against 0.017 ARI
+  - win, quality, `varied/30000/no-k` (density_rivals): betula 0.302 ARI (`betula-hdbscan`) against 0.031 ARI
+  - win, quality, `mnist/20000/no-k` (rivals): betula 0.762 ARI (`betula-leiden-rows`) against 0.510 ARI
+  - win, quality, `mnist/70000/no-k` (rivals): betula 0.777 ARI (`betula-leiden-rows`) against 0.462 ARI
+  - tie, quality, `highdim/30000/no-k` (density_rivals): betula 1.000 ARI (`betula-hdbscan`) against 1.000 ARI
+  - loss, quality, `digits/1797/no-k` (density_rivals): betula 0.164 ARI (`betula-hdbscan`) against 0.683 ARI
+  - loss, quality, `news-minilm/17901/no-k` (rivals): betula 0.330 ARI (`betula-leiden-rows`) against 0.360 ARI
+- **deltric** — 17 win · 2 tie · 1 loss
+  - win, memory, `aniso/30000/no-k` (density_rivals): betula 166 MB (`betula-hdbscan`) against 453 MB
+  - win, memory, `blobs/30000/no-k` (density_rivals): betula 166 MB (`betula-hdbscan`) against 454 MB
+  - win, memory, `circles/30000/no-k` (density_rivals): betula 167 MB (`betula-hdbscan`) against 454 MB
+  - win, memory, `digits/1797/no-k` (density_rivals): betula 169 MB (`betula-hdbscan`) against 473 MB
+  - win, memory, `highdim/30000/no-k` (density_rivals): betula 175 MB (`betula-hdbscan`) against 718 MB
+  - win, memory, `moons/30000/no-k` (density_rivals): betula 167 MB (`betula-hdbscan`) against 453 MB
+  - win, memory, `varied/30000/no-k` (density_rivals): betula 166 MB (`betula-hdbscan`) against 454 MB
+  - win, memory, `mnist/20000/no-k` (rivals): betula 292 MB (`betula-leiden-rows`) against 3452 MB
+  - win, memory, `mnist/70000/no-k` (rivals): betula 563 MB (`betula-leiden-rows`) against 10590 MB
+  - win, memory, `news-minilm/17901/no-k` (rivals): betula 243 MB (`betula-leiden-rows`) against 1907 MB
+  - win, quality, `blobs/30000/no-k` (density_rivals): betula 0.376 ARI (`betula-hdbscan`) against 0.276 ARI
+  - win, quality, `circles/30000/no-k` (density_rivals): betula 1.000 ARI (`betula-hdbscan`) against 0.943 ARI
+  - win, quality, `moons/30000/no-k` (density_rivals): betula 1.000 ARI (`betula-hdbscan`) against 0.924 ARI
+  - win, quality, `varied/30000/no-k` (density_rivals): betula 0.302 ARI (`betula-hdbscan`) against 0.270 ARI
+  - win, quality, `mnist/20000/no-k` (rivals): betula 0.762 ARI (`betula-leiden-rows`) against 0.483 ARI
+  - win, quality, `mnist/70000/no-k` (rivals): betula 0.777 ARI (`betula-leiden-rows`) against 0.485 ARI
+  - win, quality, `news-minilm/17901/no-k` (rivals): betula 0.330 ARI (`betula-leiden-rows`) against 0.174 ARI
+  - tie, quality, `aniso/30000/no-k` (density_rivals): betula 0.469 ARI (`betula-hdbscan`) against 0.461 ARI
+  - tie, quality, `highdim/30000/no-k` (density_rivals): betula 1.000 ARI (`betula-hdbscan`) against 1.000 ARI
+  - loss, quality, `digits/1797/no-k` (density_rivals): betula 0.164 ARI (`betula-hdbscan`) against 0.727 ARI
 - **denmune** — 4 win · 3 tie · 1 loss
   - win, memory, `circles/30000/no-k` (density_rivals): betula 167 MB (`betula-hdbscan`) against 671 MB
   - win, memory, `digits/1797/no-k` (density_rivals): betula 169 MB (`betula-hdbscan`) against 252 MB

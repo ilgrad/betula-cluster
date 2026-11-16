@@ -9,6 +9,7 @@ pick when the number of clusters is unknown, or when clusters are not convex, ha
 | density, count chosen | `hdbscan` (scikit-learn-contrib), `fast_hdbscan`, scikit-learn `OPTICS` and `DBSCAN` (at its defaults and at a k-distance `eps`), the `dbscan` package, CLASSIX, DenMune, FINCH |
 | hierarchy, count given | genieclust (`Genie`), lumbermark |
 | count chosen under a bound | scikit-learn `BayesianGaussianMixture` |
+| count chosen, newer | DelTriC (`deltric`), CoreSPECT (`cplearn`) |
 
 against `hdbscan`, `scale-space`, `leiden` on the unit and the rows graph (count chosen), `xmeans`
 and the `gmm` and `gmm-full` BIC sweeps (count chosen under a bound) and `dc-median`, `ward`,
@@ -28,10 +29,11 @@ None of the rivals is a project dependency:
 
     uv run --no-sync --with scikit-learn --with pandas --with hdbscan --with fast-hdbscan \\
         --with classixclustering --with denmune --with finch-clust --with genieclust \\
-        --with lumbermark --with pynndescent --with dbscan python bench/density_rivals.py
+        --with lumbermark --with pynndescent --with dbscan --with deltric --with cplearn \\
+        python bench/density_rivals.py
 
-Writes `bench/results_density_rivals.csv` (schema of `bench/rivals.py`). `--arms=a,b` re-runs only
-those arms and replaces their rows in the existing CSV.
+Writes `bench/results_density_rivals.csv` (schema of `bench/rivals.py`, `version` included).
+`--arms=a,b` re-runs only those arms and replaces their rows in the existing CSV.
 """
 
 from __future__ import annotations
@@ -47,8 +49,9 @@ import numpy as np
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
+from _provenance import versions
 from _worker import Peak, cap_memory
-from rivals import score
+from rivals import corespect, deltric, score
 
 SEEDS = (0, 1, 2)
 K_BOUND = 20
@@ -247,6 +250,8 @@ ARMS = {
     "dbscan": (False, lambda x, k, s: _dbscan(x)),
     "sklearn-dbscan-kdist": (False, lambda x, k, s: _dbscan_kdist(x)),
     "sklearn-bgmm": (False, lambda x, k, s: _bgmm(x, s)),
+    "deltric": (False, lambda x, k, s: deltric(x, s)),
+    "cplearn-corespect": (False, lambda x, k, s: corespect(x, s)),
     "classix": (False, lambda x, k, s: _classix(x)),
     "denmune": (False, lambda x, k, s: _denmune(x)),
     "finch": (False, lambda x, k, s: _finch(x)),
@@ -255,7 +260,29 @@ ARMS = {
 }
 
 
-SEEDED = {"sklearn-bgmm"}  # rivals with a random state, run on every seed
+# The libraries each rival arm runs, written into its rows' `version` column. A betula arm runs
+# betula.
+RIVAL_DISTS = {
+    "hdbscan": ("hdbscan",),
+    "fast-hdbscan": ("fast-hdbscan",),
+    "sklearn-optics": ("scikit-learn",),
+    "sklearn-dbscan": ("scikit-learn",),
+    "dbscan": ("dbscan",),
+    "sklearn-dbscan-kdist": ("scikit-learn",),
+    "sklearn-bgmm": ("scikit-learn",),
+    "deltric": ("deltric", "umap-learn"),
+    "cplearn-corespect": ("cplearn",),
+    "classix": ("classixclustering",),
+    "denmune": ("denmune",),
+    "finch": ("finch-clust",),
+    "genieclust-genie": ("genieclust",),
+    "lumbermark": ("lumbermark",),
+}
+assert set(RIVAL_DISTS) == {a for a in ARMS if not a.startswith("betula")}
+
+
+# Rivals with a random draw, run on every seed: a random state, or numpy's global generator.
+SEEDED = {"sklearn-bgmm", "deltric", "cplearn-corespect"}
 
 
 def one(arm: str, dataset: str, seed: int) -> dict:
@@ -266,7 +293,13 @@ def one(arm: str, dataset: str, seed: int) -> dict:
     t0 = time.perf_counter()
     labels = ARMS[arm][1](x, k, seed)
     dt = time.perf_counter() - t0
-    return {"time_s": dt, "rss_mb": peak.mb(), **score(np.asarray(y), labels)}
+    dists = ("betula-cluster",) if arm.startswith("betula") else RIVAL_DISTS[arm]
+    return {
+        "time_s": dt,
+        "rss_mb": peak.mb(),
+        **score(np.asarray(y), labels),
+        "version": versions(*dists),
+    }
 
 
 def main(argv: list[str]) -> int:
@@ -274,7 +307,13 @@ def main(argv: list[str]) -> int:
 
     only = next((a.split("=", 1)[1].split(",") for a in argv if a.startswith("--arms=")), None)
     csv = HERE / "results_density_rivals.csv"
-    kept = pd.read_csv(csv) if only and csv.exists() else pd.DataFrame()
+    # Kept rows pass through as text: pandas 2 parses some floats one ulp off, and a re-run of
+    # one arm would then rewrite every other arm's row.
+    kept = (
+        pd.read_csv(csv, dtype=str, keep_default_na=False)
+        if only and csv.exists()
+        else pd.DataFrame()
+    )
     if only:
         unknown = sorted(set(only) - set(ARMS))
         if unknown:

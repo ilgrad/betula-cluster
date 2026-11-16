@@ -2,8 +2,8 @@
 
 A rival run badly is a claim nobody should believe. For each package this runs the example its own
 documentation publishes, with the documented call, and checks the documented output; the census
-section of `bench/RESULTS.md` cites the result. lumbermark and EVoC publish no numeric output, so
-they have no row here, and that is stated where their rows are read.
+section of `bench/RESULTS.md` cites the result. lumbermark, EVoC, DelTriC and CoreSPECT publish no
+numeric output, so they have no row here, and that is stated where their rows are read.
 
     uv run --no-sync --with scikit-learn --with classixclustering --with denmune \\
         --with finch-clust --with genieclust --with hdbscan --with fast-hdbscan \\

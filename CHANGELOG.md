@@ -393,6 +393,15 @@ All notable changes to this project are documented here. The format follows
   it now recovers to 0.576 after the +50 jump, where 0.26.1 went to 0.000. Its cost waits for the
   timing campaign. `stream_reference.py` gains `--methods` and a `timing_valid` column, and four
   harnesses that re-read kept rows as numbers now pass them through as text.
+- **DelTriC and CoreSPECT join the census** (`bench/density_rivals.py`, `bench/rivals.py`). The two
+  newest count-free methods with a package, `deltric` 0.4.2 and `cplearn` 0.2.1, run on the density
+  fixtures, MNIST and the news embeddings; neither publishes a numeric example to reproduce first.
+  DelTriC reads the best density mean, 0.657 against `hdbscan`'s 0.652 and betula's `hdbscan` head
+  at 0.616, all of its lead on `digits` (0.727 against 0.087). On MNIST it reads 0.483 and 0.485 at
+  20 000 and 70 000 rows, with a 10.6 GB peak at 70 000. CoreSPECT splits every 2-D fixture into
+  111–139 clusters, reads 0.510 and 0.462 on MNIST, and beats the rows graph on the news embeddings
+  (0.360 against 0.330). `density_rivals.py` writes the `version` column. The board goes to
+  49 / 102 / 33 on quality and 138 / 7 / 2 on memory.
 
 ## [1.5.0] — 2026-10-28
 
