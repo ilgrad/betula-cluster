@@ -427,6 +427,13 @@ All notable changes to this project are documented here. The format follows
   goes to 57 / 106 / 42 on quality and 160 / 7 / 1 on memory. `bench/embed_corpora.py` caches five
   small labelled corpora (ag_news, bbc, classic3, classic4, dbpedia) under the same MiniLM model,
   for the neighbour-smoothing guard; none is a board.
+- **Neighbour smoothing of embeddings fails its guard** (`bench/RESULTS.md`). On the MiniLM news
+  embeddings, smoothing each row over its 15 nearest neighbours before k-means, or a label vote
+  among them after it, read about +0.05 ARI. Against a rule fixed before the run (+0.02 and past
+  the seed range on four of seven sets, no drop above 0.01 anywhere), on `news-mpnet`,
+  `cifar100-clip` and five small corpora, five row orders × three seeds: smoothing wins three sets
+  and loses `bbc` (−0.030) and `dbpedia` (−0.072); the vote wins three and loses none. Neither
+  ships as a recipe or a head option.
 
 ## [1.5.0] — 2026-10-28
 

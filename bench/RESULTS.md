@@ -2973,6 +2973,57 @@ the rows included. Seeded arms run on seeds 0, 1, 2; a single value means all th
 - Not run: linfa's `Dbscan` and clump's `Dbscan` take a radius with no default, and linfa's `Optics`
   returns a reachability ordering, not labels. These tables are not on the board.
 
+## Neighbour smoothing of embeddings: the guard fails (task F-24)
+
+On the MiniLM embeddings of 20 newsgroups, one row order and three seeds, two steps around
+k-means each read about +0.05 ARI: replacing every row by the normalised mean of itself and its
+15 nearest cosine neighbours before k-means (0.380 → 0.441), and a plurality vote among the same
+neighbours after it (0.380 → 0.427). The published form of the first step (Fettal, Labiod and
+Nadif, EACL 2024) reports about +0.01 on five other corpora, and a loss on two of them. Before
+either step becomes a recipe or a head option, it has to hold on data it was not found on.
+
+**The rule, fixed before the first run** (the QL-1 rule, adapted to seven sets). Per set, Δ is the
+median ARI of the arm minus that of plain k-means over 15 runs, and the range of an arm is its
+max − min over them. A **win** is Δ ≥ +0.02 *and* Δ larger than the wider of the two ranges. A
+**loss** is Δ < −0.01, whatever the ranges: the guard protects data the step was not tuned on. An
+arm **passes** if it wins on at least four of the seven sets and loses on none.
+
+**Arms.** (a) scikit-learn `KMeans(n_clusters=k, n_init=10)` on the raw unit rows, told the count;
+(b) one round of smoothing, `x ← unit(x + Σ of its 15 nearest rows)` (exact cosine neighbours, the
+row itself excluded), then the same k-means; (c) (a), then one synchronous vote: every row takes
+the plurality label of itself and its 15 neighbours, and a tie keeps its own label; (d) (b), then
+the vote. **Sets:** `news-mpnet` and `cifar100-clip` of the census, and five small labelled corpora
+from the paper's archive, embedded with all-MiniLM-L6-v2 as `news-minilm` is
+(`bench/embed_corpora.py`). `news-minilm` is shown for reference and not counted: the effect was
+found on it. **Runs:** five row orders (permutation seeds 1000–1004) × k-means seeds 0, 1, 2.
+Median ARI [min, max]; Δ against (a) in brackets.
+
+| set | rows, classes | (a) k-means | (b) smoothed + k-means | (c) k-means + vote | (d) both |
+|---|---|---|---|---|---|
+| `news-mpnet` | 18 119, 20 | 0.407 [0.393, 0.424] | 0.459 [0.446, 0.473] (+0.052, win) | 0.455 [0.438, 0.475] (+0.048, win) | 0.465 [0.455, 0.479] (+0.058, win) |
+| `ag_news` | 8 000, 4 | 0.600 [0.598, 0.600] | 0.632 [0.631, 0.632] (+0.032, win) | 0.631 [0.629, 0.632] (+0.032, win) | 0.636 [0.635, 0.637] (+0.036, win) |
+| `bbc` | 2 225, 5 | 0.895 [0.893, 0.897] | 0.865 [0.864, 0.866] (−0.030, **loss**) | 0.885 [0.884, 0.885] (−0.010, tie) | 0.863 [0.863, 0.863] (−0.032, **loss**) |
+| `classic3` | 3 891, 3 | 0.978 [0.977, 0.978] | 0.992 [0.992, 0.992] (+0.015, tie) | 0.992 [0.992, 0.992] (+0.015, tie) | 0.993 [0.993, 0.993] (+0.015, tie) |
+| `classic4` | 7 095, 4 | 0.823 [0.823, 0.825] | 0.856 [0.854, 0.856] (+0.032, win) | 0.842 [0.842, 0.843] (+0.019, tie) | 0.859 [0.857, 0.859] (+0.035, win) |
+| `dbpedia` | 12 000, 14 | 0.728 [0.666, 0.746] | 0.655 [0.606, 0.702] (−0.072, **loss**) | 0.727 [0.669, 0.744] (−0.000, tie) | 0.656 [0.608, 0.704] (−0.071, **loss**) |
+| `cifar100-clip` | 59 999, 100 | 0.629 [0.611, 0.651] | 0.642 [0.622, 0.672] (+0.013, tie) | 0.670 [0.653, 0.693] (+0.041, win) | 0.657 [0.638, 0.687] (+0.028, tie) |
+| **verdict** | | | 3 win · 2 tie · 2 loss: **fails** | 3 win · 4 tie · 0 loss: **fails** | 3 win · 2 tie · 2 loss: **fails** |
+| `news-minilm` (reference) | 17 901, 20 | 0.391 [0.361, 0.409] | 0.422 [0.409, 0.439] (+0.032) | 0.437 [0.407, 0.454] (+0.046) | 0.432 [0.420, 0.447] (+0.041) |
+
+**Verdict: no arm passes.** Smoothing (b) wins on `classic4`, `ag_news` and `news-mpnet` (+0.03 to
++0.05) and loses on `bbc` (−0.030, against ranges of 0.004) and `dbpedia` (−0.072); smoothing and
+the vote together (d) do the same. The vote alone (c) loses nowhere (−0.010 on `bbc` is the
+largest drop) but wins on three sets of seven, not four, and the CIFAR-100 win clears the range by
+0.001. In every run the vote kept all k labels. The published picture holds: about +0.03 on most
+corpora, a loss on BBC News and DBpedia. Over five row orders the reference set itself
+reads +0.032 for smoothing and +0.046 for the vote, both inside k-means' own range of 0.048 there:
+the +0.06 of the one-order screen was partly that order.
+
+So step 2 of F-24 does not start: neither form ships as a recipe in the docs, and the leaf-level
+option for the centroid heads is not built. The guard's script and runs are local, beside the
+plan; the corpora have no licence, so nothing derived from their text is committed but these
+scores.
+
 ## Where the leaf budget goes — geometry, not mass (tasks #70 and #77)
 
 Two open questions about the budget, settled together because one measurement answers both.
