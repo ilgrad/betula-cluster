@@ -717,7 +717,8 @@ exact top five on MNIST and 0.99 on digits, at an ARI within the seed spread of 
 row's nearest leaf is found exactly, with the tree descent's leaf as the starting bound, and the
 row is labelled by that leaf in training and in `predict`: at $d = 784$ the descent reaches the
 nearest leaf for 69 % of MNIST rows, and labelling by the descent's leaf cost 0.05 ARI. `predict`
-runs the same exact search in the tree's precision, so `fit(X).predict(X)` equals `fit_predict(X)`;
+runs the same exact search in the tree's precision, so `fit(X).predict(X)` equals `fit_predict(X)`,
+and `fit_predict` reads each training row's leaf off the graph pass rather than searching again;
 the model keeps one label per leaf and reads the leaf means from the tree. At worst the search
 visits every leaf, `n·m·d` work, where the other graphs descend the tree.
 

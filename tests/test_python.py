@@ -1091,13 +1091,14 @@ def _lattice():
 
 @pytest.mark.parametrize("dtype", [np.float64, np.float32])
 def test_the_rows_head_labels_a_tied_row_alike_through_every_route(dtype, tmp_path):
-    """``fit_predict``, ``fit().predict`` and a reloaded model answer each row of the lattice with
-    the same leaf, so with the same label."""
+    """``fit_predict``, the one-shot ``fit_predict``, ``fit().predict`` and a reloaded model answer
+    each row of the lattice with the same leaf, so with the same label."""
     import pickle
 
     x = _lattice().astype(dtype)
     est = betula_cluster.Betula(**_LATTICE_ROWS_KW)
     labels = est.fit_predict(x)
+    np.testing.assert_array_equal(betula_cluster.fit_predict(x, **_LATTICE_ROWS_KW), labels)
     np.testing.assert_array_equal(
         betula_cluster.Betula(**_LATTICE_ROWS_KW).fit(x).predict(x), labels
     )

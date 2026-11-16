@@ -577,7 +577,33 @@ pub(crate) fn row_top_leaves<R: Real, C: ClusterFeature<R>>(
     degree: usize,
     seed: u64,
 ) -> Vec<usize> {
-    RowPicker::new(features, per_row, degree, seed).top(flat, hints)
+    RowPicker::new(features, per_row, degree, seed)
+        .top(flat, hints)
+        .top
+}
+
+/// What [`RowPicker::top`] found for a block of rows.
+#[derive(Default)]
+#[cfg_attr(not(feature = "python"), allow(dead_code))] // only the Python boundary holds the rows
+pub(crate) struct RowLeaves {
+    /// `per_row` leaves per row, row after row, nearest first: what [`RowGraph::from_top`] reads.
+    pub(crate) top: Vec<usize>,
+    /// Each row's exact nearest leaf, the one its candidates were drawn around. The rows head
+    /// labels a row by this leaf, so a training row's label needs no second search.
+    pub(crate) nearest: Vec<usize>,
+}
+
+#[cfg_attr(not(feature = "python"), allow(dead_code))] // only the Python boundary holds the rows
+impl RowLeaves {
+    /// `more`'s rows after this one's.
+    pub(crate) fn append(&mut self, mut more: Self) {
+        if self.nearest.is_empty() {
+            *self = more;
+        } else {
+            self.top.append(&mut more.top);
+            self.nearest.append(&mut more.nearest);
+        }
+    }
 }
 
 /// What [`RowPicker::top`] reads for every row — the leaf means' assignment plan and each leaf's
@@ -606,19 +632,22 @@ impl<'a, R: Real, C: ClusterFeature<R>> RowPicker<'a, R, C> {
     }
 
     /// The `per_row` leaves nearest each row of `flat`, whose descent leaves are `hints` (see
-    /// [`row_top_leaves`]). Each row's answer is its own, so blocks of rows concatenate.
-    pub(crate) fn top(&self, flat: &[R], hints: &[usize]) -> Vec<usize> {
+    /// [`row_top_leaves`]), and each row's nearest leaf. Each row's answer is its own, so blocks
+    /// of rows concatenate ([`RowLeaves::append`]).
+    pub(crate) fn top(&self, flat: &[R], hints: &[usize]) -> RowLeaves {
         let dim = if hints.is_empty() {
             0
         } else {
             flat.len() / hints.len()
         };
-        let pick = |r: usize| -> Vec<usize> {
+        let mut nearest = vec![0; hints.len()];
+        let pick = |(r, slot): (usize, &mut usize)| -> Vec<usize> {
             let x = &flat[r * dim..(r + 1) * dim];
             let own = self
                 .plan
                 .as_ref()
                 .map_or(hints[r], |p| p.nearest(x, Some(hints[r])).0);
+            *slot = own;
             let mut cand: Vec<(R, usize)> = std::iter::once(own)
                 .chain(self.near[own].iter().copied())
                 .map(|j| (sq_euclidean(x, self.features[j].mean()), j))
@@ -634,17 +663,20 @@ impl<'a, R: Real, C: ClusterFeature<R>> RowPicker<'a, R, C> {
                 .collect()
         };
         #[cfg(feature = "parallel")]
-        {
+        let top = {
             use rayon::prelude::*;
             (0..hints.len())
                 .into_par_iter()
+                .zip(nearest.par_iter_mut())
                 .flat_map_iter(pick)
                 .collect()
-        }
+        };
         #[cfg(not(feature = "parallel"))]
-        {
-            (0..hints.len()).flat_map(pick).collect()
-        }
+        let top = (0..hints.len())
+            .zip(nearest.iter_mut())
+            .flat_map(pick)
+            .collect();
+        RowLeaves { top, nearest }
     }
 }
 /// Each leaf's `k` nearest other leaves by mean, nearest first: the exact scan at `degree == 0`,
@@ -2444,6 +2476,31 @@ mod tests {
             assert!(row.windows(2).all(|w| d(w[0]) <= d(w[1])));
             // Its own grid cell holds it, so nothing is nearer than the first leaf named.
             assert!(d(row[0]) <= d(p2m[r]));
+        }
+    }
+
+    /// A row's nearest leaf is the nearest of all leaves, the lower index of equals, whatever
+    /// leaf the descent named: the rows head labels a training row by it, without a second search.
+    #[test]
+    fn a_rows_nearest_leaf_is_the_nearest_of_all_leaves_from_any_hint() {
+        let mut rng = SplitMix64::new(5);
+        let (pts, _) = blobs(&mut rng, 200, &[[0.0, 0.0], [6.0, 0.0]], 1.0);
+        let (micros, _) = grid_micros(&pts, 0.7);
+        let flat: Vec<f64> = pts.iter().flatten().copied().collect();
+        let picker = RowPicker::new(&micros, 5, 0, 1);
+        let mut found = RowLeaves::default();
+        // In two blocks, the second hinted at the last leaf rather than the first.
+        let half = pts.len() / 2;
+        found.append(picker.top(&flat[..2 * half], &vec![0; half]));
+        found.append(picker.top(&flat[2 * half..], &vec![micros.len() - 1; pts.len() - half]));
+        assert_eq!(found.top.len(), 5 * pts.len());
+        assert_eq!(found.nearest.len(), pts.len());
+        for (x, &own) in pts.iter().zip(&found.nearest) {
+            let d = |j: usize| sq_euclidean(x, micros[j].mean());
+            let want = (0..micros.len())
+                .min_by(|&a, &b| d(a).partial_cmp(&d(b)).unwrap())
+                .unwrap();
+            assert_eq!(own, want);
         }
     }
 

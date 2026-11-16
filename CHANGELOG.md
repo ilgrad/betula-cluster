@@ -22,7 +22,12 @@ All notable changes to this project are documented here. The format follows
   each row names its 5 nearest leaves, and every pair of leaves one row names gains an edge (the
   object–representative graph of U-SPEC, folded onto the leaves). A row takes the community of its
   nearest leaf, found by one exact search in the tree's precision in training and in `predict`
-  alike, so `fit(X).predict(X)` equals `fit_predict(X)`. Median ARI over five row orders ×
+  alike, so `fit(X).predict(X)` equals `fit_predict(X)`. `fit_predict`, the estimator's and the
+  one-shot function's, reads each training row's leaf off that search instead of searching again.
+  On MNIST-20k and 20 newsgroups (MiniLM) at 4 000 leaves it retires under 0.02 % more
+  instructions than `fit`: the estimator's falls from 41.9 G to 26.3 G and from 45.0 G to 25.4 G,
+  the one-shot call from 57.2 G to 26.1 G and from 39.2 G to 25.3 G, with the same labels. Median
+  ARI over five row orders ×
   seeds 0/1/2 at `γ = 1`, against the better of `"unit"` and `"mass"`: MNIST-20k 0.689 → 0.746,
   standardised MNIST 0.505 → 0.535, digits 0.768 → 0.810, 20 newsgroups (MiniLM) 0.330 → 0.345,
   covtype 0.039 → 0.032. It loses on synthetic sets: blobs 0.623 → 0.575, noisy rings 0.144 → 0.121

@@ -27,7 +27,7 @@ use crate::bregman::{
     BregmanCentroid, BregmanCf, BregmanDivergence, BregmanIncrease, ItakuraSaito, KullbackLeibler,
     Logistic, SquaredEuclidean,
 };
-use crate::clustering::community::{ROW_GRAPH_LEAVES, RowGraph, RowPicker};
+use crate::clustering::community::{ROW_GRAPH_LEAVES, RowGraph, RowLeaves, RowPicker};
 use crate::clustering::hdbscan::hdbscan_with;
 use crate::clustering::hyperbolic::lorentz_dot;
 use crate::clustering::nmf::{Projection, ProjectionKind, ProjectionSpec};
@@ -692,19 +692,21 @@ fn parse_head_options(
 const ROWS_GRAPH: &str = "rows";
 
 /// The rows graph over the leaves `features` and the rows of `rows`, each row starting from the
-/// leaf `entries` gives it — the leaf `predict` labels it by, so a training row's label is its
-/// leaf's community.
+/// leaf `entries` gives it, and each row's nearest leaf: the leaf `predict` labels it by, found by
+/// the same steps, so a training row's label is its leaf's community.
 fn row_graph<R: Real, C: ClusterFeature<R>>(
     features: &[C],
     rows: RowView<'_, R>,
     entries: impl Fn(&[R]) -> Vec<usize>,
     graph_degree: usize,
     seed: u64,
-) -> RowGraph {
+) -> (RowGraph, Vec<usize>) {
     let per_row = ROW_GRAPH_LEAVES.min(features.len());
     let picker = RowPicker::new(features, per_row, graph_degree, seed);
-    let top = rows.concat(|block| picker.top(block, &entries(block)));
-    RowGraph::from_top(&top, per_row, features.len())
+    let mut found = RowLeaves::default();
+    rows.for_each_block(&mut |block| found.append(picker.top(block, &entries(block))));
+    let graph = RowGraph::from_top(&found.top, per_row, features.len());
+    (graph, found.nearest)
 }
 
 /// The rows graph is counted in the rows' own space, and a projection replaces the space the head
@@ -2125,20 +2127,27 @@ fn cluster<R: Real, C: ClusterFeature<R>>(
                 }
             }
             None => {
-                let counted;
-                let opts = match opts.rows {
-                    RowEdges::Requested => {
-                        let rows = RowView::of(flat, n, dim);
-                        let entries = |b: &[R]| tree.nearest_entries(b, b.len() / dim);
-                        let degree = opts.graph_degree;
-                        counted = row_graph(tree.leaf_features(), rows, entries, degree, seed);
-                        HeadOptions {
-                            rows: RowEdges::Counted(&counted),
-                            ..opts
-                        }
-                    }
-                    _ => opts,
-                };
+                if let RowEdges::Requested = opts.rows {
+                    let rows = RowView::of(flat, n, dim);
+                    let entries = |b: &[R]| tree.nearest_entries(b, b.len() / dim);
+                    let degree = opts.graph_degree;
+                    let (graph, nearest) =
+                        row_graph(tree.leaf_features(), rows, entries, degree, seed);
+                    let opts = HeadOptions {
+                        rows: RowEdges::Counted(&graph),
+                        ..opts
+                    };
+                    let feats = tree.leaf_features();
+                    let fit = fit_head(feats, k, method, max_iter, n_init, seed, auto_k_max, opts);
+                    // The head labels a row by its nearest leaf, which the graph pass has just
+                    // found for every training row; and a Lloyd sweep does not refine it.
+                    debug_assert!(matches!(fit.centers, Centres::EveryLeaf));
+                    debug_assert!(!refinable(method));
+                    return (
+                        nearest.iter().map(|&l| fit.labels[l] as i64).collect(),
+                        leaves,
+                    );
+                }
                 let mut model =
                     Model::fit_passes(tree, k, method, max_iter, n_init, seed, auto_k_max, opts);
                 model.refine(flat, n, dim, refine);
@@ -2937,8 +2946,15 @@ impl<R: Real> TreeState<R> {
     }
 
     /// The rows graph of this tree over the rows of `rows`, each row starting from the leaf
-    /// [`route`](Self::route) gives it.
-    fn row_graph(&self, rows: RowView<'_, R>, beam: usize, degree: usize, seed: u64) -> RowGraph {
+    /// [`route`](Self::route) gives it, and each row's nearest leaf, as
+    /// [`nearest_leaf_labels`](Self::nearest_leaf_labels) finds it.
+    fn row_graph(
+        &self,
+        rows: RowView<'_, R>,
+        beam: usize,
+        degree: usize,
+        seed: u64,
+    ) -> (RowGraph, Vec<usize>) {
         let dim = rows.dim;
         let entries = |block: &[R]| self.entries(block, block.len() / dim, dim, beam);
         match self {
@@ -4366,7 +4382,15 @@ impl Betula {
     ///
     /// `rows` is the data the tree was just built from, or `None` where the caller has no dense
     /// rows to give (`partial_fit(None)`, the CSR paths); only the rows graph reads it.
-    fn finalize(&mut self, py: Python<'_>, rows: Option<&Bound<'_, PyAny>>) -> PyResult<()> {
+    ///
+    /// Returns the nearest leaf of every row of `rows` when the head labels a row by its nearest
+    /// leaf and the rows graph has already found them, so `fit_predict` reads the labels off
+    /// without a second search.
+    fn finalize(
+        &mut self,
+        py: Python<'_>,
+        rows: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<Option<Vec<usize>>> {
         let (kind, k, mi, ni, seed, akm, nmf) = (
             self.kind,
             self.n_clusters,
@@ -4393,7 +4417,7 @@ impl Betula {
             _ => None,
         };
         let passes = match &counted {
-            Some(g) => HeadOptions {
+            Some((g, _)) => HeadOptions {
                 rows: RowEdges::Counted(g),
                 ..passes
             },
@@ -4433,16 +4457,17 @@ impl Betula {
             seen.dedup();
             warn_auto_k_saturated(py, kind, k, seen.len(), self.n_leaves_(), akm)?;
         }
-        Ok(())
+        let nearest_leaf = matches!(self.rule, Some(PointRule::NearestLeaf));
+        Ok(counted.and_then(|(_, nearest)| nearest_leaf.then_some(nearest)))
     }
 
-    /// Count the rows graph (`leaf_graph="rows"`) of the fitted tree over `rows`, or refuse when the
-    /// caller has none to give.
+    /// Count the rows graph (`leaf_graph="rows"`) of the fitted tree over `rows`, with each row's
+    /// nearest leaf, or refuse when the caller has none to give.
     fn count_row_graph(
         &self,
         py: Python<'_>,
         rows: Option<&Bound<'_, PyAny>>,
-    ) -> PyResult<RowGraph> {
+    ) -> PyResult<(RowGraph, Vec<usize>)> {
         let Some(data) = rows else {
             return Err(PyValueError::new_err(
                 "leaf_graph='rows' counts the Leiden graph from the training rows, and this call has \
@@ -4954,9 +4979,16 @@ impl Betula {
         self.reset();
         self.stream(data, Arrival::Whole)?;
         self.refit_tree(py, data)?;
-        self.finalize(py, Some(data))?;
+        let nearest = self.finalize(py, Some(data))?;
         self.refine_rule(py, data)?;
-        self.route_data(py, data)
+        match (nearest, self.labels.as_ref()) {
+            (Some(nearest), Some(labels)) => Ok(nearest
+                .iter()
+                .map(|&l| labels[l])
+                .collect::<Vec<_>>()
+                .into_pyarray(py)),
+            _ => self.route_data(py, data),
+        }
     }
 
     /// Reset, build the tree from a dense `data`, and cluster its leaves under pairwise constraints
@@ -5019,7 +5051,8 @@ impl Betula {
             n_features,
             Arrival::Whole,
         )?;
-        self.finalize(py, None)
+        self.finalize(py, None)?;
+        Ok(())
     }
 
     fn fit_predict_csr<'py>(
