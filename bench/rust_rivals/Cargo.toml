@@ -15,3 +15,12 @@ linfa = "0.8"
 linfa-clustering = "0.8.1"
 ndarray = "0.16"
 rand_xoshiro = "0.6"
+anofox-ml-cluster = "0.6"
+anofox-ml-core = "0.6"
+scirs2-cluster = "0.6"
+scirs2-core = { version = "0.6", default-features = false }
+# AGPL-3.0: a dependency of this bench crate only, never of betula-cluster. The repository on GitHub
+# mirrors https://codeberg.org/erich_schubert/fuel; the crate is not on crates.io (`fuel` there is
+# another project).
+fuel = { git = "https://github.com/kno10/fuel" }
+rand_pcg = "0.10"

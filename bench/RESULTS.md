@@ -1792,6 +1792,8 @@ kmodes and tslearn. Their rows rest on the documented call alone.
 The CluProp row is a paper's number, not a package's example: the paper (arXiv 2605.00390)
 publishes no code, so the row reruns the recipe on its data, raw MNIST-70k at seed 0, and
 accepts a result inside the published spread (*Where betula is the right choice*, below).
+The GPU and Rust rivals check their documented examples in their own harnesses
+(`gpu_rivals.py --check`, `rust_rivals.py --check`); every check matches (*GPU rivals*, *Rust crates*).
 
 **Rival families with no row, and why.** Every rival a user would reach for is named, measured or
 not. These have no row in any committed CSV:
@@ -1800,7 +1802,7 @@ not. These have no row in any committed CSV:
 |---|---|---|
 | no CPython 3.14 wheel | fastcluster, scikit-learn-extra, trimap, SuperKMeans, ClustPy | the bench runs on CPython 3.14, and without a wheel the arm needs a compiler; fastcluster's Ward enters only as a published vector of Gagolewski's suite |
 | GPU | `cuml.accel`, cuVS k-means, flash-kmeans, rapids-singlecell, TorchDR | the GPU table holds cuML's k-means, UMAP pipelines, `HDBSCAN` and `DBSCAN`, FAISS and fastkmeans. `cuml.accel` dispatches scikit-learn, umap-learn and hdbscan calls to those cuML estimators, which the table runs directly. cuML 26.10's `KMeans` fits through cuVS, so its row is cuVS k-means. flash-kmeans is a fourth GPU k-means: the three measured tie scikit-learn on quality, and the speed it is for is not quoted here. rapids-singlecell 0.18.1 has no wheel on PyPI (sdist only), and its clustering is kNN + Leiden, which the CPU tables hold. TorchDR is dimension reduction; its clustering is the DR + k-means family of the cuML UMAP rows |
-| Rust | `kno10/fuel` (Schubert; PyO3 bindings, AGPL-3.0; GMM, von Mises–Fisher, spherical k-means, HDBSCAN, FasterPAM; no CF-tree) | not yet run; the Rust table holds linfa-clustering, clump and the `hdbscan` crate |
+| Rust | `kno10/fuel`'s GMM, von Mises–Fisher, spherical k-means and FasterPAM (Schubert; PyO3 bindings, AGPL-3.0; no CF-tree) | not yet run; the Rust table holds fuel's `kmeans` and `hdbscan`, beside linfa-clustering, clump, the `hdbscan` crate and the `Birch` of anofox-ml-cluster and scirs2-cluster. Of these only the `hdbscan` crate builds on betula's MSRV, 1.85.0 (*Rust crates*, below) |
 | deep clustering | ClustPy, the deep methods of CLUBench | by design: a deep method learns the representation, and betula clusters vectors it is given. The fair contest is the same embedding with another clusterer, which the news rows run. CLUBench (arXiv 2605.29933; 24 algorithms, 131 datasets) reports that deep clustering does not clearly beat the best conventional methods on average |
 | papers with no package | Torque Clustering (TPAMI 2025) | no pip package: the official code is MATLAB p-code over an n × n distance matrix, and the Python port is clone-only |
 
@@ -3099,7 +3101,7 @@ arms' cost waits for the timing campaign.
   than 11. Their defaults are sized for low-dimensional streams, where the River reference table
   (*The streaming heads against River*) runs them.
 
-### Rust crates — linfa-clustering, clump, `hdbscan` (`results_rust_rivals.csv`)
+### Rust crates — linfa, clump, `hdbscan`, anofox, scirs2, fuel (`results_rust_rivals.csv`)
 
 A user who calls betula from Rust compares it with the Rust crates, not with scikit-learn.
 `bench/rust_rivals/` is a crate of its own, outside betula-cluster's manifest, so none of the rivals
@@ -3111,45 +3113,126 @@ feature the Python wrapper builds for each head: `Spherical` for `kmeans`, `Diag
 `Spherical`; re-run on `Diagonal`, no ARI cell moves by more than 0.0001 and each peak RSS rises by
 0.3–1.6 MB, the per-dimension scatter the feature keeps. Each crate runs
 at its documented defaults, with the shared minimum cluster size where it takes one. Versions:
-linfa-clustering 0.8.1, clump 0.7.2, `hdbscan` 0.12.0. Peak RSS is each process's own `VmHWM`,
-the rows included. Seeded arms run on seeds 0, 1, 2; a single value means all three agree.
+linfa-clustering 0.8.1, clump 0.7.2, `hdbscan` 0.12.0, anofox-ml-cluster 0.6.1, scirs2-cluster
+0.6.5, and fuel 0.1.0 at git `e15861e`. fuel (Schubert) is AGPL-3.0 and not on crates.io: the bench
+crate takes it from its GitHub mirror, and it never enters betula-cluster's dependency tree. Peak
+RSS is each process's own `VmHWM`, the rows included.
+Seeded arms run on seeds 0, 1, 2; a single value means all three agree.
+
+The edition of 2026-11-18 re-ran every arm, built with rustc 1.100.0, with `RAYON_NUM_THREADS`
+unset and `OMP_NUM_THREADS=8`. All 140 earlier rows reproduce their ARI exactly. It adds two
+columns. **Allocations** counts every call into the Rust allocator (`alloc`, `alloc_zeroed`,
+`realloc`) from the start of the fit to its end. **Allocated MB** sums the bytes those calls asked
+for: it measures churn, not a peak. Memory a C library takes with its own `malloc` is not seen.
+
+**Two parameters have no default that fits, and get a rule.** DBSCAN's radius is absolute (linfa's
+default is 1e-4, clump's has none), so linfa's and clump's `Dbscan` take the `minPts` and `eps` of
+the `sklearn-dbscan-kdist` arm above (`density_rivals.kdist_params`: `minPts = 2·d`, `eps` at the
+elbow of the sorted `minPts`-th neighbour distances). linfa's `Optics` returns the augmented
+ordering, not labels. It runs at the shared minimum cluster size with its default unbounded radius.
+Its labels are scikit-learn's `cluster_optics_xi` at `xi = 0.05`, the value scikit-learn's `OPTICS`
+uses, without the predecessor correction, since linfa reports no predecessors. Birch takes the
+count: anofox's `Birch` runs at scikit-learn's defaults (threshold 0.5, 50 branches), which its
+documentation says it mirrors, and scirs2's `birch` at its own.
+
+**Each crate reproduces a documented example first** (`bench/rust_rivals.py --check`, also run
+before any row). linfa and fuel publish no numeric output, so their arms run the examples of other
+packages' documentation:
+
+| arm | example | published | reproduced | |
+|---|---|---|---|---|
+| anofox-ml-cluster `Birch` | scikit-learn's Birch docstring | [0, 0, 0, 1, 1, 1] | [0, 0, 0, 1, 1, 1] | yes |
+| scirs2-cluster `birch` | its own doc example; its unit test asserts the count | 2 centroids | 2 | yes |
+| linfa `Dbscan` | scikit-learn's DBSCAN example | (3, 18, 0.952) | (3, 18, 0.952) | yes |
+| clump `Dbscan` | scikit-learn's DBSCAN example | (3, 18, 0.952) | (3, 18, 0.952) | yes |
+| linfa `Optics`, xi extraction | scikit-learn's OPTICS docstring | [0, 0, 0, 1, 1, 1] | [0, 0, 0, 1, 1, 1] | yes |
+| fuel `hdbscan` | the `hdbscan` documentation's blobs | 3 | 3 | yes |
 
 **Told k**
 
-| arm | blobs | aniso | varied | moons | circles | highdim | digits | mean | peak RSS MB |
-|---|---|---|---|---|---|---|---|---|---|
-| **betula `kmeans`** | 0.861 | 0.545 | 0.541 | 0.485 | 0.000 | 1.000 | 0.467 (0.443–0.571) | 0.557 | 7–23 |
-| linfa `KMeans` | 0.862 | 0.545 | 0.539 | 0.485 | 0.000 | 1.000 | 0.555 (0.526–0.570) | 0.569 | 7–23 |
-| clump `Kmeans` | 0.861 | 0.545 | 0.539 (0.536–0.539) | 0.485 | 0.000 | 1.000 (0.835–1.000) | 0.495 (0.399–0.564) | 0.561 | 6–23 |
-| **betula `gmm-full`** | 0.863 | 0.902 | 0.757 | 0.504 | 0.000 | 1.000 | 0.575 | 0.657 | 9–23 |
-| linfa `GaussianMixtureModel` (full) | 0.864 | 0.902 | 0.752 | 0.507 | 0.000 | 1.000 | 0.421 (0.378–0.613) | 0.635 | 10–35 |
-| **betula `gmm`** (diagonal) | 0.865 | 0.540 | 0.756 | 0.519 | 0.000 | 1.000 | 0.461 | 0.592 | 9–23 |
+| arm | blobs | aniso | varied | moons | circles | highdim | digits | mean | peak RSS MB | allocations | allocated MB |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| **betula `kmeans`** | 0.861 | 0.545 | 0.541 | 0.485 | 0.000 | 1.000 | 0.467 (0.443–0.571) | 0.557 | 8–24 | 13 k–57 k | 4–6 |
+| linfa `KMeans` | 0.862 | 0.545 | 0.539 | 0.485 | 0.000 | 1.000 | 0.555 (0.526–0.570) | 0.569 | 7–24 | 3 k–31 k | 5–35 |
+| clump `Kmeans` | 0.861 | 0.545 | 0.539 (0.536–0.539) | 0.485 | 0.000 | 1.000 (0.835–1.000) | 0.495 (0.399–0.564) | 0.561 | 7–24 | 4 k–60 k | 1–5 |
+| fuel `kmeans` | 0.862 (0.687–0.862) | 0.545 | 0.539 | 0.485 | 0.000 | 0.871 (0.630–1.000) | 0.484 (0.425–0.551) | 0.541 | 7–24 | 2 k–31 k | 2–10 |
+| **betula `gmm-full`** | 0.863 | 0.902 | 0.757 | 0.504 | 0.000 | 1.000 | 0.575 | 0.657 | 9–24 | 0.8 M–7.8 M | 45–3 698 |
+| linfa `GaussianMixtureModel` (full) | 0.864 | 0.902 | 0.752 | 0.507 | 0.000 | 1.000 | 0.421 (0.378–0.613) | 0.635 | 9–34 | 5 k–32 k | 47–1 999 |
+| **betula `gmm`** (diagonal) | 0.865 | 0.540 | 0.756 | 0.519 | 0.000 | 1.000 | 0.461 | 0.592 | 9–24 | 125 k–472 k | 6–50 |
+| anofox `Birch` | 0.860 | 0.554 | 0.460 | 0.616 | 0.009 | 1.000 | 0.664 | 0.595 | 8–987 | 23 k–400 k | 5–1 039 |
+| scirs2 `birch`, as documented | 0.860 | 0.362 | 0.109 | 0.255 | 0.139 | 0.001 | 0.000 | 0.247 | 8–30 | 0.6 M–510 M | 11–77 838 |
+| scirs2 `birch`, entries mapped to clusters | 0.860 | 0.554 | 0.204 | 0.356 | 0.001 | 1.000 | 0.001 | 0.425 | 8–29 | 0.6 M–510 M | 11–77 838 |
 
 **k not given**
 
-| arm | blobs | aniso | varied | moons | circles | highdim | digits | mean | peak RSS MB |
-|---|---|---|---|---|---|---|---|---|---|
-| `hdbscan` crate | 0.434 | 0.449 | 0.507 | 1.000 | 1.000 | 1.000 | 0.091 | 0.640 | 6–23 |
-| clump `Hdbscan` | 0.000 | 0.000 | 0.000 | 1.000 | 1.000 | 1.000 | 0.000 | 0.429 | 12–24 |
-| **betula `hdbscan`** (the table above, Python) | 0.376 | 0.469 | 0.302 | 1.000 | 1.000 | 1.000 | 0.164 | 0.616 | — |
+| arm | blobs | aniso | varied | moons | circles | highdim | digits | mean | peak RSS MB | allocations | allocated MB |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| `hdbscan` crate | 0.434 | 0.449 | 0.507 | 1.000 | 1.000 | 1.000 | 0.091 | 0.640 | 7–24 | 0.4 M–11.8 M | 165–2 006 |
+| fuel `hdbscan` | 0.434 | 0.449 | 0.507 | 1.000 | 1.000 | 1.000 | 0.091 | 0.640 | 7–24 | 2 k–32 k | 1–10 |
+| clump `Hdbscan` | 0.000 | 0.000 | 0.000 | 1.000 | 1.000 | 1.000 | 0.000 | 0.429 | 13–23 | 6 k–245 k | 13–28 |
+| linfa `Dbscan`, k-distance | 0.000 | 0.000 | 0.002 | 0.921 | 0.911 | 0.998 | 0.000 | 0.405 | 7–24 | 0.4 M–11.9 M | 62–2 698 |
+| clump `Dbscan`, k-distance | 0.000 | 0.000 | 0.002 | 0.921 | 0.911 | 0.998 | 0.000 | 0.405 | 11–32 | 20 k–304 k | 18–2 067 |
+| linfa `Optics`, xi extraction | 0.000 | 0.000 | 0.000 | 1.000 | 1.000 | 1.000 | 0.000 | 0.429 | 7–29 | 0.5 M–90.1 M | 551–106 186 |
+| **betula `hdbscan`** (the table above, Python) | 0.376 | 0.469 | 0.302 | 1.000 | 1.000 | 1.000 | 0.164 | 0.616 | — | — | — |
 
-- **k-means is a three-way tie.** The three implementations agree to the third digit on four
-  fixtures and within 0.002 on blobs and `varied`; on `digits` all three spread over seeds and
-  overlap.
+- **k-means is a four-way tie.** betula, linfa and clump agree to the third digit on four fixtures
+  and within 0.002 on blobs and `varied`; on `digits` all four spread over seeds and overlap. fuel's
+  `kmeans` starts from a random sample of rows, not k-means++. It alone has a seed below 0.70 on
+  blobs (0.687) and on `highdim` (0.630), and it still ties by the rule.
 - **Full-covariance GMM: a tie on quality, and on memory.** betula's `gmm-full` and linfa's
   mixture match on six fixtures. On `digits` betula reads 0.575 on every seed and linfa 0.378–0.613,
-  a tie by the rule. betula's process peaks at 16 MB there against linfa's 10 MB. On the `Spherical`
+  a tie by the rule. betula's process peaks at 16 MB there against linfa's 11 MB. On the `Spherical`
   tree it peaked at 15 MB, and at 12, 13 and 15 MB at `RAYON_NUM_THREADS` 1, 2 and 8 (one run
-  each, not in a CSV; the committed rows ran at 8). Up to 1.5.0 it peaked at 259 MB: the head kept a
-  dense 64 × 64 matrix per leaf for each restart that ran at once, where the leaf's covariance is a
-  diagonal.
-- **No count given, the `hdbscan` crate is ahead on the mean** (0.640 against betula's 0.616): it
-  wins blobs and `varied`, betula wins aniso and `digits`. clump's `Hdbscan` returns one cluster on
-  four fixtures at its defaults, so by the rule above it is not scored there.
+  each, not in a CSV; the edition before this one ran at 8). Up to 1.5.0 it peaked at 259 MB: the
+  head kept a dense 64 × 64 matrix per leaf for each restart that ran at once, where the leaf's
+  covariance is a diagonal. Its fit makes the most allocations of any told-k arm but scirs2's: up
+  to 7.8 M on `digits`, against linfa's 7 k. The peak does not show that churn.
+- **anofox's `Birch` is ahead of every betula head on moons and `digits`**: 0.616 against `gmm`'s
+  0.519, and 0.664 against `gmm-full`'s 0.575, one deterministic run each. betula's mixtures are
+  ahead of it on aniso and `varied`. Its CF-tree peaks at 987 MB on `highdim`, against 24–34 MB for
+  the other told-k arms there.
+- **scirs2's documented `birch` call returns leaf entries, not clusters.** It returns
+  `Birch::predict`, the index of each row's nearest leaf entry, and drops the entry-to-cluster map
+  that `extract_clusters` has just computed (`src/birch.rs`, lines 911–913 in 0.6.5). The labels
+  hold 122 "clusters" on `varied`, 16 278 on `highdim` and 1 796 for 1 797 rows on `digits`. Mapped
+  through that map, they hold the count asked for, and read 1.000 on `highdim`. The documented
+  example checks only the centroid count, so it passes. Both forms are in the table; the mapped one
+  is what the documentation describes. On `highdim` the fit makes 510 M allocations, 78 GB in total.
+- **fuel's `hdbscan` gives the `hdbscan` crate's answer with a fraction of the churn.** The two
+  agree on every fixture to the third digit, at the same peak RSS; fuel's fit allocates 1–10 MB in
+  total, the crate's 165–2 006 MB.
+- **No count given, the `hdbscan` crate and fuel are ahead of betula on the mean** (0.640 against
+  0.616): they win blobs and `varied`, and betula wins aniso and `digits`. clump's `Hdbscan` returns
+  one cluster on four fixtures at its defaults, so by the rule above it is not scored there.
+- **linfa's and clump's `Dbscan` give scikit-learn's answer** at the same parameters: every ARI and
+  cluster count of the `sklearn-dbscan-kdist` row, where the k-distance rule fails included.
+- **linfa's `Optics` reads 1.000 on three fixtures only because noise is scored as one more
+  label.** On moons and circles it finds one cluster and marks the other half of the rows noise; on
+  `highdim` it finds 7 clusters, and the eighth blob is noise. On blobs, aniso, `varied` and
+  `digits` every row is noise, where scikit-learn's `OPTICS` returns one cluster. linfa's ordering
+  gives no point an undefined reachability: the object a walk starts from is not emitted first, but
+  later, when its neighbours reach it. OPTICS (Ankerst et al., 1999) emits it first, with an
+  undefined reachability, the steep start the xi method needs. On moons, moving that object to the
+  front with an undefined reachability, and nothing else, turns one cluster and half the rows noise
+  into the two moons with no noise (one run, not in a CSV). At its default unbounded radius its
+  fit allocates 93–106 GB in total per 30 000-row fixture, at a 16–29 MB peak.
 - betula's `hdbscan` head has no one-call Rust function, so its row is the Python table's; its
-  memory is not comparable with a Rust process's and is not shown.
-- Not run: linfa's `Dbscan` and clump's `Dbscan` take a radius with no default, and linfa's `Optics`
-  returns a reachability ordering, not labels. These tables are not on the board.
+  memory is not comparable with a Rust process's and is not shown. These tables are not on the
+  board.
+
+**Building on betula's MSRV.** betula-cluster declares Rust 1.85.0. Each rival was checked alone in
+a scratch crate with `cargo +1.85.0 check` and the rust-version-aware resolver
+(`CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS=fallback`), which picks older compatible versions of a
+dependency where they exist. On stable (1.100.0) all six build. On 1.85.0 one does:
+
+| crate | builds on 1.85.0 | why not |
+|---|---|---|
+| `hdbscan` 0.12.0 | yes | — |
+| linfa-clustering 0.8.1 | no | `linfa` 0.8.1 calls `is_multiple_of` (stable in 1.87) and declares no `rust-version` |
+| clump 0.7.2 | no | declares `rust-version = 1.89` |
+| anofox-ml-cluster 0.6.1 | no | it and the anofox crates it depends on declare 1.87 |
+| scirs2-cluster 0.6.5 | no | its dependencies declare 1.88 (`libloading` 0.9.1) and 1.89 (`safe_arch` 1.2.0, `wide` 1.7.1) |
+| fuel 0.1.0 (`e15861e`) | no | `let` chains (stable in 1.88) and a `const` call of `Vec::len` (1.87) |
 
 ## Neighbour smoothing of embeddings: the guard fails (task F-24)
 
