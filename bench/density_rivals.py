@@ -11,7 +11,8 @@ pick when the number of clusters is unknown, or when clusters are not convex, ha
 | count chosen under a bound | scikit-learn `BayesianGaussianMixture` |
 | count chosen, newer | DelTriC (`deltric`), CoreSPECT (`cplearn`) |
 
-against `hdbscan`, `scale-space`, `leiden` on the unit and the rows graph (count chosen), `xmeans`
+against `hdbscan`, `scale-space`, `leiden` on the unit and the rows graph and on the rows graph
+with `resolution="stable"` (count chosen), `xmeans`
 and the `gmm` and `gmm-full` BIC sweeps (count chosen under a bound) and `dc-median`, `ward`,
 `leiden` on the rows graph with `resolution="auto"`, `gmm-full`, `kmeans` (count given). One more
 told-count row, `betula-gmm-full-merge`, is a recipe rather than a head: the `gmm-full` BIC fit
@@ -208,6 +209,12 @@ ARMS = {
     "betula-leiden-rows": (
         False,
         lambda x, k, s: _betula_bounded(x, s, method="leiden", leaf_graph="rows"),
+    ),
+    "betula-leiden-rows-stable": (
+        False,
+        lambda x, k, s: _betula_bounded(
+            x, s, method="leiden", leaf_graph="rows", resolution="stable"
+        ),
     ),
     "betula-dc-median": (True, lambda x, k, s: _betula(x, k, s, method="dc-median")),
     "betula-ward": (True, lambda x, k, s: _betula(x, k, s, method="ward")),

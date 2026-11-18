@@ -785,6 +785,55 @@ $\gamma = 1$ and 0.781–0.789 told 10.
 Two moons and two circles at 20 000 points read 1.000 on both graphs at every budget; one seed of
 three falls to 0.55 on the moons at 3 200 leaves with `mass`.
 
+**Choosing the resolution without a count.** On a low-dimensional continuum the rows graph is a
+mesh, and modularity at $\gamma = 1$ cuts every cluster into patches (the 12–19 communities above).
+No data supports the borders of a patch, so another seed draws them elsewhere. `resolution="stable"`
+(`leaf_graph="rows"` only) lowers $\gamma$ only where two readings both say this happened. The
+first is the two-hop growth of the graph: the mean over the leaves of $|B_2(i)| / |B_1(i)|$, where
+$B_1(i)$ is the leaf with its neighbours and $B_2(i)$ adds theirs. Neighbours of a neighbour are
+mostly shared on a mesh and mostly new on high-dimensional data: the growth reads 2.2–3.3 on the
+planar fixtures, 4.0 on covtype, 5.2–5.8 on digits, 18–23 on MNIST, 45–53 on CLIP image embeddings
+and 68–82 on sentence embeddings. From 8 up, $\gamma = 1$ stays and Leiden runs once. The second
+reading is the agreement of five seeds at $\gamma = 1$: the mean pairwise ARI of their partitions,
+each leaf counted as its mass. A mesh of many separated clusters is cut at the clusters, and the
+seeds agree: from 0.92 up, $\gamma = 1$ stays (noisy rings read 0.87 at most, planar fixtures of
+20 and 50 blobs 0.97 at least). Otherwise five seeds run at each of $\gamma = 2^{-j/2}$,
+$j = 1, \dots, 14$. Of the resolutions whose median count of communities holding 0.5 % of the mass
+is two or more, the head takes the largest whose agreement is within 0.05 of the best, and returns
+its partition at the estimator's seed: 75 Leiden runs in all. Every other case returns the labels
+of a fixed $\gamma = 1$.
+
+The constants were fitted on 19 data sets (the seven density fixtures, blobs-20k, `varied`-20k,
+rings, digits, covtype, MNIST-20k and 70k, 20 newsgroups under MiniLM and mpnet, CIFAR-100 under
+CLIP, and 20 and 50 planar blobs) with one set left out at a time, and then read once on
+Gagolewski's suite, which played no part in the fit. Median ARI over five row orders × seeds
+0/1/2 on the fitting sets, and the mean of the per-dataset medians on the suite, scored against
+the best reference partition with its noise points left out:
+
+| data | $\gamma = 1$ | `"stable"` |
+|---|---|---|
+| density fixtures (30 000 rows): blobs / aniso | 0.439 / 0.207 | 0.836 / 0.531 |
+| density fixtures: `varied` / moons / circles | 0.175 / 0.113 / 0.098 | 0.684 / 1.000 / 1.000 |
+| density fixture `digits` / covtype-20k | 0.769 / 0.032 | 0.783 / 0.032 |
+| rings / blobs-20k / `varied`-20k | 0.121 / 0.565 / 0.242 | 1.000 / 0.978 / 0.935 |
+| suite: wut (22 datasets) / fcps (9) | 0.185 / 0.221 | 0.436 / 0.549 |
+| suite: graves (10) / uci (8) / mnist (4) | 0.210 / 0.141 / 0.584 | 0.390 / 0.168 / 0.584 |
+| suite: sipu (20) / other (8) | 0.580 / 0.312 | 0.765 / 0.590 |
+
+The other nine fitting sets keep the $\gamma = 1$ labels on all 15 runs: the 20-dimensional
+density fixture, digits, MNIST-20k and 70k, both 20 newsgroups sets, CIFAR-100 and the planar
+fixtures of 20 and 50 blobs. On MNIST, the sentence and the image embeddings the five seeds agree
+at 0.79–0.93, so the growth alone keeps $\gamma = 1$ there.
+
+It is ahead by more than 0.02 on 44 of the suite's 81 datasets and behind on four: sonar
+(0.054 → −0.005), yeast (0.073 → 0.012), birch1 (0.385 → 0.313) and worms_2 (0.398 → 0.327). A thin
+chain is where it cannot help: $\gamma = 1$ cuts a chain into segments by its length, at nearly the
+same places on every seed, so the seeds agree and $\gamma = 1$ stays. Chainlink and wut's cross and
+mk2 keep it on all 15 runs, and two moons of 1 400 rows drawn evenly along their arcs read
+0.10–0.31 at 200–1 000 leaves. The 75 runs cost 2.3–2.6× the instructions of the
+`resolution="auto"` head on the planar density fixtures, and 0.9–1.0× where $\gamma = 1$ stays
+(digits, `highdim`).
+
 Sources (2026 preprints, OpenAI):
 
 - *The Gaussian propeller bound in every dimension*, 24 September 2026 —

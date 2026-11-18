@@ -232,6 +232,7 @@ answer.
 | community / graph structure, **known** count | `leiden` with `resolution="auto"` | yes — γ is searched for `n_clusters` communities |
 | variable-density clusters **+ noise**, unknown count | `hdbscan` | no |
 | the same density structure, but you know `k` and want a partition rather than noise | `leiden` with `leaf_graph="rows"`, `resolution="auto"` (mean ARI 0.838 over the seven density fixtures, tied with Genie; it loses aniso), or `dc-median` to cut the density hierarchy itself | yes — for `dc-median` read *Naming `k` on the density hierarchy*; `dc-center` is the other objective and is **mass-blind** |
+| **low-dimensional** clusters of any shape, unknown count, a partition rather than noise | `leiden` with `leaf_graph="rows"`, `resolution="stable"` (mean worst-seed ARI over the seven density fixtures 0.814, against 0.652 for the `hdbscan` package and 0.616 for betula's `hdbscan` head) — read *Choosing the resolution without a count* in [MATH.md](MATH.md) first | **no** — γ = 1 unless the rows graph is a mesh that γ = 1 cuts differently on every seed |
 | **density peaks**, arbitrary count, no `k` *or* bandwidth to pick | `scale-space` | **no** — scale chosen by mode persistence |
 | **ordered / stationary signals** (time-series windows, trajectories, sensor waveforms), covariance *shape* | `gmm-toeplitz` | yes (or `0` = BIC) |
 | ordered signals with structure **beyond a low-order AR** (long-lag echo, narrowband) | `gmm-toeplitz-full` (any lag) or `gmm-toeplitz-gs` (likelihood-optimal precision, ≤ order 16) | yes (or `0` = BIC) |
@@ -239,7 +240,8 @@ answer.
 
 `n_clusters=0` auto-selects `k` for the parametric heads; `leiden` / `hdbscan` discover it
 (`leiden` reads the count off the graph — tune granularity with `resolution` γ, higher ⇒ more, or
-pass `resolution="auto"` to have it searched for `n_clusters`).
+pass `resolution="auto"` to have it searched for `n_clusters`, or `resolution="stable"` with
+`leaf_graph="rows"` to have it chosen without one).
 Leiden builds its leaf graph by an exact nearest-neighbour scan by default, `O(m²·d)` in the leaf
 count `m`, so doubling `max_leaves` quadruples its cost (retired instructions
 ×4.0–4.2 per doubling from 900 to 7 400 leaves). `graph_degree > 0` finds the neighbours by the

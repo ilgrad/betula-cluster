@@ -689,9 +689,20 @@ pub(crate) struct HeadOptions<'a> {
     pub(crate) graph_degree: usize,
     /// The leaf graph counted from the training rows, which replaces `graph` for the Leiden head.
     pub(crate) rows: RowEdges<'a>,
-    /// Run the modularity Leiden head at the resolution that gives `k` communities instead of at
-    /// the one [`Method::Leiden`] names (`resolution="auto"`).
-    pub(crate) resolution_for_k: bool,
+    /// Where the modularity Leiden head takes its resolution from.
+    pub(crate) resolve: Resolve,
+}
+
+/// Where the modularity Leiden head takes its resolution from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(not(feature = "python"), allow(dead_code))] // only the Python boundary names the rest
+pub(crate) enum Resolve {
+    /// The resolution [`Method::Leiden`] names.
+    Given,
+    /// The resolution that gives `k` communities (`resolution="auto"`).
+    ForK,
+    /// The resolution the rows graph chooses without a count (`resolution="stable"`).
+    Stable,
 }
 
 /// Whether the Leiden head partitions the leaf graph counted from the rows ([`RowGraph`]). Only a
@@ -717,7 +728,7 @@ impl HeadOptions<'_> {
         equal_size: false,
         graph_degree: 0,
         rows: RowEdges::Off,
-        resolution_for_k: false,
+        resolve: Resolve::Given,
     };
 }
 
@@ -828,7 +839,7 @@ pub(crate) fn fit_head<R: Real, C: ClusterFeature<R>>(
             HeadFit::hard(spectral_on(features, k, max_iter, n_init, seed, opts.graph).labels)
         }
         // Leiden discovers the community count from the graph and ignores `k` (like HDBSCAN),
-        // unless `resolution_for_k` asks for the resolution that gives `k` communities.
+        // unless `opts.resolve` asks for the resolution that gives `k` communities.
         Method::Leiden {
             resolution,
             cpm,
@@ -841,11 +852,16 @@ pub(crate) fn fit_head<R: Real, C: ClusterFeature<R>>(
             } else {
                 Objective::Modularity
             };
-            let gamma = if opts.resolution_for_k {
-                debug_assert!(!cpm && kk >= 1, "refused at the boundary");
-                Gamma::ForK(kk)
-            } else {
-                Gamma::Fixed(resolution)
+            let gamma = match opts.resolve {
+                Resolve::Given => Gamma::Fixed(resolution),
+                Resolve::ForK => {
+                    debug_assert!(!cpm && kk >= 1, "refused at the boundary");
+                    Gamma::ForK(kk)
+                }
+                Resolve::Stable => {
+                    debug_assert!(!cpm, "refused at the boundary");
+                    Gamma::Stable
+                }
             };
             match opts.rows {
                 RowEdges::Off => {}

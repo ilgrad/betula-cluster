@@ -940,6 +940,9 @@ class Betula(_Clusterer):
         # 0.5 % of the rows each, by bisection on log γ, then returns exactly n_clusters: smaller
         # communities join the one they share most edge weight with, and a surplus is merged where
         # modularity loses least. Fewer come back only when the graph splits into fewer communities.
+        # "stable" (method="leiden" with leaf_graph="rows", no count) keeps γ = 1 unless the rows
+        # graph is mesh-like and five Leiden seeds cut it differently at γ = 1; then it takes the
+        # largest γ < 1 whose cut the five seeds agree on about as well as on the most agreed cut.
         self.resolution = resolution
         # Covariance-aware Leiden weight β (method="leiden" / "leiden-cpm" with feature="full"):
         # >0 adds a log-Euclidean shape term to the microcluster affinity, so communities agree in

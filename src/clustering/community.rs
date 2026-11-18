@@ -26,7 +26,7 @@ use crate::feature::ClusterFeature;
 use crate::kernels::sq_euclidean;
 use crate::types::Real;
 use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 /// Quality function optimized by [`leiden`].
 #[derive(Clone, Copy)]
@@ -198,13 +198,16 @@ pub fn leiden_on<R: Real, C: ClusterFeature<R>>(
     )
 }
 
-/// The resolution the Leiden head runs at: as given, or the one found for a requested number of
-/// communities ([`for_k`]).
+/// The resolution the Leiden head runs at: as given, the one found for a requested number of
+/// communities ([`for_k`]), or, on the rows graph, the one chosen without a count
+/// ([`stable_rows`]).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Gamma {
     Fixed(f64),
     /// `k` communities, each holding at least [`COUNTED_SHARE`] of the mass.
     ForK(usize),
+    /// No count: `γ = 1`, unless the graph is a mesh that `γ = 1` cuts differently on every seed.
+    Stable,
 }
 
 /// Share of the total mass a community must hold to count toward a requested number of
@@ -255,6 +258,162 @@ fn for_k(k: usize, mass: &[f64], run: impl Fn(f64) -> Vec<usize>) -> (Vec<usize>
         }
     }
     (best.1, best.2)
+}
+
+/// Seeds [`stable_rows`] partitions the graph with at each resolution it reads: the caller's seed
+/// and the next four.
+const STABLE_PROBES: usize = 5;
+
+/// [`two_hop_growth`] below which the rows graph is read as a mesh. Measured over five row orders:
+/// 2.2–3.3 on two-dimensional fixtures, 4.0 on covtype, 5.2–5.8 on digits, 9–10 on 20-dimensional
+/// blobs, 18–23 on MNIST, 45–53 on CLIP image embeddings and 68–82 on sentence embeddings. The
+/// constant sits midway (in ratio) between the planar fixtures and MNIST, the first set a lowered
+/// resolution would cost.
+const MESH_GROWTH: f64 = 8.0;
+
+/// Mean pairwise ARI of the `γ = 1` partitions at or above which `γ = 1` is kept on a mesh too.
+/// Measured: at most 0.87 where the `γ = 1` cut is arbitrary (noisy rings), at least 0.97 on
+/// planar fixtures of 20 and 50 compact blobs, where it is not; midway.
+const STABLE_AT_ONE: f64 = 0.92;
+
+/// How far below the best-agreeing cut a finer one may agree and still be chosen.
+const STABLE_SLACK: f64 = 0.05;
+
+/// Resolutions searched below 1: `2^(−j/2)` for `j = 1 ..= STABLE_STEPS`, 0.71 down to 0.0078.
+const STABLE_STEPS: u32 = 14;
+
+/// The partition at the resolution [`Gamma::Stable`] chooses, from `run(γ, seed)`.
+///
+/// Modularity at `γ = 1` cuts a low-dimensional continuum into pieces whose borders no data
+/// supports, and another seed draws other borders. Two readings decide whether that happened. The
+/// graph is a mesh when few leaves lie two hops away against one ([`two_hop_growth`] below
+/// [`MESH_GROWTH`]); and the `γ = 1` cut is arbitrary when [`STABLE_PROBES`] seeds disagree on it
+/// (mean pairwise [`weighted_ari`] below [`STABLE_AT_ONE`]). Only then is `γ` lowered: to the
+/// largest resolution below 1 whose partitions agree within [`STABLE_SLACK`] of the best-agreeing
+/// cut into two or more communities (by the median [`counted_communities`] of its seeds).
+/// Everything else returns the `γ = 1` partition at `seed`, the labels of a fixed `γ = 1`.
+///
+/// Each partition is a pure function of `(γ, seed)`, so running them in parallel leaves the answer
+/// independent of the pool size.
+fn stable_rows(
+    adj: &[Vec<(usize, f64)>],
+    mass: &[f64],
+    seed: u64,
+    run: impl Fn(f64, u64) -> Vec<usize> + Sync,
+) -> Vec<usize> {
+    if two_hop_growth(adj) >= MESH_GROWTH {
+        return run(1.0, seed);
+    }
+    let probes = |gammas: &[f64]| -> Vec<Vec<usize>> {
+        let jobs: Vec<(f64, u64)> = gammas
+            .iter()
+            .flat_map(|&g| (0..STABLE_PROBES as u64).map(move |j| (g, seed.wrapping_add(j))))
+            .collect();
+        #[cfg(feature = "parallel")]
+        {
+            use rayon::prelude::*;
+            jobs.par_iter().map(|&(g, s)| run(g, s)).collect()
+        }
+        #[cfg(not(feature = "parallel"))]
+        {
+            jobs.iter().map(|&(g, s)| run(g, s)).collect()
+        }
+    };
+    let mut at_one = probes(&[1.0]);
+    if agreement(&at_one, mass) >= STABLE_AT_ONE {
+        return at_one.swap_remove(0);
+    }
+    let gammas: Vec<f64> = (1..=STABLE_STEPS)
+        .map(|j| 0.5_f64.powf(f64::from(j) / 2.0))
+        .collect();
+    // Largest γ first, each with its seeds' agreement and the partition at `seed`.
+    let mut cuts: Vec<(f64, &[usize])> = Vec::new();
+    let below = probes(&gammas);
+    for parts in below.chunks_exact(STABLE_PROBES) {
+        let mut counts: Vec<usize> = parts.iter().map(|p| counted_communities(p, mass)).collect();
+        counts.sort_unstable();
+        if counts[STABLE_PROBES / 2] >= 2 {
+            cuts.push((agreement(parts, mass), &parts[0]));
+        }
+    }
+    let Some(top) = cuts.iter().map(|c| c.0).max_by(f64::total_cmp) else {
+        return at_one.swap_remove(0);
+    };
+    cuts.iter()
+        .find(|c| c.0 >= top - STABLE_SLACK)
+        .map(|c| c.1.to_vec())
+        .expect("the best-agreeing cut is within the slack of itself")
+}
+
+/// Mean over the leaves with an edge of `|B₂(i)| / |B₁(i)|`: `B₁` is the leaf and its neighbours,
+/// `B₂` adds their neighbours. An edge counts whatever its weight. Neighbours of a neighbour are
+/// mostly shared on a mesh of a low-dimensional continuum, and mostly new on a graph of
+/// high-dimensional data.
+fn two_hop_growth(adj: &[Vec<(usize, f64)>]) -> f64 {
+    let mut stamp = vec![usize::MAX; adj.len()];
+    let (mut sum, mut named) = (0.0, 0usize);
+    for (i, row) in adj.iter().enumerate() {
+        if row.is_empty() {
+            continue;
+        }
+        let mut reached = 0usize;
+        for j in std::iter::once(i).chain(row.iter().map(|&(j, _)| j)) {
+            for k in std::iter::once(j).chain(adj[j].iter().map(|&(k, _)| k)) {
+                if stamp[k] != i {
+                    stamp[k] = i;
+                    reached += 1;
+                }
+            }
+        }
+        sum += reached as f64 / (row.len() + 1) as f64;
+        named += 1;
+    }
+    if named == 0 { 0.0 } else { sum / named as f64 }
+}
+
+/// Mean [`weighted_ari`] over every pair of `parts`.
+fn agreement(parts: &[Vec<usize>], mass: &[f64]) -> f64 {
+    let mut sum = 0.0;
+    let mut pairs = 0usize;
+    for (x, a) in parts.iter().enumerate() {
+        for b in &parts[x + 1..] {
+            sum += weighted_ari(a, b, mass);
+            pairs += 1;
+        }
+    }
+    sum / pairs.max(1) as f64
+}
+
+/// Adjusted Rand index of two partitions of the leaves, each leaf counting as `mass` rows, so it
+/// is the index of the row partitions the two leaf partitions induce. Leaves of no mass are left
+/// out. The contingency table is summed in key order, so the value does not depend on a hash.
+fn weighted_ari(a: &[usize], b: &[usize], mass: &[f64]) -> f64 {
+    let pair = |x: f64| 0.5 * x * (x - 1.0);
+    let mut joint: BTreeMap<(usize, usize), f64> = BTreeMap::new();
+    let mut rows_a: BTreeMap<usize, f64> = BTreeMap::new();
+    let mut rows_b: BTreeMap<usize, f64> = BTreeMap::new();
+    let mut n = 0.0;
+    for ((&x, &y), &w) in a.iter().zip(b).zip(mass) {
+        if w > 0.0 {
+            *joint.entry((x, y)).or_insert(0.0) += w;
+            *rows_a.entry(x).or_insert(0.0) += w;
+            *rows_b.entry(y).or_insert(0.0) += w;
+            n += w;
+        }
+    }
+    if n <= 1.0 {
+        return 1.0;
+    }
+    let index: f64 = joint.values().map(|&v| pair(v)).sum();
+    let sa: f64 = rows_a.values().map(|&v| pair(v)).sum();
+    let sb: f64 = rows_b.values().map(|&v| pair(v)).sum();
+    let expected = sa * sb / pair(n);
+    let most = 0.5 * (sa + sb);
+    if most == expected {
+        1.0
+    } else {
+        (index - expected) / (most - expected)
+    }
 }
 
 /// Squared Euclidean distance between two centroids.
@@ -497,6 +656,8 @@ pub(crate) fn leiden_on_degree<R: Real, C: ClusterFeature<R>>(
             let (labels, gamma) = for_k(k, &mass, run);
             to_k(features, &base, gamma, &mass, labels, k)
         }
+        // Its constants were measured on the rows graph only.
+        Gamma::Stable => unreachable!("resolution='stable' is refused off the rows graph"),
     };
     Community { labels }
 }
@@ -752,7 +913,7 @@ pub(crate) fn leiden_rows<R: Real, C: ClusterFeature<R>>(
         return Community { labels: vec![0; m] };
     }
     let s = graph.per_row.max(2) as f64;
-    let run = |gamma: f64| {
+    let run_at = |gamma: f64, seed: u64| {
         let (labels, _) = detect_passes_sized(
             &graph.adj,
             None,
@@ -763,6 +924,7 @@ pub(crate) fn leiden_rows<R: Real, C: ClusterFeature<R>>(
         );
         adopt_unnamed(features, graph, labels)
     };
+    let run = |gamma: f64| run_at(gamma, seed);
     let labels = match resolution {
         Gamma::Fixed(gamma) => run(gamma),
         Gamma::ForK(k) => {
@@ -777,6 +939,7 @@ pub(crate) fn leiden_rows<R: Real, C: ClusterFeature<R>>(
                 k,
             )
         }
+        Gamma::Stable => stable_rows(&graph.adj, &leaf_mass(features), seed, run_at),
     };
     Community { labels }
 }
@@ -2637,6 +2800,152 @@ mod tests {
             let rows = leiden_rows(&micros, &graph, Gamma::ForK(k), 1, 1).labels;
             assert_eq!(n_distinct(&rows), k, "rows graph, k = {k}");
         }
+    }
+
+    /// Three Gaussian blobs in the plane, with no count given: `γ = 1` cuts each blob into
+    /// patches whose borders move with the seed, and the stability rule reads the graph as a
+    /// mesh, the patches as arbitrary, and returns the blobs.
+    #[test]
+    fn the_stable_resolution_finds_planar_blobs_that_gamma_one_cuts_into_patches() {
+        let mut rng = SplitMix64::new(5);
+        let (pts, truth) = blobs(&mut rng, 2000, &[[0.0, 0.0], [8.0, 0.0], [4.0, 7.0]], 1.0);
+        let (micros, p2m) = grid_micros(&pts, 0.1);
+        let flat: Vec<f64> = pts.iter().flatten().copied().collect();
+        let s = ROW_GRAPH_LEAVES;
+        let graph = RowGraph::from_top(
+            &row_top_leaves(&micros, &flat, &p2m, s, 0, 1),
+            s,
+            micros.len(),
+        );
+        assert!(two_hop_growth(&graph.adj) < MESH_GROWTH);
+        let rows = |labels: &[usize]| p2m.iter().map(|&m| labels[m]).collect::<Vec<_>>();
+        for seed in 1..=9 {
+            let fixed = rows(&leiden_rows(&micros, &graph, Gamma::Fixed(1.0), seed, 1).labels);
+            assert!(
+                ari(&fixed, &truth) < 0.2,
+                "seed {seed}: γ = 1 cuts the blobs"
+            );
+            let stable = rows(&leiden_rows(&micros, &graph, Gamma::Stable, seed, 1).labels);
+            assert!(ari(&stable, &truth) > 0.9, "seed {seed}");
+        }
+    }
+
+    /// A graph whose neighbourhoods grow fast is not a mesh: the rule returns the `γ = 1`
+    /// partition at the caller's seed and runs nothing else.
+    #[test]
+    fn a_graph_that_grows_fast_keeps_gamma_one_and_runs_once() {
+        let (m, mut rng) = (3000, SplitMix64::new(8));
+        let mut edges = Vec::new();
+        for i in 0..m {
+            for _ in 0..6 {
+                let j = (rng.next_u64() % m as u64) as usize;
+                if j != i
+                    && !edges
+                        .iter()
+                        .any(|&(a, b, _)| (a, b) == (i.min(j), i.max(j)))
+                {
+                    edges.push((i.min(j), i.max(j), 1.0));
+                }
+            }
+        }
+        let adj = undirected(m, &edges);
+        assert!(two_hop_growth(&adj) >= MESH_GROWTH);
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        let run = |gamma: f64, seed: u64| {
+            calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            (0..m)
+                .map(|i| (i + seed as usize) % 7 + 10 * usize::from(gamma < 1.0))
+                .collect()
+        };
+        let labels = stable_rows(&adj, &vec![1.0; m], 4, run);
+        assert_eq!(labels, run(1.0, 4));
+        assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 2);
+    }
+
+    /// The decision on a mesh, with a scripted Leiden on a ring of 200 leaves. `γ = 1` partitions
+    /// that agree are kept. Partitions that disagree give way to the largest resolution below 1
+    /// whose seeds agree within the slack of the best-agreeing cut, at the caller's seed; a cut
+    /// into one community is never a candidate.
+    #[test]
+    fn on_a_mesh_the_rule_keeps_an_agreed_cut_and_otherwise_takes_the_largest_agreeing_one() {
+        let m = 200;
+        let ring = undirected(
+            m,
+            &(0..m).map(|i| (i, (i + 1) % m, 1.0)).collect::<Vec<_>>(),
+        );
+        assert!(two_hop_growth(&ring) < MESH_GROWTH);
+        let mass = vec![1.0; m];
+        let step = |gamma: f64| (-2.0 * gamma.log2()).round() as u32;
+        let arcs = |pieces: usize, shift: usize| -> Vec<usize> {
+            (0..m).map(|i| ((i + shift) % m) * pieces / m).collect()
+        };
+        // Agreed at γ = 1: kept, whatever lies below.
+        let agreed = stable_rows(&ring, &mass, 3, |_, _| arcs(10, 0));
+        assert_eq!(agreed, arcs(10, 0));
+        // γ = 1 and the first four steps below it shift by 9 leaves per seed; steps 5 and 6 halve
+        // the ring, off by one leaf per seed; steps 7–11 halve it exactly; the rest is one
+        // community. The best agreement is 1, and step 5 is the largest resolution within 0.05.
+        let script = |gamma: f64, seed: u64| -> Vec<usize> {
+            let s = seed as usize;
+            match step(gamma) {
+                0..=4 => arcs(8, 9 * s),
+                5 | 6 => arcs(2, s % 2),
+                7..=11 => arcs(2, 0),
+                _ => vec![0; m],
+            }
+        };
+        let picked = stable_rows(&ring, &mass, 6, script);
+        assert_eq!(picked, script(0.5_f64.powf(2.5), 6));
+        let agree = agreement(
+            &(6..11)
+                .map(|s| script(0.5_f64.powf(2.5), s))
+                .collect::<Vec<_>>(),
+            &mass,
+        );
+        assert!((1.0 - STABLE_SLACK..1.0).contains(&agree), "{agree}");
+        assert!(
+            agreement(&(6..11).map(|s| script(1.0, s)).collect::<Vec<_>>(), &mass) < STABLE_AT_ONE
+        );
+    }
+
+    /// Two hops from a leaf of a ring reach five leaves against three; on a complete graph they
+    /// reach nothing new; a leaf with no edge is not read.
+    #[test]
+    fn two_hop_growth_counts_the_leaves_two_hops_away_against_one() {
+        let ring = undirected(
+            12,
+            &(0..12).map(|i| (i, (i + 1) % 12, 1.0)).collect::<Vec<_>>(),
+        );
+        assert!((two_hop_growth(&ring) - 5.0 / 3.0).abs() < 1e-12);
+        let mut pairs = Vec::new();
+        for i in 0..6 {
+            for j in i + 1..6 {
+                pairs.push((i, j, 0.5));
+            }
+        }
+        let complete_and_alone = undirected(7, &pairs);
+        assert!((two_hop_growth(&complete_and_alone) - 1.0).abs() < 1e-12);
+    }
+
+    /// The weighted index is the plain index of the rows the leaves stand for, names do not
+    /// matter, and a leaf of no mass is not read.
+    #[test]
+    fn the_weighted_ari_is_the_ari_of_the_rows_the_leaves_stand_for() {
+        let a = [0, 0, 1, 1, 2, 2, 2];
+        let b = [5, 1, 1, 1, 0, 0, 9];
+        let mass = [3.0, 1.0, 2.0, 4.0, 1.0, 5.0, 0.0];
+        let expand = |labels: &[usize]| -> Vec<usize> {
+            labels
+                .iter()
+                .zip(mass)
+                .flat_map(|(&l, w)| std::iter::repeat_n(l, w as usize))
+                .collect()
+        };
+        let want = ari(&expand(&a), &expand(&b));
+        assert!((weighted_ari(&a, &b, &mass) - want).abs() < 1e-12);
+        let renamed: Vec<usize> = a.iter().map(|&l| 7 - l).collect();
+        assert!((weighted_ari(&renamed, &b, &mass) - want).abs() < 1e-12);
+        assert!((weighted_ari(&a, &a, &mass) - 1.0).abs() < 1e-12);
     }
 
     /// One-coordinate leaves of the given positions and masses.

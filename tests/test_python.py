@@ -1173,8 +1173,49 @@ def test_an_auto_resolution_is_refused_where_it_has_no_meaning(blobs):
             betula_cluster.Betula(n_clusters=3, method=method, resolution="auto").fit(x)
     with pytest.raises(ValueError, match="n_clusters must be at least 1"):
         betula_cluster.Betula(n_clusters=0, method="leiden", resolution="auto").fit(x)
-    with pytest.raises(ValueError, match="resolution must be a number or 'auto', got 'high'"):
+    with pytest.raises(
+        ValueError, match="resolution must be a number, 'auto' or 'stable', got 'high'"
+    ):
         betula_cluster.fit_predict(x, 3, method="leiden", resolution="high")
+
+
+def test_a_stable_resolution_finds_touching_blobs_and_survives_a_round_trip(tmp_path):
+    """``resolution="stable"`` needs no count: on three touching planar blobs γ = 1 cuts every blob
+    into patches, and the rule returns the blobs. Both entry points agree, and a saved model keeps
+    the spelling."""
+    import pickle
+
+    rng = np.random.default_rng(3)
+    x = np.vstack([rng.normal(c, 1.0, (1000, 2)) for c in ([0, 0], [8, 0], [4, 7])])
+    y = np.repeat(np.arange(3), 1000)
+    kw = dict(method="leiden", leaf_graph="rows", threshold=0.0, max_leaves=400, seed=1)
+    assert ari(betula_cluster.Betula(**kw).fit_predict(x), y) < 0.5
+    est = betula_cluster.Betula(resolution="stable", **kw)
+    labels = est.fit_predict(x)
+    assert est.get_params()["resolution"] == "stable"
+    assert ari(labels, y) > 0.99
+    np.testing.assert_array_equal(
+        betula_cluster.fit_predict(x, 3, resolution="stable", **kw), labels
+    )
+    path = tmp_path / "model.betula"
+    est.save(str(path))
+    for restored in (pickle.loads(pickle.dumps(est)), betula_cluster.Betula.load(str(path))):
+        assert restored.get_params()["resolution"] == "stable"
+        np.testing.assert_array_equal(restored.predict(x), est.predict(x))
+
+
+def test_a_stable_resolution_is_refused_off_the_rows_graph(blobs):
+    x, _ = blobs
+    for method, leaf_graph in (("leiden", "unit"), ("leiden", "mass"), ("kmeans", "unit")):
+        expected = f"not by method='{method}' with leaf_graph='{leaf_graph}'"
+        with pytest.raises(ValueError, match=expected):
+            betula_cluster.fit_predict(
+                x, 3, method=method, leaf_graph=leaf_graph, resolution="stable"
+            )
+        with pytest.raises(ValueError, match=expected):
+            betula_cluster.Betula(
+                n_clusters=3, method=method, leaf_graph=leaf_graph, resolution="stable"
+            ).fit(x)
 
 
 def test_the_rows_leaf_graph_refuses_sparse_rows(blobs):

@@ -48,8 +48,8 @@ use crate::kernels::{Lead, nearest_sq_euclidean, sq_euclidean};
 use crate::linalg::{cholesky_lower, mahalanobis_sq_from_chol};
 use crate::mixture::{Mixture, SparseAssigner};
 use crate::model::{
-    Centres, HeadOptions, Method, Model, RowEdges, Rule, assignment_rule, auto_k_ceiling, fit_head,
-    refinable, refine_centers_by,
+    Centres, HeadOptions, Method, Model, Resolve, RowEdges, Rule, assignment_rule, auto_k_ceiling,
+    fit_head, refinable, refine_centers_by,
 };
 use crate::order::{
     canonical_permutation, canonical_permutation_by, canonical_permutation_csr, canonical_shards,
@@ -322,19 +322,35 @@ fn parse_balance(value: Option<&Bound<'_, PyAny>>) -> PyResult<(Option<f64>, boo
     Ok((Some(b), false))
 }
 
-/// `resolution` as a caller writes it: a number, or `"auto"`.
+/// `resolution` as a caller writes it: a number, `"auto"` or `"stable"`.
 #[derive(FromPyObject)]
 enum ResolutionArg {
     Value(f64),
     Name(String),
 }
 
-/// The Leiden resolution and whether it is to be found from `n_clusters` (`"auto"`), refusing
-/// `"auto"` where it has no meaning: CPM's resolution is a density, not a count, and no other head
-/// reads a resolution at all.
-fn parse_resolution(arg: &ResolutionArg, method: &str, n_clusters: usize) -> PyResult<(f64, bool)> {
+/// The Leiden resolution and where the head takes it from ([`Resolve`]), refusing a name where it
+/// has no meaning: CPM's resolution is a density, not a count, and no other head reads a
+/// resolution at all. `"auto"` is found from `n_clusters`; `"stable"` is chosen by the rows graph,
+/// the only graph its constants were measured on.
+fn parse_resolution(
+    arg: &ResolutionArg,
+    method: &str,
+    leaf_graph: &str,
+    n_clusters: usize,
+) -> PyResult<(f64, Resolve)> {
     match arg {
-        ResolutionArg::Value(v) => Ok((*v, false)),
+        ResolutionArg::Value(v) => Ok((*v, Resolve::Given)),
+        ResolutionArg::Name(name) if name == "stable" => {
+            if method != "leiden" || leaf_graph != ROWS_GRAPH {
+                return Err(PyValueError::new_err(format!(
+                    "resolution='stable' is read only by method='leiden' with leaf_graph='rows', \
+                     not by method='{method}' with leaf_graph='{leaf_graph}': it chooses the \
+                     modularity resolution of the rows graph without a count"
+                )));
+            }
+            Ok((DEFAULT_RESOLUTION, Resolve::Stable))
+        }
         ResolutionArg::Name(name) if name == "auto" => {
             if method != "leiden" {
                 return Err(PyValueError::new_err(format!(
@@ -348,10 +364,10 @@ fn parse_resolution(arg: &ResolutionArg, method: &str, n_clusters: usize) -> PyR
                      at least 1; a resolution of 1.0 is the leiden head's own count",
                 ));
             }
-            Ok((DEFAULT_RESOLUTION, true))
+            Ok((DEFAULT_RESOLUTION, Resolve::ForK))
         }
         ResolutionArg::Name(name) => Err(PyValueError::new_err(format!(
-            "resolution must be a number or 'auto', got '{name}'"
+            "resolution must be a number, 'auto' or 'stable', got '{name}'"
         ))),
     }
 }
@@ -684,7 +700,7 @@ fn parse_head_options(
         } else {
             RowEdges::Off
         },
-        resolution_for_k: false,
+        resolve: Resolve::Given,
     })
 }
 
@@ -2474,7 +2490,7 @@ fn fit_predict<'py>(
         return Err(PyValueError::new_err("n_shards must be at least 1"));
     }
     let min_samples = parse_min_samples(min_samples)?;
-    let (resolution, resolution_for_k) = parse_resolution(&resolution, method, n_clusters)?;
+    let (resolution, resolve) = parse_resolution(&resolution, method, leaf_graph, n_clusters)?;
     let kind = parse_method(
         method,
         min_samples,
@@ -2488,7 +2504,7 @@ fn fit_predict<'py>(
         fuzzifier,
     )?;
     let opts = HeadOptions {
-        resolution_for_k,
+        resolve,
         ..parse_head_options(
             method,
             n_iterations,
@@ -3508,6 +3524,11 @@ struct Betula {
     /// written when off, so a file saved without it is byte-identical to one from 1.5.0.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     resolution_auto: bool,
+    /// The resolution was requested as `"stable"`: the rows graph chooses it without a count.
+    /// Mutually exclusive with `resolution_auto` by construction — [`Betula::new`] sets both from
+    /// one [`Resolve`]. Not written when off, as `resolution_auto`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    resolution_stable: bool,
     /// Covariance-aware Leiden weight `β` (log-Euclidean shape term, `method="leiden"` / `"leiden-cpm"`
     /// with `feature="full"`); kept for `get_params`.
     #[serde(default = "default_covariance_weight")]
@@ -4408,7 +4429,7 @@ impl Betula {
             self.projection_spec(),
         );
         let passes = HeadOptions {
-            resolution_for_k: self.resolution_auto,
+            resolve: self.resolve(),
             ..parse_head_options(
                 &self.method,
                 self.n_iterations,
@@ -4466,6 +4487,17 @@ impl Betula {
         }
         let nearest_leaf = matches!(self.rule, Some(PointRule::NearestLeaf));
         Ok(counted.and_then(|(_, nearest)| nearest_leaf.then_some(nearest)))
+    }
+
+    /// Where the Leiden head takes its resolution from, as the two stored flags say.
+    fn resolve(&self) -> Resolve {
+        if self.resolution_auto {
+            Resolve::ForK
+        } else if self.resolution_stable {
+            Resolve::Stable
+        } else {
+            Resolve::Given
+        }
     }
 
     /// Count the rows graph (`leaf_graph="rows"`) of the fitted tree over `rows`, with each row's
@@ -4784,7 +4816,7 @@ impl Betula {
         equal_size: bool,
     ) -> PyResult<Self> {
         let min_samples = parse_min_samples(min_samples)?;
-        let (resolution, resolution_auto) = parse_resolution(&resolution, method, n_clusters)?;
+        let (resolution, resolve) = parse_resolution(&resolution, method, leaf_graph, n_clusters)?;
         let kind = parse_method(
             method,
             min_samples,
@@ -4869,7 +4901,8 @@ impl Betula {
             huber_k,
             balance,
             resolution,
-            resolution_auto,
+            resolution_auto: resolve == Resolve::ForK,
+            resolution_stable: resolve == Resolve::Stable,
             covariance_weight,
             tangent_weight,
             tangent_rank,
@@ -5699,10 +5732,10 @@ impl Betula {
         } else {
             d.set_item("balance", self.balance)?;
         }
-        if self.resolution_auto {
-            d.set_item("resolution", "auto")?;
-        } else {
-            d.set_item("resolution", self.resolution)?;
+        match self.resolve() {
+            Resolve::ForK => d.set_item("resolution", "auto")?,
+            Resolve::Stable => d.set_item("resolution", "stable")?,
+            Resolve::Given => d.set_item("resolution", self.resolution)?,
         }
         d.set_item("covariance_weight", self.covariance_weight)?;
         d.set_item("tangent_weight", self.tangent_weight)?;
