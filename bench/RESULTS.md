@@ -171,7 +171,8 @@ losses** are reported below.
   mean NCA 0.774 against Lumbermark's 0.786 and GIc's 0.784; paired, ahead on 19 datasets and behind
   on 22–25), ahead of Genie at its default, ITM and scikit-learn's k-means and GMM, and it cannot
   hit K on 3 of the 81. On a GPU, cuML's UMAP + k-means and UMAP + HDBSCAN are a separate table that
-  enters no total: the k-means pipelines find what their CPU versions find.
+  enters no total: the k-means pipelines, FAISS, fastkmeans and cuML's DBSCAN find what their CPU
+  versions find.
 - **A capability no mainstream library ships:** `method="gmm-toeplitz"` — an AR/Toeplitz-structured
   covariance GMM for ordered stationary signals — recovers a mixture of AR processes that differ *only*
   in autocovariance (ARI **1.00** at long windows) exactly where both diagonal (blind) and full
@@ -1798,7 +1799,7 @@ not. These have no row in any committed CSV:
 | family | named, not measured | reason |
 |---|---|---|
 | no CPython 3.14 wheel | fastcluster, scikit-learn-extra, trimap, SuperKMeans, ClustPy | the bench runs on CPython 3.14, and without a wheel the arm needs a compiler; fastcluster's Ward enters only as a published vector of Gagolewski's suite |
-| GPU | cuML `DBSCAN`, cuML `HDBSCAN` on the raw rows, `cuml.accel`, cuVS k-means, FAISS on a GPU, fastkmeans, flash-kmeans, rapids-singlecell, TorchDR | not yet run; the GPU table holds cuML's k-means and UMAP pipelines |
+| GPU | `cuml.accel`, cuVS k-means, flash-kmeans, rapids-singlecell, TorchDR | the GPU table holds cuML's k-means, UMAP pipelines, `HDBSCAN` and `DBSCAN`, FAISS and fastkmeans. `cuml.accel` dispatches scikit-learn, umap-learn and hdbscan calls to those cuML estimators, which the table runs directly. cuML 26.10's `KMeans` fits through cuVS, so its row is cuVS k-means. flash-kmeans is a fourth GPU k-means: the three measured tie scikit-learn on quality, and the speed it is for is not quoted here. rapids-singlecell 0.18.1 has no wheel on PyPI (sdist only), and its clustering is kNN + Leiden, which the CPU tables hold. TorchDR is dimension reduction; its clustering is the DR + k-means family of the cuML UMAP rows |
 | Rust | `kno10/fuel` (Schubert; PyO3 bindings, AGPL-3.0; GMM, von Mises–Fisher, spherical k-means, HDBSCAN, FasterPAM; no CF-tree) | not yet run; the Rust table holds linfa-clustering, clump and the `hdbscan` crate |
 | deep clustering | ClustPy, the deep methods of CLUBench | by design: a deep method learns the representation, and betula clusters vectors it is given. The fair contest is the same embedding with another clusterer, which the news rows run. CLUBench (arXiv 2605.29933; 24 algorithms, 131 datasets) reports that deep clustering does not clearly beat the best conventional methods on average |
 | papers with no package | Torque Clustering (TPAMI 2025) | no pip package: the official code is MATLAB p-code over an n × n distance matrix, and the Python port is clone-only |
@@ -2927,6 +2928,61 @@ the CPU table measures it. Wall times are recorded with `timing_valid = False` a
 - **On the news embeddings told k, cuML's UMAP + k-means wins**, as umap-learn's does on the CPU.
 - A cuML process holds 0.95–1.73 GB of host memory and 0.20–0.55 GB on the device, against
   betula's 292–293 MB (MNIST-20k) and 562–563 MB (MNIST-70k, 14 000 leaves) on the CPU.
+
+**The raw rows, and two more GPU k-means (2026-11-18).** The same harness runs cuML's `HDBSCAN`
+on the raw rows of the three boards (at cuML's defaults) and of the density fixtures (at the shared
+minimum cluster size, as the CPU `hdbscan` arm), cuML's `DBSCAN` on the fixtures at the CPU
+`sklearn-dbscan-kdist` arm's parameters, and the k-means of FAISS 1.16.0 (`faiss-gpu`, the CPU
+FAISS arm's settings with `gpu=True`) and fastkmeans 0.5.0 (PyTorch 2.15.0, Triton 3.9.0) in a
+second scratch environment. The deterministic cuML arms run once. Before any row the harness
+reproduces the `cuml.DBSCAN` docstring (labels `[0, 1, 2]`) and, since cuML's `HDBSCAN` docstring
+has no example, the 3 clusters of the `hdbscan` documentation's blobs; both reproduce. FAISS
+publishes no numeric output. fastkmeans's README says it "reaches roughly the same NMI as faiss and
+scikit-learn" on MNIST; its PyTorch path does (AMI 0.501 against FAISS's 0.494 and scikit-learn's
+0.482 on MNIST-20k).
+
+| contest | GPU arm | ARI median (min–max) | clusters | noise | peak RSS MB | device MB | the same method on the CPU | betula's head in the contest |
+|---|---|---|---|---|---|---|---|---|
+| mnist 20 000, told k | FAISS k-means | 0.383 (0.357–0.439) | 10 | 0.00 | 1 009 | 1 202 | scikit-learn 0.359, tie | — |
+| mnist 20 000, told k | fastkmeans, PyTorch path | 0.390 (0.361–0.397) | 10 | 0.00 | 1 879 | 360 | scikit-learn 0.359, tie | — |
+| mnist 20 000, k not given | cuML HDBSCAN, raw rows | 0.052 | 40 | 0.83 | 1 193 | 269 | no CPU row | **0.762** (0.680–0.766), betula ahead |
+| mnist 70 000, told k | FAISS k-means | 0.355 (0.304–0.363) | 10 | 0.00 | 1 160 | 1 202 | scikit-learn 0.367, tie | — |
+| mnist 70 000, told k | fastkmeans, PyTorch path | 0.370 (0.362–0.394) | 10 | 0.00 | 2 156 | 598 | scikit-learn 0.367, tie | — |
+| mnist 70 000, k not given | cuML HDBSCAN, raw rows | 0.046 | 115 | 0.85 | 1 545 | 525 | no CPU row | **0.777** (0.777–0.791), betula ahead |
+| news 17 901, told k | FAISS k-means | 0.364 (0.356–0.384) | 20 | 0.00 | 968 | 1 202 | scikit-learn 0.389, tie | — |
+| news 17 901, told k | fastkmeans, PyTorch path | 0.370 (0.353–0.375) | 20 | 0.00 | 1 845 | 282 | scikit-learn 0.389, tie | — |
+| news 17 901, k not given | cuML HDBSCAN, raw rows | 0.001 | 2 | 0.08 | 1 113 | 233 | no CPU row | **0.330** (0.321–0.340), betula ahead |
+
+fastkmeans at its defaults takes its Triton kernel on this card and does not finish on any board or
+seed: `torch.AcceleratorError: CUDA error: device-side assert triggered`, after PyTorch's scatter
+kernel reports an index out of bounds. Its PyTorch path on the same rows finishes. Its README names
+Python 3.9–3.13, and this run is CPython 3.14.8, so the failure is recorded, not attributed.
+
+**Density fixtures** (one run each; host RSS 915–1 066 MB for every cuML arm, against 165–175 MB
+for betula's `hdbscan` head, 186–286 MB for `hdbscan` and 191–433 MB for scikit-learn's DBSCAN):
+
+| arm | blobs | aniso | varied | moons | circles | highdim | digits | mean | device MB |
+|---|---|---|---|---|---|---|---|---|---|
+| cuML `HDBSCAN` | 0.432 | 0.447 | 0.503 | 1.000 | 1.000 | 1.000 | 0.096 | 0.640 | 171–483 |
+| `hdbscan` (CPU) | 0.472 | 0.500 | 0.505 | 1.000 | 1.000 | 1.000 | 0.087 | 0.652 | — |
+| **betula `hdbscan`** | 0.376 | 0.469 | 0.302 | 1.000 | 1.000 | 1.000 | 0.164 | 0.616 | — |
+| cuML `DBSCAN`, k-distance | 0.000 | 0.000 | 0.002 | 0.921 | 0.911 | 0.998 | 0.000 | 0.405 | 179–1 033 |
+| scikit-learn `DBSCAN`, k-distance | 0.000 | 0.000 | 0.002 | 0.921 | 0.911 | 0.998 | 0.000 | 0.405 | — |
+
+- **cuML's DBSCAN finds what scikit-learn's finds** at the same `minPts` and `eps`: the same ARI on
+  all seven fixtures. The cluster counts differ by one on blobs (73 against 74) and aniso (18
+  against 19).
+- **cuML's HDBSCAN reads like the Rust implementations, not like the `hdbscan` package.** It is
+  within 0.004 of the `hdbscan` crate and fuel on blobs, aniso and `varied` (the Rust table below);
+  the package reads 0.04–0.05 higher on blobs and aniso. Against betula's head it is ahead on blobs
+  and `varied`, behind on aniso and `digits`, and level on the other three.
+- **On the raw boards at its defaults, cuML's HDBSCAN is not a clusterer of these rows.** It calls
+  83–85 % of MNIST noise, and on the news embeddings it finds 2 clusters. No CPU HDBSCAN runs on
+  these rows (`results_real.csv` skips it as O(N²)); betula's own `hdbscan` head reads 0.037 and
+  0.024 on MNIST and 0.070 on news, and the rows graph is its head in this contest.
+- **FAISS and fastkmeans on the GPU tie scikit-learn's k-means on all three boards**, as cuML's
+  does.
+  FAISS holds the same 1 202 MB on the device on every board, whatever the row count.
 
 ### Gagolewski's clustering benchmark suite — told k, 81 datasets (`results_clustbench.csv`)
 

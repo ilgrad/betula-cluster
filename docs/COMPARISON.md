@@ -30,7 +30,7 @@ whole process. A difference smaller than the wider seed range of the two is a ti
 | Outliers inside clusters of unequal density | **betula** `outlier_scores` | ROC-AUC / average precision 1.000 / 0.998 against IsolationForest 0.887 / 0.175, LOF 0.993 / 0.915 and PyOD's cluster-based CBLOF 0.557 / 0.055 (median of seeds 0/1/2, `bench/results_outliers.csv`). |
 | Global outliers, or sheared clusters | **IsolationForest**, or PyOD's `KNN` | 1.000 / 1.000 for both on global outliers; on sheared clusters `KNN` 1.000 / 0.999 and IsolationForest 0.980 / 0.698, against betula 0.990 / 0.943 and 0.711 / 0.154 (`metric="mahalanobis"`). Same CSV as the row above. |
 | A mixture of stationary signals | **betula** `gmm-toeplitz` | 0.764 on an AR mixture against tslearn's k-Shape 0.057 and a diagonal GMM 0.018. |
-| A GPU is available | the same choices | cuML's k-means and UMAP + k-means find what their CPU versions find (*GPU rivals* in the census). |
+| A GPU is available | the same choices | cuML's k-means, UMAP + k-means and DBSCAN, FAISS's k-means and fastkmeans's PyTorch path find what their CPU versions find; cuML's HDBSCAN on raw MNIST calls 83–85 % of the rows noise (ARI 0.046–0.052), and fastkmeans's default Triton path did not finish on this card (*GPU rivals* in the census). |
 
 ## What each library can do
 

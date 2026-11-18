@@ -126,14 +126,13 @@ def _dbscan(x):
     return labels
 
 
-def _dbscan_kdist(x):
-    """DBSCAN with the parameters its literature derives from the data, since no default fits.
+def kdist_params(x) -> tuple[int, float]:
+    """`(minPts, eps)` as the DBSCAN literature derives them from the data, since no default fits.
 
     `minPts = 2·d` (Schubert et al., TODS 2017); `eps` at the elbow of the sorted distances to the
     `minPts`-th neighbour, the point farthest below the chord of the normalised curve (Kneedle's
     difference curve). The rule is ours to state, not a package's default.
     """
-    from sklearn.cluster import DBSCAN
     from sklearn.neighbors import NearestNeighbors
 
     min_pts = 2 * x.shape[1]
@@ -142,6 +141,13 @@ def _dbscan_kdist(x):
     span = curve[-1] - curve[0]
     t = np.linspace(0.0, 1.0, len(curve))
     eps = float(curve[np.argmax(t - (curve - curve[0]) / span)]) if span > 0 else float(curve[0])
+    return min_pts, eps
+
+
+def _dbscan_kdist(x):
+    from sklearn.cluster import DBSCAN
+
+    min_pts, eps = kdist_params(x)
     return DBSCAN(eps=eps, min_samples=min_pts).fit_predict(x)
 
 
