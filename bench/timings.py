@@ -25,7 +25,8 @@ scored elsewhere:
 - Every arm that takes a thread count gets the same one, `--threads` (8): OpenMP, BLAS, rayon and
   numba through the environment, the rest through `_provenance.JOBS`. A seeded UMAP on the
   0.5-compatible layout runs on one thread whatever it is given (umap-learn 0.6 keeps the threads
-  of a seeded fit on its own layout only); its row says `threads=1` and why, in `note`. The
+  of a seeded fit on its own layout only); its row says `threads=1` and why, in `note`. CoreSPECT
+  keeps numba on one thread (`NUMBA_ONE_THREAD`: cplearn 0.2.1 fails above one), noted. The
   `threads` stage times betula on one thread and an unseeded UMAP 0.6 where the two meet.
 - `vmhwm_mb` is the process's peak resident set (`VmHWM`, `_worker.Peak`) from the moment the rows
   are loaded. `n_init` is the restart count every scikit-learn k-means of the fit resolved to, read
@@ -1196,6 +1197,14 @@ def environment(ready_report: str) -> dict:
     }
 
 
+# Arms whose numba kernels run on one thread whatever `--threads` says, with the row's note.
+# cplearn 0.2.1 under numba 0.63 returns out-of-range indices (an IndexError) whenever numba
+# runs more than one thread; at one numba thread it finishes, whatever OMP_NUM_THREADS is.
+NUMBA_ONE_THREAD = {
+    "cplearn-corespect": "CoreSPECT: numba on one thread (cplearn 0.2.1 fails above one)",
+}
+
+
 def _thread_env(threads: int) -> dict[str, str]:
     names = ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS")
     names += ("RAYON_NUM_THREADS", "NUMBA_NUM_THREADS", "BENCH_JOBS")
@@ -1209,6 +1218,8 @@ def run_case(case: Case, seed: int, threads: int) -> dict:
     cmd = [sys.executable, str(Path(__file__)), "--child", case.stage, case.arm]
     cmd += [case.dataset, str(case.n), str(seed)]
     env = os.environ | _thread_env(threads)
+    if case.arm in NUMBA_ONE_THREAD:
+        env["NUMBA_NUM_THREADS"] = "1"
     cache = None
     if case.stage == "numba-cold":
         cache = DATA / "numba-cold" / f"{os.getpid()}-{time.monotonic_ns()}"
@@ -1464,6 +1475,8 @@ def main(argv: list[str]) -> int:
             }
             if case.stage == "numba-cold":
                 row["note"] = "; ".join(filter(None, (row["note"], "empty numba cache")))
+            if case.arm in NUMBA_ONE_THREAD:
+                row["note"] = "; ".join(filter(None, (row["note"], NUMBA_ONE_THREAD[case.arm])))
             if res.get("dnf"):
                 key = (case.stage, case.arm, case.dataset)
                 failed.setdefault(key, []).append((case.n, res["dnf"]))
