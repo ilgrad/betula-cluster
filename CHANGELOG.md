@@ -124,6 +124,28 @@ All notable changes to this project are documented here. The format follows
   moves −0.017 to −0.022 on MNIST-20k (924–7 505 leaves), +0.002 / +0.006 on digits and at most
   0.001 on covtype-20k (seeds 0/1/2). `0` stays the default, and its labels are unchanged (12
   digests, spectral's past-2 048 graph included).
+- **`resolution="stable"` for `method="leiden"` with `leaf_graph="rows"`: the resolution without a
+  count.** γ = 1 stays unless the rows graph is a mesh (two-hop growth below 8) whose γ = 1 cut five
+  Leiden seeds disagree on (mean pairwise ARI below 0.92); then it takes the largest
+  γ = 2^(−j/2), j = 1…14, whose seeds agree within 0.05 of the best-agreeing cut. Fitted on 19
+  sets, then read once on Gagolewski's suite (81 datasets, not used for fitting; ARI): wut 0.185 →
+  0.436, fcps 0.221 → 0.549, graves 0.210 → 0.390, uci 0.141 → 0.168, mnist unchanged, sipu 0.580 →
+  0.765, other 0.312 → 0.590; four of 81 datasets lose more than 0.02. On the density census it
+  reads 0.828 mean ARI over seven fixtures (worst seed 0.814) against `hdbscan`'s 0.652 and loses no
+  fixture to any rival: the 14 no-count losses are gone. It costs 2.3–2.6× the `resolution="auto"`
+  head on the planar fixtures. Opt-in; every existing call keeps its labels, parameters and saved
+  bytes.
+- **`method="genie"`: Genie on the leaf spanning tree, for a told count.** Single linkage of the
+  Euclidean spanning tree of the leaf means with the Gini correction of Gagolewski, Bartoszuk &
+  Cena (2016): while the Gini index of the cluster sizes, counted in rows, is above
+  `gini_threshold` (new keyword, default 0.1, read only by this head), the next merge is the
+  shortest edge touching a smallest cluster; `gini_threshold=1` is single linkage. Rows take their
+  nearest leaf's label. Against the told-count rows graph, five row orders × seeds 0/1/2: a tie on
+  the seven density fixtures (worst-seed mean ARI 0.831 against 0.833), a lead on Gagolewski's
+  `graves` (NCA 0.910 against 0.726) and `other` (0.806 against 0.746). It loses where a true
+  cluster is much smaller than the rest (`iris5` 0.410 against 0.810, `line` 0.495 against 1.000),
+  and on 30 000-row inputs it moves with the row order (0.255 across five orders on `varied`). In
+  Rust, `clustering::genie`; `Method` is unchanged.
 
 ### Fixed
 - **`Betula.predict_proba` no longer raises when a density head found no cluster.** `hdbscan`
@@ -434,6 +456,29 @@ All notable changes to this project are documented here. The format follows
   `cifar100-clip` and five small corpora, five row orders × three seeds: smoothing wins three sets
   and loses `bbc` (−0.030) and `dbpedia` (−0.072); the vote wins three and loses none. Neither
   ships as a recipe or a head option.
+- **The CluProp recipe is the row-level reference for the rows graph** (`bench/rivals.py`). A union
+  kNN-8 graph of the rows with Leiden at γ = 1 reproduces the paper's MNIST-70k number (0.865
+  against 0.87 ± 0.01) and beats `leiden` with `leaf_graph="rows"` on all five no-count slices
+  (MNIST 0.854 / 0.865 against 0.762 / 0.777; news 0.419 / 0.426 against 0.330 / 0.367; CIFAR-100
+  0.464 against 0.370) in 539–1 114 MB against 243–689 MB.
+- **GPU and Rust rivals** (`bench/gpu_rivals.py`, `bench/rust_rivals.py`). cuML `HDBSCAN` on the
+  raw rows and fixtures, cuML `DBSCAN` at the k-distance parameters, FAISS-GPU k-means and
+  `fastkmeans`: every GPU k-means and DBSCAN ties its CPU version; `fastkmeans`' default Triton
+  path does not run on CPython 3.14; `faiss-gpu` has a CPython 3.14 wheel after all. In Rust,
+  anofox and scirs2 `Birch`, fuel's k-means and HDBSCAN, linfa and clump `Dbscan` at the
+  k-distance parameters, linfa `Optics` with xi extraction, with per-fit allocation counts beside
+  RSS and an MSRV census (only `hdbscan` builds on 1.85.0).
+- **A labelled million-row embedding set and FAISS's protocol for betula** (`bench/embed_arxiv.py`,
+  `bench/external_baselines.py`). `arxiv-1m` caches the first 1 000 000 rows of
+  `lmcinnes/arxiv_archive` (768-d, 150 classes; no licence declared, local use only) for the timing
+  campaign. The external contest gains betula fitted on a seeded 2 048 / 8 192 / 32 000-row sample
+  with every row labelled by `predict` (ARI 1.000 in every cell, 0.96–1.16 G instructions against
+  FAISS's 0.73 G and a full fit's 4.92 G), the full fit at `n_shards=8` (19 % fewer instructions,
+  the same partition in 44 of 44 runs), an `instructions` column and `--contests=`.
+- **The timing harness reads one thread knob and the census reads its speed axis from the timing
+  campaign** (`bench/_provenance.py`, `bench/scoreboard.py`). Arms that take a thread count read
+  `_provenance.JOBS`; MNIST is cached as `.npy`; the census speed cells come from
+  `bench/results_timings.csv`, empty until the campaign runs.
 
 ## [1.5.0] — 2026-10-28
 

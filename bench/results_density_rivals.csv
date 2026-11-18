@@ -412,3 +412,24 @@ digits,1797,deltric,False,2,25.77579074499954,473.137152,0.7270969166158947,0.83
 digits,1797,cplearn-corespect,False,0,15.070369098997617,375.86944,0.6797157556758703,0.7644204896129022,0.0,12.0,,False,,
 digits,1797,cplearn-corespect,False,1,14.972945284000161,375.95136,0.682952798041344,0.7692060849899585,0.0,12.0,,False,,
 digits,1797,cplearn-corespect,False,2,16.674998483002128,376.049664,0.6862666767342819,0.7718809062758639,0.0,12.0,,False,,
+blobs,30000,betula-leiden-rows-stable,False,0,0.321890897999765,171.790336,0.731303558765955,0.8046504274749274,0.0,5,,False,,betula-cluster 1.5.0+34da1a8
+blobs,30000,betula-leiden-rows-stable,False,1,0.2975572289997217,171.941888,0.822620444851587,0.8251775501363332,0.0,6,,False,,betula-cluster 1.5.0+34da1a8
+blobs,30000,betula-leiden-rows-stable,False,2,0.3031022449995362,172.01152,0.8468566770580183,0.8402790787413027,0.0,6,,False,,betula-cluster 1.5.0+34da1a8
+aniso,30000,betula-leiden-rows-stable,False,0,0.27363718900051026,172.081152,0.5249504631057414,0.6421502796385267,0.0,2,,False,,betula-cluster 1.5.0+34da1a8
+aniso,30000,betula-leiden-rows-stable,False,1,0.2671105280005577,172.269568,0.5249504631057414,0.6421502796385267,0.0,2,,False,,betula-cluster 1.5.0+34da1a8
+aniso,30000,betula-leiden-rows-stable,False,2,0.26044412599912903,172.35968,0.5368324682251647,0.6524294930588125,0.0,2,,False,,betula-cluster 1.5.0+34da1a8
+varied,30000,betula-leiden-rows-stable,False,0,0.27945079900018754,172.05248,0.6999371574812344,0.6695505388275895,0.0,3,,False,,betula-cluster 1.5.0+34da1a8
+varied,30000,betula-leiden-rows-stable,False,1,0.2749407899991638,171.937792,0.7100778872766509,0.6683799660102879,0.0,3,,False,,betula-cluster 1.5.0+34da1a8
+varied,30000,betula-leiden-rows-stable,False,2,0.2773773909993906,172.294144,0.690605443639034,0.6749507001106311,0.0,3,,False,,betula-cluster 1.5.0+34da1a8
+moons,30000,betula-leiden-rows-stable,False,0,0.27434983900093357,172.208128,1.0,1.0,0.0,2,,False,,betula-cluster 1.5.0+34da1a8
+moons,30000,betula-leiden-rows-stable,False,1,0.2664523410003312,171.593728,1.0,1.0,0.0,2,,False,,betula-cluster 1.5.0+34da1a8
+moons,30000,betula-leiden-rows-stable,False,2,0.26917421800135344,172.089344,1.0,1.0,0.0,2,,False,,betula-cluster 1.5.0+34da1a8
+circles,30000,betula-leiden-rows-stable,False,0,0.2485700920005911,172.167168,1.0,1.0,0.0,2,,False,,betula-cluster 1.5.0+34da1a8
+circles,30000,betula-leiden-rows-stable,False,1,0.23869237100007012,172.35968,1.0,1.0,0.0,2,,False,,betula-cluster 1.5.0+34da1a8
+circles,30000,betula-leiden-rows-stable,False,2,0.24157136400026502,172.314624,1.0,1.0,0.0,2,,False,,betula-cluster 1.5.0+34da1a8
+highdim,30000,betula-leiden-rows-stable,False,0,0.2263244890000351,183.0912,1.0,1.0,0.0,8,,False,,betula-cluster 1.5.0+34da1a8
+highdim,30000,betula-leiden-rows-stable,False,1,0.22609491699950013,182.636544,1.0,1.0,0.0,8,,False,,betula-cluster 1.5.0+34da1a8
+highdim,30000,betula-leiden-rows-stable,False,2,0.23038251799880527,182.816768,1.0,1.0,0.0,8,,False,,betula-cluster 1.5.0+34da1a8
+digits,1797,betula-leiden-rows-stable,False,0,0.06442333900122321,170.713088,0.7504409329725196,0.8420756725806173,0.0,18,,False,,betula-cluster 1.5.0+34da1a8
+digits,1797,betula-leiden-rows-stable,False,1,0.18504401000063808,171.798528,0.8395397031542087,0.8731210791762796,0.0,13,,False,,betula-cluster 1.5.0+34da1a8
+digits,1797,betula-leiden-rows-stable,False,2,0.06664466499933042,170.881024,0.7491921906467449,0.8410713213316444,0.0,19,,False,,betula-cluster 1.5.0+34da1a8

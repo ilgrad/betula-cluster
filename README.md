@@ -25,7 +25,7 @@
 pip install betula-cluster
 ```
 
-**Verified:** a **674-case** Python suite at **100% wrapper coverage** + **1115** Rust tests,
+**Verified:** a **676-case** Python suite at **100% wrapper coverage** + **1120** Rust tests,
 `clippy -D warnings` + `fmt` clean across all feature sets, CI on CPython 3.11–3.15 (one abi3 wheel)
 plus free-threaded 3.14t and 3.15t.
 
@@ -78,19 +78,19 @@ with peak RSS read from the process's own `VmHWM` (rows measured before 2026-11-
 - 🧭 **Against the rest of the field, not only scikit-learn.** The bench page's *census* runs UMAP,
   PaCMAP and openTSNE pipelines, EVoC, BERTopic's defaults, kNN + Leiden, PhenoGraph, the density
   and hierarchy specialists and one outside reference per head on the same rows. It lists every win,
-  tie and loss by rival, generated from the CSVs, with one betula head per contest. There are more
-  losses than wins on quality: density clustering without a count (DelTriC 0.657 and `hdbscan` 0.652
-  mean ARI against 0.616), the anisotropic fixture given the count (lumbermark 0.843 against
-  `leiden` 0.545; over all seven density fixtures `leiden` ties Genie, 0.838 against 0.839),
-  MNIST-70k without a count (`leiden` 0.777 against UMAP + HDBSCAN 0.920, EVoC 0.899 and PhenoGraph
-  0.821), sentence embeddings (0.374 and 0.433 under two models against UMAP + k-means 0.451 and
-  0.472) and CLIP image embeddings of CIFAR-100 (0.666 against 0.721; without a count, 0.370
-  against CoreSPECT's 0.626). On Gagolewski's clustering benchmark suite (81 datasets, given the
-  count) `leiden` with `resolution="auto"` is level with the best of 387 published configurations
-  (mean accuracy 0.774 against 0.786), not ahead of them. cuML's GPU pipelines sit in a separate
-  table.
-  The [comparison page](https://github.com/ilgrad/betula-cluster/blob/main/docs/COMPARISON.md) names,
-  task by task, the method to use, betula's or the rival's.
+  tie and loss by rival, generated from the CSVs, with one betula head per contest. On quality the
+  board reads 56 wins, 52 ties and 26 losses. Density clustering without a count is a win since
+  `resolution="stable"` (0.828 mean ARI over seven fixtures against DelTriC's 0.657 and `hdbscan`'s
+  0.652). The losses: the anisotropic fixture given the count (lumbermark 0.843 against `leiden`
+  0.545; over all seven density fixtures `leiden` ties Genie, 0.838 against 0.839), MNIST-70k
+  without a count (`leiden` 0.777 against UMAP + HDBSCAN 0.920, EVoC 0.899 and the CluProp recipe
+  0.865), sentence embeddings (0.374 and 0.433 under two models against UMAP + k-means 0.451 and
+  0.472) and CLIP image embeddings of CIFAR-100 (0.666 against 0.721; without a count, 0.370 against
+  CoreSPECT's 0.626). On Gagolewski's clustering benchmark suite (81 datasets, given the count)
+  `leiden` with `resolution="auto"` is level with the best of 387 published configurations (mean
+  accuracy 0.774 against 0.786), not ahead of them. cuML's GPU pipelines sit in a separate table.
+  The [comparison page](https://github.com/ilgrad/betula-cluster/blob/main/docs/COMPARISON.md)
+  names, task by task, the method to use, betula's or the rival's.
 
 | ![Fit time vs N](https://raw.githubusercontent.com/ilgrad/betula-cluster/main/bench/plots/scaling_time.png) | ![Peak memory vs N](https://raw.githubusercontent.com/ilgrad/betula-cluster/main/bench/plots/memory_streaming.png) |
 |:--:|:--:|
@@ -424,7 +424,7 @@ And six **end-to-end use cases** (each scored against ground truth):
 - [**Benchmarks**](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md) — methodology, every metric, all tables, honest wins & losses.
 - [**Design**](https://github.com/ilgrad/betula-cluster/blob/main/DESIGN.md) — internal design, invariants, and testing strategy.
 
-Verified: **1115** Rust tests (library, equivariance, integration and CLI) + a **674-case**
+Verified: **1120** Rust tests (library, equivariance, integration and CLI) + a **676-case**
 Python suite at **100%** wrapper coverage (Rust ≥95%, CI-enforced), `clippy -D warnings` + `fmt`
 clean across all feature sets, on Python 3.11–3.15 (single abi3 wheel) and free-threaded
 3.14t and 3.15t.
