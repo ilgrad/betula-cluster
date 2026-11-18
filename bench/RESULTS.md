@@ -1162,7 +1162,7 @@ both are pulled per invocation:
 
 ```bash
 uv run --with faiss-cpu --with fast-hdbscan --with scikit-learn --with pandas \
-    python bench/external_baselines.py [--quality-only]
+    python bench/external_baselines.py [--quality-only] [--contests=kmeans-speed,...]
 ```
 
 Each row is one contest, size, row order and method, fitted once per seed, each fit in its own
@@ -1175,57 +1175,66 @@ arrive sorted by label. Every case therefore also runs on a seeded shuffle of th
 `1000 + seed`), because the tree is built in row order. Both density methods get
 `min_cluster_size = n/400` points and their own default `min_samples`; betula's `hdbscan` runs on
 8 000 leaves, plain and with `canonical_order=True`. The `threads` column records what each library
-ran with: FAISS and scikit-learn on eight OpenMP threads (the shell exports `OMP_NUM_THREADS=8`, and
-the harness sets it only when it is unset), `fast_hdbscan` on sixteen numba threads, betula on its
-sixteen-thread rayon pool.
+ran with. The k-means contest runs at one thread (`RAYON_NUM_THREADS=1`, `OMP_NUM_THREADS=1`), so
+its `instructions` column counts work and not waiting: an OpenMP pool spins while it waits, and the
+spin retires instructions too. The density contests ran with `fast_hdbscan` on sixteen numba threads and
+betula on its sixteen-thread rayon pool. The k-means contest also holds four betula arms that give
+betula FAISS's protocol (*FAISS's protocol, given to betula*, below); this table keeps the four arms
+that fit every row or FAISS's subsample.
 
-| contest | n | rows | method | clusters | noise | ARI, median [range] | peak RSS |
-|---|---:|---|---|---:|---:|---|---:|
-| k-means, `highdim`, k=8, 11 seeds | 200 000 | label | **betula-kmeans** | 8 | 0.0 % | **1.000** [1.000, 1.000] | 199 MB |
-|  |  |  | faiss-kmeans, defaults | 8 | 0.0 % | 0.835 [0.630, 1.000] | 211 MB |
-|  |  |  | faiss-kmeans-pp | 8 | 0.0 % | **1.000** [1.000, 1.000] | 210 MB |
-|  |  |  | sklearn-kmeans | 8 | 0.0 % | **1.000** [1.000, 1.000] | 270 MB |
-|  |  | shuffled | **betula-kmeans** | 8 | 0.0 % | **1.000** [1.000, 1.000] | 224 MB |
-|  |  |  | faiss-kmeans, defaults | 8 | 0.0 % | 0.717 [0.406, 1.000] | 232 MB |
-|  |  |  | faiss-kmeans-pp | 8 | 0.0 % | **1.000** [0.835, 1.000] | 233 MB |
-|  |  |  | sklearn-kmeans | 8 | 0.0 % | **1.000** [1.000, 1.000] | 292 MB |
-|  | 1 000 000 | label | **betula-kmeans** | 8 | 0.0 % | **1.000** [1.000, 1.000] | 542 MB |
-|  |  |  | faiss-kmeans, defaults | 8 | 0.0 % | 0.835 [0.606, 1.000] | 542 MB |
-|  |  |  | faiss-kmeans-pp | 8 | 0.0 % | **1.000** [1.000, 1.000] | 542 MB |
-|  |  |  | sklearn-kmeans | 8 | 0.0 % | **1.000** [1.000, 1.000] | 657 MB |
-|  |  | shuffled | **betula-kmeans** | 8 | 0.0 % | **1.000** [1.000, 1.000] | 542 MB |
-|  |  |  | faiss-kmeans, defaults | 8 | 0.0 % | 0.717 [0.497, 0.836] | 542 MB |
-|  |  |  | faiss-kmeans-pp | 8 | 0.0 % | **1.000** [0.835, 1.000] | 542 MB |
-|  |  |  | sklearn-kmeans | 8 | 0.0 % | **1.000** [1.000, 1.000] | 666 MB |
-| HDBSCAN, `blobs`, k=6, 5 seeds | 100 000 | label | betula-hdbscan | 5 | 2.9 % | 0.799 [0.799, 0.799] | 171 MB |
-|  |  |  | betula-hdbscan-canonical | 6 | 7.8 % | 0.897 [0.897, 0.897] | 171 MB |
-|  |  |  | fast-hdbscan | 6 | 6.7 % | **0.910** [0.910, 0.910] | 314 MB |
-|  |  | shuffled | betula-hdbscan | 6 | 8.1 % | 0.895 [0.892, 0.901] | 172 MB |
-|  |  |  | betula-hdbscan-canonical | 6 | 7.8 % | 0.897 [0.897, 0.897] | 172 MB |
-|  |  |  | fast-hdbscan | 6 | 6.7 % | **0.910** [0.910, 0.910] | 315 MB |
-|  | 500 000 | label | betula-hdbscan | 5 | 3.2 % | 0.796 [0.796, 0.796] | 184 MB |
-|  |  |  | betula-hdbscan-canonical | 6 | 9.6 % | 0.876 [0.876, 0.876] | 184 MB |
-|  |  |  | fast-hdbscan | 6 | 8.5 % | **0.892** [0.892, 0.892] | 421 MB |
-|  |  | shuffled | betula-hdbscan | 6 | 9.1 % | 0.883 [0.798, 0.891] | 188 MB |
-|  |  |  | betula-hdbscan-canonical | 6 | 9.6 % | 0.876 [0.876, 0.876] | 188 MB |
-|  |  |  | fast-hdbscan | 6 | 8.5 % | **0.892** [0.892, 0.892] | 424 MB |
-| no count given, `blobs`, k=6, 5 seeds | 100 000 | label | **betula-gmm-full-bic** | 6 | 0.0 % | **0.983** [0.983, 0.983] | 170 MB |
-|  |  |  | betula-xmeans | 6 | 0.0 % | 0.977 [0.977, 0.977] | 167 MB |
-|  |  |  | fast-hdbscan | 6 | 6.7 % | 0.910 [0.910, 0.910] | 314 MB |
-|  |  | shuffled | **betula-gmm-full-bic** | 6 | 0.0 % | **0.983** [0.983, 0.983] | 173 MB |
-|  |  |  | betula-xmeans | 6 | 0.0 % | 0.977 [0.977, 0.977] | 168 MB |
-|  |  |  | fast-hdbscan | 6 | 6.7 % | 0.910 [0.910, 0.910] | 315 MB |
-|  | 500 000 | label | **betula-gmm-full-bic** | 6 | 0.0 % | **0.983** [0.983, 0.983] | 183 MB |
-|  |  |  | betula-xmeans | 6 | 0.0 % | 0.977 [0.977, 0.977] | 180 MB |
-|  |  |  | fast-hdbscan | 6 | 8.5 % | 0.892 [0.892, 0.892] | 421 MB |
-|  |  | shuffled | **betula-gmm-full-bic** | 6 | 0.0 % | **0.983** [0.983, 0.983] | 188 MB |
-|  |  |  | betula-xmeans | 6 | 0.0 % | 0.977 [0.977, 0.977] | 184 MB |
-|  |  |  | fast-hdbscan | 6 | 8.5 % | 0.892 [0.892, 0.892] | 424 MB |
+| contest | n | rows | method | clusters | noise | ARI, median [range] | peak RSS | instructions |
+|---|---:|---|---|---:|---:|---|---:|---:|
+| k-means, `highdim`, k=8, 11 seeds | 200 000 | label | **betula-kmeans** | 8 | 0.0 % | **1.000** [1.000, 1.000] | 201 MB | 1.07 G |
+|  |  |  | faiss-kmeans, defaults | 8 | 0.0 % | 0.835 [0.630, 1.000] | 210 MB | 0.16 G |
+|  |  |  | faiss-kmeans-pp | 8 | 0.0 % | **1.000** [1.000, 1.000] | 211 MB | 0.16 G |
+|  |  |  | sklearn-kmeans | 8 | 0.0 % | **1.000** [1.000, 1.000] | 270 MB | 4.68 G |
+|  |  | shuffled | **betula-kmeans** | 8 | 0.0 % | **1.000** [1.000, 1.000] | 226 MB | 1.09 G |
+|  |  |  | faiss-kmeans, defaults | 8 | 0.0 % | 0.717 [0.406, 1.000] | 232 MB | 0.18 G |
+|  |  |  | faiss-kmeans-pp | 8 | 0.0 % | **1.000** [0.835, 1.000] | 232 MB | 0.18 G |
+|  |  |  | sklearn-kmeans | 8 | 0.0 % | **1.000** [1.000, 1.000] | 292 MB | 4.68 G |
+|  | 1 000 000 | label | **betula-kmeans** | 8 | 0.0 % | **1.000** [1.000, 1.000] | 543 MB | 4.92 G |
+|  |  |  | faiss-kmeans, defaults | 8 | 0.0 % | 0.835 [0.606, 1.000] | 543 MB | 0.73 G |
+|  |  |  | faiss-kmeans-pp | 8 | 0.0 % | **1.000** [1.000, 1.000] | 543 MB | 0.73 G |
+|  |  |  | sklearn-kmeans | 8 | 0.0 % | **1.000** [1.000, 1.000] | 658 MB | 23.13 G |
+|  |  | shuffled | **betula-kmeans** | 8 | 0.0 % | **1.000** [1.000, 1.000] | 543 MB | 5.22 G |
+|  |  |  | faiss-kmeans, defaults | 8 | 0.0 % | 0.717 [0.497, 0.836] | 543 MB | 0.74 G |
+|  |  |  | faiss-kmeans-pp | 8 | 0.0 % | **1.000** [0.835, 1.000] | 543 MB | 0.74 G |
+|  |  |  | sklearn-kmeans | 8 | 0.0 % | **1.000** [1.000, 1.000] | 667 MB | 23.13 G |
+| HDBSCAN, `blobs`, k=6, 5 seeds | 100 000 | label | betula-hdbscan | 5 | 2.9 % | 0.799 [0.799, 0.799] | 171 MB | — |
+|  |  |  | betula-hdbscan-canonical | 6 | 7.8 % | 0.897 [0.897, 0.897] | 171 MB | — |
+|  |  |  | fast-hdbscan | 6 | 6.7 % | **0.910** [0.910, 0.910] | 314 MB | — |
+|  |  | shuffled | betula-hdbscan | 6 | 8.1 % | 0.895 [0.892, 0.901] | 172 MB | — |
+|  |  |  | betula-hdbscan-canonical | 6 | 7.8 % | 0.897 [0.897, 0.897] | 172 MB | — |
+|  |  |  | fast-hdbscan | 6 | 6.7 % | **0.910** [0.910, 0.910] | 315 MB | — |
+|  | 500 000 | label | betula-hdbscan | 5 | 3.2 % | 0.796 [0.796, 0.796] | 184 MB | — |
+|  |  |  | betula-hdbscan-canonical | 6 | 9.6 % | 0.876 [0.876, 0.876] | 184 MB | — |
+|  |  |  | fast-hdbscan | 6 | 8.5 % | **0.892** [0.892, 0.892] | 421 MB | — |
+|  |  | shuffled | betula-hdbscan | 6 | 9.1 % | 0.883 [0.798, 0.891] | 188 MB | — |
+|  |  |  | betula-hdbscan-canonical | 6 | 9.6 % | 0.876 [0.876, 0.876] | 188 MB | — |
+|  |  |  | fast-hdbscan | 6 | 8.5 % | **0.892** [0.892, 0.892] | 424 MB | — |
+| no count given, `blobs`, k=6, 5 seeds | 100 000 | label | **betula-gmm-full-bic** | 6 | 0.0 % | **0.983** [0.983, 0.983] | 170 MB | — |
+|  |  |  | betula-xmeans | 6 | 0.0 % | 0.977 [0.977, 0.977] | 167 MB | — |
+|  |  |  | fast-hdbscan | 6 | 6.7 % | 0.910 [0.910, 0.910] | 314 MB | — |
+|  |  | shuffled | **betula-gmm-full-bic** | 6 | 0.0 % | **0.983** [0.983, 0.983] | 173 MB | — |
+|  |  |  | betula-xmeans | 6 | 0.0 % | 0.977 [0.977, 0.977] | 168 MB | — |
+|  |  |  | fast-hdbscan | 6 | 6.7 % | 0.910 [0.910, 0.910] | 315 MB | — |
+|  | 500 000 | label | **betula-gmm-full-bic** | 6 | 0.0 % | **0.983** [0.983, 0.983] | 183 MB | — |
+|  |  |  | betula-xmeans | 6 | 0.0 % | 0.977 [0.977, 0.977] | 180 MB | — |
+|  |  |  | fast-hdbscan | 6 | 8.5 % | 0.892 [0.892, 0.892] | 421 MB | — |
+|  |  | shuffled | **betula-gmm-full-bic** | 6 | 0.0 % | **0.983** [0.983, 0.983] | 188 MB | — |
+|  |  |  | betula-xmeans | 6 | 0.0 % | 0.977 [0.977, 0.977] | 184 MB | — |
+|  |  |  | fast-hdbscan | 6 | 8.5 % | 0.892 [0.892, 0.892] | 424 MB | — |
 
-The table is the 2026-11-16 run on `e984f2c` with the new harness not yet committed (the `version`
-column's `.dirty`; no file under `src/` differed), faiss-cpu 1.16.0, fast-hdbscan 0.3.4 and
-scikit-learn 1.9.1. **It carries no times.** It ran with `--quality-only` on a loaded machine, and
-the times are re-taken in the timing campaign (task F-18). The previous edition (2026-10-20, the
+The density contests are the 2026-11-16 run on `e984f2c` with the new harness not yet committed
+(the `version` column's `.dirty`; no file under `src/` differed), faiss-cpu 1.16.0, fast-hdbscan
+0.3.4 and scikit-learn 1.9.1. The k-means contest re-ran on 2026-11-18 (`--contests=kmeans-speed`,
+on `e2a07f4` with this edition's harness, the same libraries) at one thread, to add the
+`instructions` column and the four arms below. Its medians and ranges equal the 2026-11-16 run at
+eight and sixteen threads in all sixteen cells; peak RSS moved by 2 MB at most. **The table carries
+no times.** Both runs used `--quality-only` on a loaded machine, and the times are re-taken in the
+timing campaign (task F-18). An instruction count is valid on a loaded machine: it is the
+fit's own work, from the rows in memory to the labels, with the library already imported
+(`import faiss` alone retires 0.16 G). The previous edition (2026-10-20, the
 1.1.0 tree) was one seed in label order. Its arms differed: a FAISS arm fed every row with ten
 random restarts, and a betula `hdbscan` arm at `min_samples = 10` on 2 000 leaves, which read
 0.480 and 0.490. Its times belong to those arms and are not carried forward; FAISS's default arm and
@@ -1238,7 +1247,10 @@ The three contests give three answers:
   0.835 in label order and 0.717 on shuffled rows, as low as 0.406. With k-means++ seeding and three
   restarts (`faiss-kmeans-pp`, next section) it reads 1.000 at the median, though a shuffled seed
   still lands at 0.835. Which of the three arms that recover the partition is fastest is open until
-  F-18.
+  F-18. In work done the order is clear: at 1 000 000 rows FAISS with k-means++ retires 0.73 G
+  instructions, betula 4.92 G, scikit-learn 23.13 G. The three do different jobs: FAISS fits
+  2 048 rows, betula summarises every row, scikit-learn runs ten restarts over every row. Given
+  FAISS's protocol, betula reads 1.000 at 0.96–1.16 G (*FAISS's protocol, given to betula*).
 - **HDBSCAN: a loss, by 0.013–0.015.** `fast_hdbscan` reads 0.910 at 100 000 rows and 0.892 at
   500 000. betula's best arm is `canonical_order=True`: 0.897 and 0.876, the same in either order.
   The default arm reads 0.799 and 0.796 in label order, where it finds five clusters, and 0.895 and
@@ -1395,6 +1407,79 @@ the 2026-11-16 edition.)
 One caveat for the timing campaign: `fast_hdbscan` is numba-compiled, so its first call in a fresh
 environment pays the compile into its on-disk cache. The harness makes one unrecorded fit before the
 first row, so every recorded row is warm-cache.
+
+### FAISS's protocol, given to betula
+
+The k-means rows above compare two jobs. FAISS at its defaults fits Lloyd on 2 048 of the rows and
+labels the rest with one search; betula summarises every row. Four more betula arms in the same
+contest, the same eleven seeds and both orders, give betula FAISS's shortcut, or split its own build
+(task F-34). What each arm reads:
+
+| arm | rows the centres are fitted on | how every row is labelled |
+|---|---|---|
+| `betula-kmeans` | every row, once, into a tree of at most 2 000 leaves, built in row order; k-means++ and restarts on the leaves | nearest centre |
+| `betula-kmeans-shards8` | every row, split into eight shards, each built into its own tree, then merged | nearest centre |
+| `betula-kmeans-sample-m` | a seeded sample of m = 2 048, 8 192 or 32 000 rows, kept in the input's order, through the estimator's `fit` | `predict`, nearest centre |
+| `faiss-kmeans` | 2 048 rows (`max_points_per_centroid = 256` at k = 8), a random start, one restart | one search |
+| `faiss-kmeans-pp` | the same 2 048 rows, k-means++, three restarts | one search |
+| `sklearn-kmeans` | every row in every Lloyd iteration, k-means++, ten restarts | the fit's own labels |
+
+Every betula arm reads ARI 1.000 on all eleven seeds, in both orders, at both sizes. The work each
+one does, in user-space instructions at one thread (the CSV's median run, seed 5 for every betula
+arm):
+
+| arm | 200 000, label | 200 000, shuffled | 1 000 000, label | 1 000 000, shuffled |
+|---|---:|---:|---:|---:|
+| `betula-kmeans` | 1.07 G | 1.09 G | 4.92 G | 5.22 G |
+| `betula-kmeans-shards8` | 0.89 G | 0.92 G | 4.01 G | 4.07 G |
+| `betula-kmeans-sample-2048` | 0.25 G | 0.25 G | 0.96 G | 0.96 G |
+| `betula-kmeans-sample-8192` | 0.31 G | 0.29 G | 1.02 G | 1.00 G |
+| `betula-kmeans-sample-32000` | 0.44 G | 0.41 G | 1.16 G | 1.13 G |
+| `faiss-kmeans`, defaults | 0.16 G | 0.18 G | 0.73 G | 0.74 G |
+| `faiss-kmeans-pp` | 0.16 G | 0.18 G | 0.73 G | 0.74 G |
+
+- **The label pass is now the cost.** Split by phase at seed 0 on 1 000 000 rows in label order
+  (`local/scratch/f34/phases.py`, not in a CSV): the sample arm's `fit` retires 0.07, 0.12 and
+  0.25 G at the three sample sizes, and its `predict` over every row 0.89 G, 77–93 % of the arm.
+  FAISS's default arm spends 0.05 G converting the rows to `float32`, 0.22 G training and 0.46 G
+  in its search. Per row, betula's label pass retires about 890 instructions and FAISS's search
+  about 460, at d = 20 and k = 8. Given the same shortcut, betula does 1.3× FAISS's work, not 6.7×,
+  and the remaining gap is the label pass.
+- **Eight shards: 16–22 % fewer instructions, the same partition.** Measured at eight rayon
+  threads over seeds 0–10 (`local/scratch/f34/shards.py`, not in a CSV), one shard against eight
+  gave the same partition in 44 of 44 runs (two sizes, two orders). The median saving is 18.6 %
+  and 19.4 % at 1 000 000 rows (label, shuffled; 17.5–22.1 % over seeds) and 16.5 % and 15.8 % at
+  200 000. The thread count does not enter the count: 4.0065 G at eight threads against 4.0054 G at
+  one, the same seed. Eight threads build the eight shards at once; the time is F-18's.
+- **A rare cluster is where a sample stops being the same job.** The `highdim` fixture with a ninth
+  cluster of 1 000 rows (0.1 % of 1 000 000), its centre drawn from the same box times a
+  separation s, told k = 9, seeds 0–10 in both orders, 22 runs per arm
+  (`local/scratch/f34/rare.py`, not in a CSV). "Found" is the rare cluster's F1 against its best
+  predicted cluster: 1.000 in every run that finds it and 0.073 at most in every run that does not.
+
+  | arm | rare rows in the sample | found, s = 2 | found, s = 1 |
+  |---|---:|---:|---:|
+  | `betula-kmeans` (every row) | 1 000 | **21 of 22** | 11 of 22 |
+  | sample of 32 000 | 23–44 | 19 of 22 | 10 of 22 |
+  | sample of 8 192 | 5–15 | 18 of 22 | 10 of 22 |
+  | sample of 2 048 | 0–4 | 7 of 22 | 3 of 22 |
+
+  ARI cannot see the rare cluster itself; it sees what the ninth centre does instead. A run that
+  misses it splits a common cluster and reads 0.962–0.968 (one full fit 0.976), against 1.000. At
+  s = 1 the full fit misses half the time too: the seeding, not the sample, decides there. At s = 2
+  the 2 048-row sample, FAISS's own default, finds the cluster in 7 of 22 runs against the full
+  fit's 21. No sample that held none of its rows found it, and one that held one row found it once
+  in eight.
+
+**Decision input: sample, freeze, parallel refit.** That design, not built, fits the tree on a row
+sample, freezes it, folds every other row into its leaves in parallel, and inserts the rows that fit
+no leaf one by one at the end. It goes ahead on three conditions: the sample arm ties the full fit
+on this fixture, and on a set with a planted rare cluster, and F-19 puts the sequential build above
+half of a fit at 10 M rows. The first holds at every sample size (1.000 on all seeds, at
+0.96–1.16 G against 4.92–5.22 G). The second holds at 8 192 and 32 000 rows to within one to three
+runs of 22, a difference this probe cannot separate from chance. It fails at 2 048 rows: there
+most of the cluster's rows would reach the tree only through the design's repair step, which this
+probe does not have. The third waits for F-19.
 
 ### The scoreboard
 
