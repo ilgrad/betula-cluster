@@ -333,6 +333,8 @@ def test_hyperbolic_refuses_a_projection_and_a_sparse_matrix(lorentz_arms):
         est.fit_predict(x)
     with pytest.raises(ValueError, match="does not accept a projection"):
         est.partial_fit(x)
+    with pytest.raises(ValueError, match="does not accept a projection"):
+        betula_cluster.fit_predict(x, 3, method="hyperbolic", projection="svd")
     sparse = pytest.importorskip("scipy.sparse")
     csr = sparse.csr_matrix(x)
     with pytest.raises(ValueError, match="needs dense rows"):
@@ -6097,6 +6099,36 @@ def test_unknown_projection_names_the_whole_set():
         betula_cluster.fit_predict(x, 2, projection="pca")
     with pytest.raises(ValueError, match=r"'svd'"):
         betula_cluster.Betula(n_clusters=2, projection="pca").fit(x)
+
+
+def _overlapping_nonneg_rows(seed=0, d=8):
+    """Five overlapping clusters of unequal mass and spread, folded into the nonnegative orthant so
+    every projection accepts them. The overlap is what makes a head's labels depend on the space it
+    clusters: on separated blobs they survive a rank-2 projection unchanged."""
+    rng = np.random.default_rng(seed)
+    centres = rng.normal(scale=2.2, size=(5, d))
+    masses, spreads = (200, 160, 120, 80, 60), (0.6, 1.0, 1.4, 0.8, 1.8)
+    x = np.vstack(
+        [
+            c + rng.normal(scale=s, size=(m, d))
+            for c, m, s in zip(centres, masses, spreads, strict=True)
+        ]
+    )
+    return np.abs(x[rng.permutation(len(x))])
+
+
+@pytest.mark.parametrize("projection", ["svd", "weighted-nmf", "weighted-nmf-kl"])
+@pytest.mark.parametrize("method", ["hdbscan", "dc-center", "dc-median", "genie", "scale-space"])
+def test_the_one_shot_projects_the_leaves_for_the_non_parametric_heads(method, projection):
+    """A head with no parametric model clusters the codes too, and the one-shot function answers
+    row for row as the estimator does — not with the labels of the unprojected leaves."""
+    x = _overlapping_nonneg_rows()
+    kw = dict(
+        n_clusters=5, method=method, max_leaves=80, seed=0, projection=projection, projection_dim=2
+    )
+    np.testing.assert_array_equal(
+        betula_cluster.fit_predict(x, **kw), betula_cluster.Betula(**kw).fit_predict(x)
+    )
 
 
 def test_a_budget_that_never_binds_warns_that_nothing_was_compressed():

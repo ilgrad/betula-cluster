@@ -779,6 +779,17 @@ fn require_rows_graph_unprojected(leaf_graph: &str, projection: &str) -> PyResul
     Ok(())
 }
 
+/// A projection replaces the space the rows live in, and a code vector has no time-like coordinate:
+/// the sheet is a property of the input space, not of the codes.
+fn require_hyperbolic_unprojected(kind: Kind, projection: &str) -> PyResult<()> {
+    if matches!(kind, Kind::Parametric(Method::Hyperbolic)) && projection != "none" {
+        return Err(PyValueError::new_err(
+            "method='hyperbolic' does not accept a projection: the codes are not points of H^d",
+        ));
+    }
+    Ok(())
+}
+
 /// Equal-size k-means labels each row by its leaf, so the keywords that relabel rows from a centre
 /// rule — `refine` and a projection — would either drop the constraint or do nothing.
 fn require_equal_size_alone(equal_size: bool, refine: usize, projection: &str) -> PyResult<()> {
@@ -2179,60 +2190,59 @@ fn cluster<R: Real, C: ClusterFeature<R>>(
         tree.refit_leaves(flat, n);
     }
     let leaves = tree.num_leaves();
+    if nmf_dim.is_some() {
+        // Reduce leaf centroids to codes and cluster those, whatever the head: the projection
+        // replaces the space the head clusters, parametric or not. A linear projection (`svd`) gives
+        // a centre or posterior head a point rule, so each row is labelled by its own code; an NMF
+        // cannot, nor can a head with no point model, and the row inherits its leaf's label.
+        let out = label_features_proba(
+            tree.leaf_features(),
+            kind,
+            k,
+            max_iter,
+            n_init,
+            seed,
+            auto_k_max,
+            opts,
+            nmf_dim,
+        );
+        let labels = match out.rule {
+            Some(rule) => rule.label_rows(flat, n, dim),
+            None => tree
+                .nearest_entries(flat, n)
+                .into_iter()
+                .map(|e| out.labels[e])
+                .collect(),
+        };
+        return (labels, leaves);
+    }
     let labels = match kind {
-        Kind::Parametric(method) => match nmf_dim {
-            Some(_) => {
-                // Reduce leaf centroids to codes and cluster those. A linear projection (`svd`) hands
-                // back a point rule, so each row is labelled by its own code; an NMF cannot, and the
-                // row inherits its leaf's label.
-                let out = label_features_proba(
-                    tree.leaf_features(),
-                    kind,
-                    k,
-                    max_iter,
-                    n_init,
-                    seed,
-                    auto_k_max,
-                    opts,
-                    nmf_dim,
+        Kind::Parametric(method) => {
+            if let RowEdges::Requested = opts.rows {
+                let rows = RowView::of(flat, n, dim);
+                let entries = |b: &[R]| tree.nearest_entries(b, b.len() / dim);
+                let degree = opts.graph_degree;
+                let (graph, nearest) = row_graph(tree.leaf_features(), rows, entries, degree, seed);
+                let opts = HeadOptions {
+                    rows: RowEdges::Counted(&graph),
+                    ..opts
+                };
+                let feats = tree.leaf_features();
+                let fit = fit_head(feats, k, method, max_iter, n_init, seed, auto_k_max, opts);
+                // The head labels a row by its nearest leaf, which the graph pass has just
+                // found for every training row; and a Lloyd sweep does not refine it.
+                debug_assert!(matches!(fit.centers, Centres::EveryLeaf));
+                debug_assert!(!refinable(method));
+                return (
+                    nearest.iter().map(|&l| fit.labels[l] as i64).collect(),
+                    leaves,
                 );
-                match out.rule {
-                    Some(rule) => rule.label_rows(flat, n, dim),
-                    None => tree
-                        .nearest_entries(flat, n)
-                        .into_iter()
-                        .map(|e| out.labels[e])
-                        .collect(),
-                }
             }
-            None => {
-                if let RowEdges::Requested = opts.rows {
-                    let rows = RowView::of(flat, n, dim);
-                    let entries = |b: &[R]| tree.nearest_entries(b, b.len() / dim);
-                    let degree = opts.graph_degree;
-                    let (graph, nearest) =
-                        row_graph(tree.leaf_features(), rows, entries, degree, seed);
-                    let opts = HeadOptions {
-                        rows: RowEdges::Counted(&graph),
-                        ..opts
-                    };
-                    let feats = tree.leaf_features();
-                    let fit = fit_head(feats, k, method, max_iter, n_init, seed, auto_k_max, opts);
-                    // The head labels a row by its nearest leaf, which the graph pass has just
-                    // found for every training row; and a Lloyd sweep does not refine it.
-                    debug_assert!(matches!(fit.centers, Centres::EveryLeaf));
-                    debug_assert!(!refinable(method));
-                    return (
-                        nearest.iter().map(|&l| fit.labels[l] as i64).collect(),
-                        leaves,
-                    );
-                }
-                let mut model =
-                    Model::fit_passes(tree, k, method, max_iter, n_init, seed, auto_k_max, opts);
-                model.refine(flat, n, dim, refine);
-                map_rows(n, |i| model.predict(&flat[i * dim..(i + 1) * dim]) as i64)
-            }
-        },
+            let mut model =
+                Model::fit_passes(tree, k, method, max_iter, n_init, seed, auto_k_max, opts);
+            model.refine(flat, n, dim, refine);
+            map_rows(n, |i| model.predict(&flat[i * dim..(i + 1) * dim]) as i64)
+        }
         Kind::Hdbscan {
             min_samples,
             min_cluster_size,
@@ -2594,6 +2604,7 @@ fn fit_predict<'py>(
     };
     require_equal_size_alone(equal_size, refine, projection)?;
     require_rows_graph_unprojected(leaf_graph, projection)?;
+    require_hyperbolic_unprojected(kind, projection)?;
     let nmf_dim = parse_projection(projection, projection_dim, projection_max_iter)?;
     let n_init = parse_n_init(n_init, kind, method)?;
     let max_iter = parse_max_iter(max_iter)?;
@@ -4971,6 +4982,7 @@ impl Betula {
         )?; // lowered at finalize
         require_equal_size_alone(equal_size, refine, projection)?;
         require_rows_graph_unprojected(leaf_graph, projection)?;
+        require_hyperbolic_unprojected(kind, projection)?;
         parse_max_iter(max_iter)?;
         check_tree_shape(branching, leaf_cap)?;
         Ok(Self {

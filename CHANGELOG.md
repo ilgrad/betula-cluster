@@ -148,6 +148,15 @@ All notable changes to this project are documented here. The format follows
   Rust, `clustering::genie`; `Method` is unchanged.
 
 ### Fixed
+- **The one-shot `fit_predict` applies `projection` to every head, as the estimator does.** For
+  the heads with no parametric model — `hdbscan`, `dc-center`, `dc-median`, `genie` and
+  `scale-space` — it clustered the raw leaves and silently ignored `projection="svd"`,
+  `"weighted-nmf"` and `"weighted-nmf-kl"`: the projection branch sat inside the parametric arm of
+  the one-shot's own dispatch, while `Betula(...).fit_predict` projects before every head. One-shot
+  calls that pass a projection to these five heads change labels and now equal the estimator's.
+  `fit_predict(method="hyperbolic", projection=...)` now raises the estimator's `ValueError`
+  instead of scoring code vectors as points of H^d; the refusal had lived only in the Python class.
+  Every other call keeps its labels.
 - **`Betula.predict_proba` no longer raises when a density head found no cluster.** `hdbscan`
   and the other noise-reporting heads can label every row noise on small inputs; the
   centroid-softmax proxy then took a maximum over zero centres. It now returns an `(n, 0)` array.
