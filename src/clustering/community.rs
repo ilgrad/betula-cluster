@@ -1149,7 +1149,7 @@ fn detect_from_sized(
 }
 
 /// One local-moving pass, started from partition `init`: each node greedily joins the neighbouring
-/// community with the largest quality gain, iterating until no node moves.
+/// community with the largest quality gain, iterating until no node moves or the sweeps cycle.
 fn one_level(g: &Graph, obj: Objective, gamma: f64, seed: u64, init: &[usize]) -> Vec<usize> {
     let n = g.len();
     let mut comm = init.to_vec();
@@ -1161,9 +1161,19 @@ fn one_level(g: &Graph, obj: Objective, gamma: f64, seed: u64, init: &[usize]) -
         tot_size[comm[i]] += g.size[i];
     }
     let order = shuffled(n, seed);
-    let mut moved = true;
-    while moved {
-        moved = false;
+    // In exact arithmetic every move raises the objective, no partition comes back, and the sweeps
+    // end. The running totals are rounded: taking a degree out of a total and adding it back need
+    // not restore the total's bits. A node whose gains to two communities tie exactly can then
+    // find the one it is in scored lower by rounding alone, whichever that is, and move on every
+    // sweep forever. A sweep is a pure function of `(comm, tot_deg, tot_size)`, so a sweep that
+    // ends on a state seen before has entered a cycle. Brent's detection compares each sweep's end
+    // against one saved state, re-saved after 1, 2, 4, … sweeps, and stops at the first match; the
+    // moves around a cycle tie up to rounding, so any partition on it is as good as the next. A
+    // run that ends on its own never repeats a state, so the check leaves its labels as they were.
+    let mut saved = (comm.clone(), tot_deg.clone(), tot_size.clone());
+    let mut sweeps = 0usize;
+    loop {
+        let mut moved = false;
         for &i in &order {
             let ci = comm[i];
             let (ki, si) = (g.degree[i], g.size[i]);
@@ -1204,8 +1214,26 @@ fn one_level(g: &Graph, obj: Objective, gamma: f64, seed: u64, init: &[usize]) -
                 moved = true;
             }
         }
+        if !moved
+            || (comm == saved.0 && same_bits(&tot_deg, &saved.1) && same_bits(&tot_size, &saved.2))
+        {
+            break;
+        }
+        sweeps += 1;
+        if sweeps.is_power_of_two() {
+            saved.0.clone_from(&comm);
+            saved.1.clone_from(&tot_deg);
+            saved.2.clone_from(&tot_size);
+        }
     }
     relabel(&comm)
+}
+
+/// Whether `a` and `b` hold the same floats bit for bit.
+fn same_bits(a: &[f64], b: &[f64]) -> bool {
+    a.iter()
+        .map(|x| x.to_bits())
+        .eq(b.iter().map(|x| x.to_bits()))
 }
 
 /// Refinement: within each community of `part`, grow sub-communities by merging *singleton* nodes
@@ -1846,6 +1874,118 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The rows graph of ten leaves named by twenty rows, five each. At `γ = 1` and seed 0, leaf
+    /// 5's gains to the community of leaves 0 and 1 and to that of leaves 3, 4, 7 and 8 are equal
+    /// in the graph's count arithmetic (672/10 000 each), and the rounded running totals scored
+    /// whichever one leaf 5 was in a few ulps lower: before the local move compared states, it
+    /// moved leaf 5 on every sweep and never returned. Seeds 0, 3, 4, 5 and 7 cycle, every one
+    /// with period two; seed 7 enters its cycle after three sweeps, so only the state saved after
+    /// four can match.
+    fn tied_rows_graph() -> Graph {
+        const TOP: [[usize; 5]; 20] = [
+            [2, 7, 6, 8, 9],
+            [9, 2, 4, 6, 5],
+            [9, 0, 6, 2, 1],
+            [4, 0, 3, 6, 2],
+            [3, 2, 0, 9, 1],
+            [4, 9, 7, 6, 3],
+            [9, 2, 1, 6, 5],
+            [8, 6, 7, 4, 2],
+            [7, 0, 1, 4, 5],
+            [4, 1, 0, 3, 5],
+            [6, 1, 4, 9, 7],
+            [8, 4, 5, 7, 6],
+            [4, 2, 1, 3, 7],
+            [8, 7, 5, 3, 4],
+            [4, 6, 1, 3, 7],
+            [8, 4, 0, 3, 1],
+            [3, 2, 7, 8, 4],
+            [6, 9, 3, 1, 7],
+            [7, 4, 1, 5, 0],
+            [9, 1, 8, 6, 4],
+        ];
+        let top: Vec<usize> = TOP.iter().flatten().copied().collect();
+        Graph::from_adj(RowGraph::from_top(&top, 5, 10).adj)
+    }
+
+    #[test]
+    fn the_local_move_stops_where_its_rounded_totals_cycle_on_a_tie() {
+        // On a thread, so a local move that never stops fails the test rather than hanging it.
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let g = tied_rows_graph();
+            let init: Vec<usize> = (0..g.len()).collect();
+            let parts: Vec<Vec<usize>> = (0..8)
+                .map(|seed| one_level(&g, Objective::Modularity, 1.0, seed, &init))
+                .collect();
+            tx.send(parts)
+                .expect("the test thread waits for the partitions");
+        });
+        let parts = rx
+            .recv_timeout(std::time::Duration::from_secs(60))
+            .expect("the local move did not stop");
+        // Stopped inside the cycle, the partition is still one no single move improves: the moves
+        // that cycled were ties.
+        let g = tied_rows_graph();
+        for (seed, part) in parts.iter().enumerate() {
+            let q = quality(&g, Objective::Modularity, 1.0, part);
+            for i in 0..g.len() {
+                for &(j, _) in &g.adj[i] {
+                    let mut alt = part.clone();
+                    alt[i] = part[j];
+                    let alt_q = quality(&g, Objective::Modularity, 1.0, &relabel(&alt));
+                    assert!(
+                        alt_q <= q + 1e-9,
+                        "seed {seed}: moving {i} next to {j} improves {q} -> {alt_q}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Why the check compares totals and not the partition alone. On this rows graph at `γ = 1`
+    /// and seed 4, the fourth sweep ends on the partition the second ended on, with other totals,
+    /// and the local move goes on to stop by itself after the sixth, with leaf 3 moved. A check on
+    /// the partition alone stopped at the fourth sweep and returned leaf 3 on the other side.
+    #[test]
+    fn a_partition_that_returns_with_other_totals_does_not_stop_the_local_move() {
+        const TOP: [[usize; 5]; 20] = [
+            [6, 4, 2, 7, 0],
+            [9, 1, 8, 0, 2],
+            [4, 1, 5, 8, 2],
+            [1, 4, 0, 9, 8],
+            [0, 9, 7, 6, 5],
+            [4, 1, 7, 3, 5],
+            [0, 3, 4, 6, 1],
+            [1, 0, 9, 2, 3],
+            [9, 3, 0, 6, 2],
+            [3, 1, 5, 2, 4],
+            [1, 3, 5, 9, 4],
+            [6, 0, 1, 9, 7],
+            [5, 4, 3, 6, 2],
+            [1, 2, 8, 9, 6],
+            [5, 9, 4, 8, 2],
+            [1, 7, 5, 3, 9],
+            [6, 7, 2, 3, 0],
+            [1, 9, 5, 4, 3],
+            [1, 8, 9, 4, 0],
+            [1, 4, 9, 8, 7],
+        ];
+        let top: Vec<usize> = TOP.iter().flatten().copied().collect();
+        let g = Graph::from_adj(RowGraph::from_top(&top, 5, 10).adj);
+        let init: Vec<usize> = (0..g.len()).collect();
+        assert_eq!(
+            one_level(&g, Objective::Modularity, 1.0, 4, &init),
+            [0, 1, 0, 0, 1, 1, 0, 0, 1, 1]
+        );
+    }
+
+    #[test]
+    fn same_bits_tells_floats_one_ulp_apart() {
+        assert!(same_bits(&[7.84, 3.04], &[7.84, 3.04]));
+        assert!(!same_bits(&[7.84, 3.04], &[7.840000000000001, 3.04]));
     }
 
     /// Resolution has to reach the local move through the null-model totals. Totals stuck at zero

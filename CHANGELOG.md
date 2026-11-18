@@ -148,6 +148,14 @@ All notable changes to this project are documented here. The format follows
   Rust, `clustering::genie`; `Method` is unchanged.
 
 ### Fixed
+- **Leiden no longer loops forever on an exact tie.** The local move keeps each community's degree
+  total as a running sum, and taking a degree out of a total and adding it back need not restore
+  its bits. When a node's gains to two communities tied exactly — common with `leaf_graph="rows"`,
+  whose edge weights count rows — the community it sat in could score lower by rounding alone, so
+  it moved on every sweep and `fit` never returned (yeast at `resolution=5.66`; 120 random rows at
+  the default resolution; 7 of 1 501 random 120 × 8 sets). The local move now stops when a sweep
+  ends on a state it has seen before, partition and totals bit for bit (Brent's cycle detection).
+  Every fit that returned before returns the same labels.
 - **The one-shot `fit_predict` applies `projection` to every head, as the estimator does.** For
   the heads with no parametric model — `hdbscan`, `dc-center`, `dc-median`, `genie` and
   `scale-space` — it clustered the raw leaves and silently ignored `projection="svd"`,

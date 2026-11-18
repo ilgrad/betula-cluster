@@ -1220,6 +1220,30 @@ def test_a_stable_resolution_is_refused_off_the_rows_graph(blobs):
             ).fit(x)
 
 
+_TIED_ROWS_SCRIPT = """
+import betula_cluster
+import numpy as np
+
+x = np.round(np.random.default_rng(35).normal(size=(120, 8)), 2)
+print(len(betula_cluster.Betula(method="leiden", leaf_graph="rows", seed=3).fit_predict(x)))
+"""
+
+
+def test_the_rows_graph_fit_returns_where_the_local_move_cycles_on_a_tie():
+    """On these 120 rows the rows-graph Leiden fit at the default resolution never returned: the
+    graph's weights count rows, so two gains can tie exactly, and on such a tie the rounded running
+    totals kept the local move cycling. A subprocess, so a loop that never ends fails the test
+    instead of hanging the suite."""
+    done = subprocess.run(
+        [sys.executable, "-c", _TIED_ROWS_SCRIPT],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=True,
+    )
+    assert done.stdout.strip() == "120"
+
+
 def test_the_rows_leaf_graph_refuses_sparse_rows(blobs):
     sparse = pytest.importorskip("scipy.sparse")
     x, _ = blobs
