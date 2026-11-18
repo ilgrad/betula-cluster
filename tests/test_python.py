@@ -1120,14 +1120,19 @@ def test_the_rows_head_labels_a_sparse_row_as_its_dense_twin():
 
 
 def test_the_rows_leaf_graph_refuses_a_fit_with_no_dense_rows_to_count(blobs):
-    """The graph needs the rows at head time: ``partial_fit(None)`` has only the leaves, and a
-    sparse fit has no dense rows; a projection moves the head off the rows' space; the spectral
-    head does not read this graph, and CPM's resolution has no size-free meaning on it."""
+    """The graph needs every row the tree holds: a stream after a ``fit()`` holds rows no count
+    saw, and a decayed stream forgets rows the counts would keep; a projection moves the head off
+    the rows' space; the spectral head does not read this graph, and CPM's resolution has no
+    size-free meaning on it."""
     x, _ = blobs
-    est = betula_cluster.Betula(method="leiden", leaf_graph="rows")
-    est.partial_fit(x)
-    with pytest.raises(ValueError, match="partial_fit\\(None\\) sees only the leaves"):
+    est = betula_cluster.Betula(method="leiden", leaf_graph="rows").fit(x[:1000])
+    est.partial_fit(x[1000:])
+    with pytest.raises(ValueError, match="only if it counted every row the tree holds"):
         est.partial_fit()
+    decayed = betula_cluster.Betula(method="leiden", leaf_graph="rows", decay=0.9)
+    decayed.partial_fit(x)
+    with pytest.raises(ValueError, match="at decay=1"):
+        decayed.partial_fit()
     with pytest.raises(ValueError, match="cannot be combined with a projection"):
         betula_cluster.Betula(method="leiden", leaf_graph="rows", projection="svd").fit(x)
     with pytest.raises(ValueError, match="cannot be combined with a projection"):
@@ -1249,6 +1254,175 @@ def test_the_rows_leaf_graph_refuses_sparse_rows(blobs):
     x, _ = blobs
     with pytest.raises(ValueError, match="a sparse fit is not supported"):
         betula_cluster.Betula(method="leiden", leaf_graph="rows").fit(sparse.csr_matrix(x))
+    est = betula_cluster.Betula(method="leiden", leaf_graph="rows").partial_fit(x[:1000])
+    assert est._est._row_graph() is not None
+    est.partial_fit(sparse.csr_matrix(x[1000:]))
+    assert est._est._row_graph() is None
+    with pytest.raises(ValueError, match="only if it counted every row the tree holds"):
+        est.partial_fit()
+
+
+_STREAM_ROWS_KW = dict(method="leiden", leaf_graph="rows", n_clusters=4, resolution="auto", seed=1)
+
+
+def _named_after_each_insert(est, x):
+    """Stream ``x`` one row per call, and count the rows graph as F-25 defines it from the outside:
+    each row names its five nearest leaves of the tree right after its own insert, nearest first,
+    ties to the lower index, and a pair of leaves one row names gains one count."""
+    named = np.zeros(0, dtype=np.int64)
+    pairs = collections.Counter()
+    for row in x:
+        est.partial_fit(row[None, :])
+        centres = np.asarray(est.microcluster_centers_)
+        d = ((centres - row) ** 2).sum(1)
+        top = np.lexsort((np.arange(len(d)), d))[:5]
+        named = np.r_[named, np.zeros(len(centres) - len(named), dtype=np.int64)]
+        named[top] += 1
+        pairs.update((min(a, b), max(a, b)) for a, b in itertools.combinations(top.tolist(), 2))
+    return named.tolist(), sorted((a, b, c) for (a, b), c in pairs.items())
+
+
+def test_a_stream_counts_the_rows_graph_each_row_names_after_its_own_insert(blobs):
+    """With no rebuild every leaf keeps its index, so the counts are exactly what the names given
+    right after each insert add up to, whatever the stream's cut into calls; ``partial_fit(None)``
+    runs the head on them, and the head finds the blobs."""
+    x, y = blobs
+    rng = np.random.default_rng(0)
+    order = rng.permutation(len(x))[:400]
+    x, y = x[order], y[order]
+    kw = dict(_STREAM_ROWS_KW, threshold=0.3, max_leaves=1000)
+    one_by_one = betula_cluster.Betula(**kw)
+    want = _named_after_each_insert(one_by_one, x)
+    assert one_by_one.n_rebuilds_ == 0
+    named, pairs = one_by_one._est._row_graph()
+    assert (named, [tuple(p) for p in pairs]) == want
+    chunked = betula_cluster.Betula(**kw)
+    for part in np.array_split(x, 7):
+        chunked.partial_fit(part)
+    assert chunked._est._row_graph() == one_by_one._est._row_graph()
+    one_by_one.partial_fit()
+    chunked.partial_fit()
+    np.testing.assert_array_equal(chunked.predict(x), one_by_one.predict(x))
+    assert ari(one_by_one.predict(x), y) > 0.95
+
+
+def test_a_stream_rows_graph_follows_the_rebuilds(blobs):
+    """At 40 leaves the tree rebuilds about ten times, and every rebuild merges and renumbers
+    leaves. The counts follow: one per leaf, every name kept (a merge only turns a pair into a
+    loop), a graph independent of how the stream was cut into calls, and a head that still
+    finds the blobs."""
+    x, y = blobs
+    order = np.random.default_rng(1).permutation(len(x))
+    x, y = x[order], y[order]
+    kw = dict(_STREAM_ROWS_KW, threshold=0.0, max_leaves=40)
+    whole = betula_cluster.Betula(**kw).partial_fit(x)
+    assert whole.n_rebuilds_ >= 5
+    named, pairs = whole._est._row_graph()
+    assert len(named) == whole.n_leaves_
+    # The first four rows name the one to four leaves there are; every later row names five.
+    assert sum(named) == 1 + 2 + 3 + 4 + 5 * (len(x) - 4)
+    assert all(a < b < len(named) and c > 0 for a, b, c in pairs)
+    assert sum(c for _, _, c in pairs) < 10 * len(x)
+    cut = betula_cluster.Betula(**kw)
+    for part in np.array_split(x, 13):
+        cut.partial_fit(part)
+    assert cut._est._row_graph() == whole._est._row_graph()
+    whole.partial_fit()
+    assert ari(whole.predict(x), y) > 0.95
+
+
+@pytest.mark.parametrize("dtype", [np.float64, np.float32])
+def test_a_stream_rows_graph_survives_a_save_mid_stream(blobs, dtype, tmp_path):
+    """A stream saved, loaded and continued counts the graph the uninterrupted stream counts, and
+    the file is schema 5 -- before and after the head ran -- so a build that cannot carry the
+    counts refuses it instead of resuming on an empty graph."""
+    import pickle
+
+    x, _ = blobs
+    x = x[np.random.default_rng(2).permutation(len(x))].astype(dtype)
+    kw = dict(_STREAM_ROWS_KW, threshold=0.0, max_leaves=80)
+    straight = betula_cluster.Betula(**kw).partial_fit(x[:1000]).partial_fit(x[1000:])
+    paused = betula_cluster.Betula(**kw).partial_fit(x[:1000])
+    assert _schema_version(paused, tmp_path) == 5
+    path = tmp_path / "paused.betula"
+    paused.save(str(path))
+    for resumed in (betula_cluster.Betula.load(str(path)), pickle.loads(pickle.dumps(paused))):
+        resumed.partial_fit(x[1000:])
+        assert resumed._est._row_graph() == straight._est._row_graph()
+    straight.partial_fit()
+    resumed.partial_fit()
+    np.testing.assert_array_equal(resumed.predict(x), straight.predict(x))
+    assert _schema_version(straight, tmp_path) == 5
+    restored = pickle.loads(pickle.dumps(straight))
+    np.testing.assert_array_equal(restored.predict(x), straight.predict(x))
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        (+1, "corrupt model: a stream's rows graph needs"),
+        (-1, "the rows graph lists pair"),
+    ],
+)
+def test_a_file_whose_rows_graph_does_not_fit_its_tree_is_refused(blobs, tmp_path, change, message):
+    """The counts are input like the tree: one count per leaf, and no pair past the last leaf,
+    or the head would index past them."""
+    import gzip
+
+    x, _ = blobs
+    est = betula_cluster.Betula(**_STREAM_ROWS_KW, max_leaves=80).partial_fit(x)
+    path = tmp_path / "model.betula"
+    est.save(str(path))
+    plain = bytearray(gzip.decompress(path.read_bytes()))
+    i = plain.index(b"\x65named")  # CBOR text key "named", then its array header
+    assert plain[i + 6] == 0x98, "a one-byte array length; this patch assumes it"
+    plain[i + 7] += change
+    if change > 0:
+        plain.insert(i + 8, 0)  # a leaf the tree does not have, named by no row
+    else:
+        width = {0x18: 2, 0x19: 3, 0x1A: 5, 0x1B: 9}.get(plain[i + 8], 1)  # CBOR unsigned int
+        del plain[i + 8 : i + 8 + width]  # the first leaf's count
+    path.write_bytes(gzip.compress(bytes(plain), 1))
+    with pytest.raises(ValueError, match=message):
+        betula_cluster.Betula.load(str(path))
+
+
+def test_a_schema_4_file_that_carries_a_rows_graph_is_refused(blobs, tmp_path):
+    import gzip
+
+    x, _ = blobs
+    est = betula_cluster.Betula(**_STREAM_ROWS_KW, max_leaves=80).partial_fit(x).partial_fit()
+    path = tmp_path / "model.betula"
+    est.save(str(path))
+    plain = bytearray(gzip.decompress(path.read_bytes()))
+    assert plain[:2] == b"\x82\x05", "a (version 5, estimator) pair"
+    plain[1] = 0x04
+    path.write_bytes(gzip.compress(bytes(plain), 1))
+    with pytest.raises(ValueError, match="corrupt model: a version 4 file with a stream's rows"):
+        betula_cluster.Betula.load(str(path))
+
+
+def test_a_stream_file_from_a_build_before_the_counts_loads_and_refuses_the_head():
+    """A stream saved by a build that kept no counts (schema 2) still loads and streams on; the
+    head refuses, since the tree holds rows no count saw, and a refit recovers.
+
+    Regenerate with `tests/data/gen_rows_stream_snapshot.py`, whose docstring carries the
+    invocation."""
+    import gzip
+    from pathlib import Path
+
+    path = Path(__file__).parent / "data" / "v2_rows_stream_a2c42d8.betula"
+    plain = gzip.decompress(path.read_bytes())
+    assert plain[:2] == b"\x82\x02", "a (version 2, estimator) pair"
+    assert b"row_counts" not in plain, "written by a build that keeps the counts"
+    est = betula_cluster.Betula.load(str(path))
+    assert est.get_params()["leaf_graph"] == "rows"
+    assert est._est._row_graph() is None
+    more = np.random.default_rng(1).normal(size=(50, 2))
+    est.partial_fit(more)
+    with pytest.raises(ValueError, match="only if it counted every row the tree holds"):
+        est.partial_fit()
+    assert est.fit_predict(more).shape == (50,)
 
 
 def test_a_shared_vmf_kappa_is_opt_in_and_survives_a_round_trip(blobs, tmp_path):

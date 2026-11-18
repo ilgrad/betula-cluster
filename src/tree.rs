@@ -117,7 +117,18 @@ pub struct CFTree<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDista
     /// written before it existed — the rows are gone, and nothing can rebuild it.
     #[cfg_attr(feature = "persistence", serde(default))]
     inserted: Option<RowMoments>,
+    /// Where each entry went at the rebuilds since [`Self::take_entry_moves`] last ran, kept only
+    /// while a caller records them ([`Self::record_entry_moves`]): `moves[old]` is the entry that
+    /// holds `old` now, or [`ENTRY_GONE`]. Empty while no rebuild has merged anything, since then
+    /// every entry kept its index and new ones were appended. Not written to a file: it describes
+    /// one stretch of inserts, and a caller resuming from a file starts a new one.
+    #[cfg_attr(feature = "persistence", serde(skip))]
+    entry_moves: Option<Vec<usize>>,
 }
+
+/// [`CFTree::take_entry_moves`]'s mark for an entry no entry holds now: a rebuild's rebalance
+/// reinserts only the entries the root reaches, which is every entry of a tree built by inserts.
+pub(crate) const ENTRY_GONE: usize = usize::MAX;
 
 /// Share of the total mass in a single leaf above which the automatic cap arms.
 ///
@@ -214,7 +225,33 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> CF
             auto_balance: false,
             inserts_since_auto_check: 0,
             inserted: Some(RowMoments::new(dim)),
+            entry_moves: None,
         }
+    }
+
+    /// Start recording where the rebuilds move the leaf entries, if not recording already.
+    ///
+    /// Between rebuilds an entry keeps its index and a new one is appended; a rebuild merges
+    /// entries and renumbers the survivors twice (compaction, then the rebalance). A caller that
+    /// keys state by entry index — the streamed rows graph keys its edge counts by leaf — reads the
+    /// moves after every insert with [`Self::take_entry_moves`]. Recording does not change the tree.
+    #[cfg_attr(not(feature = "python"), allow(dead_code))] // only the Python boundary streams rows
+    pub(crate) fn record_entry_moves(&mut self) {
+        self.entry_moves.get_or_insert_with(Vec::new);
+    }
+
+    /// Where every entry that existed at the previous call went, composed over each rebuild since,
+    /// and restart the record; `None` when no rebuild merged anything, so every index still holds
+    /// its entry. `moves[old]` is the entry holding `old` now, or [`ENTRY_GONE`]; the map covers at
+    /// least the entries of the previous call, and an entry's weight is the sum of the weights of
+    /// the entries mapped to it plus the rows inserted into it since. `None` too when nobody
+    /// records ([`Self::record_entry_moves`]).
+    #[cfg_attr(not(feature = "python"), allow(dead_code))] // only the Python boundary streams rows
+    pub(crate) fn take_entry_moves(&mut self) -> Option<Vec<usize>> {
+        self.entry_moves
+            .as_mut()
+            .map(std::mem::take)
+            .filter(|m| !m.is_empty())
     }
 
     /// Bound how much of the total mass one leaf may hold, as a multiple of the mass-balanced ideal
@@ -707,6 +744,10 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> CF
     /// as consecutive blocks, in index order, every time it is called. Each block is routed on its
     /// own and folded in row order, so any split of the rows gives the same bits as one block.
     pub(crate) fn refit_leaves_blocks(&mut self, n: usize, beam: usize, blocks: &RowBlocks<'_, R>) {
+        debug_assert!(
+            self.entry_moves.is_none(),
+            "a refit replaces every entry, so no recorded move survives it"
+        );
         if self.entries.is_empty() || n == 0 || self.dim == 0 {
             return;
         }
@@ -887,6 +928,12 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> CF
         pairs.sort_unstable_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(Ordering::Equal));
 
         let mut alive = vec![true; self.entries.len()];
+        // The entry each merged one went into, kept only while a caller records the moves.
+        let mut into: Vec<usize> = if self.entry_moves.is_some() {
+            (0..self.entries.len()).collect()
+        } else {
+            Vec::new()
+        };
         let mut merged = 0usize;
         let mut widest = R::zero();
         // Two passes when a mass cap is set: first the pairs that respect it, then — only if the
@@ -919,6 +966,9 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> CF
                 let absorbed = self.entries[ej].clone();
                 self.entries[ei].merge(&absorbed);
                 alive[ej] = false;
+                if let Some(went) = into.get_mut(ej) {
+                    *went = ei;
+                }
                 merged += 1;
                 // A gap that overflowed carries no scale, and growing to it would absorb every later
                 // row — as `+inf`, the one threshold `validate` refuses on load.
@@ -936,13 +986,16 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> CF
             if grown > self.threshold {
                 self.threshold = grown;
             }
-            self.drop_merged(&alive);
+            let kept = self.drop_merged(&alive);
             self.merged_since_rebalance += merged;
             // A merge across leaves empties one, and `descend` indexes `children[0]`; rebuilding
             // the structure from the survivors removes that state, as it does for `refit_leaves`.
-            if across || self.merged_since_rebalance >= self.max_leaves {
+            let placed = (across || self.merged_since_rebalance >= self.max_leaves).then(|| {
                 self.merged_since_rebalance = 0;
-                self.reinsert();
+                self.reinsert()
+            });
+            if self.entry_moves.is_some() {
+                self.compose_entry_moves(&alive, &into, &kept, placed.as_deref());
             }
         }
         self.refold_node_cfs();
@@ -1017,9 +1070,49 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> CF
         }
     }
 
+    /// Where each entry of the rebuild that marked `alive` went: an entry merged away follows the
+    /// entry it went `into` until one survived, then compaction's renumbering (`kept`), then the
+    /// rebalance's (`placed`, the old indices in the order [`Self::reinsert`] took them), composed
+    /// onto the moves recorded so far.
+    fn compose_entry_moves(
+        &mut self,
+        alive: &[bool],
+        into: &[usize],
+        kept: &[usize],
+        placed: Option<&[usize]>,
+    ) {
+        let after_rebalance = placed.map(|order| {
+            let mut at = vec![ENTRY_GONE; kept.len()];
+            // `reinsert` places the entries back to front, and each placement appends one.
+            for (new, &old) in order.iter().rev().enumerate() {
+                at[old] = new;
+            }
+            at
+        });
+        let step: Vec<usize> = (0..alive.len())
+            .map(|mut e| {
+                while !alive[e] {
+                    e = into[e];
+                }
+                let k = kept[e];
+                after_rebalance.as_ref().map_or(k, |at| at[k])
+            })
+            .collect();
+        let Some(moves) = self.entry_moves.as_mut() else {
+            return;
+        };
+        if moves.is_empty() {
+            *moves = step;
+        } else {
+            for m in moves.iter_mut().filter(|m| **m != ENTRY_GONE) {
+                *m = step[*m];
+            }
+        }
+    }
+
     /// Compact the entry arena after a merge pass, dropping every entry marked dead and rewriting the
-    /// leaf child lists to the new indices.
-    fn drop_merged(&mut self, alive: &[bool]) {
+    /// leaf child lists to the new indices, which it returns (meaningful at the survivors only).
+    fn drop_merged(&mut self, alive: &[bool]) -> Vec<usize> {
         let mut remap = vec![0usize; self.entries.len()];
         let mut kept = Vec::with_capacity(self.entries.len());
         for (old, e) in std::mem::take(&mut self.entries).into_iter().enumerate() {
@@ -1037,6 +1130,7 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> CF
                 }
             }
         }
+        remap
     }
 
     /// Rebalance: route every leaf entry through a fresh tree, merging nothing.
@@ -1049,8 +1143,12 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> CF
     /// rebalance that also merged would be free to walk off the concentration cliff compaction was
     /// built to avoid (measured: reinserting *with* absorption collapses a d = 50 blob mixture to 9
     /// leaves against a 500 budget).
-    fn reinsert(&mut self) {
-        let entries = self.collect_entries_dfs();
+    ///
+    /// Returns the old index of every entry in the order it was read, so the entry read `p`-th of
+    /// `n` is entry `n − 1 − p` afterwards.
+    fn reinsert(&mut self) -> Vec<usize> {
+        let order = self.entry_ids_dfs();
+        let entries: Vec<C> = order.iter().map(|&e| self.entries[e].clone()).collect();
         self.entries.clear();
         self.nodes.clear();
         self.nodes.push(Node {
@@ -1066,6 +1164,7 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> CF
         for e in entries.into_iter().rev() {
             self.place_cf(e);
         }
+        order
     }
 
     /// Rebuild every node CF bottom-up from its children, replacing what insertion's leaf→root
@@ -1145,18 +1244,16 @@ impl<R: Real, C: ClusterFeature<R>, D: CFDistance<R, C>, A: CFDistance<R, C>> CF
         self.split_up(leaf);
     }
 
-    fn collect_entries_dfs(&self) -> Vec<C> {
+    fn entry_ids_dfs(&self) -> Vec<usize> {
         let mut out = Vec::with_capacity(self.entries.len());
         self.collect_from(self.root, &mut out);
         out
     }
 
-    fn collect_from(&self, id: usize, out: &mut Vec<C>) {
+    fn collect_from(&self, id: usize, out: &mut Vec<usize>) {
         let node = &self.nodes[id];
         if node.leaf {
-            for &e in &node.children {
-                out.push(self.entries[e].clone());
-            }
+            out.extend_from_slice(&node.children);
         } else {
             for &c in &node.children {
                 self.collect_from(c, out);
@@ -2183,6 +2280,140 @@ mod tests {
         }
         assert_eq!(tree.num_leaves(), 1); // everything absorbs into one entry
         assert!(close(tree.summary().weight(), 300.0));
+    }
+
+    fn weights<C: ClusterFeature<f64>, D: CFDistance<f64, C>, A: CFDistance<f64, C>>(
+        tree: &CFTree<f64, C, D, A>,
+    ) -> Vec<f64> {
+        tree.entries.iter().map(ClusterFeature::weight).collect()
+    }
+
+    /// The trees whose rebuilds renumber entries every way a rebuild can: compaction in place with
+    /// a rebalance every `max_leaves` merges (`leaf_cap = 8`), merges across leaves with a rebalance
+    /// at every rebuild (`leaf_cap = 1`), and the mass cap's second pass.
+    fn renumbering_trees() -> Vec<EuclidTree> {
+        let mut capped = EuclidTree::new(2, 8, 8, 0.0, 30, CentroidEuclidean, CentroidEuclidean);
+        capped.set_balance(Some(1.5));
+        vec![
+            EuclidTree::new(2, 8, 8, 0.0, 30, CentroidEuclidean, CentroidEuclidean),
+            EuclidTree::new(2, 4, 1, 0.0, 30, CentroidEuclidean, CentroidEuclidean),
+            capped,
+        ]
+    }
+
+    /// `n` Gaussian points in the plane whose spread grows along the stream, so new entries keep
+    /// forming past every grown threshold and the tree keeps rebuilding.
+    fn spreading(n: usize) -> Vec<Vec<f64>> {
+        let mut rng = crate::clustering::rng::SplitMix64::new(7);
+        (0..n)
+            .map(|i| {
+                let s = 1.0 + i as f64 / 20.0;
+                vec![s * rng.gauss(), s * rng.gauss()]
+            })
+            .collect()
+    }
+
+    /// Every rebuild reports where each entry went, exactly: an entry's weight after the rebuild is
+    /// the sum of the weights mapped to it, plus the one row whose insert set the rebuild off.
+    /// Between rebuilds there is nothing to report, because every entry keeps its index.
+    #[test]
+    fn a_rebuild_reports_where_every_entry_went() {
+        for (case, mut tree) in renumbering_trees().into_iter().enumerate() {
+            tree.record_entry_moves();
+            let mut moved = 0;
+            for p in &spreading(600) {
+                let before = weights(&tree);
+                tree.insert(p);
+                let after = weights(&tree);
+                let Some(moves) = tree.take_entry_moves() else {
+                    assert!(
+                        after.len() >= before.len(),
+                        "case {case}: an entry vanished"
+                    );
+                    let grew: f64 = after.iter().sum::<f64>() - before.iter().sum::<f64>();
+                    assert_eq!(grew, 1.0, "case {case}");
+                    assert!(
+                        before.iter().zip(&after).all(|(b, a)| a >= b),
+                        "case {case}"
+                    );
+                    continue;
+                };
+                moved += 1;
+                assert!(
+                    moves.len() > before.len(),
+                    "case {case}: the new row's entry is unmapped"
+                );
+                assert!(
+                    moves.iter().all(|&m| m < after.len()),
+                    "case {case}: {moves:?}"
+                );
+                let mut got = vec![0.0; after.len()];
+                for (old, &w) in before.iter().enumerate() {
+                    got[moves[old]] += w;
+                }
+                let residual: Vec<f64> = after.iter().zip(&got).map(|(a, g)| a - g).collect();
+                assert_eq!(
+                    residual.iter().filter(|&&r| r == 1.0).count(),
+                    1,
+                    "case {case}: {residual:?}"
+                );
+                assert!(
+                    residual.iter().all(|&r| r == 0.0 || r == 1.0),
+                    "case {case}"
+                );
+            }
+            assert!(
+                moved >= 10,
+                "case {case}: only {moved} rebuilds merged anything"
+            );
+            verify(&tree, 600);
+        }
+    }
+
+    /// Moves recorded over many rebuilds compose: one read at the end equals the reads after
+    /// every insert chained, and recording leaves the tree exactly as it would be without it.
+    #[test]
+    fn moves_compose_across_rebuilds_and_leave_the_tree_alone() {
+        let pts = spreading(900);
+        for (case, ((mut each, mut once), mut plain)) in renumbering_trees()
+            .into_iter()
+            .zip(renumbering_trees())
+            .zip(renumbering_trees())
+            .enumerate()
+        {
+            for p in &pts[..100] {
+                each.insert(p);
+                once.insert(p);
+                plain.insert(p);
+            }
+            each.record_entry_moves();
+            once.record_entry_moves();
+            let (start, rebuilds) = (each.num_leaves(), each.rebuilds());
+            let mut chained: Vec<usize> = (0..start).collect();
+            for p in &pts[100..] {
+                each.insert(p);
+                once.insert(p);
+                plain.insert(p);
+                if let Some(step) = each.take_entry_moves() {
+                    for c in &mut chained {
+                        *c = step[*c];
+                    }
+                }
+            }
+            assert!(each.rebuilds() >= rebuilds + 5, "case {case}");
+            let whole = once.take_entry_moves().expect("rebuilds merged entries");
+            assert_eq!(whole[..start], chained[..], "case {case}");
+            assert!(
+                once.take_entry_moves().is_none(),
+                "case {case}: the read restarts"
+            );
+            assert_eq!(weights(&once), weights(&plain), "case {case}");
+            let means = |t: &EuclidTree| -> Vec<Vec<f64>> {
+                t.entries.iter().map(|e| e.mean().to_vec()).collect()
+            };
+            assert_eq!(means(&once), means(&plain), "case {case}");
+            assert_eq!(once.rebuilds(), plain.rebuilds(), "case {case}");
+        }
     }
 
     #[test]

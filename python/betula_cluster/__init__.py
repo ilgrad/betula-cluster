@@ -1021,8 +1021,11 @@ class Betula(_Clusterer):
         # until 2.0. "rows" (method="leiden" only) counts the graph from the training rows: each
         # row names its 5 nearest leaves, and every pair of leaves one row names gains an edge
         # count. A row, in training and in predict, takes the community of its nearest leaf, found
-        # by one exact search in the tree's precision. It needs the rows when the head runs, so
-        # partial_fit(None) and sparse input refuse it.
+        # by one exact search in the tree's precision. fit() counts the graph from the rows it is
+        # given; a partial_fit stream counts it as the rows arrive (each row names its 5 nearest
+        # leaves right after its own insert), so partial_fit(None) runs the head on those counts.
+        # Sparse input, and a stream after fit() or with decay < 1, have no counted graph and
+        # refuse it.
         self.leaf_graph = leaf_graph
         # Concentration model of the vMF head (method="vmf"). "free" (default) fits one κ per
         # component, as every earlier release did. "shared" fits one κ for all of them: on text the

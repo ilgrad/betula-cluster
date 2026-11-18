@@ -689,6 +689,7 @@ const ROW_GRAPH_CANDIDATES: usize = 4 * ROW_GRAPH_LEAVES;
 /// the off-diagonal of `BᵀB`: a bipartite row–leaf graph folded onto the leaves, as U-SPEC does. A
 /// leaf's mass is the row share it carries, `Σ_r B_ri`. Counts are integers, so the graph does not
 /// depend on the order the rows are counted in.
+#[cfg_attr(test, derive(Debug, PartialEq))]
 pub(crate) struct RowGraph {
     adj: Vec<Vec<(usize, f64)>>,
     mass: Vec<f64>,
@@ -710,11 +711,23 @@ impl RowGraph {
             }
         }
         pairs.sort_unstable();
+        let counted = pairs
+            .chunk_by(|x, y| x == y)
+            .map(|run| (run[0], run.len() as u64));
+        Self::from_counts(&named, counted, per_row)
+    }
+
+    /// The graph of `named[i]` rows naming leaf `i` and `count` rows naming both leaves of each
+    /// pair `(a, b)`, `a < b`, the pairs in ascending order (the order the adjacency lists keep).
+    fn from_counts(
+        named: &[u64],
+        pairs: impl Iterator<Item = ((usize, usize), u64)>,
+        per_row: usize,
+    ) -> Self {
         let unit = 1.0 / (per_row * per_row) as f64;
-        let mut adj = vec![Vec::new(); m];
-        for run in pairs.chunk_by(|x, y| x == y) {
-            let (a, b) = run[0];
-            let w = run.len() as f64 * unit;
+        let mut adj = vec![Vec::new(); named.len()];
+        for ((a, b), count) in pairs {
+            let w = count as f64 * unit;
             adj[a].push((b, w));
             adj[b].push((a, w));
         }
@@ -722,6 +735,204 @@ impl RowGraph {
         Self { adj, mass, per_row }
     }
 }
+
+/// The rows graph of a `partial_fit` stream: [`RowGraph`] counted as the rows arrive, keyed by
+/// leaf, while the rows themselves are forgotten.
+///
+/// A row names its [`ROW_GRAPH_LEAVES`] nearest leaves ([`nearest_leaves`]) right after its own
+/// insert, against the tree as it stands then; what is kept is how many rows named each leaf and
+/// each pair of leaves. Between rebuilds a leaf keeps its index. A rebuild merges leaves and
+/// renumbers the survivors, and a count is additive under a merge, so [`Self::follow`] moves every
+/// count to the leaf that absorbed its own and equals a recount of the moved names.
+///
+/// The names go stale as the tree grows: a row never sees the leaves inserted after it, so on the
+/// 20 newsgroups stream about half the names differ from the ones the final tree would give. The
+/// community structure survives the substitution of a near leaf for a nearer one, which is what
+/// `bench/stream_vs_refit.py` measures against the graph counted from every row at the end.
+///
+/// Integers, so the graph does not depend on how the stream was cut into calls, and memory is
+/// `O(leaves + edges)` whatever its length.
+#[derive(Clone, Default)]
+#[cfg_attr(test, derive(Debug, PartialEq))]
+#[cfg_attr(
+    feature = "persistence",
+    derive(serde::Serialize, serde::Deserialize),
+    serde(into = "RowCountsFile", try_from = "RowCountsFile")
+)]
+#[cfg_attr(not(feature = "python"), allow(dead_code))] // only the Python boundary holds the rows
+pub(crate) struct RowCounts {
+    /// Rows that named each leaf, one slot per leaf of the tree at the last row counted.
+    named: Vec<u64>,
+    /// Rows that named both leaves of each pair `(a, b)`, `a < b`; a pair no row named is absent.
+    pairs: BTreeMap<(u32, u32), u64>,
+}
+
+#[cfg_attr(not(feature = "python"), allow(dead_code))] // only the Python boundary holds the rows
+impl RowCounts {
+    /// Count one row that named the distinct leaves `top` of a tree of `leaves` leaves.
+    pub(crate) fn add(&mut self, top: &[usize], leaves: usize) {
+        debug_assert!(u32::try_from(leaves).is_ok(), "a leaf index fits a u32");
+        debug_assert!(
+            self.named.len() <= leaves,
+            "leaves are lost only by a rebuild"
+        );
+        self.named.resize(leaves, 0);
+        for (x, &a) in top.iter().enumerate() {
+            self.named[a] += 1;
+            for &b in &top[x + 1..] {
+                *self.pairs.entry(pair(a, b)).or_insert(0) += 1;
+            }
+        }
+    }
+
+    /// Move every count to the leaf that holds its own after the rebuilds `moves` reports
+    /// ([`crate::tree::CFTree::take_entry_moves`]), in a tree of `leaves` leaves. Two leaves that
+    /// merged lose the edge between them, as a row naming both now names one leaf twice; a leaf
+    /// that went nowhere takes its counts with it.
+    pub(crate) fn follow(&mut self, moves: &[usize], leaves: usize) {
+        debug_assert!(
+            self.named.len() <= moves.len(),
+            "the moves cover every counted leaf"
+        );
+        let to = |a: usize| moves.get(a).copied().filter(|&m| m < leaves);
+        let mut named = vec![0; leaves];
+        for (a, &c) in self.named.iter().enumerate() {
+            if let Some(m) = to(a) {
+                named[m] += c;
+            }
+        }
+        let mut pairs = BTreeMap::new();
+        for (&(a, b), &c) in &self.pairs {
+            if let (Some(ma), Some(mb)) = (to(a as usize), to(b as usize)) {
+                if ma != mb {
+                    *pairs.entry(pair(ma, mb)).or_insert(0) += c;
+                }
+            }
+        }
+        self.named = named;
+        self.pairs = pairs;
+    }
+
+    /// The leaves the counts are kept for: the tree's leaf count at the last row counted.
+    pub(crate) fn leaves(&self) -> usize {
+        self.named.len()
+    }
+
+    /// The graph [`leiden_rows`] partitions, over a tree of `self.leaves()` leaves.
+    pub(crate) fn graph(&self) -> RowGraph {
+        let per_row = ROW_GRAPH_LEAVES.min(self.named.len());
+        let pairs = self
+            .pairs
+            .iter()
+            .map(|(&(a, b), &c)| ((a as usize, b as usize), c));
+        RowGraph::from_counts(&self.named, pairs, per_row)
+    }
+
+    /// The counts as arrays: rows per leaf, and `(a, b, rows)` per pair in ascending order.
+    pub(crate) fn arrays(&self) -> (Vec<u64>, Vec<(u32, u32, u64)>) {
+        let pairs = self.pairs.iter().map(|(&(a, b), &c)| (a, b, c)).collect();
+        (self.named.clone(), pairs)
+    }
+}
+
+/// The key of the pair of distinct leaves `a` and `b`.
+#[cfg_attr(not(feature = "python"), allow(dead_code))] // only the Python boundary holds the rows
+fn pair(a: usize, b: usize) -> (u32, u32) {
+    debug_assert_ne!(a, b, "a row names distinct leaves");
+    (a.min(b) as u32, a.max(b) as u32)
+}
+
+/// [`RowCounts`] as a file holds it: the pairs as a sorted list, so equal counts write equal
+/// bytes, and checked on the way in, since a file is input.
+#[cfg(feature = "persistence")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(not(feature = "python"), allow(dead_code))] // only the Python boundary holds the rows
+struct RowCountsFile {
+    named: Vec<u64>,
+    pairs: Vec<(u32, u32, u64)>,
+}
+
+#[cfg(feature = "persistence")]
+impl From<RowCounts> for RowCountsFile {
+    fn from(c: RowCounts) -> Self {
+        let (named, pairs) = c.arrays();
+        Self { named, pairs }
+    }
+}
+
+#[cfg(feature = "persistence")]
+impl TryFrom<RowCountsFile> for RowCounts {
+    type Error = String;
+
+    fn try_from(f: RowCountsFile) -> Result<Self, String> {
+        let m = f.named.len();
+        let mut pairs = BTreeMap::new();
+        let mut last = None;
+        for &(a, b, c) in &f.pairs {
+            if a >= b || b as usize >= m || c == 0 || last >= Some((a, b)) {
+                return Err(format!(
+                    "the rows graph lists pair ({a}, {b}) with {c} rows over {m} leaves; pairs are \
+                     distinct, ascending, a < b < leaves, and counted at least once"
+                ));
+            }
+            last = Some((a, b));
+            pairs.insert((a, b), c);
+        }
+        Ok(Self {
+            named: f.named,
+            pairs,
+        })
+    }
+}
+
+/// The `k` leaves whose means are nearest `x`, nearest first, ties to the lower index, by an exact
+/// scan over every leaf: the names a streamed row gives ([`RowCounts`]). `O(m·d)` per row, split
+/// across threads past `NEAREST_LEAVES_PAR_MIN` coordinates; each piece's best `k` merge into the
+/// same answer under the same order, so the thread count does not change it.
+#[cfg_attr(not(feature = "python"), allow(dead_code))] // only the Python boundary holds the rows
+pub(crate) fn nearest_leaves<R: Real, C: ClusterFeature<R>>(
+    features: &[C],
+    x: &[R],
+    k: usize,
+) -> Vec<usize> {
+    let best = |from: usize, chunk: &[C]| -> Vec<(R, usize)> {
+        let mut top: Vec<(R, usize)> = Vec::with_capacity(k + 1);
+        for (i, f) in chunk.iter().enumerate() {
+            let d = sq_euclidean(x, f.mean());
+            // Indices arrive ascending, so a later leaf displaces an earlier one only when nearer.
+            if top.len() < k || top.last().is_some_and(|&(w, _)| d < w) {
+                let at = top.partition_point(|&(w, _)| w <= d);
+                top.insert(at, (d, from + i));
+                top.truncate(k);
+            }
+        }
+        top
+    };
+    #[cfg(feature = "parallel")]
+    if features.len() * x.len() >= NEAREST_LEAVES_PAR_MIN {
+        use rayon::prelude::*;
+        let mut all: Vec<(R, usize)> = features
+            .par_chunks(NEAREST_LEAVES_CHUNK)
+            .enumerate()
+            .flat_map_iter(|(c, chunk)| best(c * NEAREST_LEAVES_CHUNK, chunk))
+            .collect();
+        all.sort_by(|a, b| {
+            a.0.partial_cmp(&b.0)
+                .unwrap_or(Ordering::Equal)
+                .then(a.1.cmp(&b.1))
+        });
+        return all.into_iter().take(k).map(|(_, j)| j).collect();
+    }
+    best(0, features).into_iter().map(|(_, j)| j).collect()
+}
+
+/// Leaf coordinates (leaves × dimension) from which [`nearest_leaves`] splits its scan across
+/// threads, and the leaves per piece: a piece of 256 leaves at `d = 384` is ~10⁵ multiply-adds,
+/// well above a task's cost.
+#[cfg(feature = "parallel")]
+const NEAREST_LEAVES_PAR_MIN: usize = 1 << 17;
+#[cfg(feature = "parallel")]
+const NEAREST_LEAVES_CHUNK: usize = 256;
 
 /// The `per_row` leaves nearest each row of `flat`, row after row, nearest first, among the row's
 /// nearest leaf and that leaf's [`ROW_GRAPH_CANDIDATES`] nearest leaves. `hints` holds one leaf
@@ -2674,6 +2885,167 @@ mod tests {
         assert_eq!(g.adj[2], vec![(1, 0.25)]);
         assert!(g.adj[3].is_empty());
         assert_eq!(g.mass, vec![1.0, 1.5, 0.5, 0.0]);
+    }
+
+    /// `n` rows, each naming `s` distinct leaves of `m`, row after row.
+    fn random_names(rng: &mut SplitMix64, n: usize, s: usize, m: usize) -> Vec<usize> {
+        let mut top = Vec::with_capacity(n * s);
+        for _ in 0..n {
+            let mut row: Vec<usize> = Vec::new();
+            while row.len() < s {
+                let j = (rng.next_u64() % m as u64) as usize;
+                if !row.contains(&j) {
+                    row.push(j);
+                }
+            }
+            top.extend(row);
+        }
+        top
+    }
+
+    /// Counted one row at a time, the streamed graph is the batch graph of the same names,
+    /// adjacency order included, so the head reads the same graph either way.
+    #[test]
+    fn rows_counted_as_they_arrive_give_the_graph_counted_at_once() {
+        let mut rng = SplitMix64::new(11);
+        let (s, m) = (ROW_GRAPH_LEAVES, 40);
+        let top = random_names(&mut rng, 300, s, m);
+        let mut counts = RowCounts::default();
+        for row in top.chunks_exact(s) {
+            counts.add(row, m);
+        }
+        assert_eq!(counts.graph(), RowGraph::from_top(&top, s, m));
+        let (named, pairs) = counts.arrays();
+        assert_eq!(named.iter().sum::<u64>(), 300 * s as u64);
+        assert_eq!(
+            pairs.iter().map(|p| p.2).sum::<u64>(),
+            300 * (s * (s - 1) / 2) as u64
+        );
+    }
+
+    /// Following a merge map moves every count where a recount of the moved names puts it: each
+    /// name maps on its own, a pair whose two leaves merged becomes a loop and is dropped, and a
+    /// leaf that went nowhere takes its counts with it. Counts after two maps equal counts after
+    /// their composition.
+    #[test]
+    fn following_the_moves_equals_recounting_the_moved_names() {
+        let mut rng = SplitMix64::new(12);
+        for case in 0..50 {
+            let s = ROW_GRAPH_LEAVES;
+            let m = 8 + (rng.next_u64() % 40) as usize;
+            let top = random_names(&mut rng, 200, s, m);
+            let mut counts = RowCounts::default();
+            for row in top.chunks_exact(s) {
+                counts.add(row, m);
+            }
+            // A merge map onto `after` leaves, every few cases with a leaf that went nowhere.
+            let after = 2 + (rng.next_u64() % (m as u64 - 1)) as usize;
+            let mut moves: Vec<usize> = (0..m)
+                .map(|_| (rng.next_u64() % after as u64) as usize)
+                .collect();
+            if case % 4 == 0 {
+                moves[case % m] = crate::tree::ENTRY_GONE;
+            }
+            counts.follow(&moves, after);
+
+            let mut recount = RowCounts {
+                named: vec![0; after],
+                ..RowCounts::default()
+            };
+            for row in top.chunks_exact(s) {
+                let moved: Vec<usize> = row
+                    .iter()
+                    .map(|&a| moves[a])
+                    .filter(|&a| a != crate::tree::ENTRY_GONE)
+                    .collect();
+                for &a in &moved {
+                    recount.named[a] += 1;
+                }
+                for (x, &a) in moved.iter().enumerate() {
+                    for &b in moved[x + 1..].iter().filter(|&&b| b != a) {
+                        *recount.pairs.entry(pair(a, b)).or_insert(0) += 1;
+                    }
+                }
+            }
+            assert_eq!(counts, recount, "case {case}");
+
+            let further: Vec<usize> = (0..after).map(|a| a / 2).collect();
+            let mut twice = counts.clone();
+            twice.follow(&further, after.div_ceil(2));
+            let composed: Vec<usize> = moves
+                .iter()
+                .map(|&a| further.get(a).copied().unwrap_or(crate::tree::ENTRY_GONE))
+                .collect();
+            let mut original = RowCounts::default();
+            for row in top.chunks_exact(s) {
+                original.add(row, m);
+            }
+            original.follow(&composed, after.div_ceil(2));
+            assert_eq!(twice, original, "case {case}");
+        }
+    }
+
+    /// The exact scan answers with the `k` nearest leaves, nearest first and ties to the lower
+    /// index, whether it runs whole or split across threads.
+    #[test]
+    fn nearest_leaves_are_the_exact_top_k_with_ties_to_the_lower_index() {
+        let mut rng = SplitMix64::new(13);
+        for (m, dim) in [(7usize, 3usize), (40, 2), (900, 200)] {
+            // Coordinates on a coarse grid, so distances tie often.
+            let micros: Vec<Spherical<f64>> = (0..m)
+                .map(|_| {
+                    let x: Vec<f64> = (0..dim).map(|_| (rng.next_u64() % 4) as f64).collect();
+                    let mut f = Spherical::new(dim);
+                    f.push(&x, 1.0);
+                    f
+                })
+                .collect();
+            for _ in 0..20 {
+                let x: Vec<f64> = (0..dim).map(|_| (rng.next_u64() % 4) as f64).collect();
+                let mut want: Vec<(f64, usize)> = micros
+                    .iter()
+                    .enumerate()
+                    .map(|(j, f)| (sq_euclidean(&x, f.mean()), j))
+                    .collect();
+                want.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                let want: Vec<usize> = want.iter().take(5).map(|&(_, j)| j).collect();
+                assert_eq!(nearest_leaves(&micros, &x, 5), want, "m {m} dim {dim}");
+            }
+        }
+    }
+
+    #[cfg(feature = "persistence")]
+    #[test]
+    fn row_counts_survive_a_file_and_a_corrupt_list_is_refused() {
+        let mut rng = SplitMix64::new(14);
+        let top = random_names(&mut rng, 100, ROW_GRAPH_LEAVES, 30);
+        let mut counts = RowCounts::default();
+        for row in top.chunks_exact(ROW_GRAPH_LEAVES) {
+            counts.add(row, 30);
+        }
+        let mut bytes = Vec::new();
+        ciborium::into_writer(&counts, &mut bytes).unwrap();
+        let back: RowCounts = ciborium::from_reader(bytes.as_slice()).unwrap();
+        assert_eq!(back, counts);
+
+        let bad = [
+            vec![(3, 3, 1)],
+            vec![(4, 3, 1)],
+            vec![(1, 30, 1)],
+            vec![(1, 2, 0)],
+            vec![(1, 2, 1), (1, 2, 1)],
+            vec![(1, 3, 1), (1, 2, 1)],
+        ];
+        for pairs in bad {
+            let file = RowCountsFile {
+                named: vec![1; 30],
+                pairs: pairs.clone(),
+            };
+            let mut bytes = Vec::new();
+            ciborium::into_writer(&file, &mut bytes).unwrap();
+            let got: Result<RowCounts, _> = ciborium::from_reader(bytes.as_slice());
+            assert!(got.is_err(), "{pairs:?} was accepted");
+        }
     }
 
     /// The graph Leiden runs on leaves out `BᵀB`'s diagonal and raises γ by `s/(s − 1)`; that must

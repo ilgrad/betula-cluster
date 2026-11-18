@@ -27,7 +27,9 @@ use crate::bregman::{
     BregmanCentroid, BregmanCf, BregmanDivergence, BregmanIncrease, ItakuraSaito, KullbackLeibler,
     Logistic, SquaredEuclidean,
 };
-use crate::clustering::community::{ROW_GRAPH_LEAVES, RowGraph, RowLeaves, RowPicker};
+use crate::clustering::community::{
+    ROW_GRAPH_LEAVES, RowCounts, RowGraph, RowLeaves, RowPicker, nearest_leaves,
+};
 use crate::clustering::hdbscan::hdbscan_with;
 use crate::clustering::hyperbolic::lorentz_dot;
 use crate::clustering::nmf::{Projection, ProjectionKind, ProjectionSpec};
@@ -2993,14 +2995,43 @@ impl<R: Real> TreeState<R> {
         }
     }
 
+    /// Insert `row` and count it into the streamed rows graph `counts`: first the moves of any
+    /// rebuild the insert set off, then the row's own names against the tree as it now stands.
+    fn insert_counted(&mut self, row: &[R], counts: &mut RowCounts) {
+        fn one<R: Real, C: ClusterFeature<R>>(
+            t: &mut BetulaTree<R, C>,
+            row: &[R],
+            counts: &mut RowCounts,
+        ) {
+            t.record_entry_moves();
+            t.insert(row);
+            let leaves = t.num_leaves();
+            if let Some(moves) = t.take_entry_moves() {
+                counts.follow(&moves, leaves);
+            }
+            counts.add(
+                &nearest_leaves(t.leaf_features(), row, ROW_GRAPH_LEAVES),
+                leaves,
+            );
+        }
+        match self {
+            TreeState::Spherical(t) => one(t, row, counts),
+            TreeState::Diagonal(t) => one(t, row, counts),
+            TreeState::Full(t) => one(t, row, counts),
+            TreeState::Fd(t) => one(t, row, counts),
+        }
+    }
+
     /// Stream the rows of `rows` into the tree, in the order `order` names or else in arrival
     /// order, lazily creating it (and resolving the gate) on the first call, applying EWMA decay
-    /// first. `slot` is the estimator's per-dtype tree.
+    /// first. `slot` is the estimator's per-dtype tree; `counts`, when given, counts every row into
+    /// the streamed rows graph right after its insert.
     fn stream_chunk(
         slot: &mut Option<Self>,
         cfg: &StreamCfg<'_>,
         rows: RowView<'_, R>,
         order: Option<&[u32]>,
+        counts: Option<&mut RowCounts>,
     ) -> Result<(), &'static str> {
         let dim = rows.dim;
         if cfg.decay < 1.0 {
@@ -3026,7 +3057,10 @@ impl<R: Real> TreeState<R> {
             )?);
         }
         let tree = slot.as_mut().unwrap();
-        rows.visit_rows(order, &mut |row| tree.insert(row));
+        match counts {
+            Some(counts) => rows.visit_rows(order, &mut |row| tree.insert_counted(row, counts)),
+            None => rows.visit_rows(order, &mut |row| tree.insert(row)),
+        }
         Ok(())
     }
 
@@ -3741,6 +3775,13 @@ struct Betula {
     /// Left out of the file when absent, so every other model saves byte-for-byte as before.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     origin: Option<Vec<f64>>,
+    /// The rows graph a `partial_fit` stream counts as its rows arrive (`leaf_graph="rows"`), kept
+    /// from the stream's first row so `partial_fit(None)` can run the head on it. `None` for every
+    /// other model, and for a tree holding rows no count saw: one `fit` built, a sparse or decayed
+    /// stream, or a file from a build before the counts existed. Left out of the file when absent,
+    /// so every other model saves byte-for-byte as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    row_counts: Option<RowCounts>,
 }
 
 /// A 2-D array as flat row-major rows, casting from the other float dtype if needed (lossless
@@ -4113,6 +4154,7 @@ impl Betula {
         self.leaf_plans = LeafPlans::default();
         self.dim = 0;
         self.origin = None;
+        self.row_counts = None;
     }
 
     /// Should this whole-array build be repeated with the mass cap on?
@@ -4156,6 +4198,14 @@ impl Betula {
             (_, Some(_)) => true,
             (None, None) => data.extract::<PyReadonlyArray2<f64>>().is_err(),
         };
+        // A stream counts its rows graph from its first row or not at all: the counts are kept
+        // only while they cover every row the tree holds. A decayed tree forgets rows the counts
+        // would keep at full weight, so it does not start them.
+        let first_rows = self.state64.is_none() && self.state32.is_none();
+        let start_counts = first_rows
+            && arrival == Arrival::Chunk
+            && self.leaf_graph == ROWS_GRAPH
+            && self.decay >= 1.0;
         let cfg = StreamCfg {
             feature: &self.feature,
             branching: self.branching,
@@ -4193,7 +4243,11 @@ impl Betula {
                 ));
             }
             let order = self.insertion_order(view, arrival)?;
-            TreeState::stream_chunk(&mut self.state32, &cfg, view, order.as_deref())
+            if first_rows {
+                self.row_counts = start_counts.then(RowCounts::default);
+            }
+            let counts = self.row_counts.as_mut();
+            TreeState::stream_chunk(&mut self.state32, &cfg, view, order.as_deref(), counts)
                 .map_err(PyValueError::new_err)?;
             if self.resummarize_capped(arrival, &self.state32) {
                 self.state32 = None;
@@ -4202,7 +4256,7 @@ impl Betula {
                     auto_balance: false,
                     ..cfg
                 };
-                TreeState::stream_chunk(&mut self.state32, &capped, view, order.as_deref())
+                TreeState::stream_chunk(&mut self.state32, &capped, view, order.as_deref(), None)
                     .map_err(PyValueError::new_err)?;
             }
             self.dim = dim;
@@ -4216,7 +4270,11 @@ impl Betula {
                 ));
             }
             let order = self.insertion_order(view, arrival)?;
-            TreeState::stream_chunk(&mut self.state64, &cfg, view, order.as_deref())
+            if first_rows {
+                self.row_counts = start_counts.then(RowCounts::default);
+            }
+            let counts = self.row_counts.as_mut();
+            TreeState::stream_chunk(&mut self.state64, &cfg, view, order.as_deref(), counts)
                 .map_err(PyValueError::new_err)?;
             if self.resummarize_capped(arrival, &self.state64) {
                 self.state64 = None;
@@ -4225,7 +4283,7 @@ impl Betula {
                     auto_balance: false,
                     ..cfg
                 };
-                TreeState::stream_chunk(&mut self.state64, &capped, view, order.as_deref())
+                TreeState::stream_chunk(&mut self.state64, &capped, view, order.as_deref(), None)
                     .map_err(PyValueError::new_err)?;
             }
             self.dim = dim;
@@ -4293,6 +4351,8 @@ impl Betula {
         self.dim = n_features;
         self.labels = None;
         self.proba = None;
+        // The rows graph names dense rows; a sparse chunk leaves rows it never counted.
+        self.row_counts = None;
         Ok(())
     }
 
@@ -4591,7 +4651,7 @@ impl Betula {
             warn_auto_k_saturated(py, kind, k, seen.len(), self.n_leaves_(), akm)?;
         }
         let nearest_leaf = matches!(self.rule, Some(PointRule::NearestLeaf));
-        Ok(counted.and_then(|(_, nearest)| nearest_leaf.then_some(nearest)))
+        Ok(counted.and_then(|(_, nearest)| nearest.filter(|_| nearest_leaf)))
     }
 
     /// Where the Leiden head takes its resolution from, as the two stored flags say.
@@ -4605,32 +4665,41 @@ impl Betula {
         }
     }
 
-    /// Count the rows graph (`leaf_graph="rows"`) of the fitted tree over `rows`, with each row's
-    /// nearest leaf, or refuse when the caller has none to give.
+    /// The rows graph (`leaf_graph="rows"`) of the fitted tree: counted over `rows`, with each
+    /// row's nearest leaf, or, with no rows, the graph a `partial_fit` stream counted as its rows
+    /// arrived ([`Betula::row_counts`]); a refusal when there is neither.
     fn count_row_graph(
         &self,
         py: Python<'_>,
         rows: Option<&Bound<'_, PyAny>>,
-    ) -> PyResult<(RowGraph, Vec<usize>)> {
+    ) -> PyResult<(RowGraph, Option<Vec<usize>>)> {
         let Some(data) = rows else {
-            return Err(PyValueError::new_err(
-                "leaf_graph='rows' counts the Leiden graph from the training rows, and this call has \
-                 none to count: partial_fit(None) sees only the leaves the stream left, and a sparse \
-                 fit is not supported. Call fit() or fit_predict() on dense rows",
-            ));
+            let Some(counts) = &self.row_counts else {
+                return Err(PyValueError::new_err(
+                    "leaf_graph='rows' counts the Leiden graph from the rows, and this call has none \
+                     to count: a sparse fit is not supported, and partial_fit(None) runs on the \
+                     graph a stream counted only if it counted every row the tree holds -- dense \
+                     chunks from the first on, at decay=1, with no fit() before them, and not \
+                     resumed from a file an earlier build saved. Call fit() or fit_predict() on \
+                     dense rows",
+                ));
+            };
+            debug_assert_eq!(counts.leaves(), self.n_leaves_(), "counted every leaf");
+            return Ok((counts.graph(), None));
         };
         let (beam, degree, seed) = (self.route_beam, self.graph_degree, self.seed);
-        if let Some(t) = &self.state64 {
+        let (graph, nearest) = if let Some(t) = &self.state64 {
             let rows = self.rows_of::<f64>(data)?;
             let view = rows.view();
-            Ok(py.detach(|| t.row_graph(view, beam, degree, seed)))
+            py.detach(|| t.row_graph(view, beam, degree, seed))
         } else if let Some(t) = &self.state32 {
             let rows = self.rows_of::<f32>(data)?;
             let view = rows.view();
-            Ok(py.detach(|| t.row_graph(view, beam, degree, seed)))
+            py.detach(|| t.row_graph(view, beam, degree, seed))
         } else {
-            Err(PyValueError::new_err("no data was fitted"))
-        }
+            return Err(PyValueError::new_err("no data was fitted"));
+        };
+        Ok((graph, Some(nearest)))
     }
 
     /// Cluster the leaves under pairwise constraints (COP-KMeans). `data` is the just-streamed array,
@@ -5043,6 +5112,7 @@ impl Betula {
             hartigan,
             equal_size,
             origin: None,
+            row_counts: None,
         })
     }
 
@@ -5387,6 +5457,14 @@ impl Betula {
         Ok(Array2::from_shape_vec((rows, dim), centers)
             .expect("centers length is rows*dim")
             .into_pyarray(py))
+    }
+
+    /// The rows graph a `partial_fit` stream has counted (`leaf_graph="rows"`): how many rows named
+    /// each leaf, and `(a, b, rows)` for every pair of leaves one row named, `a < b`, ascending.
+    /// `None` when no stream counted one. Hidden: it exists for the tests that check the counts.
+    #[allow(clippy::type_complexity)]
+    fn _row_graph(&self) -> Option<(Vec<u64>, Vec<(u32, u32, u64)>)> {
+        self.row_counts.as_ref().map(RowCounts::arrays)
     }
 
     /// The IMM threshold tree ([`imm`]) over the leaf means, weighed by mass, with the leaves'
@@ -5940,6 +6018,12 @@ const SCHEMA_VERSION_ORIGIN: u32 = 3;
 /// [`SCHEMA_VERSION_ORIGIN`], readable by the builds that wrote its kind.
 const SCHEMA_VERSION_LEAF: u32 = 4;
 
+/// The schema of a model that carries a stream's rows graph ([`Betula::row_counts`]), with or
+/// without a nearest-leaf rule or an origin. A build that reads versions 2 to 4 would skip the
+/// counts as an unknown key and resume the stream on an empty graph without a word; this number
+/// makes it refuse the file instead. Every other model keeps the version it had.
+const SCHEMA_VERSION_ROWS: u32 = 5;
+
 /// Leading bytes of a gzip member (RFC 1952 §2.3.1), which is how [`decode`] tells a compressed
 /// model from one written before `save` framed them.
 const GZIP_MAGIC: [u8; 2] = [0x1f, 0x8b];
@@ -5956,7 +6040,9 @@ const GZIP_MAGIC: [u8; 2] = [0x1f, 0x8b];
 /// cross-compiles without a C toolchain, and a `.betula` file stays readable by `gzip -d`.
 fn encode(est: &Betula) -> PyResult<Vec<u8>> {
     let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
-    let version = if matches!(est.rule, Some(PointRule::NearestLeaf)) {
+    let version = if est.row_counts.is_some() {
+        SCHEMA_VERSION_ROWS
+    } else if matches!(est.rule, Some(PointRule::NearestLeaf)) {
         SCHEMA_VERSION_LEAF
     } else if est.origin.is_some() {
         SCHEMA_VERSION_ORIGIN
@@ -5991,14 +6077,40 @@ fn decode(bytes: &[u8]) -> PyResult<Betula> {
         ciborium::from_reader(bytes)
     }
     .map_err(|e| PyValueError::new_err(format!("deserialize failed: {e}")))?;
-    if ![SCHEMA_VERSION, SCHEMA_VERSION_ORIGIN, SCHEMA_VERSION_LEAF].contains(&version) {
+    if ![
+        SCHEMA_VERSION,
+        SCHEMA_VERSION_ORIGIN,
+        SCHEMA_VERSION_LEAF,
+        SCHEMA_VERSION_ROWS,
+    ]
+    .contains(&version)
+    {
         return Err(PyValueError::new_err(format!(
             "unsupported model version {version} (this build reads {SCHEMA_VERSION}, \
-             {SCHEMA_VERSION_ORIGIN} and {SCHEMA_VERSION_LEAF})"
+             {SCHEMA_VERSION_ORIGIN}, {SCHEMA_VERSION_LEAF} and {SCHEMA_VERSION_ROWS})"
         )));
     }
+    if (version == SCHEMA_VERSION_ROWS) != est.row_counts.is_some() {
+        return Err(PyValueError::new_err(format!(
+            "corrupt model: a version {version} file {} a stream's rows graph",
+            if est.row_counts.is_some() {
+                "with"
+            } else {
+                "without"
+            }
+        )));
+    }
+    if est
+        .row_counts
+        .as_ref()
+        .is_some_and(|c| c.leaves() != est.n_leaves_() || est.leaf_graph != ROWS_GRAPH)
+    {
+        return Err(PyValueError::new_err(
+            "corrupt model: a stream's rows graph needs leaf_graph='rows' and one count per leaf",
+        ));
+    }
     let nearest_leaf = matches!(est.rule, Some(PointRule::NearestLeaf));
-    if (version == SCHEMA_VERSION_LEAF) != nearest_leaf {
+    if version != SCHEMA_VERSION_ROWS && (version == SCHEMA_VERSION_LEAF) != nearest_leaf {
         return Err(PyValueError::new_err(format!(
             "corrupt model: a version {version} file {} a nearest-leaf rule",
             if nearest_leaf { "with" } else { "without" }
@@ -6014,7 +6126,9 @@ fn decode(bytes: &[u8]) -> PyResult<Betula> {
             "corrupt model: a nearest-leaf rule needs one label per leaf",
         ));
     }
-    if version != SCHEMA_VERSION_LEAF && (version == SCHEMA_VERSION_ORIGIN) != est.origin.is_some()
+    if version != SCHEMA_VERSION_LEAF
+        && version != SCHEMA_VERSION_ROWS
+        && (version == SCHEMA_VERSION_ORIGIN) != est.origin.is_some()
     {
         return Err(PyValueError::new_err(format!(
             "corrupt model: a version {version} file {} an origin",
