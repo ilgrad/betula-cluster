@@ -1758,7 +1758,7 @@ versions are the ones listed here.
   were ties until the `VmHWM` re-read of 2026-11-15.
 
 **Each rival reproduces its own documentation first** (`bench/rival_reproductions.py`): the example
-the package publishes, called as published, against the published output. 14 of 16 match. The
+the package publishes, called as published, against the published output. 15 of 17 match. The
 two that do not are stable across runs and are traced to the documentation, not to the call.
 lumbermark, EVoC, DelTriC (`deltric`) and CoreSPECT (`cplearn`) publish no numeric output, so they
 have no row; read theirs with that in mind. The DelTriC and CoreSPECT papers report numbers on
@@ -1786,6 +1786,11 @@ kmodes and tslearn. Their rows rest on the documented call alone.
 | BICO 0.1.8 | (0.46892639, 0.41968333, 0.47302945, 0.51782955, 0.39390839, 0.56209413, 0.4481691, 0.49521457, 0.31394509, 0.5104331) | (0.46892639, 0.41968333, 0.47302945, 0.51782955, 0.39390839, 0.56209413, 0.4481691, 0.49521457, 0.31394509, 0.5104331) | yes |
 | River 0.27.0 DBSTREAM | [0, 1, 2] | [0, 1, 2] | yes |
 | River 0.27.0 DenStream | [0, 2, 1, 3] | [0, 2, 1, 3] | yes |
+| CluProp recipe (pynndescent 0.7.0, python-igraph 1.0.0) | ARI 0.87 ± 0.01, 12 ± 1 clusters | (0.865, 13) | yes |
+
+The CluProp row is a paper's number, not a package's example: the paper (arXiv 2605.00390)
+publishes no code, so the row reruns the recipe on its data, raw MNIST-70k at seed 0, and
+accepts a result inside the published spread (*Where betula is the right choice*, below).
 
 **Rival families with no row, and why.** Every rival a user would reach for is named, measured or
 not. These have no row in any committed CSV:
@@ -1810,6 +1815,33 @@ not. These have no row in any committed CSV:
   use UMAP + HDBSCAN or EVoC if the memory is there. The two newest count-free methods trail it at
   both sizes: CoreSPECT reads 0.510 and 0.462 with 23 and 36 clusters, and DelTriC 0.483 and 0.485
   with 49 and 93 clusters and a peak of 3.5 and 10.6 GB.
+- **The row-level reference, k not given: the CluProp recipe is ahead on all five slices.** CluProp
+  (Zheng, Phibbs, Pham, arXiv 2605.00390 v2, ICDM 2026) runs Leiden modularity at resolution 1 on
+  the union kNN graph, k = 8, cosine: the rows graph with a row in place of each leaf. Its paper
+  reports ARI 0.87 ± 0.01 and 12 ± 1 clusters on raw MNIST-70k (Table 1, five runs), and publishes
+  no code. The arm (`rivals._cluprop`; pynndescent 0.7.0, python-igraph 1.0.0) makes the three
+  choices the text leaves open: eight neighbours besides the row itself, an edge weighted by the
+  cosine similarity `1 − d`, and igraph's `community_leiden` at its defaults. It reads 0.865
+  (0.864–0.866) with 13 clusters there, inside the published spread. The other readings miss it
+  (a scratch study, seeds 0/1/2, not in a CSV): the text's "a weight proportional to d", taken as
+  the distance, reads 0.783 with 15–16 clusters, and seven neighbours (k = 8 counting the row
+  itself) read 0.780–0.820 under any of the three weights.
+
+  | slice, k not given | CluProp recipe | clusters | betula `leiden`, rows graph | clusters |
+  |---|---|---|---|---|
+  | MNIST, 20 000 | 0.854 (0.837–0.858) | 12 | 0.762 (0.680–0.766) | 10 |
+  | MNIST, 70 000 | 0.865 (0.864–0.866) | 13 | 0.777 (0.777–0.791) | 13 |
+  | news, MiniLM | 0.419 (0.413–0.423) | 25 | 0.330 (0.321–0.340) | 13 |
+  | news, mpnet | 0.426 (0.418–0.434) | 30 | 0.367 (0.366–0.370) | 14 |
+  | CIFAR-100, CLIP | 0.464 (0.454–0.478) | 63 | 0.370 (0.358–0.386) | 51 |
+
+  Each is a quality loss for betula, by 0.09 on four slices and 0.06 on mpnet, and a memory win:
+  243–689 MB against 539–1 114 MB. On MNIST both find 10–13 communities, so the gap there is the
+  price of the leaf summaries at γ = 1. On the sentence sets the recipe finds 25–30 communities for
+  20 classes and the rows graph 13–14: there the gap is mostly the count. Among the rivals the
+  recipe is the best method without a count on MiniLM (PhenoGraph 0.395) and level with EVoC on
+  MNIST-20k and with PhenoGraph on mpnet; at 70 000 rows EVoC is ahead of it and UMAP + HDBSCAN
+  level, and on CIFAR-100 CoreSPECT, kNN + Leiden and PhenoGraph are ahead.
 - **Told k.** `leiden` with `resolution="auto"` reads 0.762 on MNIST-20k, level with PaCMAP +
   k-means (0.751), openTSNE + k-means (0.740) and both UMAP pipelines (0.73). At 70 000 rows and
   14 000 leaves it reads 0.835, above every rival's median, but its seeds spread from 0.806 to
@@ -1946,6 +1978,7 @@ Bold rows are betula's. `bench/rivals.py --arms=a,b` and `bench/density_rivals.p
 
 | method | ARI median (min–max) | clusters | noise | peak RSS MB |
 |---|---|---|---|---|
+| cluprop recipe (union knn-8 + leiden) | 0.854 (0.837–0.858) | 12 | 0.00 | 608 |
 | evoc | 0.815 (0.748–0.816) | 11 | 0.09 | 1028 |
 | phenograph | 0.766 (0.744–0.776) | 14 | 0.00 | 447 |
 | **betula-leiden-rows** | 0.762 (0.680–0.766) | 10 | 0.00 | 292 |
@@ -1975,6 +2008,7 @@ Bold rows are betula's. `bench/rivals.py --arms=a,b` and `bench/density_rivals.p
 
 | method | ARI median (min–max) | clusters | noise | peak RSS MB |
 |---|---|---|---|---|
+| cluprop recipe (union knn-8 + leiden) | 0.419 (0.413–0.423) | 25 | 0.00 | 539 |
 | phenograph | 0.395 (0.386–0.404) | 29 | 0.00 | 386 |
 | knn+leiden (scanpy recipe) | 0.386 (0.382–0.400) | 38 | 0.00 | 575 |
 | cplearn-corespect | 0.360 (0.359–0.369) | 36 | 0.00 | 540 |
@@ -2007,6 +2041,7 @@ Bold rows are betula's. `bench/rivals.py --arms=a,b` and `bench/density_rivals.p
 |---|---|---|---|---|
 | umap+hdbscan (umap docs' mnist recipe) | 0.920 (0.850–0.926) | 10 | 0.01 | 1096 |
 | evoc | 0.899 (0.896–0.902) | 10 | 0.05 | 1408 |
+| cluprop recipe (union knn-8 + leiden) | 0.865 (0.864–0.866) | 13 | 0.00 | 940 |
 | phenograph | 0.821 (0.809–0.842) | 15 | 0.00 | 1104 |
 | **betula-leiden-rows (20000 leaves)** | 0.788 (0.771–0.841) | 13 | 0.00 | 614 |
 | **betula-leiden-rows** | 0.777 (0.777–0.791) | 13 | 0.00 | 563 |
@@ -2045,6 +2080,7 @@ read by the same instrument.
 | method | ARI median (min–max) | clusters | noise | peak RSS MB |
 |---|---|---|---|---|
 | phenograph | 0.429 (0.419–0.430) | 30 | 0.00 | 417 |
+| cluprop recipe (union knn-8 + leiden) | 0.426 (0.418–0.434) | 30 | 0.00 | 595 |
 | knn+leiden (scanpy recipe) | 0.397 (0.392–0.398) | 45 | 0.00 | 606 |
 | **betula-leiden-rows** | 0.367 (0.366–0.370) | 14 | 0.00 | 275 |
 | cplearn-corespect | 0.354 (0.351–0.356) | 50 | 0.00 | 590 |
@@ -2076,6 +2112,7 @@ read by the same instrument.
 | cplearn-corespect | 0.626 (0.624–0.635) | 125 | 0.00 | 1556 |
 | knn+leiden (scanpy recipe) | 0.561 (0.556–0.580) | 78 | 0.00 | 1052 |
 | phenograph | 0.529 (0.505–0.540) | 75 | 0.00 | 1109 |
+| cluprop recipe (union knn-8 + leiden) | 0.464 (0.454–0.478) | 63 | 0.00 | 1114 |
 | **betula-leiden-rows** | 0.370 (0.358–0.386) | 51 | 0.00 | 689 |
 | **betula-leiden-mass** | 0.322 (0.321–0.323) | 47 | 0.00 | 722 |
 | **betula-leiden** | 0.230 (0.219–0.273) | 34 | 0.00 | 721 |

@@ -146,6 +146,38 @@ def _leiden_knn(x, seed, n_neighbors=15):
     return np.asarray(part.membership)
 
 
+def _cluprop(x, seed, n_neighbors=8):
+    """The CluProp recipe (Zheng, Phibbs, Pham, arXiv 2605.00390 v2): Leiden modularity at
+    resolution 1 on the union kNN graph, k = 8 under the cosine metric.
+
+    The paper publishes no code and leaves three choices open; these are the ones that reproduce its
+    MNIST-70k row (ARI 0.87 ± 0.01, 12 ± 1 clusters): eight neighbours besides the row itself, edge
+    weight the cosine similarity `1 - d` (its text says "proportional to d", which reads 0.78), and
+    igraph's `community_leiden` at its defaults.
+    """
+    import random
+
+    import igraph as ig
+    from pynndescent import NNDescent
+
+    idx, dist = NNDescent(
+        x, n_neighbors=n_neighbors + 1, metric="cosine", random_state=seed
+    ).neighbor_graph
+    n, k = idx.shape
+    i, j, d = np.repeat(np.arange(n), k), idx.ravel(), dist.ravel()
+    keep = i != j
+    lo, hi, d = np.minimum(i, j)[keep], np.maximum(i, j)[keep], d[keep]
+    _, first = np.unique(lo.astype(np.int64) * n + hi, return_index=True)
+    g = ig.Graph(n=n, edges=np.column_stack([lo[first], hi[first]]).tolist())
+    random.seed(seed)  # igraph draws from Python's `random`
+    part = g.community_leiden(
+        objective_function="modularity",
+        weights=np.clip(1.0 - d[first], 1e-9, None).tolist(),
+        resolution=1.0,
+    )
+    return np.asarray(part.membership)
+
+
 def deltric(x, seed):
     from deltric import DelTriC
 
@@ -249,6 +281,7 @@ ARMS = {
     ),
     "evoc": (False, "all", lambda x, k, s, d, n: _evoc(x, s)),
     "knn+leiden (scanpy recipe)": (False, "all", lambda x, k, s, d, n: _leiden_knn(x, s)),
+    "cluprop recipe (union knn-8 + leiden)": (False, "all", lambda x, k, s, d, n: _cluprop(x, s)),
     "phenograph": (False, "all", lambda x, k, s, d, n: _phenograph(x, s)),
     "deltric": (False, "all", lambda x, k, s, d, n: deltric(x, s)),
     "cplearn-corespect": (False, "all", lambda x, k, s, d, n: corespect(x, s)),
@@ -267,6 +300,7 @@ RIVAL_DISTS = {
     "bertopic default (umap+hdbscan mcs=10)": ("umap-learn", "pynndescent", "hdbscan"),
     "evoc": ("evoc",),
     "knn+leiden (scanpy recipe)": ("pynndescent", "leidenalg", "python-igraph"),
+    "cluprop recipe (union knn-8 + leiden)": ("pynndescent", "python-igraph"),
     "phenograph": ("PhenoGraph", "leidenalg"),
     "deltric": ("deltric", "umap-learn"),
     "cplearn-corespect": ("cplearn",),

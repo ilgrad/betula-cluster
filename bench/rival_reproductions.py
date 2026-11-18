@@ -3,12 +3,13 @@
 A rival run badly is a claim nobody should believe. For each package this runs the example its own
 documentation publishes, with the documented call, and checks the documented output; the census
 section of `bench/RESULTS.md` cites the result. lumbermark, EVoC, DelTriC and CoreSPECT publish no
-numeric output, so they have no row here, and that is stated where their rows are read.
+numeric output, so they have no row here, and that is stated where their rows are read. The
+CluProp paper publishes a number and no code, so its row reruns the recipe on the paper's data.
 
     uv run --no-sync --with scikit-learn --with classixclustering --with denmune \\
         --with finch-clust --with genieclust --with hdbscan --with fast-hdbscan \\
         --with phenograph --with dbscan --with pyod --with bico --with river \\
-        python bench/rival_reproductions.py
+        --with pynndescent --with python-igraph python bench/rival_reproductions.py
 
 Two examples need the authors' data files, fetched once into scikit-learn's data home: `jain`
 from the clustering benchmark suite (genieclust, DenMune) and FINCH's `gestalt_clusters.txt`.
@@ -252,6 +253,22 @@ def river_denstream():
     return [0, 2, 1, 3], [*got, model.n_clusters]
 
 
+def cluprop():
+    """CluProp (arXiv 2605.00390 v2), Table 1: ARI 0.87 ± 0.01 and 12 ± 1 clusters on raw
+    MNIST-70k, cosine, k = 8. The paper publishes no code; `rivals._cluprop` is the recipe as its
+    text describes it, with the three choices it leaves open made as that function says. Seed 0."""
+    from rivals import _cluprop, load
+
+    x, y = load("mnist", 70_000, 0)
+    labels = _cluprop(x, 0)
+    ari, k = adjusted_rand_score(y, labels), len(np.unique(labels))
+    return (
+        "ARI 0.87 ± 0.01, 12 ± 1 clusters",
+        (round(ari, 3), k),
+        abs(ari - 0.87) <= 0.01 and abs(k - 12) <= 1,
+    )
+
+
 CHECKS = {
     "CLASSIX 1.5.3": classix,
     "genieclust 1.3.0": genie,
@@ -269,6 +286,7 @@ CHECKS = {
     "BICO 0.1.8": bico,
     "River 0.27.0 DBSTREAM": river_dbstream,
     "River 0.27.0 DenStream": river_denstream,
+    "CluProp recipe (pynndescent 0.7.0, python-igraph 1.0.0)": cluprop,
 }
 
 
@@ -290,8 +308,9 @@ def main() -> int:
     print("| rival | published | reproduced | |")
     print("|---|---|---|---|")
     for name, check in CHECKS.items():
-        want, got = check()
-        if want == got:
+        # A check whose published number carries a spread says itself whether it lands inside.
+        want, got, *within = check()
+        if within[0] if within else want == got:
             verdict = "yes"
         elif name in STALE:
             verdict = f"no — {STALE[name]}"
