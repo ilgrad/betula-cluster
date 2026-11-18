@@ -1,0 +1,1588 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Numerically stable, memory-bounded BETULA clustering with a Rust core">
+      
+      
+      
+        <link rel="canonical" href="https://ilgrad.github.io/betula-cluster/COMPARISON/">
+      
+      
+        <link rel="prev" href="../FEATURES/">
+      
+      
+        <link rel="next" href="../MATH/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.8.1">
+    
+    
+      
+        <title>Comparison with other libraries - betula-cluster</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.57a0d79d.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.fb2fffe2.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/_mkdocstrings.css">
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="teal" data-md-color-accent="teal">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#comparison-with-other-clustering-libraries" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="betula-cluster" class="md-header__button md-logo" aria-label="betula-cluster" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            betula-cluster
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Comparison with other libraries
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="teal" data-md-color-accent="teal"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m17.75 4.09-2.53 1.94.91 3.06-2.63-1.81-2.63 1.81.91-3.06-2.53-1.94L12.44 4l1.06-3 1.06 3zm3.5 6.91-1.64 1.25.59 1.98-1.7-1.17-1.7 1.17.59-1.98L15.75 11l2.06-.05L18.5 9l.69 1.95zm-2.28 4.95c.83-.08 1.72 1.1 1.19 1.85-.32.45-.66.87-1.08 1.27C15.17 23 8.84 23 4.94 19.07c-3.91-3.9-3.91-10.24 0-14.14.4-.4.82-.76 1.27-1.08.75-.53 1.93.36 1.85 1.19-.27 2.86.69 5.83 2.89 8.02a9.96 9.96 0 0 0 8.02 2.89m-1.64 2.02a12.08 12.08 0 0 1-7.8-3.47c-2.17-2.19-3.33-5-3.49-7.82-2.81 3.14-2.7 7.96.31 10.98 3.02 3.01 7.84 3.12 10.98.31"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="teal" data-md-color-accent="teal"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 7a5 5 0 0 1 5 5 5 5 0 0 1-5 5 5 5 0 0 1-5-5 5 5 0 0 1 5-5m0 2a3 3 0 0 0-3 3 3 3 0 0 0 3 3 3 3 0 0 0 3-3 3 3 0 0 0-3-3m0-7 2.39 3.42C13.65 5.15 12.84 5 12 5s-1.65.15-2.39.42zM3.34 7l4.16-.35A7.2 7.2 0 0 0 5.94 8.5c-.44.74-.69 1.5-.83 2.29zm.02 10 1.76-3.77a7.131 7.131 0 0 0 2.38 4.14zM20.65 7l-1.77 3.79a7.02 7.02 0 0 0-2.38-4.15zm-.01 10-4.14.36c.59-.51 1.12-1.14 1.54-1.86.42-.73.69-1.5.83-2.29zM12 22l-2.41-3.44c.74.27 1.55.44 2.41.44.82 0 1.63-.17 2.37-.44z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/ilgrad/betula-cluster" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    ilgrad/betula-cluster
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="betula-cluster" class="md-nav__button md-logo" aria-label="betula-cluster" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    betula-cluster
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/ilgrad/betula-cluster" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    ilgrad/betula-cluster
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../USAGE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Usage guide
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../FEATURES/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Features
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Comparison with other libraries
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Comparison with other libraries
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#which-method-for-which-task" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Which method for which task
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-each-library-can-do" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What each library can do
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#every-verdict-rival-by-rival" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Every verdict, rival by rival
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../MATH/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    The math
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Design decisions
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Design decisions
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../adr/001-gmm-toeplitz/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR 001 — Toeplitz GMM covariance head
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../adr/002-bregman-ward-anderberg/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR 002 — Bregman-Ward needs Anderberg
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../adr/003-avx2-kernels-unsafe/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR 003 — AVX2 kernels and the first unsafe
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../adr/004-bregman-public-api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR 004 — Bregman as a second estimator
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../adr/005-canonical-order-projection-seed/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR 005 — the canonical order's projection constant
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../adr/006-assignment-kernel/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR 006 — one exact kernel for nearest-centre assignment
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../changelog/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Changelog
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#which-method-for-which-task" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Which method for which task
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-each-library-can-do" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What each library can do
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#every-verdict-rival-by-rival" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Every verdict, rival by rival
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="comparison-with-other-clustering-libraries">Comparison with other clustering libraries<a class="headerlink" href="#comparison-with-other-clustering-libraries" title="Permanent link">&para;</a></h1>
+<p>This page answers two questions: which method to use for a task, betula's or another library's, and
+what each library can do. Every number comes from
+<a href="https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md"><code>bench/RESULTS.md</code></a>, whose
+<em>census</em> section states the rules (seeds, the tie rule, one betula head per contest) and holds the
+tables. Where a rival wins, this page says to use the rival.</p>
+<h2 id="which-method-for-which-task">Which method for which task<a class="headerlink" href="#which-method-for-which-task" title="Permanent link">&para;</a></h2>
+<p>ARI is the median of seeds 0, 1 and 2 against the labels; RSS is the peak resident memory of the
+whole process. A difference smaller than the wider seed range of the two is a tie.</p>
+<table>
+<thead>
+<tr>
+<th>task</th>
+<th>use</th>
+<th>the measurement behind it</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Sentence embeddings, count given</td>
+<td><strong>UMAP + k-means</strong></td>
+<td>20 newsgroups under MiniLM (17 901 posts) and under mpnet (18 119): 0.451 and 0.472 against betula <code>leiden</code>, <code>leaf_graph="rows"</code>, <code>resolution="auto"</code>, 0.374 and 0.433 (<code>vmf</code> reads 0.382 and 0.400). Under mpnet, PaCMAP and openTSNE + k-means tie betula, and it beats scikit-learn's k-means (0.404). betula's process is 243 and 276 MB against 640 and 694 MB, and has no layout step.</td>
+</tr>
+<tr>
+<td>Sentence embeddings, count unknown</td>
+<td><strong>the CluProp recipe</strong> (union kNN-8 + Leiden), <strong>PhenoGraph</strong> or <strong>kNN + Leiden</strong></td>
+<td>MiniLM: 0.419, 0.395 and 0.386; mpnet: 0.426, 0.429 and 0.397; against <code>leiden</code> with <code>leaf_graph="rows"</code> at 0.330 and 0.367, which finds 13–14 communities for 20 classes where the recipe finds 25–30. CoreSPECT (<code>cplearn</code>) reads 0.360 and 0.354. BERTopic's default UMAP + HDBSCAN reads 0.086 and 0.081 and marks a third of the posts as noise.</td>
+</tr>
+<tr>
+<td>Image embeddings (CIFAR-100 under CLIP, 59 999 rows, 100 classes), count given</td>
+<td><strong>UMAP + k-means</strong> or <strong>openTSNE + k-means</strong></td>
+<td>0.721 and 0.696 against betula <code>leiden</code>, <code>leaf_graph="rows"</code>, <code>resolution="auto"</code>, 0.666, which ties UMAP 0.6 + k-means (0.667) and scikit-learn's k-means (0.637) and beats PaCMAP + k-means (0.634). betula uses 690 MB against 1 098–1 649 MB.</td>
+</tr>
+<tr>
+<td>Image embeddings (CIFAR-100 under CLIP), count unknown</td>
+<td><strong>CoreSPECT</strong> (<code>cplearn</code>) or <strong>kNN + Leiden</strong></td>
+<td>0.626 and 0.561 against <code>leiden</code> with <code>leaf_graph="rows"</code> 0.370, which finds 51 communities for 100 classes; PhenoGraph reads 0.529. CoreSPECT peaks at 1 556 MB against betula's 689 MB. EVoC reads 0.198 with 21 % of the rows marked noise (0.835 on the rows it clusters); DelTriC runs out of memory under a 13 GB cap.</td>
+</tr>
+<tr>
+<td>Images (raw MNIST), count unknown, 70 000 rows</td>
+<td><strong>UMAP + HDBSCAN</strong> (the UMAP docs' recipe) or <strong>EVoC</strong></td>
+<td>0.920 and 0.899 against <code>leiden</code> with <code>leaf_graph="rows"</code> 0.777 at 14 000 leaves (0.788 at 20 000). The CluProp recipe, the same graph on rows instead of leaves, reads 0.865 in 940 MB. betula uses 563 MB against 1 096 and 1 408 MB.</td>
+</tr>
+<tr>
+<td>Images (raw MNIST), count unknown, 20 000 rows</td>
+<td><strong>the CluProp recipe</strong> (union kNN-8 + Leiden) or <strong>EVoC</strong></td>
+<td>0.854 and 0.815, level by EVoC's seed range, against <code>leiden</code> with <code>leaf_graph="rows"</code> 0.762, which is level with EVoC and PhenoGraph (0.766) and ahead of UMAP + HDBSCAN (0.536). betula uses 292 MB against 608 and 1 028 MB.</td>
+</tr>
+<tr>
+<td>Images (raw MNIST), count given</td>
+<td><strong>betula</strong> <code>leiden</code>, <code>resolution="auto"</code></td>
+<td>0.835 at 70 000 rows and 14 000 leaves (seeds 0.806–0.884): level with UMAP 0.6 + k-means (0.804), PaCMAP + k-means (0.795) and UMAP 0.5 + k-means (0.769), ahead of openTSNE + k-means (0.745). 20 000 leaves read 0.881 for 58 MB more, 8 000 leaves 0.788.</td>
+</tr>
+<tr>
+<td>Low-dimensional data, density, count unknown</td>
+<td><strong>betula</strong> <code>leiden</code>, <code>leaf_graph="rows"</code>, <code>resolution="stable"</code></td>
+<td>Mean ARI over seven fixtures 0.828 (worst seed 0.814) against DelTriC 0.657, <code>hdbscan</code> 0.652 and betula's <code>hdbscan</code> head 0.616; it loses no fixture to any rival (blobs 0.823, aniso 0.525, <code>varied</code> 0.700 against <code>hdbscan</code>'s 0.472, 0.500 and 0.505; <code>digits</code> 0.750, level with DelTriC 0.727 and DenMune 0.786; 1.000 on the rings and <code>highdim</code>). If the clusters are Gaussian, betula <code>gmm-full</code> with <code>n_clusters=0</code> reads more on blobs, aniso and <code>varied</code> (0.863, 0.902, 0.757) and 0.11 on the rings.</td>
+</tr>
+<tr>
+<td>Low-dimensional data, count given</td>
+<td><strong>betula</strong> <code>leiden</code>, <code>leaf_graph="rows"</code>, <code>resolution="auto"</code>, or <strong>Genie</strong> (genieclust)</td>
+<td>Mean ARI over seven fixtures 0.838 against 0.839, a tie. betula wins <code>digits</code> (0.840 against 0.643) and loses aniso (0.545 against 0.750; lumbermark 0.843). Merging the <code>gmm-full</code> BIC fit down to the count (<a href="../USAGE/#merging-an-over-fitted-mixture-to-a-known-count">a recipe</a>) reads a mean of 0.871 and 0.902 on aniso, but 0.575 on <code>digits</code>. betula <code>genie</code> (Genie's Gini bound on the leaf spanning tree) ties the rows graph on the fixtures and leads it on Gagolewski's <code>graves</code> and <code>other</code> batteries (NCA 0.910 and 0.804 against 0.734 and 0.769); it loses where one cluster is much smaller than the rest.</td>
+</tr>
+<tr>
+<td>Benchmark datasets, count given</td>
+<td><strong>betula</strong> <code>leiden</code>, <code>resolution="auto"</code>, or <strong>Lumbermark</strong> / <strong>GIc</strong></td>
+<td>Gagolewski's suite, 81 datasets: mean accuracy 0.774 against 0.786 and 0.784, a tie. <code>leiden</code> cannot reach the count on 3 of the 81.</td>
+</tr>
+<tr>
+<td>Mixed numeric and categorical columns</td>
+<td>either: betula <code>KPrototypes</code> or kmodes</td>
+<td>0.028 against 0.022 on mixed covtype: a tie, and both near 0.</td>
+</tr>
+<tr>
+<td>A stream of rows</td>
+<td><strong>betula</strong> <code>partial_fit</code></td>
+<td>After each chunk the labels equal a refit on every row seen (75 of 75 checkpoints, 20 newsgroups). UMAP + k-means refitted at each checkpoint is level at 20 and 40 % of the stream and ahead from 60 % on (0.429–0.448 against 0.383–0.392), at the cost of a refit each time. Every rival that learns in chunks reads below betula at every checkpoint: BICO 0.345–0.364, scikit-learn's <code>MiniBatchKMeans</code> 0.320–0.347 and <code>Birch</code> 0.299–0.349, BERTopic's online recipe 0.21–0.22, River's <code>DenStream</code> 0.18 at best.</td>
+</tr>
+<tr>
+<td>Input larger than memory</td>
+<td><strong>betula</strong>, fed in chunks</td>
+<td>500 000 to 10 M rows (20-D) in 55 MB, against 0.41–5.0 GB for an in-core scikit-learn <code>KMeans</code>; betula holding the whole array needs 0.13–1.65 GB. scikit-learn's <code>MiniBatchKMeans</code> and BICO stay flat too, at 180 and 175 MB, most of it their imports. <code>Birch</code> at its defaults keeps one subcluster per row of that data and did not finish 500 000 rows in the harness's time cap.</td>
+</tr>
+<tr>
+<td>k-means on a million rows, speed first</td>
+<td><strong>FAISS</strong></td>
+<td>The two sides do different jobs. FAISS fits its centres on 2 048 of the rows (256 per centre) and labels every row with one search: median ARI 0.835 over eleven seeds at its defaults, 1.000 seeded with k-means++. betula summarises every row into at most 2 000 leaves, fits the centres on the leaves and labels every row: 1.000. Work per fit at one thread: FAISS 0.73 G instructions, betula 4.92 G (4.01 G at <code>n_shards=8</code>). Given FAISS's shortcut, a fit on a seeded 2 048-row sample and <code>predict</code> on every row, betula also reads 1.000, at 0.96 G. A sample is not free: a cluster of 0.1 % of the rows is found by betula's full fit in 21 of 22 runs and from a 2 048-row sample in 7. The one time is from 2026-10-20: FAISS's defaults 0.07 s against betula's full fit 0.42 s, both multi-threaded; the other arms are not yet timed.</td>
+</tr>
+<tr>
+<td>Outliers inside clusters of unequal density</td>
+<td><strong>betula</strong> <code>outlier_scores</code></td>
+<td>ROC-AUC / average precision 1.000 / 0.998 against IsolationForest 0.887 / 0.175, LOF 0.993 / 0.915 and PyOD's cluster-based CBLOF 0.557 / 0.055 (median of seeds 0/1/2, <code>bench/results_outliers.csv</code>).</td>
+</tr>
+<tr>
+<td>Global outliers, or sheared clusters</td>
+<td><strong>IsolationForest</strong>, or PyOD's <code>KNN</code></td>
+<td>1.000 / 1.000 for both on global outliers; on sheared clusters <code>KNN</code> 1.000 / 0.999 and IsolationForest 0.980 / 0.698, against betula 0.990 / 0.943 and 0.711 / 0.154 (<code>metric="mahalanobis"</code>). Same CSV as the row above.</td>
+</tr>
+<tr>
+<td>A mixture of stationary signals</td>
+<td><strong>betula</strong> <code>gmm-toeplitz</code></td>
+<td>0.764 on an AR mixture against tslearn's k-Shape 0.057 and a diagonal GMM 0.018.</td>
+</tr>
+<tr>
+<td>A GPU is available</td>
+<td>the same choices</td>
+<td>cuML's k-means, UMAP + k-means and DBSCAN, FAISS's k-means and fastkmeans's PyTorch path find what their CPU versions find; cuML's HDBSCAN on raw MNIST calls 83–85 % of the rows noise (ARI 0.046–0.052), and fastkmeans's default Triton path did not finish on this card (<em>GPU rivals</em> in the census).</td>
+</tr>
+</tbody>
+</table>
+<h2 id="what-each-library-can-do">What each library can do<a class="headerlink" href="#what-each-library-can-do" title="Permanent link">&para;</a></h2>
+<p>Each rival cell cites the release's documentation or source. "Not documented" means that release
+was read and no such feature was found. Each betula cell names a test, a script or a bench row.</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>betula-cluster <code>main</code> (1.5.0 and <code>[Unreleased]</code>)</th>
+<th>umap-learn 0.6.0 + hdbscan 0.8.44</th>
+<th>EVoC 0.3.2</th>
+<th>fast_hdbscan 0.3.4</th>
+<th>scikit-learn 1.9.1</th>
+<th>FAISS 1.16.0</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Learn from a stream</strong></td>
+<td><code>partial_fit</code> on chunks, then <code>partial_fit()</code> (<code>test_streaming_partial_fit_matches_oneshot</code>)</td>
+<td>UMAP: <a href="https://github.com/lmcinnes/umap/blob/release-0.6.0/umap/umap_.py#L4751"><code>update(X)</code></a> retrains with the new rows; hdbscan: not documented</td>
+<td>not documented</td>
+<td>not documented</td>
+<td><code>partial_fit</code> on <code>MiniBatchKMeans</code> and <a href="https://github.com/scikit-learn/scikit-learn/blob/1.9.1/sklearn/cluster/_birch.py#L611"><code>Birch</code></a>; not on <code>HDBSCAN</code></td>
+<td>not documented</td>
+</tr>
+<tr>
+<td><strong>Input larger than memory</strong></td>
+<td>chunked <code>partial_fit</code>; 55 MB at 0.5–10 M rows (<em>Memory — streaming stays bounded</em>)</td>
+<td>UMAP: <a href="https://github.com/lmcinnes/umap/blob/release-0.6.0/doc/faq.rst#L89"><code>low_memory</code></a> covers the neighbour search only; hdbscan: not documented</td>
+<td>its <a href="https://github.com/TutteInstitute/evoc/blob/release-0.3.2/doc/source/examples.rst#L181">example</a> refits each chunk</td>
+<td>not documented</td>
+<td><code>MiniBatchKMeans</code>, <code>Birch</code> (<a href="https://github.com/scikit-learn/scikit-learn/blob/1.9.1/doc/computing/scaling_strategies.rst#L59">incremental estimators</a>)</td>
+<td>k-means <a href="https://github.com/facebookresearch/faiss/blob/v1.16.0/faiss/Clustering.h#L45">trains on a subsample</a></td>
+</tr>
+<tr>
+<td><strong>Sample weights</strong></td>
+<td>no</td>
+<td>no (<a href="https://github.com/lmcinnes/umap/blob/release-0.6.0/umap/umap_.py#L3506">UMAP</a>, <a href="https://github.com/scikit-learn-contrib/hdbscan/blob/release-0.8.44/hdbscan/hdbscan_.py#L1202">hdbscan</a>)</td>
+<td>no (<a href="https://github.com/TutteInstitute/evoc/blob/release-0.3.2/evoc/clustering.py#L651"><code>fit</code></a> takes <code>X</code> only)</td>
+<td><a href="https://github.com/TutteInstitute/fast_hdbscan/blob/release-0.3.4/fast_hdbscan/hdbscan.py#L689"><code>sample_weight</code></a>, <a href="https://github.com/TutteInstitute/fast_hdbscan/blob/release-0.3.4/fast_hdbscan/hdbscan.py#L452">Euclidean only</a></td>
+<td><code>KMeans</code>, <code>MiniBatchKMeans</code>; not <code>Birch</code> or <code>HDBSCAN</code></td>
+<td><a href="https://github.com/facebookresearch/faiss/blob/v1.16.0/faiss/python/extra_wrappers.py#L586"><code>train(x, weights=)</code></a></td>
+</tr>
+<tr>
+<td><strong>Label new rows</strong></td>
+<td><code>predict</code> (<code>test_estimator_predict_on_new_points</code>)</td>
+<td>UMAP: <a href="https://github.com/lmcinnes/umap/blob/release-0.6.0/umap/umap_.py#L4178"><code>transform</code></a>; hdbscan: <a href="https://github.com/scikit-learn-contrib/hdbscan/blob/release-0.8.44/hdbscan/prediction.py#L416"><code>approximate_predict</code></a>, with <code>prediction_data=True</code></td>
+<td>not documented</td>
+<td>not documented</td>
+<td><code>predict</code> on <code>KMeans</code>, <code>MiniBatchKMeans</code>, <code>Birch</code>; <code>HDBSCAN</code> has none (<a href="https://github.com/scikit-learn/scikit-learn/blob/1.9.1/doc/modules/clustering.rst#L139">transductive</a>)</td>
+<td><a href="https://github.com/facebookresearch/faiss/blob/v1.16.0/faiss/python/extra_wrappers.py#L648"><code>Kmeans.assign</code></a></td>
+</tr>
+<tr>
+<td><strong>Same labels at any thread count</strong></td>
+<td>every head, compared by digest at 1 and 8 threads (<code>scripts/thread_determinism.py</code>)</td>
+<td>UMAP: a seed <a href="https://github.com/lmcinnes/umap/blob/release-0.6.0/umap/umap_.py#L3100">forces one thread</a>; hdbscan: no seed</td>
+<td>a seed selects a deterministic mode, but <code>approx_n_clusters</code> <a href="https://github.com/TutteInstitute/evoc/blob/release-0.3.2/evoc/clustering_utilities.py#L151">hard-codes <code>reproducible=False</code></a></td>
+<td><a href="https://github.com/TutteInstitute/fast_hdbscan/blob/release-0.3.4/fast_hdbscan/hdbscan.py#L621"><code>reproducible=False</code></a> by default</td>
+<td><code>KMeans</code>, <code>MiniBatchKMeans</code> <a href="https://github.com/scikit-learn/scikit-learn/blob/1.9.1/sklearn/cluster/tests/test_k_means.py#L979">tested at 1 and 2 threads</a></td>
+<td><a href="https://github.com/facebookresearch/faiss/wiki/Threads-and-asynchronous-calls">bitwise at the same thread count</a></td>
+</tr>
+<tr>
+<td><strong>Save a fitted model</strong></td>
+<td><code>save</code> / <code>load</code> (gzip-framed CBOR) and pickle (<code>test_save_load_roundtrip</code>, <code>test_pickle_roundtrip</code>); MNIST 70 000 × 784 at 2 000 spherical leaves: 5.3 MB (<a href="../USAGE/#saving-and-loading-a-model">Saving and loading a model</a>)</td>
+<td>UMAP: <a href="https://github.com/lmcinnes/umap/blob/release-0.6.0/doc/parametric_umap.rst#L76">pickle</a>; hdbscan: not documented</td>
+<td>not documented</td>
+<td>not documented</td>
+<td><a href="https://github.com/scikit-learn/scikit-learn/blob/1.9.1/doc/model_persistence.rst#L7">pickle, joblib, skops, ONNX</a></td>
+<td>an index serialises; the <code>Kmeans</code> object: not documented</td>
+</tr>
+<tr>
+<td><strong>Hard dependencies</strong> (PyPI)</td>
+<td>numpy</td>
+<td>numpy, scipy, scikit-learn, numba, pynndescent, tqdm; joblib</td>
+<td>numpy, scikit-learn, numba, tqdm</td>
+<td>numpy, numba, scikit-learn</td>
+<td>numpy, scipy, joblib, narwhals, threadpoolctl</td>
+<td>numpy, packaging (<code>faiss-cpu</code>)</td>
+</tr>
+<tr>
+<td><strong>Free-threaded CPython wheels</strong></td>
+<td>3.14t, and <code>abi3t</code> for 3.15t onward</td>
+<td>UMAP is pure Python on numba 0.68.1, which has 3.14t and no 3.15t; hdbscan has no 3.14t wheel</td>
+<td>as UMAP (numba)</td>
+<td>as UMAP (numba)</td>
+<td>3.14t and 3.15t</td>
+<td>none (<code>abi3</code> and <code>cp314</code>)</td>
+</tr>
+<tr>
+<td><strong>Licence</strong></td>
+<td>MIT</td>
+<td>BSD-3-Clause; BSD-3-Clause</td>
+<td>BSD-2-Clause</td>
+<td>BSD-2-Clause</td>
+<td>BSD-3-Clause</td>
+<td>MIT</td>
+</tr>
+<tr>
+<td><strong>Noise and the count</strong></td>
+<td>noise (−1) from the <code>hdbscan</code> head; <code>leiden</code> and <code>hdbscan</code> find the count, <code>n_clusters=0</code> sweeps it for <code>gmm</code> by BIC</td>
+<td>UMAP embeds only; hdbscan marks noise and finds the count</td>
+<td>noise, count found</td>
+<td>noise, count found</td>
+<td><code>HDBSCAN</code> marks noise and finds the count; <code>KMeans</code> needs it</td>
+<td>no noise; the count is required</td>
+</tr>
+</tbody>
+</table>
+<p>The wheel and dependency rows were read from PyPI on 2026-11-14; the rest at each release's tag.</p>
+<h2 id="every-verdict-rival-by-rival">Every verdict, rival by rival<a class="headerlink" href="#every-verdict-rival-by-rival" title="Permanent link">&para;</a></h2>
+<p>Generated from the bench CSVs by <code>bench/scoreboard.py --claims</code>; CI fails when this block and the
+CSVs disagree. The betula side of each cell is the one head its contest chose. On GitHub the block
+is not inlined: read it in <code>bench/RESULTS.md</code>, <em>Every verdict, rival by rival</em>.</p>
+<!-- claims:begin -->
+<ul>
+<li><strong>aeon-kasba</strong> — 1 win · 1 tie · 0 loss</li>
+<li>win, quality, <code>ar-mixture/90/told-k</code> (head_refs): betula 0.764 ARI (<code>betula-gmm-toeplitz</code>) against 0.207 ARI</li>
+<li>tie, memory, <code>ar-mixture/90/told-k</code> (head_refs): betula 177 MB (<code>betula-gmm-toeplitz</code>) against 320 MB</li>
+<li><strong>bertopic default (umap+hdbscan mcs=10)</strong> — 6 win · 0 tie · 0 loss</li>
+<li>win, memory, <code>cifar100-clip/59999/no-k</code> (rivals): betula 689 MB (<code>betula-leiden-rows</code>) against 1368 MB</li>
+<li>win, memory, <code>news-minilm/17901/no-k</code> (rivals): betula 243 MB (<code>betula-leiden-rows</code>) against 640 MB</li>
+<li>win, memory, <code>news-mpnet/18119/no-k</code> (rivals): betula 275 MB (<code>betula-leiden-rows</code>) against 695 MB</li>
+<li>win, quality, <code>cifar100-clip/59999/no-k</code> (rivals): betula 0.370 ARI (<code>betula-leiden-rows</code>) against 0.176 ARI</li>
+<li>win, quality, <code>news-minilm/17901/no-k</code> (rivals): betula 0.330 ARI (<code>betula-leiden-rows</code>) against 0.086 ARI</li>
+<li>win, quality, <code>news-mpnet/18119/no-k</code> (rivals): betula 0.367 ARI (<code>betula-leiden-rows</code>) against 0.081 ARI</li>
+<li><strong>bico (streaming)</strong> — 5 win · 0 tie · 0 loss</li>
+<li>win, memory, <code>1000000</code> (memory): betula 55 MB (<code>betula (streaming)</code>) against 175 MB</li>
+<li>win, memory, <code>10000000</code> (memory): betula 55 MB (<code>betula (streaming)</code>) against 175 MB</li>
+<li>win, memory, <code>2000000</code> (memory): betula 55 MB (<code>betula (streaming)</code>) against 175 MB</li>
+<li>win, memory, <code>500000</code> (memory): betula 55 MB (<code>betula (streaming)</code>) against 175 MB</li>
+<li>win, memory, <code>5000000</code> (memory): betula 55 MB (<code>betula (streaming)</code>) against 175 MB</li>
+<li><strong>classix</strong> — 1 win · 1 tie · 0 loss</li>
+<li>win, memory, <code>highdim/30000/no-k</code> (density_rivals): betula 183 MB (<code>betula-leiden-rows-stable</code>) against 188 MB</li>
+<li>tie, quality, <code>highdim/30000/no-k</code> (density_rivals): betula 1.000 ARI (<code>betula-leiden-rows-stable</code>) against 1.000 ARI</li>
+<li><strong>cluprop recipe (union knn-8 + leiden)</strong> — 5 win · 0 tie · 5 loss</li>
+<li>win, memory, <code>cifar100-clip/59999/no-k</code> (rivals): betula 689 MB (<code>betula-leiden-rows</code>) against 1114 MB</li>
+<li>win, memory, <code>mnist/20000/no-k</code> (rivals): betula 292 MB (<code>betula-leiden-rows</code>) against 608 MB</li>
+<li>win, memory, <code>mnist/70000/no-k</code> (rivals): betula 563 MB (<code>betula-leiden-rows</code>) against 940 MB</li>
+<li>win, memory, <code>news-minilm/17901/no-k</code> (rivals): betula 243 MB (<code>betula-leiden-rows</code>) against 539 MB</li>
+<li>win, memory, <code>news-mpnet/18119/no-k</code> (rivals): betula 275 MB (<code>betula-leiden-rows</code>) against 595 MB</li>
+<li>loss, quality, <code>cifar100-clip/59999/no-k</code> (rivals): betula 0.370 ARI (<code>betula-leiden-rows</code>) against 0.464 ARI</li>
+<li>loss, quality, <code>mnist/20000/no-k</code> (rivals): betula 0.762 ARI (<code>betula-leiden-rows</code>) against 0.854 ARI</li>
+<li>loss, quality, <code>mnist/70000/no-k</code> (rivals): betula 0.777 ARI (<code>betula-leiden-rows</code>) against 0.865 ARI</li>
+<li>loss, quality, <code>news-minilm/17901/no-k</code> (rivals): betula 0.330 ARI (<code>betula-leiden-rows</code>) against 0.419 ARI</li>
+<li>loss, quality, <code>news-mpnet/18119/no-k</code> (rivals): betula 0.367 ARI (<code>betula-leiden-rows</code>) against 0.426 ARI</li>
+<li><strong>cplearn-corespect</strong> — 20 win · 2 tie · 2 loss</li>
+<li>win, memory, <code>aniso/30000/no-k</code> (density_rivals): betula 172 MB (<code>betula-leiden-rows-stable</code>) against 839 MB</li>
+<li>win, memory, <code>blobs/30000/no-k</code> (density_rivals): betula 172 MB (<code>betula-leiden-rows-stable</code>) against 779 MB</li>
+<li>win, memory, <code>circles/30000/no-k</code> (density_rivals): betula 172 MB (<code>betula-leiden-rows-stable</code>) against 858 MB</li>
+<li>win, memory, <code>digits/1797/no-k</code> (density_rivals): betula 171 MB (<code>betula-leiden-rows-stable</code>) against 376 MB</li>
+<li>win, memory, <code>highdim/30000/no-k</code> (density_rivals): betula 183 MB (<code>betula-leiden-rows-stable</code>) against 635 MB</li>
+<li>win, memory, <code>moons/30000/no-k</code> (density_rivals): betula 172 MB (<code>betula-leiden-rows-stable</code>) against 856 MB</li>
+<li>win, memory, <code>varied/30000/no-k</code> (density_rivals): betula 172 MB (<code>betula-leiden-rows-stable</code>) against 766 MB</li>
+<li>win, memory, <code>cifar100-clip/59999/no-k</code> (rivals): betula 689 MB (<code>betula-leiden-rows</code>) against 1556 MB</li>
+<li>win, memory, <code>mnist/20000/no-k</code> (rivals): betula 292 MB (<code>betula-leiden-rows</code>) against 558 MB</li>
+<li>win, memory, <code>mnist/70000/no-k</code> (rivals): betula 563 MB (<code>betula-leiden-rows</code>) against 1083 MB</li>
+<li>win, memory, <code>news-minilm/17901/no-k</code> (rivals): betula 243 MB (<code>betula-leiden-rows</code>) against 540 MB</li>
+<li>win, memory, <code>news-mpnet/18119/no-k</code> (rivals): betula 275 MB (<code>betula-leiden-rows</code>) against 590 MB</li>
+<li>win, quality, <code>aniso/30000/no-k</code> (density_rivals): betula 0.525 ARI (<code>betula-leiden-rows-stable</code>) against 0.031 ARI</li>
+<li>win, quality, <code>blobs/30000/no-k</code> (density_rivals): betula 0.823 ARI (<code>betula-leiden-rows-stable</code>) against 0.084 ARI</li>
+<li>win, quality, <code>circles/30000/no-k</code> (density_rivals): betula 1.000 ARI (<code>betula-leiden-rows-stable</code>) against 0.018 ARI</li>
+<li>win, quality, <code>moons/30000/no-k</code> (density_rivals): betula 1.000 ARI (<code>betula-leiden-rows-stable</code>) against 0.017 ARI</li>
+<li>win, quality, <code>varied/30000/no-k</code> (density_rivals): betula 0.700 ARI (<code>betula-leiden-rows-stable</code>) against 0.031 ARI</li>
+<li>win, quality, <code>mnist/20000/no-k</code> (rivals): betula 0.762 ARI (<code>betula-leiden-rows</code>) against 0.510 ARI</li>
+<li>win, quality, <code>mnist/70000/no-k</code> (rivals): betula 0.777 ARI (<code>betula-leiden-rows</code>) against 0.462 ARI</li>
+<li>win, quality, <code>news-mpnet/18119/no-k</code> (rivals): betula 0.367 ARI (<code>betula-leiden-rows</code>) against 0.354 ARI</li>
+<li>tie, quality, <code>digits/1797/no-k</code> (density_rivals): betula 0.750 ARI (<code>betula-leiden-rows-stable</code>) against 0.683 ARI</li>
+<li>tie, quality, <code>highdim/30000/no-k</code> (density_rivals): betula 1.000 ARI (<code>betula-leiden-rows-stable</code>) against 1.000 ARI</li>
+<li>loss, quality, <code>cifar100-clip/59999/no-k</code> (rivals): betula 0.370 ARI (<code>betula-leiden-rows</code>) against 0.626 ARI</li>
+<li>loss, quality, <code>news-minilm/17901/no-k</code> (rivals): betula 0.330 ARI (<code>betula-leiden-rows</code>) against 0.360 ARI</li>
+<li><strong>deltric</strong> — 20 win · 2 tie · 0 loss</li>
+<li>win, memory, <code>aniso/30000/no-k</code> (density_rivals): betula 172 MB (<code>betula-leiden-rows-stable</code>) against 453 MB</li>
+<li>win, memory, <code>blobs/30000/no-k</code> (density_rivals): betula 172 MB (<code>betula-leiden-rows-stable</code>) against 454 MB</li>
+<li>win, memory, <code>circles/30000/no-k</code> (density_rivals): betula 172 MB (<code>betula-leiden-rows-stable</code>) against 454 MB</li>
+<li>win, memory, <code>digits/1797/no-k</code> (density_rivals): betula 171 MB (<code>betula-leiden-rows-stable</code>) against 473 MB</li>
+<li>win, memory, <code>highdim/30000/no-k</code> (density_rivals): betula 183 MB (<code>betula-leiden-rows-stable</code>) against 718 MB</li>
+<li>win, memory, <code>moons/30000/no-k</code> (density_rivals): betula 172 MB (<code>betula-leiden-rows-stable</code>) against 453 MB</li>
+<li>win, memory, <code>varied/30000/no-k</code> (density_rivals): betula 172 MB (<code>betula-leiden-rows-stable</code>) against 454 MB</li>
+<li>win, memory, <code>mnist/20000/no-k</code> (rivals): betula 292 MB (<code>betula-leiden-rows</code>) against 3452 MB</li>
+<li>win, memory, <code>mnist/70000/no-k</code> (rivals): betula 563 MB (<code>betula-leiden-rows</code>) against 10590 MB</li>
+<li>win, memory, <code>news-minilm/17901/no-k</code> (rivals): betula 243 MB (<code>betula-leiden-rows</code>) against 1907 MB</li>
+<li>win, memory, <code>news-mpnet/18119/no-k</code> (rivals): betula 275 MB (<code>betula-leiden-rows</code>) against 3125 MB</li>
+<li>win, quality, <code>aniso/30000/no-k</code> (density_rivals): betula 0.525 ARI (<code>betula-leiden-rows-stable</code>) against 0.461 ARI</li>
+<li>win, quality, <code>blobs/30000/no-k</code> (density_rivals): betula 0.823 ARI (<code>betula-leiden-rows-stable</code>) against 0.276 ARI</li>
+<li>win, quality, <code>circles/30000/no-k</code> (density_rivals): betula 1.000 ARI (<code>betula-leiden-rows-stable</code>) against 0.943 ARI</li>
+<li>win, quality, <code>moons/30000/no-k</code> (density_rivals): betula 1.000 ARI (<code>betula-leiden-rows-stable</code>) against 0.924 ARI</li>
+<li>win, quality, <code>varied/30000/no-k</code> (density_rivals): betula 0.700 ARI (<code>betula-leiden-rows-stable</code>) against 0.270 ARI</li>
+<li>win, quality, <code>mnist/20000/no-k</code> (rivals): betula 0.762 ARI (<code>betula-leiden-rows</code>) against 0.483 ARI</li>
+<li>win, quality, <code>mnist/70000/no-k</code> (rivals): betula 0.777 ARI (<code>betula-leiden-rows</code>) against 0.485 ARI</li>
+<li>win, quality, <code>news-minilm/17901/no-k</code> (rivals): betula 0.330 ARI (<code>betula-leiden-rows</code>) against 0.174 ARI</li>
+<li>win, quality, <code>news-mpnet/18119/no-k</code> (rivals): betula 0.367 ARI (<code>betula-leiden-rows</code>) against 0.213 ARI</li>
+<li>tie, quality, <code>digits/1797/no-k</code> (density_rivals): betula 0.750 ARI (<code>betula-leiden-rows-stable</code>) against 0.727 ARI</li>
+<li>tie, quality, <code>highdim/30000/no-k</code> (density_rivals): betula 1.000 ARI (<code>betula-leiden-rows-stable</code>) against 1.000 ARI</li>
+<li><strong>denmune</strong> — 4 win · 4 tie · 0 loss</li>
+<li>win, memory, <code>circles/30000/no-k</code> (density_rivals): betula 172 MB (<code>betula-leiden-rows-stable</code>) against 671 MB</li>
+<li>win, memory, <code>digits/1797/no-k</code> (density_rivals): betula 171 MB (<code>betula-leiden-rows-stable</code>) against 252 MB</li>
+<li>win, memory, <code>highdim/30000/no-k</code> (density_rivals): betula 183 MB (<code>betula-leiden-rows-stable</code>) against 688 MB</li>
+<li>win, memory, <code>moons/30000/no-k</code> (density_rivals): betula 172 MB (<code>betula-leiden-rows-stable</code>) against 671 MB</li>
+<li>tie, quality, <code>circles/30000/no-k</code> (density_rivals): betula 1.000 ARI (<code>betula-leiden-rows-stable</code>) against 0.999 ARI</li>
+<li>tie, quality, <code>digits/1797/no-k</code> (density_rivals): betula 0.750 ARI (<code>betula-leiden-rows-stable</code>) against 0.786 ARI</li>
+<li>tie, quality, <code>highdim/30000/no-k</code> (density_rivals): betula 1.000 ARI (<code>betula-leiden-rows-stable</code>) against 0.999 ARI</li>
+<li>tie, quality, <code>moons/30000/no-k</code> (density_rivals): betula 1.000 ARI (<code>betula-leiden-rows-stable</code>) against 0.997 ARI</li>
+<li><strong>evoc</strong> — 7 win · 2 tie · 1 loss</li>
+<li>win, memory, <code>cifar100-clip/59999/no-k</code> (rivals): betula 689 MB (<code>betula-leiden-rows</code>) against 1347 MB</li>
+<li>win, memory, <code>mnist/20000/no-k</code> (rivals): betula 292 MB (<code>betula-leiden-rows</code>) against 1028 MB</li>
+<li>win, memory, <code>mnist/70000/no-k</code> (rivals): betula 563 MB (<code>betula-leiden-rows</code>) against 1408 MB</li>
+<li>win, memory, <code>news-minilm/17901/no-k</code> (rivals): betula 243 MB (<code>betula-leiden-rows</code>) against 929 MB</li>
+<li>win, memory, <code>news-mpnet/18119/no-k</code> (rivals): betula 275 MB (<code>betula-leiden-rows</code>) against 956 MB</li>
+<li>win, quality, <code>cifar100-clip/59999/no-k</code> (rivals): betula 0.370 ARI (<code>betula-leiden-rows</code>) against 0.198 ARI</li>
+<li>win, quality, <code>news-mpnet/18119/no-k</code> (rivals): betula 0.367 ARI (<code>betula-leiden-rows</code>) against 0.252 ARI</li>
+<li>tie, quality, <code>mnist/20000/no-k</code> (rivals): betula 0.762 ARI (<code>betula-leiden-rows</code>) against 0.815 ARI</li>
+<li>tie, quality, <code>news-minilm/17901/no-k</code> (rivals): betula 0.330 ARI (<code>betula-leiden-rows</code>) against 0.207 ARI</li>
+<li>loss, quality, <code>mnist/70000/no-k</code> (rivals): betula 0.777 ARI (<code>betula-leiden-rows</code>) against 0.899 ARI</li>
+<li><strong>faiss-kmeans-pp</strong> — 0 win · 2 tie · 0 loss</li>
+<li>tie, quality, <code>highdim/1000000/kmeans-speed</code> (external): betula 1.000 ARI (<code>betula-kmeans</code>) against 1.000 ARI</li>
+<li>tie, quality, <code>highdim/200000/kmeans-speed</code> (external): betula 1.000 ARI (<code>betula-kmeans</code>) against 1.000 ARI</li>
+<li><strong>fast-hdbscan</strong> — 15 win · 3 tie · 4 loss</li>
+<li>win, memory, <code>aniso/30000/no-k</code> (density_rivals): betula 172 MB (<code>betula-leiden-rows-stable</code>) against 326 MB</li>
+<li>win, memory, <code>blobs/30000/no-k</code> (density_rivals): betula 172 MB (<code>betula-leiden-rows-stable</code>) against 326 MB</li>
+<li>win, memory, <code>circles/30000/no-k</code> (density_rivals): betula 172 MB (<code>betula-leiden-rows-stable</code>) against 326 MB</li>
+<li>win, memory, <code>digits/1797/no-k</code> (density_rivals): betula 171 MB (<code>betula-leiden-rows-stable</code>) against 938 MB</li>
+<li>win, memory, <code>highdim/30000/no-k</code> (density_rivals): betula 183 MB (<code>betula-leiden-rows-stable</code>) against 333 MB</li>
+<li>win, memory, <code>moons/30000/no-k</code> (density_rivals): betula 172 MB (<code>betula-leiden-rows-stable</code>) against 326 MB</li>
+<li>win, memory, <code>varied/30000/no-k</code> (density_rivals): betula 172 MB (<code>betula-leiden-rows-stable</code>) against 325 MB</li>
+<li>win, quality, <code>aniso/30000/no-k</code> (density_rivals): betula 0.525 ARI (<code>betula-leiden-rows-stable</code>) against 0.447 ARI</li>
+<li>win, quality, <code>blobs/30000/no-k</code> (density_rivals): betula 0.823 ARI (<code>betula-leiden-rows-stable</code>) against 0.432 ARI</li>
+<li>win, quality, <code>digits/1797/no-k</code> (density_rivals): betula 0.750 ARI (<code>betula-leiden-rows-stable</code>) against 0.087 ARI</li>
+<li>win, quality, <code>varied/30000/no-k</code> (density_rivals): betula 0.700 ARI (<code>betula-leiden-rows-stable</code>) against 0.503 ARI</li>
+<li>win, quality, <code>blobs/100000/countfree-scale</code> (external): betula 0.983 ARI (<code>betula-gmm-full-bic</code>) against 0.910 ARI</li>
+<li>win, quality, <code>blobs/100000/countfree-scale/shuffled</code> (external): betula 0.983 ARI (<code>betula-gmm-full-bic</code>) against 0.910 ARI</li>
+<li>win, quality, <code>blobs/500000/countfree-scale</code> (external): betula 0.983 ARI (<code>betula-gmm-full-bic</code>) against 0.892 ARI</li>
+<li>win, quality, <code>blobs/500000/countfree-scale/shuffled</code> (external): betula 0.983 ARI (<code>betula-gmm-full-bic</code>) against 0.892 ARI</li>
+<li>tie, quality, <code>circles/30000/no-k</code> (density_rivals): betula 1.000 ARI (<code>betula-leiden-rows-stable</code>) against 1.000 ARI</li>
+<li>tie, quality, <code>highdim/30000/no-k</code> (density_rivals): betula 1.000 ARI (<code>betula-leiden-rows-stable</code>) against 1.000 ARI</li>
+<li>tie, quality, <code>moons/30000/no-k</code> (density_rivals): betula 1.000 ARI (<code>betula-leiden-rows-stable</code>) against 1.000 ARI</li>
+<li>loss, quality, <code>blobs/100000/hdbscan-scale</code> (external): betula 0.897 ARI (<code>betula-hdbscan-canonical</code>) against 0.910 ARI</li>
+<li>loss, quality, <code>blobs/100000/hdbscan-scale/shuffled</code> (external): betula 0.897 ARI (<code>betula-hdbscan-canonical</code>) against 0.910 ARI</li>
+<li>loss, quality, <code>blobs/500000/hdbscan-scale</code> (external): betula 0.876 ARI (<code>betula-hdbscan-canonical</code>) against 0.892 ARI</li>
+<li>loss, quality, <code>blobs/500000/hdbscan-scale/shuffled</code> (external): betula 0.876 ARI (<code>betula-hdbscan-canonical</code>) against 0.892 ARI</li>
+<li><strong>finch</strong> — 10 win · 2 tie · 0 loss</li>
+<li>win, memory, <code>aniso/30000/no-k</code> (density_rivals): betula 172 MB (<code>betula-leiden-rows-stable</code>) against 1883 MB</li>
+<li>win, memory, <code>blobs/30000/no-k</code> (density_rivals): betula 172 MB (<code>betula-leiden-rows-stable</code>) against 2012 MB</li>
+<li>win, memory, <code>digits/1797/no-k</code> (density_rivals): betula 171 MB (<code>betula-leiden-rows-stable</code>) against 337 MB</li>
+<li>win, memory, <code>highdim/30000/no-k</code> (density_rivals): betula 183 MB (<code>betula-leiden-rows-stable</code>) against 805 MB</li>
+<li>win, memory, <code>moons/30000/no-k</code> (density_rivals): betula 172 MB (<code>betula-leiden-rows-stable</code>) against 1858 MB</li>
+<li>win, memory, <code>varied/30000/no-k</code> (density_rivals): betula 172 MB (<code>betula-leiden-rows-stable</code>) against 1859 MB</li>
+<li>win, quality, <code>blobs/30000/no-k</code> (density_rivals): betula 0.823 ARI (<code>betula-leiden-rows-stable</code>) against 0.617 ARI</li>
+<li>win, quality, <code>digits/1797/no-k</code> (density_rivals): betula 0.750 ARI (<code>betula-leiden-rows-stable</code>) against 0.333 ARI</li>
+<li>win, quality, <code>moons/30000/no-k</code> (density_rivals): betula 1.000 ARI (<code>betula-leiden-rows-stable</code>) against 0.451 ARI</li>
+<li>win, quality, <code>varied/30000/no-k</code> (density_rivals): betula 0.700 ARI (<code>betula-leiden-rows-stable</code>) against 0.462 ARI</li>
+<li>tie, quality, <code>aniso/30000/no-k</code> (density_rivals): betula 0.525 ARI (<code>betula-leiden-rows-stable</code>) against 0.522 ARI</li>
+<li>tie, quality, <code>highdim/30000/no-k</code> (density_rivals): betula 1.000 ARI (<code>betula-leiden-rows-stable</code>) against 1.000 ARI</li>
+<li><strong>genieclust-genie</strong> — 8 win · 5 tie · 1 loss</li>
+<li>win, memory, <code>aniso/30000/told-k</code> (density_rivals): betula 172 MB (<code>betula-leiden-rows-auto</code>) against 206 MB</li>
+<li>win, memory, <code>blobs/30000/told-k</code> (density_rivals): betula 172 MB (<code>betula-leiden-rows-auto</code>) against 205 MB</li>
+<li>win, memory, <code>circles/30000/told-k</code> (density_rivals): betula 173 MB (<code>betula-leiden-rows-auto</code>) against 206 MB</li>
+<li>win, memory, <code>digits/1797/told-k</code> (density_rivals): betula 170 MB (<code>betula-leiden-rows-auto</code>) against 201 MB</li>
+<li>win, memory, <code>highdim/30000/told-k</code> (density_rivals): betula 184 MB (<code>betula-leiden-rows-auto</code>) against 213 MB</li>
+<li>win, memory, <code>moons/30000/told-k</code> (density_rivals): betula 173 MB (<code>betula-leiden-rows-auto</code>) against 205 MB</li>
+<li>win, memory, <code>varied/30000/told-k</code> (density_rivals): betula 173 MB (<code>betula-leiden-rows-auto</code>) against 205 MB</li>
+<li>win, quality, <code>digits/1797/told-k</code> (density_rivals): betula 0.840 ARI (<code>betula-leiden-rows-auto</code>) against 0.643 ARI</li>
+<li>tie, quality, <code>blobs/30000/told-k</code> (density_rivals): betula 0.829 ARI (<code>betula-leiden-rows-auto</code>) against 0.840 ARI</li>
+<li>tie, quality, <code>circles/30000/told-k</code> (density_rivals): betula 1.000 ARI (<code>betula-leiden-rows-auto</code>) against 1.000 ARI</li>
+<li>tie, quality, <code>highdim/30000/told-k</code> (density_rivals): betula 1.000 ARI (<code>betula-leiden-rows-auto</code>) against 1.000 ARI</li>
+<li>tie, quality, <code>moons/30000/told-k</code> (density_rivals): betula 1.000 ARI (<code>betula-leiden-rows-auto</code>) against 1.000 ARI</li>
+<li>tie, quality, <code>varied/30000/told-k</code> (density_rivals): betula 0.651 ARI (<code>betula-leiden-rows-auto</code>) against 0.641 ARI</li>
+<li>loss, quality, <code>aniso/30000/told-k</code> (density_rivals): betula 0.545 ARI (<code>betula-leiden-rows-auto</code>) against 0.750 ARI</li>
+<li><strong>hdbscan</strong> — 11 win · 3 tie · 0 loss</li>
+<li>win, memory, <code>aniso/30000/no-k</code> (density_rivals): betula 172 MB (<code>betula-leiden-rows-stable</code>) against 278 MB</li>
+<li>win, memory, <code>blobs/30000/no-k</code> (density_rivals): betula 172 MB (<code>betula-leiden-rows-stable</code>) against 278 MB</li>
+<li>win, memory, <code>circles/30000/no-k</code> (density_rivals): betula 172 MB (<code>betula-leiden-rows-stable</code>) against 275 MB</li>
+<li>win, memory, <code>digits/1797/no-k</code> (density_rivals): betula 171 MB (<code>betula-leiden-rows-stable</code>) against 186 MB</li>
+<li>win, memory, <code>highdim/30000/no-k</code> (density_rivals): betula 183 MB (<code>betula-leiden-rows-stable</code>) against 286 MB</li>
+<li>win, memory, <code>moons/30000/no-k</code> (density_rivals): betula 172 MB (<code>betula-leiden-rows-stable</code>) against 281 MB</li>
+<li>win, memory, <code>varied/30000/no-k</code> (density_rivals): betula 172 MB (<code>betula-leiden-rows-stable</code>) against 280 MB</li>
+<li>win, quality, <code>aniso/30000/no-k</code> (density_rivals): betula 0.525 ARI (<code>betula-leiden-rows-stable</code>) against 0.500 ARI</li>
+<li>win, quality, <code>blobs/30000/no-k</code> (density_rivals): betula 0.823 ARI (<code>betula-leiden-rows-stable</code>) against 0.472 ARI</li>
+<li>win, quality, <code>digits/1797/no-k</code> (density_rivals): betula 0.750 ARI (<code>betula-leiden-rows-stable</code>) against 0.087 ARI</li>
+<li>win, quality, <code>varied/30000/no-k</code> (density_rivals): betula 0.700 ARI (<code>betula-leiden-rows-stable</code>) against 0.505 ARI</li>
+<li>tie, quality, <code>circles/30000/no-k</code> (density_rivals): betula 1.000 ARI (<code>betula-leiden-rows-stable</code>) against 1.000 ARI</li>
+<li>tie, quality, <code>highdim/30000/no-k</code> (density_rivals): betula 1.000 ARI (<code>betula-leiden-rows-stable</code>) against 1.000 ARI</li>
+<li>tie, quality, <code>moons/30000/no-k</code> (density_rivals): betula 1.000 ARI (<code>betula-leiden-rows-stable</code>) against 1.000 ARI</li>
+<li><strong>kmedoids (fasterpam)</strong> — 1 win · 1 tie · 0 loss</li>
+<li>win, memory, <code>digits/1797/told-k</code> (head_refs): betula 166 MB (<code>betula-kmedoids</code>) against 217 MB</li>
+<li>tie, quality, <code>digits/1797/told-k</code> (head_refs): betula 0.651 ARI (<code>betula-kmedoids</code>) against 0.650 ARI</li>
+<li><strong>kmodes-kmodes</strong> — 0 win · 2 tie · 0 loss</li>
+<li>tie, memory, <code>soybean/47/told-k</code> (head_refs): betula 162 MB (<code>betula-kmodes</code>) against 159 MB</li>
+<li>tie, quality, <code>soybean/47/told-k</code> (head_refs): betula 1.000 ARI (<code>betula-kmodes</code>) against 1.000 ARI</li>
+<li><strong>kmodes-kprototypes</strong> — 1 win · 1 tie · 0 loss</li>
+<li>win, memory, <code>covtype-mixed/10000/told-k</code> (head_refs): betula 166 MB (<code>betula-kprototypes</code>) against 171 MB</li>
+<li>tie, quality, <code>covtype-mixed/10000/told-k</code> (head_refs): betula 0.028 ARI (<code>betula-kprototypes</code>) against 0.022 ARI</li>
+<li><strong>knn+leiden (scanpy recipe)</strong> — 6 win · 1 tie · 3 loss</li>
+<li>win, memory, <code>cifar100-clip/59999/no-k</code> (rivals): betula 689 MB (<code>betula-leiden-rows</code>) against 1052 MB</li>
+<li>win, memory, <code>mnist/20000/no-k</code> (rivals): betula 292 MB (<code>betula-leiden-rows</code>) against 619 MB</li>
+<li>win, memory, <code>mnist/70000/no-k</code> (rivals): betula 563 MB (<code>betula-leiden-rows</code>) against 962 MB</li>
+<li>win, memory, <code>news-minilm/17901/no-k</code> (rivals): betula 243 MB (<code>betula-leiden-rows</code>) against 575 MB</li>
+<li>win, memory, <code>news-mpnet/18119/no-k</code> (rivals): betula 275 MB (<code>betula-leiden-rows</code>) against 606 MB</li>
+<li>win, quality, <code>mnist/70000/no-k</code> (rivals): betula 0.777 ARI (<code>betula-leiden-rows</code>) against 0.711 ARI</li>
+<li>tie, quality, <code>mnist/20000/no-k</code> (rivals): betula 0.762 ARI (<code>betula-leiden-rows</code>) against 0.687 ARI</li>
+<li>loss, quality, <code>cifar100-clip/59999/no-k</code> (rivals): betula 0.370 ARI (<code>betula-leiden-rows</code>) against 0.561 ARI</li>
+<li>loss, quality, <code>news-minilm/17901/no-k</code> (rivals): betula 0.330 ARI (<code>betula-leiden-rows</code>) against 0.386 ARI</li>
+<li>loss, quality, <code>news-mpnet/18119/no-k</code> (rivals): betula 0.367 ARI (<code>betula-leiden-rows</code>) against 0.397 ARI</li>
+<li><strong>lumbermark</strong> — 9 win · 4 tie · 1 loss</li>
+<li>win, memory, <code>aniso/30000/told-k</code> (density_rivals): betula 172 MB (<code>betula-leiden-rows-auto</code>) against 207 MB</li>
+<li>win, memory, <code>blobs/30000/told-k</code> (density_rivals): betula 172 MB (<code>betula-leiden-rows-auto</code>) against 207 MB</li>
+<li>win, memory, <code>circles/30000/told-k</code> (density_rivals): betula 173 MB (<code>betula-leiden-rows-auto</code>) against 207 MB</li>
+<li>win, memory, <code>digits/1797/told-k</code> (density_rivals): betula 170 MB (<code>betula-leiden-rows-auto</code>) against 200 MB</li>
+<li>win, memory, <code>highdim/30000/told-k</code> (density_rivals): betula 184 MB (<code>betula-leiden-rows-auto</code>) against 217 MB</li>
+<li>win, memory, <code>moons/30000/told-k</code> (density_rivals): betula 173 MB (<code>betula-leiden-rows-auto</code>) against 207 MB</li>
+<li>win, memory, <code>varied/30000/told-k</code> (density_rivals): betula 173 MB (<code>betula-leiden-rows-auto</code>) against 207 MB</li>
+<li>win, quality, <code>digits/1797/told-k</code> (density_rivals): betula 0.840 ARI (<code>betula-leiden-rows-auto</code>) against 0.656 ARI</li>
+<li>win, quality, <code>varied/30000/told-k</code> (density_rivals): betula 0.651 ARI (<code>betula-leiden-rows-auto</code>) against 0.184 ARI</li>
+<li>tie, quality, <code>blobs/30000/told-k</code> (density_rivals): betula 0.829 ARI (<code>betula-leiden-rows-auto</code>) against 0.845 ARI</li>
+<li>tie, quality, <code>circles/30000/told-k</code> (density_rivals): betula 1.000 ARI (<code>betula-leiden-rows-auto</code>) against 1.000 ARI</li>
+<li>tie, quality, <code>highdim/30000/told-k</code> (density_rivals): betula 1.000 ARI (<code>betula-leiden-rows-auto</code>) against 1.000 ARI</li>
+<li>tie, quality, <code>moons/30000/told-k</code> (density_rivals): betula 1.000 ARI (<code>betula-leiden-rows-auto</code>) against 1.000 ARI</li>
+<li>loss, quality, <code>aniso/30000/told-k</code> (density_rivals): betula 0.545 ARI (<code>betula-leiden-rows-auto</code>) against 0.843 ARI</li>
+<li><strong>opentsne+kmeans</strong> — 6 win · 2 tie · 2 loss</li>
+<li>win, memory, <code>cifar100-clip/59999/told-k</code> (rivals): betula 690 MB (<code>betula-leiden-rows-auto</code>) against 1533 MB</li>
+<li>win, memory, <code>mnist/20000/told-k</code> (rivals): betula 293 MB (<code>betula-leiden-rows-auto</code>) against 626 MB</li>
+<li>win, memory, <code>mnist/70000/told-k</code> (rivals): betula 562 MB (<code>betula-leiden-rows-auto</code>) against 1272 MB</li>
+<li>win, memory, <code>news-minilm/17901/told-k</code> (rivals): betula 243 MB (<code>betula-leiden-rows-auto</code>) against 537 MB</li>
+<li>win, memory, <code>news-mpnet/18119/told-k</code> (rivals): betula 276 MB (<code>betula-leiden-rows-auto</code>) against 605 MB</li>
+<li>win, quality, <code>mnist/70000/told-k</code> (rivals): betula 0.835 ARI (<code>betula-leiden-rows-auto</code>) against 0.745 ARI</li>
+<li>tie, quality, <code>mnist/20000/told-k</code> (rivals): betula 0.762 ARI (<code>betula-leiden-rows-auto</code>) against 0.740 ARI</li>
+<li>tie, quality, <code>news-mpnet/18119/told-k</code> (rivals): betula 0.433 ARI (<code>betula-leiden-rows-auto</code>) against 0.429 ARI</li>
+<li>loss, quality, <code>cifar100-clip/59999/told-k</code> (rivals): betula 0.666 ARI (<code>betula-leiden-rows-auto</code>) against 0.696 ARI</li>
+<li>loss, quality, <code>news-minilm/17901/told-k</code> (rivals): betula 0.374 ARI (<code>betula-leiden-rows-auto</code>) against 0.416 ARI</li>
+<li><strong>pacmap+kmeans</strong> — 6 win · 3 tie · 1 loss</li>
+<li>win, memory, <code>cifar100-clip/59999/told-k</code> (rivals): betula 690 MB (<code>betula-leiden-rows-auto</code>) against 1296 MB</li>
+<li>win, memory, <code>mnist/20000/told-k</code> (rivals): betula 293 MB (<code>betula-leiden-rows-auto</code>) against 514 MB</li>
+<li>win, memory, <code>mnist/70000/told-k</code> (rivals): betula 562 MB (<code>betula-leiden-rows-auto</code>) against 1046 MB</li>
+<li>win, memory, <code>news-minilm/17901/told-k</code> (rivals): betula 243 MB (<code>betula-leiden-rows-auto</code>) against 397 MB</li>
+<li>win, memory, <code>news-mpnet/18119/told-k</code> (rivals): betula 276 MB (<code>betula-leiden-rows-auto</code>) against 489 MB</li>
+<li>win, quality, <code>cifar100-clip/59999/told-k</code> (rivals): betula 0.666 ARI (<code>betula-leiden-rows-auto</code>) against 0.634 ARI</li>
+<li>tie, quality, <code>mnist/20000/told-k</code> (rivals): betula 0.762 ARI (<code>betula-leiden-rows-auto</code>) against 0.751 ARI</li>
+<li>tie, quality, <code>mnist/70000/told-k</code> (rivals): betula 0.835 ARI (<code>betula-leiden-rows-auto</code>) against 0.795 ARI</li>
+<li>tie, quality, <code>news-mpnet/18119/told-k</code> (rivals): betula 0.433 ARI (<code>betula-leiden-rows-auto</code>) against 0.443 ARI</li>
+<li>loss, quality, <code>news-minilm/17901/told-k</code> (rivals): betula 0.374 ARI (<code>betula-leiden-rows-auto</code>) against 0.412 ARI</li>
+<li><strong>phenograph</strong> — 5 win · 1 tie · 4 loss</li>
+<li>win, memory, <code>cifar100-clip/59999/no-k</code> (rivals): betula 689 MB (<code>betula-leiden-rows</code>) against 1109 MB</li>
+<li>win, memory, <code>mnist/20000/no-k</code> (rivals): betula 292 MB (<code>betula-leiden-rows</code>) against 447 MB</li>
+<li>win, memory, <code>mnist/70000/no-k</code> (rivals): betula 563 MB (<code>betula-leiden-rows</code>) against 1104 MB</li>
+<li>win, memory, <code>news-minilm/17901/no-k</code> (rivals): betula 243 MB (<code>betula-leiden-rows</code>) against 386 MB</li>
+<li>win, memory, <code>news-mpnet/18119/no-k</code> (rivals): betula 275 MB (<code>betula-leiden-rows</code>) against 417 MB</li>
+<li>tie, quality, <code>mnist/20000/no-k</code> (rivals): betula 0.762 ARI (<code>betula-leiden-rows</code>) against 0.766 ARI</li>
+<li>loss, quality, <code>cifar100-clip/59999/no-k</code> (rivals): betula 0.370 ARI (<code>betula-leiden-rows</code>) against 0.529 ARI</li>
+<li>loss, quality, <code>mnist/70000/no-k</code> (rivals): betula 0.777 ARI (<code>betula-leiden-rows</code>) against 0.821 ARI</li>
+<li>loss, quality, <code>news-minilm/17901/no-k</code> (rivals): betula 0.330 ARI (<code>betula-leiden-rows</code>) against 0.395 ARI</li>
+<li>loss, quality, <code>news-mpnet/18119/no-k</code> (rivals): betula 0.367 ARI (<code>betula-leiden-rows</code>) against 0.429 ARI</li>
+<li><strong>skfuzzy-cmeans</strong> — 0 win · 1 tie · 1 loss</li>
+<li>tie, quality, <code>digits/1797/told-k</code> (head_refs): betula 0.206 ARI (<code>betula-fuzzy-cmeans</code>) against 0.216 ARI</li>
+<li>loss, memory, <code>digits/1797/told-k</code> (head_refs): betula 166 MB (<code>betula-fuzzy-cmeans</code>) against 163 MB</li>
+<li><strong>sklearn-bgmm</strong> — 13 win · 1 tie · 0 loss</li>
+<li>win, memory, <code>aniso/30000/no-k</code> (density_rivals): betula 172 MB (<code>betula-leiden-rows-stable</code>) against 215 MB</li>
+<li>win, memory, <code>blobs/30000/no-k</code> (density_rivals): betula 172 MB (<code>betula-leiden-rows-stable</code>) against 216 MB</li>
+<li>win, memory, <code>circles/30000/no-k</code> (density_rivals): betula 172 MB (<code>betula-leiden-rows-stable</code>) against 216 MB</li>
+<li>win, memory, <code>digits/1797/no-k</code> (density_rivals): betula 171 MB (<code>betula-leiden-rows-stable</code>) against 193 MB</li>
+<li>win, memory, <code>highdim/30000/no-k</code> (density_rivals): betula 183 MB (<code>betula-leiden-rows-stable</code>) against 224 MB</li>
+<li>win, memory, <code>moons/30000/no-k</code> (density_rivals): betula 172 MB (<code>betula-leiden-rows-stable</code>) against 216 MB</li>
+<li>win, memory, <code>varied/30000/no-k</code> (density_rivals): betula 172 MB (<code>betula-leiden-rows-stable</code>) against 216 MB</li>
+<li>win, quality, <code>aniso/30000/no-k</code> (density_rivals): betula 0.525 ARI (<code>betula-leiden-rows-stable</code>) against 0.300 ARI</li>
+<li>win, quality, <code>blobs/30000/no-k</code> (density_rivals): betula 0.823 ARI (<code>betula-leiden-rows-stable</code>) against 0.543 ARI</li>
+<li>win, quality, <code>circles/30000/no-k</code> (density_rivals): betula 1.000 ARI (<code>betula-leiden-rows-stable</code>) against 0.104 ARI</li>
+<li>win, quality, <code>digits/1797/no-k</code> (density_rivals): betula 0.750 ARI (<code>betula-leiden-rows-stable</code>) against 0.617 ARI</li>
+<li>win, quality, <code>moons/30000/no-k</code> (density_rivals): betula 1.000 ARI (<code>betula-leiden-rows-stable</code>) against 0.108 ARI</li>
+<li>win, quality, <code>varied/30000/no-k</code> (density_rivals): betula 0.700 ARI (<code>betula-leiden-rows-stable</code>) against 0.248 ARI</li>
+<li>tie, quality, <code>highdim/30000/no-k</code> (density_rivals): betula 1.000 ARI (<code>betula-leiden-rows-stable</code>) against 0.997 ARI</li>
+<li><strong>sklearn-birch</strong> — 4 win · 1 tie · 1 loss</li>
+<li>win, memory, <code>10000</code> (scaling): betula 50 MB (<code>betula-kmeans</code>) against 172 MB</li>
+<li>win, memory, <code>1000000</code> (scaling): betula 91 MB (<code>betula-hdbscan</code>) against 213 MB</li>
+<li>win, memory, <code>200000</code> (scaling): betula 57 MB (<code>betula-kmeans</code>) against 181 MB</li>
+<li>win, quality, <code>digits/1797</code> (real): betula 0.822 ARI (<code>betula-leiden</code>) against 0.664 ARI</li>
+<li>tie, quality, <code>mnist/20000</code> (real): betula 0.411 ARI (<code>betula-leiden</code>) against 0.426 ARI</li>
+<li>loss, quality, <code>covtype/20000</code> (real): betula 0.091 ARI (<code>betula-ward</code>) against 0.131 ARI</li>
+<li><strong>sklearn-bisecting-kmeans</strong> — 2 win · 0 tie · 0 loss</li>
+<li>win, memory, <code>digits/1797/told-k</code> (head_refs): betula 167 MB (<code>betula-kmeans</code>) against 181 MB</li>
+<li>win, quality, <code>digits/1797/told-k</code> (head_refs): betula 0.668 ARI (<code>betula-kmeans</code>) against 0.548 ARI</li>
+<li><strong>sklearn-dbscan-kdist</strong> — 5 win · 1 tie · 0 loss</li>
+<li>win, memory, <code>circles/30000/no-k</code> (density_rivals): betula 172 MB (<code>betula-leiden-rows-stable</code>) against 191 MB</li>
+<li>win, memory, <code>highdim/30000/no-k</code> (density_rivals): betula 183 MB (<code>betula-leiden-rows-stable</code>) against 433 MB</li>
+<li>win, memory, <code>moons/30000/no-k</code> (density_rivals): betula 172 MB (<code>betula-leiden-rows-stable</code>) against 191 MB</li>
+<li>win, quality, <code>circles/30000/no-k</code> (density_rivals): betula 1.000 ARI (<code>betula-leiden-rows-stable</code>) against 0.911 ARI</li>
+<li>win, quality, <code>moons/30000/no-k</code> (density_rivals): betula 1.000 ARI (<code>betula-leiden-rows-stable</code>) against 0.921 ARI</li>
+<li>tie, quality, <code>highdim/30000/no-k</code> (density_rivals): betula 1.000 ARI (<code>betula-leiden-rows-stable</code>) against 0.998 ARI</li>
+<li><strong>sklearn-gmm</strong> — 18 win · 23 tie · 0 loss</li>
+<li>win, memory, <code>10000/betula-gmm</code> (scaling): betula 54 MB (<code>betula-gmm</code>) against 176 MB</li>
+<li>win, memory, <code>10000/betula-gmm-full</code> (scaling): betula 57 MB (<code>betula-gmm-full</code>) against 176 MB</li>
+<li>win, memory, <code>1000000/betula-gmm</code> (scaling): betula 91 MB (<code>betula-gmm</code>) against 541 MB</li>
+<li>win, memory, <code>1000000/betula-gmm-full</code> (scaling): betula 91 MB (<code>betula-gmm-full</code>) against 541 MB</li>
+<li>win, memory, <code>200000/betula-gmm</code> (scaling): betula 61 MB (<code>betula-gmm</code>) against 240 MB</li>
+<li>win, memory, <code>200000/betula-gmm-full</code> (scaling): betula 63 MB (<code>betula-gmm-full</code>) against 240 MB</li>
+<li>win, memory, <code>50000/betula-gmm</code> (scaling): betula 55 MB (<code>betula-gmm</code>) against 189 MB</li>
+<li>win, memory, <code>50000/betula-gmm-full</code> (scaling): betula 58 MB (<code>betula-gmm-full</code>) against 189 MB</li>
+<li>win, quality, <code>moons/betula-gmm</code> (quality): betula 0.514 ARI (<code>betula-gmm</code>) against 0.504 ARI</li>
+<li>win, speed, <code>10000</code> (scaling): betula 0.03 s (<code>betula-kmeans</code>) against 0.63 s</li>
+<li>win, speed, <code>10000/betula-gmm</code> (scaling): betula 0.04 s (<code>betula-gmm</code>) against 0.63 s</li>
+<li>win, speed, <code>10000/betula-gmm-full</code> (scaling): betula 0.04 s (<code>betula-gmm-full</code>) against 0.63 s</li>
+<li>win, speed, <code>1000000/betula-gmm</code> (scaling): betula 0.23 s (<code>betula-gmm</code>) against 3.39 s</li>
+<li>win, speed, <code>1000000/betula-gmm-full</code> (scaling): betula 0.31 s (<code>betula-gmm-full</code>) against 3.39 s</li>
+<li>win, speed, <code>200000/betula-gmm</code> (scaling): betula 0.08 s (<code>betula-gmm</code>) against 0.99 s</li>
+<li>win, speed, <code>200000/betula-gmm-full</code> (scaling): betula 0.10 s (<code>betula-gmm-full</code>) against 0.99 s</li>
+<li>win, speed, <code>50000/betula-gmm</code> (scaling): betula 0.05 s (<code>betula-gmm</code>) against 0.72 s</li>
+<li>win, speed, <code>50000/betula-gmm-full</code> (scaling): betula 0.06 s (<code>betula-gmm-full</code>) against 0.72 s</li>
+<li>tie, quality, <code>aniso</code> (quality): betula 0.961 ARI (<code>betula-gmm-full</code>) against 0.902 ARI</li>
+<li>tie, quality, <code>blobs</code> (quality): betula 0.793 ARI (<code>betula-kmeans</code>) against 0.807 ARI</li>
+<li>tie, quality, <code>varied</code> (quality): betula 0.906 ARI (<code>betula-gmm-full</code>) against 0.907 ARI</li>
+<li>tie, quality, <code>aniso/betula-gmm</code> (quality): betula 0.540 ARI (<code>betula-gmm</code>) against 0.902 ARI</li>
+<li>tie, quality, <code>aniso/betula-gmm-full</code> (quality): betula 0.961 ARI (<code>betula-gmm-full</code>) against 0.902 ARI</li>
+<li>tie, quality, <code>blobs/betula-gmm</code> (quality): betula 0.812 ARI (<code>betula-gmm</code>) against 0.807 ARI</li>
+<li>tie, quality, <code>blobs/betula-gmm-full</code> (quality): betula 0.811 ARI (<code>betula-gmm-full</code>) against 0.807 ARI</li>
+<li>tie, quality, <code>circles/betula-gmm</code> (quality): betula -0.000 ARI (<code>betula-gmm</code>) against -0.000 ARI</li>
+<li>tie, quality, <code>circles/betula-gmm-full</code> (quality): betula -0.000 ARI (<code>betula-gmm-full</code>) against -0.000 ARI</li>
+<li>tie, quality, <code>highdim/betula-gmm</code> (quality): betula 1.000 ARI (<code>betula-gmm</code>) against 1.000 ARI</li>
+<li>tie, quality, <code>highdim/betula-gmm-full</code> (quality): betula 1.000 ARI (<code>betula-gmm-full</code>) against 1.000 ARI</li>
+<li>tie, quality, <code>moons/betula-gmm-full</code> (quality): betula 0.503 ARI (<code>betula-gmm-full</code>) against 0.504 ARI</li>
+<li>tie, quality, <code>varied/betula-gmm</code> (quality): betula 0.907 ARI (<code>betula-gmm</code>) against 0.907 ARI</li>
+<li>tie, quality, <code>varied/betula-gmm-full</code> (quality): betula 0.906 ARI (<code>betula-gmm-full</code>) against 0.907 ARI</li>
+<li>tie, quality, <code>covtype/20000/betula-gmm</code> (real): betula 0.077 ARI (<code>betula-gmm</code>) against 0.080 ARI</li>
+<li>tie, quality, <code>covtype/20000/betula-gmm-full</code> (real): betula 0.069 ARI (<code>betula-gmm-full</code>) against 0.080 ARI</li>
+<li>tie, quality, <code>digits/1797/betula-gmm</code> (real): betula 0.461 ARI (<code>betula-gmm</code>) against 0.463 ARI</li>
+<li>tie, quality, <code>digits/1797/betula-gmm-full</code> (real): betula 0.575 ARI (<code>betula-gmm-full</code>) against 0.463 ARI</li>
+<li>tie, quality, <code>covtype/20000/16000</code> (real_hires): betula 0.080 ARI (<code>betula-gmm-full</code>) against 0.080 ARI</li>
+<li>tie, quality, <code>covtype/20000/16000/betula-gmm</code> (real_hires): betula 0.080 ARI (<code>betula-gmm</code>) against 0.080 ARI</li>
+<li>tie, quality, <code>covtype/20000/16000/betula-gmm-full</code> (real_hires): betula 0.080 ARI (<code>betula-gmm-full</code>) against 0.080 ARI</li>
+<li>tie, quality, <code>digits/1797/1797/betula-gmm</code> (real_hires): betula 0.461 ARI (<code>betula-gmm</code>) against 0.463 ARI</li>
+<li>tie, quality, <code>digits/1797/1797/betula-gmm-full</code> (real_hires): betula 0.575 ARI (<code>betula-gmm-full</code>) against 0.463 ARI</li>
+<li><strong>sklearn-gmm-diag</strong> — 1 win · 1 tie · 0 loss</li>
+<li>win, quality, <code>ar-mixture/90/told-k</code> (head_refs): betula 0.764 ARI (<code>betula-gmm-toeplitz</code>) against 0.018 ARI</li>
+<li>tie, memory, <code>ar-mixture/90/told-k</code> (head_refs): betula 177 MB (<code>betula-gmm-toeplitz</code>) against 174 MB</li>
+<li><strong>sklearn-hdbscan</strong> — 3 win · 8 tie · 0 loss</li>
+<li>win, memory, <code>10000/betula-hdbscan</code> (scaling): betula 53 MB (<code>betula-hdbscan</code>) against 173 MB</li>
+<li>win, quality, <code>digits/1797/betula-hdbscan</code> (real): betula 0.164 ARI (<code>betula-hdbscan</code>) against 0.149 ARI</li>
+<li>win, speed, <code>10000/betula-hdbscan</code> (scaling): betula 0.21 s (<code>betula-hdbscan</code>) against 0.89 s</li>
+<li>tie, quality, <code>circles</code> (quality): betula 1.000 ARI (<code>betula-hdbscan</code>) against 1.000 ARI</li>
+<li>tie, quality, <code>moons</code> (quality): betula 1.000 ARI (<code>betula-spectral</code>) against 1.000 ARI</li>
+<li>tie, quality, <code>aniso/betula-hdbscan</code> (quality): betula 0.567 ARI (<code>betula-hdbscan</code>) against 0.567 ARI</li>
+<li>tie, quality, <code>blobs/betula-hdbscan</code> (quality): betula 0.423 ARI (<code>betula-hdbscan</code>) against 0.324 ARI</li>
+<li>tie, quality, <code>circles/betula-hdbscan</code> (quality): betula 1.000 ARI (<code>betula-hdbscan</code>) against 1.000 ARI</li>
+<li>tie, quality, <code>highdim/betula-hdbscan</code> (quality): betula 1.000 ARI (<code>betula-hdbscan</code>) against 1.000 ARI</li>
+<li>tie, quality, <code>moons/betula-hdbscan</code> (quality): betula 1.000 ARI (<code>betula-hdbscan</code>) against 1.000 ARI</li>
+<li>tie, quality, <code>varied/betula-hdbscan</code> (quality): betula 0.568 ARI (<code>betula-hdbscan</code>) against 0.802 ARI</li>
+<li><strong>sklearn-kmeans</strong> — 25 win · 20 tie · 2 loss</li>
+<li>win, memory, <code>digits/1797/told-k</code> (head_refs): betula 167 MB (<code>betula-kmeans</code>) against 181 MB</li>
+<li>win, memory, <code>covtype</code> (real_scale): betula 897 MB (<code>betula-kmeans</code>) against 934 MB</li>
+<li>win, memory, <code>covtype/betula-kmeans</code> (real_scale): betula 897 MB (<code>betula-kmeans</code>) against 934 MB</li>
+<li>win, memory, <code>cifar100-clip/59999/told-k</code> (rivals): betula 690 MB (<code>betula-leiden-rows-auto</code>) against 1098 MB</li>
+<li>win, memory, <code>mnist/20000/told-k</code> (rivals): betula 293 MB (<code>betula-leiden-rows-auto</code>) against 365 MB</li>
+<li>win, memory, <code>mnist/70000/told-k</code> (rivals): betula 562 MB (<code>betula-leiden-rows-auto</code>) against 836 MB</li>
+<li>win, memory, <code>news-minilm/17901/told-k</code> (rivals): betula 243 MB (<code>betula-leiden-rows-auto</code>) against 259 MB</li>
+<li>win, memory, <code>news-mpnet/18119/told-k</code> (rivals): betula 276 MB (<code>betula-leiden-rows-auto</code>) against 343 MB</li>
+<li>win, memory, <code>10000/betula-kmeans</code> (scaling): betula 50 MB (<code>betula-kmeans</code>) against 173 MB</li>
+<li>win, memory, <code>1000000/betula-kmeans</code> (scaling): betula 91 MB (<code>betula-kmeans</code>) against 320 MB</li>
+<li>win, memory, <code>200000/betula-kmeans</code> (scaling): betula 57 MB (<code>betula-kmeans</code>) against 202 MB</li>
+<li>win, memory, <code>50000/betula-kmeans</code> (scaling): betula 51 MB (<code>betula-kmeans</code>) against 180 MB</li>
+<li>win, quality, <code>digits/1797/1797</code> (real_hires): betula 0.575 ARI (<code>betula-gmm-full</code>) against 0.468 ARI</li>
+<li>win, quality, <code>covtype</code> (real_scale): betula 0.087 ARI (<code>betula-kmeans</code>) against 0.049 ARI</li>
+<li>win, quality, <code>covtype/betula-kmeans</code> (real_scale): betula 0.087 ARI (<code>betula-kmeans</code>) against 0.049 ARI</li>
+<li>win, quality, <code>mnist/20000/told-k</code> (rivals): betula 0.762 ARI (<code>betula-leiden-rows-auto</code>) against 0.359 ARI</li>
+<li>win, quality, <code>mnist/70000/told-k</code> (rivals): betula 0.835 ARI (<code>betula-leiden-rows-auto</code>) against 0.367 ARI</li>
+<li>win, quality, <code>news-mpnet/18119/told-k</code> (rivals): betula 0.433 ARI (<code>betula-leiden-rows-auto</code>) against 0.404 ARI</li>
+<li>win, speed, <code>covtype</code> (real_scale): betula 0.71 s (<code>betula-kmeans</code>) against 3.97 s</li>
+<li>win, speed, <code>covtype/betula-kmeans</code> (real_scale): betula 0.71 s (<code>betula-kmeans</code>) against 3.97 s</li>
+<li>win, speed, <code>1000000</code> (scaling): betula 0.21 s (<code>betula-kmeans</code>) against 2.09 s</li>
+<li>win, speed, <code>10000/betula-kmeans</code> (scaling): betula 0.03 s (<code>betula-kmeans</code>) against 0.64 s</li>
+<li>win, speed, <code>1000000/betula-kmeans</code> (scaling): betula 0.21 s (<code>betula-kmeans</code>) against 2.09 s</li>
+<li>win, speed, <code>200000/betula-kmeans</code> (scaling): betula 0.07 s (<code>betula-kmeans</code>) against 0.88 s</li>
+<li>win, speed, <code>50000/betula-kmeans</code> (scaling): betula 0.04 s (<code>betula-kmeans</code>) against 0.69 s</li>
+<li>tie, memory, <code>20news/betula-sparse</code> (sparse): betula 335 MB (<code>betula-sparse</code>) against 335 MB</li>
+<li>tie, quality, <code>highdim/1000000/kmeans-speed/shuffled</code> (external): betula 1.000 ARI (<code>betula-kmeans</code>) against 1.000 ARI</li>
+<li>tie, quality, <code>highdim/200000/kmeans-speed/shuffled</code> (external): betula 1.000 ARI (<code>betula-kmeans</code>) against 1.000 ARI</li>
+<li>tie, quality, <code>digits/1797/told-k</code> (head_refs): betula 0.668 ARI (<code>betula-kmeans</code>) against 0.664 ARI</li>
+<li>tie, quality, <code>highdim</code> (quality): betula 1.000 ARI (<code>betula-kmeans</code>) against 1.000 ARI</li>
+<li>tie, quality, <code>aniso/betula-kmeans</code> (quality): betula 0.545 ARI (<code>betula-kmeans</code>) against 0.545 ARI</li>
+<li>tie, quality, <code>blobs/betula-kmeans</code> (quality): betula 0.793 ARI (<code>betula-kmeans</code>) against 0.794 ARI</li>
+<li>tie, quality, <code>circles/betula-kmeans</code> (quality): betula -0.000 ARI (<code>betula-kmeans</code>) against -0.000 ARI</li>
+<li>tie, quality, <code>highdim/betula-kmeans</code> (quality): betula 1.000 ARI (<code>betula-kmeans</code>) against 1.000 ARI</li>
+<li>tie, quality, <code>moons/betula-kmeans</code> (quality): betula 0.485 ARI (<code>betula-kmeans</code>) against 0.484 ARI</li>
+<li>tie, quality, <code>varied/betula-kmeans</code> (quality): betula 0.670 ARI (<code>betula-kmeans</code>) against 0.670 ARI</li>
+<li>tie, quality, <code>covtype/20000/betula-kmeans</code> (real): betula 0.066 ARI (<code>betula-kmeans</code>) against 0.054 ARI</li>
+<li>tie, quality, <code>digits/1797/betula-kmeans</code> (real): betula 0.467 ARI (<code>betula-kmeans</code>) against 0.468 ARI</li>
+<li>tie, quality, <code>mnist/20000/betula-kmeans</code> (real): betula 0.327 ARI (<code>betula-kmeans</code>) against 0.324 ARI</li>
+<li>tie, quality, <code>mnist/20000/16000</code> (real_hires): betula 0.313 ARI (<code>betula-kmeans</code>) against 0.324 ARI</li>
+<li>tie, quality, <code>covtype/20000/16000/betula-kmeans</code> (real_hires): betula 0.064 ARI (<code>betula-kmeans</code>) against 0.054 ARI</li>
+<li>tie, quality, <code>digits/1797/1797/betula-kmeans</code> (real_hires): betula 0.467 ARI (<code>betula-kmeans</code>) against 0.468 ARI</li>
+<li>tie, quality, <code>mnist/20000/16000/betula-kmeans</code> (real_hires): betula 0.313 ARI (<code>betula-kmeans</code>) against 0.324 ARI</li>
+<li>tie, quality, <code>cifar100-clip/59999/told-k</code> (rivals): betula 0.666 ARI (<code>betula-leiden-rows-auto</code>) against 0.637 ARI</li>
+<li>tie, quality, <code>news-minilm/17901/told-k</code> (rivals): betula 0.374 ARI (<code>betula-leiden-rows-auto</code>) against 0.389 ARI</li>
+<li>loss, quality, <code>20news/betula-sparse</code> (sparse): betula 0.038 ARI (<code>betula-sparse</code>) against 0.056 ARI</li>
+<li>loss, speed, <code>20news/betula-sparse</code> (sparse): betula 1.62 s (<code>betula-sparse</code>) against 0.56 s</li>
+<li><strong>sklearn-kmeans (one-shot)</strong> — 18 win · 0 tie · 2 loss</li>
+<li>win, memory, <code>1000000/betula (one-shot)</code> (memory): betula 207 MB (<code>betula (one-shot)</code>) against 649 MB</li>
+<li>win, memory, <code>1000000/betula (streaming)</code> (memory): betula 55 MB (<code>betula (streaming)</code>) against 649 MB</li>
+<li>win, memory, <code>10000000/betula (one-shot)</code> (memory): betula 1647 MB (<code>betula (one-shot)</code>) against 4969 MB</li>
+<li>win, memory, <code>10000000/betula (streaming)</code> (memory): betula 55 MB (<code>betula (streaming)</code>) against 4969 MB</li>
+<li>win, memory, <code>2000000/betula (one-shot)</code> (memory): betula 367 MB (<code>betula (one-shot)</code>) against 1129 MB</li>
+<li>win, memory, <code>2000000/betula (streaming)</code> (memory): betula 55 MB (<code>betula (streaming)</code>) against 1129 MB</li>
+<li>win, memory, <code>500000/betula (one-shot)</code> (memory): betula 127 MB (<code>betula (one-shot)</code>) against 409 MB</li>
+<li>win, memory, <code>500000/betula (streaming)</code> (memory): betula 55 MB (<code>betula (streaming)</code>) against 409 MB</li>
+<li>win, memory, <code>5000000/betula (one-shot)</code> (memory): betula 847 MB (<code>betula (one-shot)</code>) against 2569 MB</li>
+<li>win, memory, <code>5000000/betula (streaming)</code> (memory): betula 55 MB (<code>betula (streaming)</code>) against 2569 MB</li>
+<li>win, speed, <code>1000000</code> (memory): betula 0.76 s (<code>betula (streaming)</code>) against 1.68 s</li>
+<li>win, speed, <code>2000000</code> (memory): betula 1.50 s (<code>betula (streaming)</code>) against 3.30 s</li>
+<li>win, speed, <code>500000</code> (memory): betula 0.41 s (<code>betula (streaming)</code>) against 0.73 s</li>
+<li>win, speed, <code>5000000</code> (memory): betula 3.71 s (<code>betula (streaming)</code>) against 5.48 s</li>
+<li>win, speed, <code>1000000/betula (streaming)</code> (memory): betula 0.76 s (<code>betula (streaming)</code>) against 1.68 s</li>
+<li>win, speed, <code>2000000/betula (streaming)</code> (memory): betula 1.50 s (<code>betula (streaming)</code>) against 3.30 s</li>
+<li>win, speed, <code>500000/betula (streaming)</code> (memory): betula 0.41 s (<code>betula (streaming)</code>) against 0.73 s</li>
+<li>win, speed, <code>5000000/betula (streaming)</code> (memory): betula 3.71 s (<code>betula (streaming)</code>) against 5.48 s</li>
+<li>loss, speed, <code>10000000</code> (memory): betula 7.26 s (<code>betula (streaming)</code>) against 5.71 s</li>
+<li>loss, speed, <code>10000000/betula (streaming)</code> (memory): betula 7.26 s (<code>betula (streaming)</code>) against 5.71 s</li>
+<li><strong>sklearn-minibatch</strong> — 3 win · 0 tie · 0 loss</li>
+<li>win, memory, <code>50000</code> (scaling): betula 51 MB (<code>betula-kmeans</code>) against 174 MB</li>
+<li>win, speed, <code>200000</code> (scaling): betula 0.07 s (<code>betula-kmeans</code>) against 0.65 s</li>
+<li>win, speed, <code>50000</code> (scaling): betula 0.04 s (<code>betula-kmeans</code>) against 0.68 s</li>
+<li><strong>sklearn-nmf</strong> — 0 win · 4 tie · 0 loss</li>
+<li>tie, memory, <code>20news</code> (sparse): betula 334 MB (<code>betula-kmeans-on-sklearn-nmf</code>) against 335 MB</li>
+<li>tie, memory, <code>20news/betula-kmeans-on-sklearn-nmf</code> (sparse): betula 334 MB (<code>betula-kmeans-on-sklearn-nmf</code>) against 335 MB</li>
+<li>tie, quality, <code>20news/betula-kmeans-on-sklearn-nmf</code> (sparse): betula 0.128 ARI (<code>betula-kmeans-on-sklearn-nmf</code>) against 0.124 ARI</li>
+<li>tie, speed, <code>20news/betula-kmeans-on-sklearn-nmf</code> (sparse): betula 1.99 s (<code>betula-kmeans-on-sklearn-nmf</code>) against 1.99 s</li>
+<li><strong>sklearn-optics</strong> — 3 win · 3 tie · 0 loss</li>
+<li>win, memory, <code>circles/30000/no-k</code> (density_rivals): betula 172 MB (<code>betula-leiden-rows-stable</code>) against 248 MB</li>
+<li>win, memory, <code>highdim/30000/no-k</code> (density_rivals): betula 183 MB (<code>betula-leiden-rows-stable</code>) against 227 MB</li>
+<li>win, memory, <code>moons/30000/no-k</code> (density_rivals): betula 172 MB (<code>betula-leiden-rows-stable</code>) against 255 MB</li>
+<li>tie, quality, <code>circles/30000/no-k</code> (density_rivals): betula 1.000 ARI (<code>betula-leiden-rows-stable</code>) against 1.000 ARI</li>
+<li>tie, quality, <code>highdim/30000/no-k</code> (density_rivals): betula 1.000 ARI (<code>betula-leiden-rows-stable</code>) against 1.000 ARI</li>
+<li>tie, quality, <code>moons/30000/no-k</code> (density_rivals): betula 1.000 ARI (<code>betula-leiden-rows-stable</code>) against 1.000 ARI</li>
+<li><strong>sklearn-svd</strong> — 2 win · 1 tie · 2 loss</li>
+<li>win, quality, <code>20news</code> (sparse): betula 0.200 ARI (<code>betula-svd</code>) against 0.130 ARI</li>
+<li>win, quality, <code>20news/betula-svd</code> (sparse): betula 0.200 ARI (<code>betula-svd</code>) against 0.130 ARI</li>
+<li>tie, memory, <code>20news/betula-svd</code> (sparse): betula 335 MB (<code>betula-svd</code>) against 335 MB</li>
+<li>loss, speed, <code>20news</code> (sparse): betula 1.45 s (<code>betula-svd</code>) against 0.38 s</li>
+<li>loss, speed, <code>20news/betula-svd</code> (sparse): betula 1.45 s (<code>betula-svd</code>) against 0.38 s</li>
+<li><strong>sklearn-ward</strong> — 2 win · 6 tie · 1 loss</li>
+<li>win, memory, <code>10000/betula-ward</code> (scaling): betula 51 MB (<code>betula-ward</code>) against 971 MB</li>
+<li>win, speed, <code>10000/betula-ward</code> (scaling): betula 0.12 s (<code>betula-ward</code>) against 2.29 s</li>
+<li>tie, quality, <code>aniso/betula-ward</code> (quality): betula 0.544 ARI (<code>betula-ward</code>) against 0.565 ARI</li>
+<li>tie, quality, <code>blobs/betula-ward</code> (quality): betula 0.787 ARI (<code>betula-ward</code>) against 0.770 ARI</li>
+<li>tie, quality, <code>circles/betula-ward</code> (quality): betula 0.003 ARI (<code>betula-ward</code>) against 0.001 ARI</li>
+<li>tie, quality, <code>highdim/betula-ward</code> (quality): betula 1.000 ARI (<code>betula-ward</code>) against 1.000 ARI</li>
+<li>tie, quality, <code>moons/betula-ward</code> (quality): betula 0.637 ARI (<code>betula-ward</code>) against 0.507 ARI</li>
+<li>tie, quality, <code>varied/betula-ward</code> (quality): betula 0.718 ARI (<code>betula-ward</code>) against 0.673 ARI</li>
+<li>loss, quality, <code>digits/1797/betula-ward</code> (real): betula 0.643 ARI (<code>betula-ward</code>) against 0.664 ARI</li>
+<li><strong>tslearn-kshape</strong> — 2 win · 0 tie · 0 loss</li>
+<li>win, memory, <code>ar-mixture/90/told-k</code> (head_refs): betula 177 MB (<code>betula-gmm-toeplitz</code>) against 461 MB</li>
+<li>win, quality, <code>ar-mixture/90/told-k</code> (head_refs): betula 0.764 ARI (<code>betula-gmm-toeplitz</code>) against 0.057 ARI</li>
+<li><strong>umap+hdbscan (umap docs' mnist recipe)</strong> — 3 win · 0 tie · 1 loss</li>
+<li>win, memory, <code>mnist/20000/no-k</code> (rivals): betula 292 MB (<code>betula-leiden-rows</code>) against 680 MB</li>
+<li>win, memory, <code>mnist/70000/no-k</code> (rivals): betula 563 MB (<code>betula-leiden-rows</code>) against 1096 MB</li>
+<li>win, quality, <code>mnist/20000/no-k</code> (rivals): betula 0.762 ARI (<code>betula-leiden-rows</code>) against 0.536 ARI</li>
+<li>loss, quality, <code>mnist/70000/no-k</code> (rivals): betula 0.777 ARI (<code>betula-leiden-rows</code>) against 0.920 ARI</li>
+<li><strong>umap+kmeans</strong> — 5 win · 2 tie · 3 loss</li>
+<li>win, memory, <code>cifar100-clip/59999/told-k</code> (rivals): betula 690 MB (<code>betula-leiden-rows-auto</code>) against 1369 MB</li>
+<li>win, memory, <code>mnist/20000/told-k</code> (rivals): betula 293 MB (<code>betula-leiden-rows-auto</code>) against 678 MB</li>
+<li>win, memory, <code>mnist/70000/told-k</code> (rivals): betula 562 MB (<code>betula-leiden-rows-auto</code>) against 1097 MB</li>
+<li>win, memory, <code>news-minilm/17901/told-k</code> (rivals): betula 243 MB (<code>betula-leiden-rows-auto</code>) against 640 MB</li>
+<li>win, memory, <code>news-mpnet/18119/told-k</code> (rivals): betula 276 MB (<code>betula-leiden-rows-auto</code>) against 694 MB</li>
+<li>tie, quality, <code>mnist/20000/told-k</code> (rivals): betula 0.762 ARI (<code>betula-leiden-rows-auto</code>) against 0.734 ARI</li>
+<li>tie, quality, <code>mnist/70000/told-k</code> (rivals): betula 0.835 ARI (<code>betula-leiden-rows-auto</code>) against 0.769 ARI</li>
+<li>loss, quality, <code>cifar100-clip/59999/told-k</code> (rivals): betula 0.666 ARI (<code>betula-leiden-rows-auto</code>) against 0.721 ARI</li>
+<li>loss, quality, <code>news-minilm/17901/told-k</code> (rivals): betula 0.374 ARI (<code>betula-leiden-rows-auto</code>) against 0.451 ARI</li>
+<li>loss, quality, <code>news-mpnet/18119/told-k</code> (rivals): betula 0.433 ARI (<code>betula-leiden-rows-auto</code>) against 0.472 ARI</li>
+<li><strong>umap-0.6+kmeans</strong> — 5 win · 3 tie · 2 loss</li>
+<li>win, memory, <code>cifar100-clip/59999/told-k</code> (rivals): betula 690 MB (<code>betula-leiden-rows-auto</code>) against 1649 MB</li>
+<li>win, memory, <code>mnist/20000/told-k</code> (rivals): betula 293 MB (<code>betula-leiden-rows-auto</code>) against 889 MB</li>
+<li>win, memory, <code>mnist/70000/told-k</code> (rivals): betula 562 MB (<code>betula-leiden-rows-auto</code>) against 1115 MB</li>
+<li>win, memory, <code>news-minilm/17901/told-k</code> (rivals): betula 243 MB (<code>betula-leiden-rows-auto</code>) against 737 MB</li>
+<li>win, memory, <code>news-mpnet/18119/told-k</code> (rivals): betula 276 MB (<code>betula-leiden-rows-auto</code>) against 927 MB</li>
+<li>tie, quality, <code>cifar100-clip/59999/told-k</code> (rivals): betula 0.666 ARI (<code>betula-leiden-rows-auto</code>) against 0.667 ARI</li>
+<li>tie, quality, <code>mnist/20000/told-k</code> (rivals): betula 0.762 ARI (<code>betula-leiden-rows-auto</code>) against 0.731 ARI</li>
+<li>tie, quality, <code>mnist/70000/told-k</code> (rivals): betula 0.835 ARI (<code>betula-leiden-rows-auto</code>) against 0.804 ARI</li>
+<li>loss, quality, <code>news-minilm/17901/told-k</code> (rivals): betula 0.374 ARI (<code>betula-leiden-rows-auto</code>) against 0.430 ARI</li>
+<li>loss, quality, <code>news-mpnet/18119/told-k</code> (rivals): betula 0.433 ARI (<code>betula-leiden-rows-auto</code>) against 0.459 ARI</li>
+</ul>
+<!-- claims:end -->
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+    <div class="md-copyright__highlight">
+      MIT-licensed · a Rust core with a scikit-learn API
+    </div>
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.sections", "navigation.top", "content.code.copy", "toc.follow"], "search": "../assets/javascripts/workers/search.a7633da7.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.a5f9d56c.min.js"></script>
+      
+        <script src="../javascripts/mathjax.js"></script>
+      
+        <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+      
+    
+  </body>
+</html>
