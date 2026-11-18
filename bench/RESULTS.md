@@ -1720,7 +1720,12 @@ versions are the ones listed here.
   machine: `bench/timings.py` re-times every arm of these harnesses and of three of the four below
   (the GPU, stream and Rust tables; it has no stage for Gagolewski's suite), in rounds of shuffled
   order with a control workload after each case, and keeps the first fit (with
-  imports, JIT compilation and device set-up) apart from the second.
+  imports, JIT compilation and device set-up) apart from the second. Its rows go to
+  `bench/results_timings.csv`, with the threads each arm actually ran, its peak RSS (`VmHWM`), the
+  k-means `n_init` beside every scikit-learn k-means time, the CPU temperature before and after,
+  and a control-workload drift; the session's governor, power, versions and `bench-ready.sh` report
+  go to `bench/results_timings_env.json`. A seeded UMAP on the 0.5-compatible layout and
+  CoreSPECT's numba run on one thread whatever they are given, and their rows say so.
 - **Peak RSS is the whole process**, the method's own import stack included (numba, for
   instance). A betula process starts at about 165 MB. A memory cell is what a user's
   process pays, not what the algorithm's data structures hold.

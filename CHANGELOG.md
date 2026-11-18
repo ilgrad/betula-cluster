@@ -508,6 +508,16 @@ All notable changes to this project are documented here. The format follows
   campaign** (`bench/_provenance.py`, `bench/scoreboard.py`). Arms that take a thread count read
   `_provenance.JOBS`; MNIST is cached as `.npy`; the census speed cells come from
   `bench/results_timings.csv`, empty until the campaign runs.
+- **The timing campaign is ready to run** (`bench/timings.py`, `bench/profile_build.py`).
+  `timings.py` gains per-arm round counts, `--n`, `--skip-arms` and `--price`; digits rows run at
+  their real 1 797; every row records the threads its arm ran on, `VmHWM`, the resolved k-means
+  `n_init`, temperatures and a control drift, and each invocation writes an environment JSON.
+  Its stages cover the rival, density, stream, out-of-core, scaling and GPU tables.
+  `profile_build.py` builds a frame-pointer wheel and splits one fit's instructions into tree
+  phases, sampled by `perf` at 10 M rows and counted exactly by callgrind at 200 000. umap-learn 0.6 keeps a seeded fit's threads only on its own
+  layout, so the 0.5-layout arms record one thread; CoreSPECT runs numba on one thread, since
+  cplearn 0.2.1 returns out-of-range indices above one. DelTriC and CoreSPECT run in their own
+  environment pinned to cplearn 0.2.1. No time is committed yet.
 
 ## [1.5.0] — 2026-10-28
 
