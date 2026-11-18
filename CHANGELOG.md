@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.6.0] — 2026-11-18
+
 ### Added
 - **`resolution="auto"` for `method="leiden"`.** Leiden ignored `n_clusters`; with
   `resolution="auto"` it searches the modularity resolution for `n_clusters` communities of at least
@@ -4503,7 +4505,8 @@ First public release.
   far below `max_leaves`), and rebuilds reinsert in reverse-DFS leaf order. The CF-tree build is now
   byte-for-byte the reference (`betulars`) tree shape and at speed parity with matched build flags.
 
-[Unreleased]: https://github.com/ilgrad/betula-cluster/compare/v1.5.0...HEAD
+[Unreleased]: https://github.com/ilgrad/betula-cluster/compare/v1.6.0...HEAD
+[1.6.0]: https://github.com/ilgrad/betula-cluster/compare/v1.5.0...v1.6.0
 [1.5.0]: https://github.com/ilgrad/betula-cluster/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/ilgrad/betula-cluster/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/ilgrad/betula-cluster/compare/v1.2.0...v1.3.0
