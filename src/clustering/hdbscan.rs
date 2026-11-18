@@ -352,6 +352,25 @@ pub(crate) fn mutual_reachability(
     }
 }
 
+/// The plain Euclidean MST over the leaf centroids: [`mutual_reachability`]'s tree without the
+/// core distances, so without their `O(m² log m)` pass. Exact over the complete graph at
+/// `graph_degree == 0`; over the beam-search index's `graph_degree` neighbours otherwise, joined
+/// into one tree as [`mst_over_graph`] joins it. `m >= 1`.
+pub(crate) fn euclidean_mst(
+    mu: &[Vec<f64>],
+    graph_degree: usize,
+    seed: u64,
+) -> Vec<(f64, usize, usize)> {
+    let m = mu.len();
+    let dist = |i: usize, j: usize| -> f64 { crate::kernels::sq_euclidean(&mu[i], &mu[j]).sqrt() };
+    if graph_degree == 0 {
+        prim_complete(m, &dist)
+    } else {
+        let adj = crate::clustering::knn::build(m, graph_degree, seed, dist);
+        mst_over_graph(m, &adj, &dist)
+    }
+}
+
 /// Cluster `features` with HDBSCAN*. `min_samples` sets the core-distance neighbourhood and
 /// `min_cluster_size` the smallest admissible cluster.
 ///

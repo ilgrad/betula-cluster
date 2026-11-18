@@ -280,6 +280,16 @@ A capability-by-capability reference. For runnable code see [`USAGE.md`](USAGE.m
   weight, so on a summary, where an outlier is a low-mass leaf, it spends its budget isolating strays
   (`[6297, 2, 1, 0]` rows at `k = 6` on the noise fixture). Tables in
   [`docs/USAGE.md`](https://github.com/ilgrad/betula-cluster/blob/main/docs/USAGE.md).
+- **Genie on the leaf spanning tree** (`method="genie"`, Gagolewski, Bartoszuk & Cena 2016) — the
+  Euclidean spanning tree of the leaf means, merged in increasing edge order, except that while the
+  Gini index of the cluster sizes (counted in rows) is above `gini_threshold` (default 0.1) the next
+  merge must grow a smallest cluster; `gini_threshold=1` is single linkage. Written from the paper.
+  Against the told-count rows graph, five row orders × seeds 0/1/2: a tie on the density fixtures
+  (worst-seed mean ARI 0.831 against 0.833) and a lead on Gagolewski's `graves` (NCA 0.910 against
+  0.726) and `other` (0.806 against 0.746) batteries. It loses where a true cluster is much smaller
+  than the rest (`iris5`, 5 / 50 / 50 rows: 0.410 against 0.810), and on large inputs it moves
+  with the row order (0.255 across five orders on `varied`). Tables in
+  [`docs/USAGE.md`](https://github.com/ilgrad/betula-cluster/blob/main/docs/USAGE.md).
 - **Explainable clustering** (`explain_tree()` → `ThresholdTree`) — an axis-aligned threshold tree
   with one leaf per cluster, fitted to any finished head by Iterative Mistake Minimization
   (Moshkovitz et al., ICML 2020) over the leaf microclusters, mass-weighted. `rules()` gives each

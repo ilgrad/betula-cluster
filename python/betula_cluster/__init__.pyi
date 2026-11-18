@@ -73,6 +73,7 @@ _Method = Literal[
     "hdbscan",
     "dc-center",
     "dc-median",
+    "genie",
     "scale-space",
 ]
 _Distance = Literal["euclidean", "manhattan", "ward", "average", "lorentz"]
@@ -208,6 +209,7 @@ def fit_predict(
     kappa: Literal["free", "shared"] = ...,
     hartigan: bool = ...,
     equal_size: bool = ...,
+    gini_threshold: float = ...,
 ) -> NDArray[np.int64]:
     """Cluster ``data`` in one shot and return per-point integer labels (``-1`` = noise)."""
 
@@ -286,6 +288,7 @@ class Betula(_Clusterer):
         kappa: Literal["free", "shared"] = ...,
         hartigan: bool = ...,
         equal_size: bool = ...,
+        gini_threshold: float = ...,
         memory_budget_mb: float | None = ...,
         compute_labels: bool = ...,
     ) -> None: ...

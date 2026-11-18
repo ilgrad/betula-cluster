@@ -19,7 +19,7 @@ labels = betula_cluster.fit_predict(X, method="hdbscan", min_samples=10, min_clu
 # hdbscan: label -1 == noise
 ```
 
-Keyword args: `feature ∈ {spherical, diagonal, full, fd}`, `method ∈ {kmeans, xmeans, kmedoids, fuzzy-cmeans, gmm, gmm-full, mppca, mfa, ward, average, weighted, centroid, median, spectral, leiden, leiden-cpm, spherical-kmeans, vmf, watson, hyperbolic, gmm-toeplitz, gmm-toeplitz-full, gmm-toeplitz-gs, hdbscan, dc-center, dc-median, scale-space}`,
+Keyword args: `feature ∈ {spherical, diagonal, full, fd}`, `method ∈ {kmeans, xmeans, kmedoids, fuzzy-cmeans, gmm, gmm-full, mppca, mfa, ward, average, weighted, centroid, median, spectral, leiden, leiden-cpm, spherical-kmeans, vmf, watson, hyperbolic, gmm-toeplitz, gmm-toeplitz-full, gmm-toeplitz-gs, hdbscan, dc-center, dc-median, genie, scale-space}`,
 `distance ∈ {euclidean, manhattan, ward, average, lorentz}` (routing measure),
 `absorb ∈ {euclidean, manhattan, average, diameter, ward, radius, chi2, subspace, lorentz}` (see *Absorption criteria*
 below; `chi2` = mass-invariant Mahalanobis gate at level `chi2_p` with `chi2_scale` = within-cluster
@@ -99,14 +99,15 @@ k-means/GMM, dendrogram cut for Ward). `threshold="auto"` (dense only) drops the
 often have to guess: a subsample pilot estimates a warm-start absorption radius, so the full fit
 starts near-converged instead of growing the threshold from zero.
 
-**A head-specific keyword handed to a head that does not read it raises.** Thirteen of the keywords above
+**A head-specific keyword handed to a head that does not read it raises.** Fifteen of the keywords above
 belong to one family of heads and configure nothing anywhere else, so `rank=8` with `method="ward"`
 is a request the fit was never going to honour:
 
 | keyword | read by |
 |---|---|
 | `min_samples` | `hdbscan`, `dc-center`, `dc-median` |
-| `graph_degree` | `hdbscan`, `dc-center`, `dc-median`, `leiden`, `leiden-cpm` |
+| `graph_degree` | `hdbscan`, `dc-center`, `dc-median`, `genie`, `leiden`, `leiden-cpm` |
+| `gini_threshold` | `genie` |
 | `min_cluster_size` | `hdbscan` |
 | `resolution`, `covariance_weight`, `tangent_weight`, `tangent_rank`, `n_iterations` | `leiden`, `leiden-cpm` |
 | `leaf_graph` | `leiden`, `leiden-cpm`, `spectral` |
@@ -233,6 +234,7 @@ answer.
 | variable-density clusters **+ noise**, unknown count | `hdbscan` | no |
 | the same density structure, but you know `k` and want a partition rather than noise | `leiden` with `leaf_graph="rows"`, `resolution="auto"` (mean ARI 0.838 over the seven density fixtures, tied with Genie; it loses aniso), or `dc-median` to cut the density hierarchy itself | yes — for `dc-median` read *Naming `k` on the density hierarchy*; `dc-center` is the other objective and is **mass-blind** |
 | **low-dimensional** clusters of any shape, unknown count, a partition rather than noise | `leiden` with `leaf_graph="rows"`, `resolution="stable"` (mean worst-seed ARI over the seven density fixtures 0.814, against 0.652 for the `hdbscan` package and 0.616 for betula's `hdbscan` head) — read *Choosing the resolution without a count* in [MATH.md](MATH.md) first | **no** — γ = 1 unless the rows graph is a mesh that γ = 1 cuts differently on every seed |
+| **thin or noisy shapes** of comparable size (rings, zigzags, curves with outliers) and a known count | `genie` — it ties the rows graph on the density fixtures and leads it on Gagolewski's `graves` and `other` batteries; read *Genie on the leaf spanning tree* for where it loses | yes — **no** auto-`k` |
 | **density peaks**, arbitrary count, no `k` *or* bandwidth to pick | `scale-space` | **no** — scale chosen by mode persistence |
 | **ordered / stationary signals** (time-series windows, trajectories, sensor waveforms), covariance *shape* | `gmm-toeplitz` | yes (or `0` = BIC) |
 | ordered signals with structure **beyond a low-order AR** (long-lag echo, narrowband) | `gmm-toeplitz-full` (any lag) or `gmm-toeplitz-gs` (likelihood-optimal precision, ≤ order 16) | yes (or `0` = BIC) |
@@ -2133,6 +2135,57 @@ different problem.
 
 Neither head takes `n_clusters=0`. Both costs fall monotonically in `k` to zero at `k = m`, so the
 objective cannot select it — the same reason `kmedoids` has no automatic mode.
+
+## Genie on the leaf spanning tree — `method="genie"`
+
+Single linkage cuts the minimum spanning tree at its `k − 1` heaviest edges, and on noisy data those
+edges isolate stray points: one giant cluster and a few outliers. Genie (Gagolewski, Bartoszuk &
+Cena, *Information Sciences* 2016) keeps the tree and changes the merge order. The edges of the
+Euclidean spanning tree of the leaf means merge in increasing order, except that while the Gini
+index of the cluster sizes is above `gini_threshold`, the next merge is the shortest edge that
+touches a smallest cluster.
+
+```python
+labels = betula_cluster.fit_predict(X, n_clusters=5, method="genie")  # gini_threshold=0.1
+labels = betula_cluster.fit_predict(X, n_clusters=5, method="genie", gini_threshold=0.3)
+```
+
+- **Sizes are counted in rows.** A cluster's size is the mass its leaves carry, not its leaf count,
+  so the Gini index is the one a point-level run would see.
+- `gini_threshold=1` is single linkage; `0` makes every merge grow a smallest cluster.
+- `graph_degree` builds the tree over the beam-search index, as for `hdbscan`.
+- Rows take the label of their nearest leaf, so `predict` on the training rows repeats the fit.
+- The head partitions: no `-1`, and `n_clusters=0` is refused. It reads no seed at
+  `graph_degree=0`; its only spread is the row order, through the tree.
+- `Method` is a frozen enum in 1.x, so in Rust the head is the free function
+  `betula_cluster::clustering::genie`.
+
+**What it scores**, against the told-count rows graph (`leiden`, `leaf_graph="rows"`,
+`resolution="auto"`) on the same build: five row orders × seeds 0 / 1 / 2, threshold 0, median per
+set. A difference inside the wider seed range is a tie.
+
+| reading | `genie` | rows graph | worst-seed mean | sets won / tied / lost |
+|---|---|---|---|---|
+| density fixtures, ARI (7) | 0.834 | 0.843 | 0.831 / 0.833 | 1 / 4 / 2 |
+| `graves` battery, NCA (10) | **0.910** | 0.734 | 0.910 / 0.726 | 4 / 4 / 2 |
+| `other` battery, NCA (8) | **0.804** | 0.769 | 0.806 / 0.746 | 3 / 3 / 2 |
+
+The wins are thin shapes the rows graph splits: `ring` 1.000 against 0.388, `ring_outliers` 1.000
+against 0.597, `zigzag_outliers` 1.000 against 0.500, `square` 1.000 against 0.244, `hdbscan`
+0.985 against 0.729, and `aniso` 0.677 against 0.543. The losses are clusters of unequal size or
+density, where the Gini bound is the wrong prior: `iris5` (5 / 50 / 50 rows) 0.410 against 0.810,
+`line` (200 / 50) 0.495 against 1.000, `chameleon_t4_8k` 0.701 against 1.000, `varied` 0.510
+against 0.680, `blobs` 0.802 against 0.838.
+
+**It moves with the row order on large inputs.** A spanning-tree cut reads a few edges, and the
+leaves depend on the order. On the 30 000-row fixtures the median over seeds moved by 0.255 across
+the five orders on `varied` and by 0.195 on `aniso`; the rows graph moved by 0.041 and 0.039. The
+`graves` sets hold at most 1 050 rows, under the 2 000-leaf budget, so every row is its own leaf
+there, and the answer did not move.
+
+**The default threshold.** Over the same five orders, the mean of the three readings is 0.849 at
+`gini_threshold=0.1`, 0.843 at 0.2 and 0.840 at 0.3. `graves` alone prefers 0.3 (0.960 against
+0.910); the density fixtures prefer 0.1 (0.831 against 0.765).
 
 ## Density structure — `reachability()`
 

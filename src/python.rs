@@ -37,7 +37,9 @@ use crate::clustering::{
     auto_min_samples, bregman_agglomerative, bregman_em, bregman_kmeans, cop_kmeans, kprototypes,
     nearest_micro, project_to_sheet, summarize_mixed,
 };
-use crate::clustering::{DcObjective, Kappa, LeafGraph, TreeNode, dc_clustering, exkmc, imm};
+use crate::clustering::{
+    DcObjective, Kappa, LeafGraph, TreeNode, dc_clustering, exkmc, genie, imm,
+};
 use crate::clustering::{Reachability, optics};
 use crate::distance::{
     AverageIntercluster, AverageIntracluster, CFDistance, CentroidEuclidean, CentroidManhattan,
@@ -83,13 +85,20 @@ enum Kind {
     },
     /// Scale-space KDE-mode clustering with persistence-selected scale (no `k`, no bandwidth).
     ScaleSpace,
+    /// Genie on the Euclidean spanning tree of the leaf means, sizes counted in points
+    /// ([`genie`]). A `Kind` rather than a [`Method`]: `Method` is a public exhaustive enum, frozen
+    /// in 1.x, and this head is reached only through the Python boundary and the free function.
+    Genie {
+        gini_threshold: f64,
+        graph_degree: usize,
+    },
 }
 
 impl Kind {
     /// Whether the head partitions the leaves into a caller-supplied `k`. HDBSCAN, scale-space and
     /// Leiden discover their own count, so a leaf budget stated relative to `k` says nothing there.
     fn consumes_k(self) -> bool {
-        matches!(self, Kind::DcDist { .. })
+        matches!(self, Kind::DcDist { .. } | Kind::Genie { .. })
             || matches!(self, Kind::Parametric(m) if !matches!(m, Method::Leiden { .. }))
     }
 }
@@ -439,6 +448,10 @@ const DEFAULT_TANGENT_WEIGHT: f64 = 0.0;
 const DEFAULT_TANGENT_RANK: usize = 2;
 const DEFAULT_RANK: usize = 2;
 const DEFAULT_FUZZIFIER: f64 = 2.0;
+/// Genie's Gini threshold. Over five row orders, the mean of the density fixtures (ARI) and the
+/// suite's `graves` and `other` batteries (NCA) read 0.849 at 0.1, 0.843 at 0.2 and 0.840 at 0.3;
+/// `graves` alone prefers 0.3 (0.960 against 0.910), the density fixtures 0.1 (0.831 against 0.765).
+const DEFAULT_GINI_THRESHOLD: f64 = 0.1;
 const DEFAULT_N_ITERATIONS: i64 = 1;
 
 /// The pass cap behind `n_iterations < 0`, "until stable". Each pass runs on its own seed, so nothing
@@ -454,8 +467,16 @@ const HEAD_KEYWORDS: &[(&str, &[&str])] = &[
     ("min_cluster_size", &["hdbscan"]),
     (
         "graph_degree",
-        &["hdbscan", "dc-center", "dc-median", "leiden", "leiden-cpm"],
+        &[
+            "hdbscan",
+            "dc-center",
+            "dc-median",
+            "genie",
+            "leiden",
+            "leiden-cpm",
+        ],
     ),
+    ("gini_threshold", &["genie"]),
     ("resolution", &["leiden", "leiden-cpm"]),
     ("covariance_weight", &["leiden", "leiden-cpm"]),
     ("tangent_weight", &["leiden", "leiden-cpm"]),
@@ -515,10 +536,13 @@ fn parse_method(
     rank: usize,
     graph_degree: usize,
     fuzzifier: f64,
+    gini_threshold: f64,
+    n_clusters: usize,
 ) -> PyResult<Kind> {
     require_head_reads_its_keywords(
         method,
         &[
+            ("gini_threshold", gini_threshold != DEFAULT_GINI_THRESHOLD),
             ("min_samples", min_samples != 0),
             (
                 "min_cluster_size",
@@ -606,12 +630,30 @@ fn parse_method(
             graph_degree,
         }),
         "scale-space" => Ok(Kind::ScaleSpace),
+        "genie" => {
+            if !(0.0..=1.0).contains(&gini_threshold) {
+                return Err(PyValueError::new_err(format!(
+                    "gini_threshold must be in [0, 1] (a Gini index), got {gini_threshold}; 1 is \
+                     single linkage, 0 always merges a smallest cluster"
+                )));
+            }
+            if n_clusters == 0 {
+                return Err(PyValueError::new_err(
+                    "method='genie' cuts the spanning tree into n_clusters clusters and has no \
+                     automatic count, so n_clusters must be at least 1",
+                ));
+            }
+            Ok(Kind::Genie {
+                gini_threshold,
+                graph_degree,
+            })
+        }
         _ => Err(PyValueError::new_err(
             "method must be 'kmeans', 'xmeans', 'kmedoids', 'fuzzy-cmeans', 'gmm', 'gmm-full', \
              'mppca', 'mfa', 'ward', 'average', 'weighted', 'centroid', 'median', 'spectral', 'leiden', \
              'leiden-cpm', 'spherical-kmeans', 'vmf', 'watson', 'hyperbolic', 'gmm-toeplitz', \
-             'gmm-toeplitz-full', 'gmm-toeplitz-gs', 'hdbscan', 'dc-center', 'dc-median' or \
-             'scale-space'",
+             'gmm-toeplitz-full', 'gmm-toeplitz-gs', 'hdbscan', 'dc-center', 'dc-median', 'genie' \
+             or 'scale-space'",
         )),
     }
 }
@@ -916,6 +958,20 @@ fn dispatch_kind<R: Real, C: ClusterFeature<R>>(
             .map(|l| l as i64)
             .collect(),
         ),
+        // The cut is a partition of the leaves, so a row takes its nearest leaf's label, found
+        // exactly as the rows-graph head finds it, rather than the leaf the descent stops at.
+        Kind::Genie {
+            gini_threshold,
+            graph_degree,
+        } => Dispatch {
+            rule: Some(PointRule::NearestLeaf),
+            ..Dispatch::hard(
+                genie(feats, k, gini_threshold, graph_degree, seed)
+                    .into_iter()
+                    .map(|l| l as i64)
+                    .collect(),
+            )
+        },
         Kind::ScaleSpace => Dispatch::hard(
             scale_space(feats, 0, max_iter)
                 .labels
@@ -2219,6 +2275,24 @@ fn cluster<R: Real, C: ClusterFeature<R>>(
                 .map(|e| res.labels[e] as i64)
                 .collect()
         }
+        Kind::Genie {
+            gini_threshold,
+            graph_degree,
+        } => {
+            let feats = tree.leaf_features();
+            let res = genie(feats, k, gini_threshold, graph_degree, seed);
+            // The estimator's nearest-leaf rule: the descent's leaf as the hint, the exact nearest
+            // from there.
+            let means: Vec<&[R]> = feats.iter().map(|c| c.mean()).collect();
+            let plan = AssignPlan::from_rows(&means, None).ok();
+            let hints = tree.nearest_entries(flat, n);
+            map_rows(n, |i| {
+                let own = plan.as_ref().map_or(hints[i], |p| {
+                    p.nearest(&flat[i * dim..(i + 1) * dim], Some(hints[i])).0
+                });
+                res[own] as i64
+            })
+        }
     };
     (labels, leaves)
 }
@@ -2431,7 +2505,7 @@ fn run_oneshot<R: Real + Element>(
     projection = "none", projection_dim = 64, projection_max_iter = 100, refine = 0, rank = DEFAULT_RANK,
     graph_degree = 0, balance = None, auto_k_max = 0, fuzzifier = DEFAULT_FUZZIFIER, leaf_refit = 0,
     canonical_order = false, n_iterations = DEFAULT_N_ITERATIONS, leaf_graph = "unit", kappa = "free", hartigan = false,
-    equal_size = false
+    equal_size = false, gini_threshold = DEFAULT_GINI_THRESHOLD
 ))]
 #[allow(clippy::too_many_arguments)]
 fn fit_predict<'py>(
@@ -2475,6 +2549,7 @@ fn fit_predict<'py>(
     kappa: &str,
     hartigan: bool,
     equal_size: bool,
+    gini_threshold: f64,
 ) -> PyResult<Bound<'py, PyArray1<i64>>> {
     // Two mutually exclusive ways to set one count: reject the pair instead of picking a winner.
     // Quietly ignoring the argument is how the old `n_jobs` came to read as a thread count.
@@ -2502,6 +2577,8 @@ fn fit_predict<'py>(
         rank,
         graph_degree,
         fuzzifier,
+        gini_threshold,
+        n_clusters,
     )?;
     let opts = HeadOptions {
         resolve,
@@ -3451,6 +3528,16 @@ fn default_fuzzifier() -> f64 {
     DEFAULT_FUZZIFIER
 }
 
+fn default_gini_threshold() -> f64 {
+    DEFAULT_GINI_THRESHOLD
+}
+
+// `serde`'s `skip_serializing_if` hands the field by reference.
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_default_gini_threshold(g: &f64) -> bool {
+    *g == DEFAULT_GINI_THRESHOLD
+}
+
 fn default_n_iterations() -> i64 {
     DEFAULT_N_ITERATIONS
 }
@@ -3546,6 +3633,13 @@ struct Betula {
     /// `#[serde(default = ...)]` is what lets a model persisted before this field existed still load.
     #[serde(default = "default_fuzzifier")]
     fuzzifier: f64,
+    /// Gini threshold of the Genie head (`method="genie"`); kept for `get_params`. Absent from the
+    /// file at its default, so a model that does not use it saves byte-for-byte as before.
+    #[serde(
+        default = "default_gini_threshold",
+        skip_serializing_if = "is_default_gini_threshold"
+    )]
+    gini_threshold: f64,
     /// Out-degree of the `method="hdbscan"` proximity graph; `0` = exact complete graph.
     #[serde(default)]
     graph_degree: usize,
@@ -4770,7 +4864,7 @@ impl Betula {
         projection_max_iter = 100, refine = 0, rank = DEFAULT_RANK, graph_degree = 0, balance = None,
         auto_k_max = 0, fuzzifier = DEFAULT_FUZZIFIER, leaf_refit = 0, canonical_order = false,
         route_beam = 1, n_iterations = DEFAULT_N_ITERATIONS, leaf_graph = "unit", kappa = "free",
-        hartigan = false, equal_size = false
+        hartigan = false, equal_size = false, gini_threshold = DEFAULT_GINI_THRESHOLD
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -4814,6 +4908,7 @@ impl Betula {
         kappa: &str,
         hartigan: bool,
         equal_size: bool,
+        gini_threshold: f64,
     ) -> PyResult<Self> {
         let min_samples = parse_min_samples(min_samples)?;
         let (resolution, resolve) = parse_resolution(&resolution, method, leaf_graph, n_clusters)?;
@@ -4828,6 +4923,8 @@ impl Betula {
             rank,
             graph_degree,
             fuzzifier,
+            gini_threshold,
+            n_clusters,
         )?;
         let proj = parse_projection(projection, projection_dim, projection_max_iter)?;
         let nmf_dim = proj.map(|p| p.rank);
@@ -4908,6 +5005,7 @@ impl Betula {
             tangent_rank,
             rank,
             fuzzifier,
+            gini_threshold,
             graph_degree,
             nmf_dim,
             nmf_kl,
@@ -5742,6 +5840,7 @@ impl Betula {
         d.set_item("tangent_rank", self.tangent_rank)?;
         d.set_item("rank", self.rank)?;
         d.set_item("fuzzifier", self.fuzzifier)?;
+        d.set_item("gini_threshold", self.gini_threshold)?;
         d.set_item("graph_degree", self.graph_degree)?;
         d.set_item("auto_k_max", self.auto_k_max)?;
         d.set_item("refine", self.refine)?;

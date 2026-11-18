@@ -9,6 +9,7 @@ pub mod community;
 pub mod dcdist;
 pub mod explain;
 pub mod fuzzy;
+pub mod genie;
 pub mod gmm;
 pub mod gmm_toeplitz;
 pub(crate) mod graph;
@@ -40,6 +41,7 @@ pub use community::{Community, LeafGraph, Objective, leiden, leiden_iterated, le
 pub use dcdist::{DcClustering, DcObjective, dc_clustering};
 pub use explain::{ThresholdTree, TreeNode, exkmc, imm};
 pub use fuzzy::{FuzzyCMeans, fuzzy_cmeans, fuzzy_cmeans_auto};
+pub use genie::genie;
 pub use gmm::{Gmm, GmmFull, gmm_diagonal, gmm_diagonal_auto, gmm_full, gmm_full_auto};
 pub use gmm_toeplitz::{
     GmmToeplitz, gmm_toeplitz, gmm_toeplitz_auto, gmm_toeplitz_full, gmm_toeplitz_full_auto,

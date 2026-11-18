@@ -800,6 +800,7 @@ _DEFAULTS = {
     "kappa": "free",
     "hartigan": False,
     "equal_size": False,
+    "gini_threshold": 0.1,
     "memory_budget_mb": None,
     "compute_labels": False,
 }
@@ -900,6 +901,7 @@ class Betula(_Clusterer):
         kappa="free",
         hartigan=False,
         equal_size=False,
+        gini_threshold=0.1,
         memory_budget_mb=None,
         compute_labels=False,
     ):
@@ -1038,6 +1040,12 @@ class Betula(_Clusterer):
         # its leaf's label, so the row-level sizes are equal to within a leaf's mass. Off by
         # default.
         self.equal_size = equal_size
+        # Gini threshold of the Genie head (method="genie"), in [0, 1]. The head merges the
+        # spanning tree of the leaf means in increasing edge order, except that while the Gini
+        # index of the cluster sizes (in rows) is above this threshold the next merge must grow a
+        # smallest cluster. 1 is single linkage. 0.1 led on the density fixtures; Gagolewski's
+        # `graves` battery prefers 0.3. Ignored by every other head.
+        self.gini_threshold = gini_threshold
         # Subspace rank q of the two subspace heads: each component's covariance is W Wᵀ + σ²I
         # (method="mppca") or W Wᵀ + diag(ψ) (method="mfa") with W of rank q, clamped to at most
         # dim - 1. Ignored by every other head.

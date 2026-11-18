@@ -25,7 +25,7 @@
 pip install betula-cluster
 ```
 
-**Verified:** a **666-case** Python suite at **100% wrapper coverage** + **1113** Rust tests,
+**Verified:** a **674-case** Python suite at **100% wrapper coverage** + **1115** Rust tests,
 `clippy -D warnings` + `fmt` clean across all feature sets, CI on CPython 3.11–3.15 (one abi3 wheel)
 plus free-threaded 3.14t and 3.15t.
 
@@ -295,6 +295,11 @@ snapshots / active-learning batches, the Rust API, and the CLI — all in the
   mutual-reachability tree `hdbscan` reads its count off. `dc-median` beats `spectral` by 0.198 on
   noisy moons at 20× less wall clock and ties `ward` on `digits`; `dc-center` is mass-blind by
   construction and is published with the measurement that shows it.
+- **Genie on the leaf spanning tree** (`method="genie"`, Gagolewski et al. 2016) — single linkage
+  with a Gini bound on the cluster sizes, counted in rows, for a `k` you name. Against the told-count
+  rows graph over five row orders it ties on the density fixtures (worst-seed mean ARI 0.831 against
+  0.833) and leads on Gagolewski's `graves` (NCA 0.910 against 0.726) and `other` (0.806 against
+  0.746) batteries; it loses where a true cluster is much smaller than the rest.
 - **OPTICS reachability plot** (`reachability()` → `ReachabilityPlot`) — the density diagnostic, over
   the microclusters. Not a lookalike of `method="hdbscan"`: OPTICS with no ε cutoff *is* Prim on the
   mutual-reachability graph, so the sweep walks that head's own spanning tree and `labels_at(ε)` is
@@ -419,7 +424,7 @@ And six **end-to-end use cases** (each scored against ground truth):
 - [**Benchmarks**](https://github.com/ilgrad/betula-cluster/blob/main/bench/RESULTS.md) — methodology, every metric, all tables, honest wins & losses.
 - [**Design**](https://github.com/ilgrad/betula-cluster/blob/main/DESIGN.md) — internal design, invariants, and testing strategy.
 
-Verified: **1113** Rust tests (library, equivariance, integration and CLI) + a **666-case**
+Verified: **1115** Rust tests (library, equivariance, integration and CLI) + a **674-case**
 Python suite at **100%** wrapper coverage (Rust ≥95%, CI-enforced), `clippy -D warnings` + `fmt`
 clean across all feature sets, on Python 3.11–3.15 (single abi3 wheel) and free-threaded
 3.14t and 3.15t.

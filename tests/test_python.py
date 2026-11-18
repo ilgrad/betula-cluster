@@ -4574,6 +4574,7 @@ _HEAD_KEYWORDS = [
     ("equal_size", True, "kmeans", "ward"),
     ("rank", 1, "mppca", "ward"),
     ("fuzzifier", 1.5, "fuzzy-cmeans", "kmeans"),
+    ("gini_threshold", 0.3, "genie", "kmeans"),
 ]
 
 
@@ -6757,13 +6758,83 @@ def test_the_ultrametric_heads_survive_a_save_load_round_trip(
     assert np.array_equal(est.predict(x), betula_cluster.Betula.load(path).predict(x))
 
 
-def test_a_leaf_budget_too_small_for_k_still_warns_on_the_ultrametric_heads(blobs_with_stragglers):
+@pytest.mark.parametrize("method", ["dc-median", "genie"])
+def test_a_leaf_budget_too_small_for_k_still_warns_on_the_spanning_tree_heads(
+    method, blobs_with_stragglers
+):
     """These heads consume `n_clusters`, so the summary-too-coarse guard has to see them."""
     x, _y = blobs_with_stragglers
     with pytest.warns(UserWarning, match="max_leaves"):
         betula_cluster.Betula(
-            n_clusters=40, method="dc-median", threshold=0.0, max_leaves=50, seed=0
+            n_clusters=40, method=method, threshold=0.0, max_leaves=50, seed=0
         ).fit(x)
+
+
+# ── genie: the Gini-corrected single linkage of the leaf spanning tree ────────────────────────
+
+
+def _genie(data, k=5, **kw):
+    return betula_cluster.Betula(
+        n_clusters=k, method="genie", threshold=0.0, max_leaves=400, seed=0, **kw
+    ).fit_predict(data)
+
+
+def test_genie_keeps_the_blobs_that_single_linkage_sheds_stragglers_into(blobs_with_stragglers):
+    """The reason for the head. Single linkage (`gini_threshold=1`) spends four of five clusters on
+    stray leaves and answers one giant cluster; the Gini bound makes the smallest cluster merge
+    first, so the five blobs survive as five clusters of ~800 rows."""
+    ari = pytest.importorskip("sklearn.metrics").adjusted_rand_score
+    x, y = blobs_with_stragglers
+    genie = _genie(x)
+    assert ari(y, genie) > 0.85
+    assert np.bincount(genie).min() > 0.15 * len(x)
+    single = _genie(x, gini_threshold=1.0)
+    assert ari(y, single) < 0.1
+    assert np.bincount(single).max() > 0.9 * len(x)
+
+
+def test_genie_follows_a_shape_no_centroid_head_can():
+    datasets = pytest.importorskip("sklearn.datasets")
+    ari = pytest.importorskip("sklearn.metrics").adjusted_rand_score
+    x, y = datasets.make_moons(n_samples=4000, noise=0.06, random_state=0)
+    assert ari(y, _genie(x, k=2)) > 0.99
+
+
+def test_genie_answers_the_same_rows_at_every_entry_point_and_after_a_round_trip(
+    tmp_path, blobs_with_stragglers
+):
+    """Rows take their nearest leaf's label, so `predict` on the training rows, the functional
+    entry point and a reloaded model all repeat the fit; the threshold outlives the save."""
+    import pickle
+
+    x, _y = blobs_with_stragglers
+    kw = dict(method="genie", gini_threshold=0.3, threshold=0.0, max_leaves=200, seed=0)
+    est = betula_cluster.Betula(n_clusters=5, **kw)
+    labels = est.fit_predict(x)
+    np.testing.assert_array_equal(est.predict(x), labels)
+    np.testing.assert_array_equal(betula_cluster.fit_predict(x, 5, **kw), labels)
+    path = tmp_path / "genie.betula"
+    est.save(str(path))
+    for restored in (pickle.loads(pickle.dumps(est)), betula_cluster.Betula.load(str(path))):
+        assert restored.get_params()["gini_threshold"] == 0.3
+        np.testing.assert_array_equal(restored.predict(x), labels)
+
+
+@pytest.mark.parametrize("gini", [-0.1, 1.5, float("nan")])
+def test_genie_refuses_a_threshold_that_is_not_a_gini_index(blobs, gini):
+    x, _ = blobs
+    with pytest.raises(ValueError, match="gini_threshold must be in"):
+        betula_cluster.Betula(n_clusters=4, method="genie", gini_threshold=gini).fit(x)
+    with pytest.raises(ValueError, match="gini_threshold must be in"):
+        betula_cluster.fit_predict(x, 4, method="genie", gini_threshold=gini)
+
+
+def test_genie_has_no_automatic_count(blobs):
+    x, _ = blobs
+    with pytest.raises(ValueError, match="no automatic count"):
+        betula_cluster.Betula(n_clusters=0, method="genie").fit(x)
+    with pytest.raises(ValueError, match="no automatic count"):
+        betula_cluster.fit_predict(x, 0, method="genie")
 
 
 @pytest.mark.parametrize("dtype", [np.float64, np.float32])

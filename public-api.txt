@@ -403,6 +403,8 @@ impl<R> core::panic::unwind_safe::RefUnwindSafe for betula_cluster::clustering::
 impl<R> core::panic::unwind_safe::UnwindSafe for betula_cluster::clustering::fuzzy::FuzzyCMeans<R> where alloc::vec::Vec<alloc::vec::Vec<R>>: core::panic::unwind_safe::UnwindSafe + core::panic::unwind_safe::UnwindSafe
 pub fn betula_cluster::clustering::fuzzy::fuzzy_cmeans<R: betula_cluster::types::Real, C: betula_cluster::feature::ClusterFeature<R>>(&[C], usize, f64, usize, u64) -> betula_cluster::clustering::fuzzy::FuzzyCMeans<R>
 pub fn betula_cluster::clustering::fuzzy::fuzzy_cmeans_auto<R: betula_cluster::types::Real, C: betula_cluster::feature::ClusterFeature<R>>(&[C], usize, f64, usize, u64) -> betula_cluster::clustering::fuzzy::FuzzyCMeans<R>
+pub mod betula_cluster::clustering::genie
+pub fn betula_cluster::clustering::genie::genie<R: betula_cluster::types::Real, C: betula_cluster::feature::ClusterFeature<R>>(&[C], usize, f64, usize, u64) -> alloc::vec::Vec<usize>
 pub mod betula_cluster::clustering::gmm
 pub struct betula_cluster::clustering::gmm::Gmm<R: betula_cluster::types::Real>
 pub betula_cluster::clustering::gmm::Gmm::labels: alloc::vec::Vec<usize>
@@ -1409,6 +1411,7 @@ pub fn betula_cluster::clustering::exkmc(&betula_cluster::clustering::explain::T
 pub fn betula_cluster::clustering::f64_working_radius() -> f64
 pub fn betula_cluster::clustering::fuzzy_cmeans<R: betula_cluster::types::Real, C: betula_cluster::feature::ClusterFeature<R>>(&[C], usize, f64, usize, u64) -> betula_cluster::clustering::fuzzy::FuzzyCMeans<R>
 pub fn betula_cluster::clustering::fuzzy_cmeans_auto<R: betula_cluster::types::Real, C: betula_cluster::feature::ClusterFeature<R>>(&[C], usize, f64, usize, u64) -> betula_cluster::clustering::fuzzy::FuzzyCMeans<R>
+pub fn betula_cluster::clustering::genie<R: betula_cluster::types::Real, C: betula_cluster::feature::ClusterFeature<R>>(&[C], usize, f64, usize, u64) -> alloc::vec::Vec<usize>
 pub fn betula_cluster::clustering::gmm_diagonal<R: betula_cluster::types::Real, C: betula_cluster::feature::ClusterFeature<R>>(&[C], usize, usize, u64) -> betula_cluster::clustering::gmm::Gmm<R>
 pub fn betula_cluster::clustering::gmm_diagonal_auto<R: betula_cluster::types::Real, C: betula_cluster::feature::ClusterFeature<R>>(&[C], usize, usize, usize, u64) -> betula_cluster::clustering::gmm::Gmm<R>
 pub fn betula_cluster::clustering::gmm_full<R: betula_cluster::types::Real, C: betula_cluster::feature::ClusterFeature<R>>(&[C], usize, usize, u64) -> betula_cluster::clustering::gmm::GmmFull<R>
