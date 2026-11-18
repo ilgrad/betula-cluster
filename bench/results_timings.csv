@@ -1,1 +1,1 @@
-stage,dataset,n,arm,round,seed,threads,n_init,cold_s,warm_s,vmhwm_mb,ari,roc_auc,dnf,process_s,control_drift,timing_valid,temp_before,temp_after,gpu_before,gpu_after,version
+stage,dataset,n,arm,round,seed,threads,n_init,seen,cold_s,warm_s,vmhwm_mb,device_mb,ari,roc_auc,dnf,process_s,control_drift,timing_valid,temp_before,temp_after,gpu_before,gpu_after,version,note,run

@@ -1,22 +1,22 @@
-stage,dataset,n,arm,round,seed,threads,n_init,cold_s,warm_s,vmhwm_mb,ari,roc_auc,dnf,process_s,control_drift,timing_valid,temp_before,temp_after,gpu_before,gpu_after,version
-rivals,mnist,20000,betula-leiden-rows-auto,0,0,8,,12.0,10.0,500.0,0.80,,,25.0,0.01,True,50.0,60.0,,,betula-cluster 1.5.0
-rivals,mnist,20000,betula-leiden-rows-auto,1,1,8,,12.5,10.2,505.0,0.81,,,25.5,-0.01,True,50.0,60.0,,,betula-cluster 1.5.0
-rivals,mnist,20000,betula-leiden-rows-auto,2,2,8,,11.8,9.8,495.0,0.79,,,24.8,0.00,True,50.0,60.0,,,betula-cluster 1.5.0
-rivals,mnist,20000,sklearn-kmeans,0,0,8,4,6.0,4.0,360.0,0.36,,,13.0,0.02,True,50.0,55.0,,,scikit-learn 1.9.1
-rivals,mnist,20000,sklearn-kmeans,1,1,8,4,6.1,4.1,360.0,0.36,,,13.2,0.01,True,50.0,55.0,,,scikit-learn 1.9.1
-rivals,mnist,20000,sklearn-kmeans,2,2,8,4,6.2,3.9,360.0,0.36,,,13.1,-0.02,True,50.0,55.0,,,scikit-learn 1.9.1
-rivals,mnist,20000,sklearn-kmeans,3,3,8,4,6.0,99.0,360.0,0.36,,,110.0,0.20,False,50.0,55.0,,,scikit-learn 1.9.1
-rivals,mnist,20000,umap-0.6+kmeans,0,0,1,4,16.0,13.0,900.0,0.70,,,32.0,0.01,True,50.0,60.0,,,umap-learn 0.6.0; pynndescent 0.5.13; scikit-learn 1.9.1
-rivals,mnist,20000,umap-0.6+kmeans,1,1,1,4,16.2,13.1,910.0,0.71,,,32.4,0.00,True,50.0,60.0,,,umap-learn 0.6.0; pynndescent 0.5.13; scikit-learn 1.9.1
-rivals,mnist,20000,umap-0.6+kmeans,2,2,1,4,15.8,12.9,890.0,0.69,,,31.7,0.01,True,50.0,60.0,,,umap-learn 0.6.0; pynndescent 0.5.13; scikit-learn 1.9.1
-rivals,mnist,20000,pacmap+kmeans,0,0,8,4,20.0,18.0,700.0,0.65,,,41.0,0.01,True,50.0,60.0,,,pacmap 0.8.0; scikit-learn 1.9.1
-rivals,mnist,20000,pacmap+kmeans,1,1,8,4,20.5,18.2,700.0,0.66,,,41.7,0.02,True,50.0,60.0,,,pacmap 0.8.0; scikit-learn 1.9.1
-rivals,mnist,20000,pacmap+kmeans,2,2,8,4,19.6,17.9,700.0,0.64,,,40.5,0.00,True,50.0,60.0,,,pacmap 0.8.0; scikit-learn 1.9.1
-rivals,mnist,20000,opentsne+kmeans,0,0,8,,,,,,,timeout 3600 s,3600.0,0.01,True,50.0,70.0,,,openTSNE 1.0.2; scikit-learn 1.9.1
-rivals,mnist,20000,betula-leiden-rows,0,0,8,,12.0,10.0,500.0,0.75,,,25.0,0.01,True,50.0,60.0,,,betula-cluster 1.5.0
-rivals,mnist,20000,betula-leiden-rows,1,1,8,,12.1,10.1,500.0,0.76,,,25.2,0.00,True,50.0,60.0,,,betula-cluster 1.5.0
-rivals,mnist,20000,betula-leiden-rows,2,2,8,,11.9,9.9,500.0,0.74,,,24.9,0.01,True,50.0,60.0,,,betula-cluster 1.5.0
-rivals,mnist,20000,evoc,0,0,8,,9.0,5.0,800.0,0.70,,,15.0,0.01,True,50.0,60.0,,,evoc 0.2.0
-rivals,mnist,20000,evoc,1,1,8,,9.1,5.1,800.0,0.70,,,15.2,0.00,True,50.0,60.0,,,evoc 0.2.0
-rivals,mnist,20000,evoc,2,2,8,,8.9,4.9,800.0,0.70,,,14.9,0.02,True,50.0,60.0,,,evoc 0.2.0
-threads,mnist,20000,betula-leiden-rows-auto,0,0,1,,32.0,30.0,500.0,0.80,,,63.0,0.01,True,50.0,60.0,,,betula-cluster 1.5.0
+stage,dataset,n,arm,round,seed,threads,n_init,seen,cold_s,warm_s,vmhwm_mb,device_mb,ari,roc_auc,dnf,process_s,control_drift,timing_valid,temp_before,temp_after,gpu_before,gpu_after,version,note,run
+rivals,mnist,20000,betula-leiden-rows-auto,0,0,8,,,12.0,10.0,500.0,,0.80,,,25.0,0.01,True,50.0,60.0,,,betula-cluster 1.5.0,,2026-01-01T00:00:00+00:00
+rivals,mnist,20000,betula-leiden-rows-auto,1,1,8,,,12.5,10.2,505.0,,0.81,,,25.5,-0.01,True,50.0,60.0,,,betula-cluster 1.5.0,,2026-01-01T00:00:00+00:00
+rivals,mnist,20000,betula-leiden-rows-auto,2,2,8,,,11.8,9.8,495.0,,0.79,,,24.8,0.00,True,50.0,60.0,,,betula-cluster 1.5.0,,2026-01-01T00:00:00+00:00
+rivals,mnist,20000,sklearn-kmeans,0,0,8,4,,6.0,4.0,360.0,,0.36,,,13.0,0.02,True,50.0,55.0,,,scikit-learn 1.9.1,,2026-01-01T00:00:00+00:00
+rivals,mnist,20000,sklearn-kmeans,1,1,8,4,,6.1,4.1,360.0,,0.36,,,13.2,0.01,True,50.0,55.0,,,scikit-learn 1.9.1,,2026-01-01T00:00:00+00:00
+rivals,mnist,20000,sklearn-kmeans,2,2,8,4,,6.2,3.9,360.0,,0.36,,,13.1,-0.02,True,50.0,55.0,,,scikit-learn 1.9.1,,2026-01-01T00:00:00+00:00
+rivals,mnist,20000,sklearn-kmeans,3,3,8,4,,6.0,99.0,360.0,,0.36,,,110.0,0.20,False,50.0,55.0,,,scikit-learn 1.9.1,,2026-01-01T00:00:00+00:00
+rivals,mnist,20000,umap-0.6+kmeans,0,0,8,4,,16.0,13.0,900.0,,0.70,,,32.0,0.01,True,50.0,60.0,,,umap-learn 0.6.0; pynndescent 0.5.13; scikit-learn 1.9.1,,2026-01-01T00:00:00+00:00
+rivals,mnist,20000,umap-0.6+kmeans,1,1,8,4,,16.2,13.1,910.0,,0.71,,,32.4,0.00,True,50.0,60.0,,,umap-learn 0.6.0; pynndescent 0.5.13; scikit-learn 1.9.1,,2026-01-01T00:00:00+00:00
+rivals,mnist,20000,umap-0.6+kmeans,2,2,8,4,,15.8,12.9,890.0,,0.69,,,31.7,0.01,True,50.0,60.0,,,umap-learn 0.6.0; pynndescent 0.5.13; scikit-learn 1.9.1,,2026-01-01T00:00:00+00:00
+rivals,mnist,20000,pacmap+kmeans,0,0,8,4,,20.0,18.0,700.0,,0.65,,,41.0,0.01,True,50.0,60.0,,,pacmap 0.8.0; scikit-learn 1.9.1,,2026-01-01T00:00:00+00:00
+rivals,mnist,20000,pacmap+kmeans,1,1,8,4,,20.5,18.2,700.0,,0.66,,,41.7,0.02,True,50.0,60.0,,,pacmap 0.8.0; scikit-learn 1.9.1,,2026-01-01T00:00:00+00:00
+rivals,mnist,20000,pacmap+kmeans,2,2,8,4,,19.6,17.9,700.0,,0.64,,,40.5,0.00,True,50.0,60.0,,,pacmap 0.8.0; scikit-learn 1.9.1,,2026-01-01T00:00:00+00:00
+rivals,mnist,20000,opentsne+kmeans,0,0,8,,,,,,,,,timeout 3600 s,3600.0,0.01,True,50.0,70.0,,,openTSNE 1.0.2; scikit-learn 1.9.1,,2026-01-01T00:00:00+00:00
+rivals,mnist,20000,betula-leiden-rows,0,0,8,,,12.0,10.0,500.0,,0.75,,,25.0,0.01,True,50.0,60.0,,,betula-cluster 1.5.0,,2026-01-01T00:00:00+00:00
+rivals,mnist,20000,betula-leiden-rows,1,1,8,,,12.1,10.1,500.0,,0.76,,,25.2,0.00,True,50.0,60.0,,,betula-cluster 1.5.0,,2026-01-01T00:00:00+00:00
+rivals,mnist,20000,betula-leiden-rows,2,2,8,,,11.9,9.9,500.0,,0.74,,,24.9,0.01,True,50.0,60.0,,,betula-cluster 1.5.0,,2026-01-01T00:00:00+00:00
+rivals,mnist,20000,evoc,0,0,8,,,9.0,5.0,800.0,,0.70,,,15.0,0.01,True,50.0,60.0,,,evoc 0.2.0,,2026-01-01T00:00:00+00:00
+rivals,mnist,20000,evoc,1,1,8,,,9.1,5.1,800.0,,0.70,,,15.2,0.00,True,50.0,60.0,,,evoc 0.2.0,,2026-01-01T00:00:00+00:00
+rivals,mnist,20000,evoc,2,2,8,,,8.9,4.9,800.0,,0.70,,,14.9,0.02,True,50.0,60.0,,,evoc 0.2.0,,2026-01-01T00:00:00+00:00
+threads,mnist,20000,betula-leiden-rows-auto,0,0,1,,,32.0,30.0,500.0,,0.80,,,63.0,0.01,True,50.0,60.0,,,betula-cluster 1.5.0,,2026-01-01T00:00:00+00:00
