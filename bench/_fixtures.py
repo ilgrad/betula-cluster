@@ -31,6 +31,9 @@ imports only what the method under test needs.
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
 import numpy as np
 
 REAL_CAP = 20_000  # subsample big real sets so the O(N^2) baselines stay feasible and comparable
@@ -43,12 +46,7 @@ def fetch(dataset: str) -> tuple[np.ndarray, np.ndarray, int]:
 
         x, y, k = (*load_digits(return_X_y=True), 10)
     elif dataset == "mnist":
-        from sklearn.datasets import fetch_openml
-
-        # `parser="liac-arff"`: the default ("auto" → pandas) raises on scikit-learn 1.9.1 with
-        # pandas 3.1, and the harness used to read that as "offline" and drop the dataset.
-        d = fetch_openml("mnist_784", version=1, as_frame=False, parser="liac-arff")
-        x, y, k = d.data, d.target.astype(int), 10
+        x, y, k = (*_mnist(), 10)
     elif dataset == "covtype":
         from sklearn.datasets import fetch_covtype
 
@@ -57,6 +55,39 @@ def fetch(dataset: str) -> tuple[np.ndarray, np.ndarray, int]:
     else:
         raise ValueError(f"unknown real dataset: {dataset}")
     return np.asarray(x, dtype=np.float64), np.asarray(y), k
+
+
+def _mnist() -> tuple[np.ndarray, np.ndarray]:
+    """OpenML's `mnist_784`, parsed once and kept as two `.npy` files beside the other caches.
+
+    `fetch_openml` parses the ARFF text again on every call, in pure Python (70 000 × 785 values),
+    and every bench process that loads MNIST paid for it: 114 of the 744 children the timing
+    campaign was prepared with. The pixels are integers 0–255 and are kept as `uint8`; the float64
+    array returned is the parse's bit for bit, which is checked when the cache is written.
+    """
+    from sklearn.datasets import get_data_home
+
+    base = Path(get_data_home()) / "betula_bench"
+    xp, yp = base / "mnist_784-X.npy", base / "mnist_784-y.npy"
+    if xp.exists() and yp.exists():
+        return np.load(xp).astype(np.float64), np.load(yp)
+    from sklearn.datasets import fetch_openml
+
+    # `parser="liac-arff"`: the default ("auto" → pandas) raises on scikit-learn 1.9.1 with
+    # pandas 3.1, and the harness used to read that as "offline" and drop the dataset.
+    d = fetch_openml("mnist_784", version=1, as_frame=False, parser="liac-arff")
+    x, y = np.asarray(d.data, dtype=np.float64), np.asarray(d.target.astype(int))
+    pixels = x.astype(np.uint8)
+    if not np.array_equal(pixels, x):
+        raise ValueError("mnist_784 holds a pixel that is not an integer 0-255: not cached")
+    base.mkdir(parents=True, exist_ok=True)
+    for path, array in ((xp, pixels), (yp, y)):
+        # Written aside and renamed, so a process that starts mid-write never reads half a file.
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+        with tmp.open("wb") as f:
+            np.save(f, array)
+        os.replace(tmp, path)
+    return x, y
 
 
 def draw_then_scale(x, y, n: int | None = REAL_CAP, seed: int = 0):

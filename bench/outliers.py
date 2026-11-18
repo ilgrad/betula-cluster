@@ -33,7 +33,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from _provenance import versions
+from _provenance import jobs, versions
 
 SEEDS = (0, 1, 2)
 
@@ -103,13 +103,13 @@ def _betula(x, seed, metric):
 def _iforest(x, seed):
     from sklearn.ensemble import IsolationForest
 
-    return -IsolationForest(random_state=seed).fit(x).score_samples(x)
+    return -IsolationForest(random_state=seed, **jobs("n_jobs")).fit(x).score_samples(x)
 
 
 def _lof(x, seed):
     from sklearn.neighbors import LocalOutlierFactor
 
-    return -LocalOutlierFactor().fit(x).negative_outlier_factor_
+    return -LocalOutlierFactor(**jobs("n_jobs")).fit(x).negative_outlier_factor_
 
 
 def _pyod(name, x, seed):

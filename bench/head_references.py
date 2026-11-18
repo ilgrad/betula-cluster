@@ -49,7 +49,7 @@ import numpy as np
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
-from _provenance import versions
+from _provenance import jobs, versions
 from _worker import Peak, cap_memory
 from rivals import score
 
@@ -118,7 +118,7 @@ def _kprototypes_betula(x, k, seed, extra):
 def _kprototypes_kmodes(x, k, seed, extra):
     from kmodes.kprototypes import KPrototypes
 
-    model = KPrototypes(n_clusters=k, init="Huang", n_init=4, random_state=seed)
+    model = KPrototypes(n_clusters=k, init="Huang", n_init=4, random_state=seed, **jobs("n_jobs"))
     return model.fit_predict(x, categorical=list(extra["categorical"]))
 
 

@@ -50,7 +50,7 @@ import numpy as np
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
-from _provenance import versions
+from _provenance import jobs, versions
 from _worker import Peak, cap_memory
 from rivals import corespect, deltric, score
 
@@ -136,7 +136,7 @@ def kdist_params(x) -> tuple[int, float]:
     from sklearn.neighbors import NearestNeighbors
 
     min_pts = 2 * x.shape[1]
-    dist = NearestNeighbors(n_neighbors=min_pts).fit(x).kneighbors(x)[0][:, -1]
+    dist = NearestNeighbors(n_neighbors=min_pts, **jobs("n_jobs")).fit(x).kneighbors(x)[0][:, -1]
     curve = np.sort(dist)
     span = curve[-1] - curve[0]
     t = np.linspace(0.0, 1.0, len(curve))
@@ -148,7 +148,7 @@ def _dbscan_kdist(x):
     from sklearn.cluster import DBSCAN
 
     min_pts, eps = kdist_params(x)
-    return DBSCAN(eps=eps, min_samples=min_pts).fit_predict(x)
+    return DBSCAN(eps=eps, min_samples=min_pts, **jobs("n_jobs")).fit_predict(x)
 
 
 def _classix(x):
@@ -235,7 +235,9 @@ ARMS = {
     "hdbscan": (
         False,
         lambda x, k, s: (
-            __import__("hdbscan").HDBSCAN(min_cluster_size=min_points(len(x))).fit_predict(x)
+            __import__("hdbscan")
+            .HDBSCAN(min_cluster_size=min_points(len(x)), **jobs("core_dist_n_jobs"))
+            .fit_predict(x)
         ),
     ),
     "fast-hdbscan": (
@@ -248,7 +250,7 @@ ARMS = {
         False,
         lambda x, k, s: (
             __import__("sklearn.cluster", fromlist=["OPTICS"])
-            .OPTICS(min_samples=min_points(len(x)))
+            .OPTICS(min_samples=min_points(len(x)), **jobs("n_jobs"))
             .fit_predict(x)
         ),
     ),
@@ -256,7 +258,7 @@ ARMS = {
         False,
         lambda x, k, s: (
             __import__("sklearn.cluster", fromlist=["DBSCAN"])
-            .DBSCAN(min_samples=min_points(len(x)))
+            .DBSCAN(min_samples=min_points(len(x)), **jobs("n_jobs"))
             .fit_predict(x)
         ),
     ),

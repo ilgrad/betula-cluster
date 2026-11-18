@@ -71,7 +71,7 @@ def load(dataset, n, seed):
 
 def _umap_kw(dataset):
     # The CPU table's UMAP settings (`rivals._umap`): BERTopic's for text, the UMAP docs' for MNIST.
-    if dataset == "news-minilm":
+    if dataset != "mnist":
         return {"n_neighbors": 15, "min_dist": 0.0, "n_components": 5, "metric": "cosine"}
     return {"n_neighbors": 30, "min_dist": 0.0, "n_components": 2}
 
@@ -93,7 +93,7 @@ def _hdbscan(z, dataset):
 
     kw = (
         {"min_cluster_size": 10}
-        if dataset == "news-minilm"
+        if dataset != "mnist"
         else {"min_samples": 10, "min_cluster_size": 500}
     )
     return HDBSCAN(**kw).fit_predict(z)

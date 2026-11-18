@@ -58,7 +58,7 @@ import numpy as np
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
-from _provenance import versions
+from _provenance import jobs, versions
 from _worker import Peak, cap_memory
 
 SEEDS = (0, 1, 2)
@@ -111,15 +111,17 @@ def _kmeans(z, k, seed):
     return KMeans(k, n_init=4, random_state=seed).fit_predict(z)
 
 
+def umap_params(dataset):
+    """UMAP's settings: BERTopic's on the embedding sets, the UMAP docs' MNIST recipe otherwise."""
+    if dataset in EMBEDDINGS or dataset.startswith("arxiv"):
+        return {"n_neighbors": 15, "min_dist": 0.0, "n_components": 5, "metric": "cosine"}
+    return {"n_neighbors": 30, "min_dist": 0.0, "n_components": 2}
+
+
 def _umap(x, seed, dataset, **kw):
     import umap
 
-    base = (
-        {"n_neighbors": 15, "min_dist": 0.0, "n_components": 5, "metric": "cosine"}
-        if dataset in EMBEDDINGS
-        else {"n_neighbors": 30, "min_dist": 0.0, "n_components": 2}
-    )
-    return umap.UMAP(random_state=seed, **{**base, **kw}).fit_transform(x)
+    return umap.UMAP(random_state=seed, **{**umap_params(dataset), **kw}).fit_transform(x)
 
 
 def _leiden_knn(x, seed, n_neighbors=15):
@@ -311,7 +313,7 @@ assert set(RIVAL_DISTS) == {a for a in ARMS if not a.startswith("betula")}
 def _hdbscan(z, **kw):
     import hdbscan
 
-    return hdbscan.HDBSCAN(**kw).fit_predict(z)
+    return hdbscan.HDBSCAN(**kw, **jobs("core_dist_n_jobs")).fit_predict(z)
 
 
 def _evoc(x, seed):
@@ -329,13 +331,14 @@ def _pacmap(x, seed):
 def _tsne(x, seed):
     from openTSNE import TSNE
 
-    return np.asarray(TSNE(random_state=seed, n_jobs=os.cpu_count()).fit(x))
+    threads = {"n_jobs": os.cpu_count()} | jobs("n_jobs")
+    return np.asarray(TSNE(random_state=seed, **threads).fit(x))
 
 
 def _phenograph(x, seed):
     import phenograph
 
-    labels, _, _ = phenograph.cluster(x, seed=seed, clustering_algo="leiden")
+    labels, _, _ = phenograph.cluster(x, seed=seed, clustering_algo="leiden", **jobs("n_jobs"))
     return labels
 
 
