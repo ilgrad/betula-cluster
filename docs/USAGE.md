@@ -78,7 +78,8 @@ MNIST-20k it lifts the median ARI at every budget from 400 to 3 200 leaves, by 0
 and 0.06–0.25 for spectral; it costs up to 0.035 on digits and 0.035 on covtype, whose ARI is near 0
 either way — see *Mass-weighted leaf graphs* in [MATH.md](MATH.md); `"rows"`, for `leiden` only,
 counts the graph from the training rows — each row names its 5 nearest leaves and every pair it
-names gains an edge — and labels a row by its nearest leaf, found by the same exact search in
+names gains an edge, and a `partial_fit` stream counts them as they arrive (*A rows graph on a
+stream* below) — and labels a row by its nearest leaf, found by the same exact search in
 training and in `predict` (at worst `n·m·d`). On MNIST-20k it lifts the median ARI from 0.689 to 0.746, on digits from 0.768 to 0.810;
 it loses to `"mass"` on well-separated blobs (0.575 against 0.623) and on noisy rings — see
 *The rows-counted leaf graph* in [MATH.md](MATH.md)), `kappa` (the concentration model of
@@ -1523,6 +1524,49 @@ for chunk in stream_of_arrays:        # each chunk is a 2-D float64 array
 est.partial_fit()                     # finalize the global clustering over everything seen
 labels = est.predict(X_query)         # est.n_clusters_ / est.n_leaves_ / est.effective_max_leaves_
 ```
+
+### A rows graph on a stream
+
+`leaf_graph="rows"` streams as well. `fit` counts the graph from every row against the final tree,
+and a stream has no final tree until it stops, so `partial_fit` counts as the rows arrive: each row
+names its 5 nearest leaves right after its own insert (an exact scan of every leaf mean, `m·d` per
+row) and every pair it names gains one count. The estimator keeps the counts per leaf pair, not
+the rows, so memory grows with the edges and not with the stream. When a rebuild merges or
+renumbers leaves the counts move with them: a merged leaf's counts add into the leaf that absorbed
+it, and a pair that ends inside one leaf is dropped. `partial_fit()` cuts the counted graph, and
+`predict` labels a row by its nearest leaf, as after `fit`. A row's names depend only on the rows
+before it, so the graph is the same however the stream is cut into chunks.
+
+```python
+est = betula_cluster.Betula(method="leiden", leaf_graph="rows", resolution="auto", n_clusters=20)
+for chunk in stream_of_arrays:        # dense rows, from the first chunk on
+    est.partial_fit(chunk)
+est.partial_fit()                     # Leiden on the graph the stream counted
+```
+
+The counted graph is not the batch graph: a row named early never sees the leaves the tree grows
+after it. On the news stream of `bench/stream_vs_refit.py` (MiniLM 20 newsgroups, 17 901 rows,
+20 clusters, 4 000 leaves; each cell is the median over five row orders of the median over seeds
+0 / 1 / 2) the head does not lose for it:
+
+| rows seen | 20 % | 40 % | 60 % | 80 % | 100 % |
+|---|---|---|---|---|---|
+| streamed rows graph, `partial_fit` | 0.365 | 0.378 | 0.381 | 0.381 | 0.382 |
+| batch rows graph, `fit` on every row seen | 0.349 | 0.370 | 0.374 | 0.378 | 0.382 |
+| `vmf` stream (`kappa="shared"`), `partial_fit` | 0.391 | 0.398 | 0.392 | 0.390 | 0.383 |
+
+Of the 25 order × checkpoint cells, the streamed graph lands inside the batch graph's three-seed
+range in 7, above it in 15 and below it in 3; the largest single loss is 0.021 (40 %). It trails
+the `vmf` stream at every checkpoint, by 0.026 at 20 % and 0.001 at the end. At the end of order
+0 (seed 0) the counts hold 51 836 edges over 3 953 leaves (0.86 MB), and the saved model is
+13.18 MB against 13.02 MB after `fit`. The process peaks at 293 MB resident from the first
+checkpoint to the last, against 291 MB for the batch graph refitted on every row and 445 MB for the
+`vmf` stream (`VmHWM`, median over the orders, the interpreter and the 17 901 × 384 rows included).
+
+The graph is only the rows' graph if it counted every row the tree holds, so `partial_fit()`
+refuses the head when it did not: a stream after `fit()`, a sparse chunk, `decay < 1` (which fades
+the tree but not the counts), or a stream resumed from a file an earlier build saved. A model that
+carries the counts is saved as schema 5, which earlier builds refuse to load.
 
 ### Sizing `max_leaves` against `n_clusters`
 

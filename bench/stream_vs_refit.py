@@ -8,6 +8,11 @@ At 20, 40, 60, 80 and 100 % of the stream every arm labels the rows seen so far:
 - `betula-stream`: `vmf` (`kappa="shared"`, 20 clusters, 4 000 leaves), `partial_fit` on the new
   chunk, then `partial_fit()` for the global step; no refit.
 - `betula-refit`: the same estimator fitted from scratch on every row seen.
+- `betula-rows-stream`: `leiden` on the rows graph (`leaf_graph="rows"`, `resolution="auto"`, the
+  same 20 clusters and 4 000 leaves), streamed the same way: each row names its five nearest
+  leaves right after its own insert, and `partial_fit()` runs the head on the counts.
+- `betula-rows-refit`: the same estimator fitted from scratch on every row seen, its graph counted
+  from every row against the final tree (the batch rows graph).
 - `sklearn-kmeans`, `umap+kmeans`, `umap+hdbscan` (BERTopic's cluster step: UMAP 5-D cosine,
   `min_cluster_size=10`) and `evoc`, each refitted from scratch, since none of them streams.
 - The rivals that learn in chunks (`STREAMERS`), each fed the new chunk the way its documentation
@@ -15,8 +20,10 @@ At 20, 40, 60, 80 and 100 % of the stream every arm labels the rows seen so far:
   `Birch`, BICO, BERTopic's online recipe, and River's `DBSTREAM` and `DenStream`, at their
   defaults and at the radius that suits this stream.
 
-Quality only (ARI over the rows seen), seeds 0, 1, 2; an arm with no seed runs once per order. The
-rivals are pulled per invocation (BICO is GPL-3.0, River BSD-3):
+Quality (ARI over the rows seen), seeds 0, 1, 2; an arm with no seed runs once per order. The four
+betula arms also record `peak_mb`, the process's peak resident set from the start of the arm to
+the checkpoint (`VmHWM` after `clear_refs`), the interpreter and the rows included: run one of them
+per invocation (`--arms=…`) for a peak that is its own. The rivals are pulled per invocation (BICO is GPL-3.0, River BSD-3):
 
     uv run --no-sync --with scikit-learn --with umap-learn --with hdbscan --with evoc \\
         --with bico --with river --with pandas python bench/stream_vs_refit.py \\
@@ -168,11 +175,11 @@ STREAMERS = {
     "dbstream-tuned": _river("DBSTREAM", **DBSTREAM_TUNED),
     "denstream-tuned": _river("DenStream", **DENSTREAM_TUNED),
 }
-ARMS = ("betula-stream", "betula-refit", *REFITS, *STREAMERS)
+BETULA = ("betula-stream", "betula-refit", "betula-rows-stream", "betula-rows-refit")
+ARMS = (*BETULA, *REFITS, *STREAMERS)
 # The libraries each arm runs, written into its rows' `version` column.
 DISTS = {
-    "betula-stream": ("betula-cluster",),
-    "betula-refit": ("betula-cluster",),
+    **{arm: ("betula-cluster",) for arm in BETULA},
     "sklearn-kmeans": ("scikit-learn",),
     "umap+kmeans": ("umap-learn", "pynndescent", "scikit-learn"),
     "umap+hdbscan": ("umap-learn", "pynndescent", "hdbscan"),
@@ -187,6 +194,20 @@ DISTS = {
     "denstream-tuned": ("river",),
 }
 assert set(DISTS) == set(ARMS), set(ARMS) ^ set(DISTS)
+
+
+class Peak:
+    """This process's peak resident set (`VmHWM`) from the moment the object is made, in MB: writing
+    5 to `/proc/self/clear_refs` lowers the high-water mark to the current RSS (`_worker.Peak`)."""
+
+    def __init__(self):
+        with open("/proc/self/clear_refs", "w") as f:
+            f.write("5")
+
+    def mb(self) -> float:
+        with open("/proc/self/status") as f:
+            kb = next(int(line.split()[1]) for line in f if line.startswith("VmHWM:"))
+        return kb * 1024 / 1e6
 
 
 def refit(arm: str, xs: np.ndarray, seed: int) -> np.ndarray:
@@ -221,7 +242,7 @@ def run(order: int, arms: tuple[str, ...] = ARMS) -> list[dict]:
     cuts = [int(f * len(x)) for f in FRACTIONS]
     rows = []
 
-    def emit(seen, arm, seed, labels):
+    def emit(seen, arm, seed, labels, peak=None):
         labels = np.asarray(labels)
         rows.append(
             {
@@ -233,10 +254,11 @@ def run(order: int, arms: tuple[str, ...] = ARMS) -> list[dict]:
                 "n_clusters": len(set(labels[labels >= 0].tolist())),
                 "noise_share": float(np.mean(labels < 0)),
                 "version": versions(*DISTS[arm]),
+                **({} if peak is None else {"peak_mb": round(peak.mb(), 1)}),
             }
         )
         print(
-            f"order {order} seen {seen:6d} {arm:15s} seed {seed}  ARI {rows[-1]['ari']:.3f}",
+            f"order {order} seen {seen:6d} {arm:18s} seed {seed}  ARI {rows[-1]['ari']:.3f}",
             flush=True,
         )
 
@@ -245,17 +267,35 @@ def run(order: int, arms: tuple[str, ...] = ARMS) -> list[dict]:
             method="vmf", kappa="shared", n_clusters=K, max_leaves=LEAVES, threshold=0.0, seed=seed
         )
 
-    if "betula-stream" in arms or "betula-refit" in arms:
+    def rows_graph(seed):
+        return bc.Betula(
+            method="leiden",
+            leaf_graph="rows",
+            resolution="auto",
+            n_clusters=K,
+            max_leaves=LEAVES,
+            threshold=0.0,
+            seed=seed,
+        )
+
+    for arm, make in (("betula-stream", vmf), ("betula-rows-stream", rows_graph)):
+        if arm not in arms:
+            continue
+        peak = Peak()
         for seed in SEEDS:
-            est, start = vmf(seed), 0
+            est, start = make(seed), 0
             for cp in cuts:
                 est.partial_fit(x[start:cp])
                 start = cp
                 est.partial_fit()
-                if "betula-stream" in arms:
-                    emit(cp, "betula-stream", seed, est.predict(x[:cp]))
-                if "betula-refit" in arms:
-                    emit(cp, "betula-refit", seed, vmf(seed).fit_predict(x[:cp]))
+                emit(cp, arm, seed, est.predict(x[:cp]), peak)
+    for arm, make in (("betula-refit", vmf), ("betula-rows-refit", rows_graph)):
+        if arm not in arms:
+            continue
+        peak = Peak()
+        for seed in SEEDS:
+            for cp in cuts:
+                emit(cp, arm, seed, make(seed).fit_predict(x[:cp]), peak)
     for seed in SEEDS:
         for cp in cuts:
             for arm in (a for a in REFITS if a in arms):
