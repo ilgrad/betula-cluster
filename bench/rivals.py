@@ -20,6 +20,7 @@ other row of the CSV. The embedding boards read caches that `bench/embed_*.py` b
 `news-minilm` (20 newsgroups under all-MiniLM-L6-v2, `bench/embed_news.py`), and the two
 `evoc_bench_*` sets of the EVoC benchmark (`bench/embed_evoc.py`): `news-mpnet` (the same corpus
 under all-mpnet-base-v2) and `cifar100-clip` (CIFAR-100 as CLIP image embeddings, 100 classes).
+`load` also reads `arxiv-1m` (`bench/embed_arxiv.py`) for the timing campaign.
 
 Rules (the plan's 12.4, kept here so the CSV can be read without it):
 
@@ -71,22 +72,19 @@ BUDGET = {20_000: 4_000, 70_000: 14_000, 17_901: 4_000, 18_119: 4_000, 59_999: 1
 BUDGET_STUDY = (8_000, 20_000)
 
 # The unit-norm embedding sets. UMAP runs on them with the cosine metric, and the directional heads
-# and BERTopic's pipeline run on them alone.
-EMBEDDINGS = ("news-minilm", "news-mpnet", "cifar100-clip")
+# and BERTopic's pipeline run on them alone. `arxiv-1m` (`bench/embed_arxiv.py`) is the timing
+# campaign's million-row set; no board of this harness reads it.
+EMBEDDINGS = ("news-minilm", "news-mpnet", "cifar100-clip", "arxiv-1m")
 
 
 def load(dataset: str, n: int, seed: int):
-    """`(X float32, y)`: MNIST raw / 255, or one of the `EMBEDDINGS`."""
+    """`(X float32, y)`: MNIST raw / 255, or one of the `EMBEDDINGS`; `n` below the set's size
+    takes one seeded draw of its rows, the same for every seed (seeds vary the method)."""
     if dataset == "mnist":
         from _fixtures import fetch
 
         x, y, _ = fetch("mnist")
         x = x / 255.0
-        if n < len(x):
-            pick = np.random.default_rng(0).choice(
-                len(x), n, replace=False
-            )  # one draw; seeds vary the method
-            x, y = x[pick], y[pick]
     elif dataset == "news-minilm":
         from embed_news import cached
 
@@ -95,8 +93,15 @@ def load(dataset: str, n: int, seed: int):
         from embed_evoc import cached
 
         x, y = cached(dataset)
+    elif dataset == "arxiv-1m":
+        from embed_arxiv import cached
+
+        x, y = cached()
     else:
         raise ValueError(dataset)
+    if n < len(x):
+        pick = np.random.default_rng(0).choice(len(x), n, replace=False)
+        x, y = x[pick], y[pick]
     return np.ascontiguousarray(x, dtype=np.float32), np.asarray(y)
 
 
