@@ -53,7 +53,8 @@ def two_spirals(n, noise=0.2, seed=0):
 # ## Spectral vs k-means on manifolds
 #
 # Pair spectral with a small `threshold` (many microclusters) so the affinity graph resolves the
-# manifold. k-means slices straight across the arms; spectral follows them.
+# manifold. k-means slices straight across the arms; spectral follows them — on the spirals, at
+# this seed, all but the tight inner end of one arm, which it hands to the other.
 
 # %%
 manifolds = {

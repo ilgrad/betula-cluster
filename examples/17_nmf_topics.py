@@ -60,8 +60,9 @@ print(f"corpus: {X.shape[0]} documents × {d} nonnegative features, {k} latent t
 # ## The data — nonnegative, additive, overlapping
 #
 # Each row is a nonnegative feature vector; documents of the same topic share a dominant set of active
-# features, but every document mixes in a little of the others. Raw Euclidean k-means on the sparse
-# high-`d` counts sees mostly magnitude, not topic.
+# features, but every document mixes in a little of the others. On this corpus the topic blocks are
+# strong enough that raw Euclidean k-means recovers them too (below): what the NMF path adds here is
+# interpretable parts at bounded memory, not accuracy.
 
 # %%
 fig, ax = plt.subplots(figsize=(7, 2.8))
@@ -252,7 +253,7 @@ except ValueError as e:
 # nonnegative parts and clusters their codes — but factorizes the `M ≪ N` leaf centroids, so NMF runs at
 # BETULA scale and bounded memory (point-level NMF cannot stream). The default Frobenius objective fits
 # Gaussian-ish magnitudes (TF-IDF); **`projection="weighted-nmf-kl"`** switches to the KL divergence, the
-# Poisson maximum-likelihood fit for raw **counts** — a large win on sparse counts, converging to
-# Frobenius as counts grow. It is an **opt-in reducer** for nonnegative data only; for signed embeddings
+# Poisson maximum-likelihood fit for raw **counts** — a small edge on the sparsest counts (+0.04
+# here), converging to Frobenius as counts grow. It is an **opt-in reducer** for nonnegative data only; for signed embeddings
 # reach for `vmf` / `spherical-kmeans` or PCA / TruncatedSVD. See the [Usage guide](../docs/USAGE.md) and
 # [`docs/MATH.md`](../docs/MATH.md#cf-weighted-nmf-for-nonnegative-data).

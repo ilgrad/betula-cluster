@@ -171,16 +171,17 @@ plt.show()
 #
 # The CF-tree is bounded by `max_leaves`, so betula's footprint is **flat in `N`** while any in-core
 # method's grows linearly (it has to hold `X`). The figures below are the streaming memory table from
-# [`bench/RESULTS.md`](../bench/RESULTS.md) — peak RSS of the process itself, `/proc/self/statm`,
-# 20-dimensional data, betula via chunked `partial_fit` against a one-shot scikit-learn `KMeans`. They
-# are quoted, not measured here: peak RSS is only meaningful in an isolated subprocess, and a notebook
-# kernel that has already imported matplotlib, pandas and seaborn is not one.
+# [`bench/RESULTS.md`](../bench/RESULTS.md) — peak RSS of the process itself (`VmHWM` for betula,
+# a `/proc/self/statm` sampler for scikit-learn), 20-dimensional data, betula via chunked
+# `partial_fit` against a one-shot scikit-learn `KMeans`. They are quoted, not measured here: peak RSS
+# is only meaningful in an isolated subprocess, and a notebook kernel that has already imported
+# matplotlib, pandas and seaborn is not one.
 
 # %%
 # bench/RESULTS.md § "Memory — streaming stays bounded"; 20-d, peak RSS in MB.
 mem_N = [500_000, 1_000_000, 2_000_000, 5_000_000, 10_000_000]
-mem_betula = [60.1, 60.4, 60.1, 60.5, 60.3]
-mem_sklearn = [407, 647, 1130, 2570, 4970]
+mem_betula = [54.9, 55.1, 54.9, 54.8, 54.9]
+mem_sklearn = [409, 649, 1130, 2570, 4970]
 
 plt.figure(figsize=(6, 3.8))
 plt.loglog(mem_N, mem_betula, "o-", lw=2, color="#2a9d8f", label="betula (streaming partial_fit)")

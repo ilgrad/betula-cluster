@@ -87,45 +87,59 @@ pd.DataFrame(rows).set_index("true k")
 
 # %%
 Xu, yu = make_blobs(n_samples=5000, centers=5, cluster_std=0.6, random_state=42)
+SEEDS = (0, 1, 2)
 
-results = []
-lab, ms_time = timed(
-    lambda: betula_cluster.fit_predict(
-        Xu, method="scale-space", threshold=0.08, max_leaves=500, seed=0
-    )
-)
-results.append(
-    {
-        "method": "betula scale-space",
-        "parameter": "none",
-        "found": len(set(lab)),
-        "ARI": round(ari(yu, lab), 3),
-        "ms": round(ms_time),
+
+def ari_summary(y, labelings):
+    """Median ARI over the seeds, and its (min–max) range."""
+    scores = [ari(y, lab) for lab in labelings]
+    return {
+        "ARI": round(float(np.median(scores)), 3),
+        "ARI range": f"{min(scores):.3f}–{max(scores):.3f}",
     }
-)
+
+
+def seeded_row(method, parameter, fit):
+    """One table row for `fit(seed)` run at every seed; `ms` is the median over the seeds."""
+    runs = [timed(lambda s=s: fit(s)) for s in SEEDS]
+    labelings = [lab for lab, _ in runs]
+    return {
+        "method": method,
+        "parameter": parameter,
+        "found": "/".join(str(c) for c in sorted({len(set(lab)) for lab in labelings})),
+        **ari_summary(yu, labelings),
+        "ms": round(float(np.median([t for _, t in runs]))),
+    }
+
+
+results = [
+    seeded_row(
+        "betula scale-space",
+        "none",
+        lambda s: betula_cluster.fit_predict(
+            Xu, method="scale-space", threshold=0.08, max_leaves=500, seed=s
+        ),
+    )
+]
 for k in (3, 4, 6):
-    lab, t = timed(
-        lambda k=k: betula_cluster.fit_predict(
-            Xu, method="kmeans", n_clusters=k, threshold=0.08, max_leaves=500, seed=0
+    results.append(
+        seeded_row(
+            "betula k-means",
+            f"guessed k={k}",
+            lambda s, k=k: betula_cluster.fit_predict(
+                Xu, method="kmeans", n_clusters=k, threshold=0.08, max_leaves=500, seed=s
+            ),
         )
     )
-    results.append(
-        {
-            "method": "betula k-means",
-            "parameter": f"guessed k={k}",
-            "found": k,
-            "ARI": round(ari(yu, lab), 3),
-            "ms": round(t),
-        }
-    )
 bw = estimate_bandwidth(Xu, quantile=0.2, n_samples=500)
-(ms_labels), sk_time = timed(lambda: MeanShift(bandwidth=bw).fit(Xu).labels_)
+ms_labels, sk_time = timed(lambda: MeanShift(bandwidth=bw).fit(Xu).labels_)
 results.append(
     {
         "method": "sklearn MeanShift",
         "parameter": "auto bandwidth",
-        "found": len(set(ms_labels)),
+        "found": str(len(set(ms_labels))),
         "ARI": round(ari(yu, ms_labels), 3),
+        "ARI range": "deterministic, 1 run",
         "ms": round(sk_time),
     }
 )
@@ -135,7 +149,7 @@ fig, ax = plt.subplots(figsize=(6.4, 3.8))
 ax.bar(range(len(table)), table["ARI"], color=sns.color_palette("deep", len(table)))
 ax.set(
     xticks=range(len(table)),
-    ylabel="ARI",
+    ylabel="median ARI, seeds 0–2",
     ylim=(0, 1.05),
     title="accuracy when the true k = 5 is unknown",
 )
@@ -144,15 +158,17 @@ for i, v in enumerate(table["ARI"]):
     ax.text(i, v + 0.02, f"{v:.2f}", ha="center", fontsize=8)
 fig.tight_layout()
 
-# The `ms` column tells the speed story among the two parameter-free methods (scale-space vs MeanShift).
+# `ARI` and `ms` are medians over seeds 0, 1, 2 (`found` lists every count they returned);
+# `MeanShift` is deterministic, so it runs once. The `ms` column tells the speed story among the
+# two parameter-free methods (scale-space vs MeanShift).
 table
 
 # %% [markdown]
 # **Read it.** Only two methods need no `k` — betula `scale-space` and `MeanShift`. betula recovers
-# the true count of 5 and lands near ARI 1.00; `MeanShift`'s auto-bandwidth finds 4 and scores about
-# 0.62, so the accuracy gap is the large one. **The speed gap at this size is not** — betula is
-# roughly 1.6× faster here, not the multiple an earlier edition of this notebook claimed. Both are
-# single-threaded (`OMP_NUM_THREADS=1`, `RAYON_NUM_THREADS=1`), which is the only comparison worth
+# the true count of 5 at all three seeds and lands near ARI 1.00 (0.999 at each); `MeanShift`'s
+# auto-bandwidth finds 4 and scores about 0.62, so the accuracy gap is the large one.
+# **The speed gap at this size is not** — betula is roughly 1.6× faster here, not the multiple an
+# earlier edition of this notebook claimed. Both are single-threaded (`OMP_NUM_THREADS=1`, `RAYON_NUM_THREADS=1`), which is the only comparison worth
 # printing. The durable claim is the **scaling** one: betula runs mean-shift over the `M ≪ N`
 # microclusters so its cost tracks the leaf count, while `MeanShift` is `O(N²)` in the sample count —
 # the ratio grows with `N` and this is 5 000 points. k-means matches on accuracy only if you already
@@ -184,50 +200,51 @@ Xa = np.vstack(
 )
 ya = np.r_[[0] * 500, [1] * 500, [2] * 500]
 
-kw = dict(n_clusters=3, threshold=0.1, max_leaves=300, seed=0)
-km_labels = betula_cluster.fit_predict(Xa, method="kmeans", **kw)
-gmm_labels = betula_cluster.fit_predict(Xa, method="gmm-full", feature="full", **kw)
+kw = dict(n_clusters=3, threshold=0.1, max_leaves=300)
+km_runs = [betula_cluster.fit_predict(Xa, method="kmeans", seed=s, **kw) for s in SEEDS]
+gmm_runs = [
+    betula_cluster.fit_predict(Xa, method="gmm-full", feature="full", seed=s, **kw) for s in SEEDS
+]
+sk_gmm_runs = [
+    GaussianMixture(3, covariance_type="full", random_state=s).fit_predict(Xa) for s in SEEDS
+]
+sk_km_runs = [KMeans(3, n_init=10, random_state=s).fit_predict(Xa) for s in SEEDS]
 geo = pd.DataFrame(
     [
-        {
-            "method": "betula gmm-full",
-            "models covariance?": "yes",
-            "ARI": round(ari(ya, gmm_labels), 3),
-        },
+        {"method": "betula gmm-full", "models covariance?": "yes", **ari_summary(ya, gmm_runs)},
         {
             "method": "betula k-means",
             "models covariance?": "no (spherical)",
-            "ARI": round(ari(ya, km_labels), 3),
+            **ari_summary(ya, km_runs),
         },
         {
             "method": "sklearn GaussianMixture",
             "models covariance?": "yes",
-            "ARI": round(
-                ari(ya, GaussianMixture(3, covariance_type="full", random_state=0).fit_predict(Xa)),
-                3,
-            ),
+            **ari_summary(ya, sk_gmm_runs),
         },
         {
             "method": "sklearn KMeans",
             "models covariance?": "no (spherical)",
-            "ARI": round(ari(ya, KMeans(3, n_init=10, random_state=0).fit_predict(Xa)), 3),
+            **ari_summary(ya, sk_km_runs),
         },
     ]
 ).set_index("method")
 
+km_labels, gmm_labels = km_runs[0], gmm_runs[0]
 fig, (ax0, ax1) = plt.subplots(1, 2, figsize=(9, 4))
 ax0.scatter(Xa[:, 0], Xa[:, 1], c=km_labels, cmap="tab10", s=7, alpha=0.85)
-ax0.set(title=f"spherical k-means — ARI {ari(ya, km_labels):.2f}", xticks=[], yticks=[])
+ax0.set(title=f"spherical k-means, seed 0 — ARI {ari(ya, km_labels):.2f}", xticks=[], yticks=[])
 ax1.scatter(Xa[:, 0], Xa[:, 1], c=gmm_labels, cmap="tab10", s=7, alpha=0.85)
-ax1.set(title=f"betula gmm-full — ARI {ari(ya, gmm_labels):.2f}", xticks=[], yticks=[])
+ax1.set(title=f"betula gmm-full, seed 0 — ARI {ari(ya, gmm_labels):.2f}", xticks=[], yticks=[])
 fig.tight_layout()
 
+# Median ARI over seeds 0, 1, 2 (betula `seed=`, scikit-learn `random_state=`); the data stay fixed.
 geo
 
 # %% [markdown]
 # **Read it.** Covariance-aware clustering (betula `gmm-full`) is at the **top of the table, tied with
-# scikit-learn's `GaussianMixture`** (0.885 against 0.887 — inside the 0.05 band this project calls a
-# tie), and **+0.27 ARI over spherical k-means**, which slices straight across the elongated clusters. betula reaches that quality on the **bounded-memory
+# scikit-learn's `GaussianMixture`** (0.887 against 0.887, the median of seeds 0, 1, 2 on both sides,
+# and no seed moves either), and **+0.27 ARI over spherical k-means**, which slices straight across the elongated clusters. betula reaches that quality on the **bounded-memory
 # microclusters**, so it holds as `N` grows past what an in-core GMM can fit. The same shape awareness
 # is available inside graph community detection through the **GeoBETULA** knobs `covariance_weight`
 # (log-Euclidean shape) and `tangent_weight` (Grassmann orientation), for `method="leiden"` with

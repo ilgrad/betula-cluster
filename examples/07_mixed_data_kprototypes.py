@@ -149,8 +149,11 @@ plt.show()
 # %% [markdown]
 # ## Why not just k-means on the numbers?
 #
-# Dropping the categorical signal blurs segments that overlap numerically. k-prototypes recovers the
-# true segments better because it also uses `city` / `plan`.
+# Dropping the categorical signal blurs segments that overlap numerically. These three barely
+# overlap — age and spend already separate them — so here k-means on the numbers alone ties
+# k-prototypes (ARI 0.97 each). `city` / `plan` earn their keep when the numeric columns cannot
+# separate the segments on their own, the case
+# [`usecase_03_customer_segmentation`](usecases/usecase_03_customer_segmentation.ipynb) builds.
 
 # %%
 from betula_cluster import fit_predict

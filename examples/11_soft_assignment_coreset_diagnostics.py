@@ -72,7 +72,7 @@ plt.show()
 # ## A streaming coreset — refit anything on a tiny weighted summary
 #
 # `export_coreset()` returns the CF-tree leaves as weighted points. Fitting scikit-learn `KMeans` on
-# the coreset (a few hundred weighted rows) matches fitting it on all 12,000 points — at a fraction of
+# the coreset (902 weighted rows) matches fitting it on all 12,000 points — at a fraction of
 # the size.
 
 # %%

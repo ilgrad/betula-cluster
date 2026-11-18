@@ -69,9 +69,10 @@ print(f"{len(X)} items, {DIM}-dim embeddings, {len(theme_sizes)} latent themes o
 # ## Leiden discovers the theme count — no `k`
 #
 # `method="leiden"` ignores `n_clusters`. Pair it with a moderate `threshold` so the microcluster
-# graph resolves the themes. At this coarse γ it returns **five** communities at ARI ≈ 0.98 — the two
-# overlapping themes (4 and 5) merge into one, which is the honest read of a graph that connects them;
-# `resolution` sharpens or coarsens that next.
+# graph resolves the themes. At γ = 1 it returns **six** communities at ARI ≈ 0.79 — the right count
+# but not the six themes: the two overlapping themes (4 and 5) merge into one, which is the honest
+# read of a graph that connects them, and the largest theme (600 items) is cut in two. `resolution`
+# coarsens or sharpens that next.
 
 # %%
 LEIDEN_KW = dict(method="leiden", threshold=0.4, max_leaves=800, seed=0)
@@ -112,8 +113,10 @@ print(f"CPM objective (γ=0.008): {len(set(cpm))} communities, ARI = {adjusted_r
 # ## Which items are ambiguous? — `consensus`
 #
 # The CF-tree depends on insertion order, and the overlapping themes have genuinely uncertain members.
-# `consensus` clusters several random permutations and votes, giving a per-item **stability** score:
-# the theme cores are confident, the overlap seam between themes 4 and 5 is not.
+# `consensus` clusters several random permutations and votes, giving a per-item **stability** score.
+# Here every unstable item sits in the largest theme: themes 4 and 5 merge in every run, so `k = 6`
+# has a cluster to spare and spends it cutting the largest theme in two, at a place that moves
+# from run to run. The other themes, the merged pair included, are stable.
 
 # %%
 res = betula_cluster.consensus(X, n_clusters=6, n_runs=8, method="kmeans", threshold=0.2, n_jobs=-1)
@@ -126,9 +129,11 @@ fig.colorbar(sc, ax=ax, label="fraction of runs agreeing")
 fig.tight_layout()
 
 # %% [markdown]
-# ## Why this beats "just pick k"
+# ## Against "just pick k"
 #
-# For reference, k-means *must* be told the count, and gets it wrong if you guess wrong:
+# For reference, k-means *must* be told the count, and loses accuracy when the guess is wrong
+# (`k = 4` or `8`). Told the right count it ties Leiden here (0.789 against 0.791); Leiden got there
+# without being told:
 
 # %%
 rows = []

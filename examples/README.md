@@ -4,17 +4,18 @@ Executed Jupyter notebooks (with plots, tables, and graphs) demonstrating **ever
 `betula-cluster`. Each notebook is paired with a [jupytext](https://jupytext.readthedocs.io/) `.py`
 source (the diff-friendly form); the `.ipynb` is the rendered, executed output you can read on GitHub.
 
-> **Provenance.** The stored outputs were executed on **2026-08-30** against the working tree after
-> 0.7.0 ([`07_mixed_data_kprototypes`](07_mixed_data_kprototypes.ipynb) on **2026-09-02**), and every
-> notebook's first cell prints `betula-cluster 0.7.0`. Labels have changed since in more heads than
-> one: the tree build itself (the cost-ranked rebuild, 1.0.0, which reaches every head), `spectral`
-> (rewritten before 0.8.0, again at 1.2.0 above 2 048 leaves), the graph-HDBSCAN `min_samples`
-> (1.2.0), `fuzzy-cmeans` (1.3.0) and
-> `scale-space` (1.4.0) — see [`CHANGELOG.md`](../CHANGELOG.md). A figure printed here is a 0.7.0
-> figure; every notebook pins its seeds in code, so re-executing reproduces the current numbers.
+> **Provenance.** The stored outputs of twenty notebooks were executed on **2026-11-18** against
+> 1.6.0, and their first cell prints `betula-cluster 1.6.0`. The other three —
+> [`04_method_comparison`](04_method_comparison.ipynb), [`10_sparse_highdim`](10_sparse_highdim.ipynb)
+> and [`15_geometry_aware_clustering`](15_geometry_aware_clustering.ipynb) — time betula against
+> scikit-learn, and are re-executed against 1.6.0 in a later run on an idle machine. Until then they
+> still print `betula-cluster 0.7.0` and hold their 2026-08-30 outputs, and the `.py` of `15` already
+> runs seeds 0, 1, 2 where its stored outputs show one. Every notebook pins its seeds in code, so
+> re-executing reproduces the current numbers.
 >
-> A quality figure printed here is also a **single draw**, and clustering quality is
-> seed-dependent. Where a notebook makes a head-to-head claim it says which seed produced it. The
+> A quality figure printed here is also a **single draw** unless the cell reports a median, and
+> clustering quality is seed-dependent. Where a notebook makes a head-to-head claim it says which
+> seed produced it, or reports the median of seeds 0, 1, 2 with its range. The
 > seeded medians of record — seeds 0/1/2, with per-cell ranges — are in
 > [`bench/RESULTS.md`](../bench/RESULTS.md), and that is what to quote. Wall-clock cells were run
 > single-threaded on both sides (`OMP_NUM_THREADS=1`, `RAYON_NUM_THREADS=1`), which the benchmark

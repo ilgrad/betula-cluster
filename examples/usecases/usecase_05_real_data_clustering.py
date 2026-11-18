@@ -190,11 +190,12 @@ plt.tight_layout()
 plt.show()
 
 # %% [markdown]
-# ## A coreset reproduces the result at a fraction of the size
+# ## A coreset approximates the result at a fraction of the size
 #
 # `export_coreset()` returns the CF-tree leaves as weighted points. A deliberately **coarse** tree
-# (256 leaves) summarizes the 1797 images; refitting scikit-learn k-means on those 256 weighted leaves
-# gives a clustering that closely agrees with fitting on all 1797 images — at a fraction of the rows.
+# (`max_leaves=256`; it settles at 232) summarizes the 1797 images; refitting scikit-learn k-means on
+# those 232 weighted leaves gives a clustering that agrees with fitting on all 1797 images at ARI
+# 0.76 — at a fraction of the rows.
 
 # %%
 coarse = betula_cluster.Betula(

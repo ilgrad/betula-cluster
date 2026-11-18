@@ -97,10 +97,12 @@ ax.legend()
 plt.show()
 
 # %% [markdown]
-# ## Mergeable: sketch shards in parallel, combine exactly
+# ## Mergeable: sketch shards in parallel, then combine
 #
 # Split the stream across 4 "workers", sketch each independently, then `merge` — the combined sketch
-# matches one built over the whole stream.
+# carries the same rank-error guarantee as one built over the whole stream. Each is a separate
+# random draw of KLL's compactions, so the two agree in the body and part in the sparse tail (p99:
+# 240.6 single, 200.6 merged, 206.4 exact) — there a small rank error is a large value error.
 
 # %%
 shards = np.array_split(data, 4)
