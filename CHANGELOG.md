@@ -37,8 +37,18 @@ All notable changes to this project are documented here. The format follows
   which earlier builds refuse. At worst the search visits every leaf (`n·m·d`), where the other
   graphs descend the tree.
   `leiden-cpm` refuses it (its resolution would mean a different thing at every row count), and so
-  do `partial_fit(None)`, sparse input and a projection, which have no dense rows to count. Labels
-  are the same at any thread count. `"unit"` stays the default.
+  do sparse input and a projection, which have no dense rows to count. Labels are the same at any
+  thread count. `"unit"` stays the default.
+- **`leaf_graph="rows"` streams.** A `partial_fit` stream counts the rows graph as the rows arrive.
+  Each row names its 5 nearest leaves right after its own insert, with an exact scan (m·d per row).
+  The counts are kept per leaf pair and follow the tree's rebuilds, so memory grows with the edges
+  and not the rows, and the graph is the same however the stream is chunked. `partial_fit()` runs
+  Leiden on it; it used to raise. On the news stream (17 901 MiniLM rows, 4 000 leaves, five
+  orders × seeds 0/1/2), the streamed graph reads 0.365 → 0.382 from 20 % to 100 %, against
+  0.349 → 0.382 for the batch graph refitted on every row seen. It is below the batch graph's seed
+  range in 3 of 25 cells. A model carrying the counts is saved as schema 5, which earlier builds
+  refuse. A stream that did not count every row is refused: one after `fit()`, one with a sparse
+  chunk, one at `decay<1`, or one resumed from an earlier build's file.
 - **`Betula` passes scikit-learn's `check_estimator`** (all 40 checks, on the `kmeans`, `gmm`,
   `ward`, `hdbscan`, `leiden`, `spectral`, `vmf`, `scale-space` and `dc-median` heads).
   `compute_labels=True` keeps the training rows' labels as `labels_` after `fit`, as scikit-learn's

@@ -3110,13 +3110,16 @@ River's `DBSTREAM` and `DenStream`. River runs at its defaults and at the settin
 ARI on the first chunk of order 0 (an oracle choice, generous to River; the grid is in the harness).
 Each streaming rival first reproduces its documented example (*Each rival reproduces its own
 documentation first*). Seeds 0, 1, 2, and one run per order for an arm with no seed; each cell is
-the median over seeds, then the median (min–max) over the five orders. Quality only: the streaming
-arms' cost waits for the timing campaign.
+the median over seeds, then the median (min–max) over the five orders. Quality only, apart from
+the peak RSS that the betula arms record (`peak_mb`): the streaming arms' cost waits for the timing
+campaign.
 
 | arm | 20 % (3 580) | 40 % | 60 % | 80 % | 100 % (17 901) | clusters | noise |
 |---|---|---|---|---|---|---|---|
 | **betula, `partial_fit`** | 0.391 (0.370–0.409) | 0.398 (0.388–0.398) | 0.392 (0.385–0.401) | 0.390 (0.382–0.406) | 0.383 (0.371–0.394) | 20 | 0.00 |
 | **betula, refitted** | 0.391 (0.370–0.409) | 0.398 (0.388–0.398) | 0.392 (0.385–0.401) | 0.390 (0.382–0.406) | 0.383 (0.371–0.394) | 20 | 0.00 |
+| **betula `leiden` rows graph, `partial_fit`** | 0.365 (0.350–0.378) | 0.378 (0.360–0.386) | 0.381 (0.374–0.390) | 0.381 (0.373–0.406) | 0.382 (0.376–0.405) | 20 | 0.00 |
+| **betula `leiden` rows graph, refitted** | 0.349 (0.319–0.360) | 0.370 (0.362–0.406) | 0.374 (0.358–0.396) | 0.378 (0.368–0.393) | 0.382 (0.364–0.389) | 20 | 0.00 |
 | UMAP + k-means, refitted | 0.410 (0.390–0.418) | 0.417 (0.394–0.438) | 0.431 (0.415–0.443) | 0.429 (0.417–0.439) | 0.448 (0.425–0.452) | 20 | 0.00 |
 | scikit-learn k-means, refitted | 0.364 (0.331–0.375) | 0.376 (0.368–0.384) | 0.372 (0.346–0.384) | 0.376 (0.371–0.378) | 0.369 (0.359–0.380) | 20 | 0.00 |
 | UMAP + HDBSCAN, refitted | 0.186 (0.020–0.207) | 0.136 (0.117–0.138) | 0.120 (0.080–0.155) | 0.085 (0.082–0.106) | 0.089 (0.082–0.090) | 43 → 213 | 0.29–0.37 |
@@ -3133,6 +3136,10 @@ arms' cost waits for the timing campaign.
 - **Streaming costs nothing in quality here.** At all 75 checkpoints (five orders, three seeds,
   five fractions) `partial_fit` gives the same ARI as a refit on every row seen, to the last digit:
   the tree receives the rows in the same order either way. What the stream saves is the refit.
+- **The rows graph streams without loss against its batch graph:** 7 of 25 cells inside the
+  refit's seed range, 15 above and 3 below (worst −0.021 at 40 %). It trails betula's vmf stream by
+  0.026 at 20 % and by 0.001 at the end. Peak RSS is 293 MB against 291 MB for the refit and 445 MB
+  for the vmf stream.
 - **UMAP + k-means wins from 60 % of the stream on**, by 0.039–0.065, and is level before that. It
   pays a full refit, layout included, at each checkpoint.
 - **UMAP + HDBSCAN, BERTopic's cluster step, gets worse as posts arrive**: its topic count grows from
