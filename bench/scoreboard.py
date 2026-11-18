@@ -19,7 +19,10 @@ Four pairings, because "did we win" has four different meanings:
 - `vs-rival` — betula's best head against **each** rival of the census harnesses
   (`bench/rivals.py`, `bench/head_references.py`, `bench/density_rivals.py`), one cell per rival,
   told-k and no-k kept apart. `--claims` renders these and the other named pairings as sentences
-  for `bench/RESULTS.md`, and `--claims-check` fails when a committed block has drifted.
+  for `bench/RESULTS.md`, and `--claims-check` fails when a committed block has drifted. Their
+  speed cells come from the timing campaign (`bench/results_timings.csv`, written by
+  `bench/timings.py`): the second fit in a process is judged, the first is printed beside it, and
+  a ratio under 1.5× is a tie (`LEVEL`).
 
 `bench/scoreboard.json` records the verdicts as of the last accepted run. `--check` re-derives them
 and exits non-zero if any cell got worse (win → tie/loss, tie → loss) or vanished; `--update`
@@ -35,6 +38,13 @@ champions are printed on the rendered line instead.
     uv run --with pandas python bench/scoreboard.py --check    # CI gate
     uv run --with pandas python bench/scoreboard.py --update   # accept the current board
 
+`--data DIR` reads the CSVs and the board from `DIR` instead of `bench/`. The fixture in
+`bench/fixtures/scoreboard/` holds one census table, a timing CSV in the format `bench/timings.py`
+writes, and the claims block they must produce; it checks the timing reader end to end:
+
+    uv run --with pandas python bench/scoreboard.py --data bench/fixtures/scoreboard \\
+        --claims-check bench/fixtures/scoreboard/claims.md
+
 Tables without a spread sidecar (speed, memory, sparse, real-scale) are single runs by construction —
 `bench/_worker.py` pins `seed=0` for them — so they fall back to the per-axis tolerance in `SLACK`.
 """
@@ -46,11 +56,14 @@ import json
 import math
 import sys
 from pathlib import Path
+from typing import NamedTuple
 
 import pandas as pd
 
 HERE = Path(__file__).resolve().parent
-BOARD = HERE / "scoreboard.json"
+# Where the CSVs and the board are read from; `--data` points both at a fixture directory.
+DATA = HERE
+BOARD = DATA / "scoreboard.json"
 
 # Slack for a comparison with no seed spread behind it: an absolute floor plus a relative term.
 # Timing on a shared machine moves by a few percent between runs; peak RSS is far steadier; an ARI
@@ -59,6 +72,19 @@ SLACK = {
     "quality": (0.01, 0.0),
     "speed": (0.0, 0.05),
     "memory": (0.0, 0.02),
+}
+
+# A census speed cell from the timing campaign is "level" below a ratio of 1.5: the slack is a
+# third of the slower side. With 5 % run noise and the 28 % that DRAM placement adds on this
+# machine, three rounds resolve 1.5x and no finer (1.3x needs six), so a smaller ratio is not a
+# result whatever the round spread.
+LEVEL = 1 / 3
+
+# The stage of `bench/timings.py` that times each census table's arms.
+TIMED_STAGE = {
+    "results_rivals": "rivals",
+    "results_head_refs": "heads",
+    "results_density_rivals": "density",
 }
 
 # Which betula row is answered by which rival, for the like-for-like pairing.
@@ -97,11 +123,27 @@ class Cell:
     """One comparison: a betula value against a rival's, with whatever spread each side carries."""
 
     def __init__(
-        self, axis, pairing, table, label, ours, theirs, spreads, higher_is_better, contenders=""
+        self,
+        axis,
+        pairing,
+        table,
+        label,
+        ours,
+        theirs,
+        spreads,
+        higher_is_better,
+        contenders="",
+        rel=None,
+        cold=None,
     ):
         self.axis, self.pairing, self.table, self.label = axis, pairing, table, label
         self.ours, self.theirs = ours, theirs
         self.higher = higher_is_better
+        # The relative slack, where it is not the axis's own (`LEVEL` for the timing campaign).
+        self.rel = rel
+        # A timed cell judges the second fit in a process; the first, `(ours, theirs)`, is printed
+        # beside it and never judged.
+        self.cold = cold
         # Who won the slice, for `vs-best`. Reported, never part of `name()`: a champion that
         # changes is data about the run, and folding it into the identity made an improvement
         # ("betula-svd is now our fastest sparse head") indistinguishable from a vanished result.
@@ -113,6 +155,7 @@ class Cell:
     def _slack(self, spreads):
         """The margin below which this comparison is not a result."""
         floor, rel = SLACK.get(self.axis, (0.0, 0.0))
+        rel = rel if self.rel is None else self.rel
         seen = [s for s in spreads if s is not None and not math.isnan(s)]
         return max(floor, rel * max(abs(self.ours), abs(self.theirs)), *seen)
 
@@ -132,7 +175,7 @@ class Cell:
 
 
 def _read(name):
-    path = HERE / f"{name}.csv"
+    path = DATA / f"{name}.csv"
     return pd.read_csv(path) if path.exists() else None
 
 
@@ -336,8 +379,12 @@ def _rivals(table):
     the best mean, over the contest's slices, of its worst-seed ARI. It
     is chosen on quality alone, and the memory and speed cells are that arm's: the lightest arm is
     often one whose labels no one would use, and a memory win it scored would be no claim at all.
-    Values are medians over the seeds, and the seed range is the spread. Wall time enters only when
-    the run recorded `timing_valid` (the machine passed `bench-ready.sh`); a DNF arm gives no cell.
+    Values are medians over the seeds, and the seed range is the spread; a DNF arm gives no cell.
+
+    The speed cells come from `bench/results_timings.csv` (`_timings`), never from the harness's own
+    `time_s`, which is a first fit on whatever machine was at hand. A speed cell needs both arms
+    timed, and judges the second fit in a process (`warm_s`, the median over the rounds, their range
+    as the spread) under `LEVEL`; the first fit (`cold_s`) is printed beside it.
 
     A rival that recovers no structure on a slice (median ARI under `NO_STRUCTURE`) gives no cell
     there either. At its documented defaults CLASSIX, DenMune and OPTICS return one cluster on the
@@ -352,12 +399,10 @@ def _rivals(table):
         df = df[df["dnf"].isna()]
     df = df.assign(kind=df["dataset"].map(lambda d: KIND.get(d, d)))
     champion = _contest_champions(df, CONTEST[table])
-    axes = [("quality", "ari", True), ("memory", "rss_mb", False)]
-    if "timing_valid" in df.columns and bool(df["timing_valid"].all()):
-        axes.append(("speed", "time_s", False))
+    timed = _timings(TIMED_STAGE[table])
     cells = []
     for (dataset, n, told), grp in df.groupby(["dataset", "n", "told_k"], sort=True):
-        stats = grp.groupby("arm")[["ari", "rss_mb", "time_s"]].agg(["median", "min", "max"])
+        stats = grp.groupby("arm")[["ari", "rss_mb"]].agg(["median", "min", "max"])
         arms = list(stats.index)
         ours = [a for a in arms if a.startswith("betula")]
         theirs = [a for a in arms if not a.startswith("betula")]
@@ -366,19 +411,22 @@ def _rivals(table):
         slice_ = {"dataset": dataset, "kind": KIND.get(dataset, dataset), "told_k": told}
         key = tuple(slice_[c] for c in CONTEST[table])
         best = champion[key]
-        for axis, column, higher in axes:
+        label = f"{dataset}/{n}/{'told-k' if told else 'no-k'}"
+        pairs = []
+        for rm in theirs:
+            if stats["ari"].loc[rm, "median"] < NO_STRUCTURE:
+                continue
+            paired = HEAD_OF_REFERENCE.get(rm) if table == "results_head_refs" else None
+            pairs.append((paired if paired in ours else best, rm))
+        for axis, column, higher in (("quality", "ari", True), ("memory", "rss_mb", False)):
             col = stats[column]
-            for rm in theirs:
-                if stats["ari"].loc[rm, "median"] < NO_STRUCTURE:
-                    continue
-                paired = HEAD_OF_REFERENCE.get(rm) if table == "results_head_refs" else None
-                bm = paired if paired in ours else best
+            for bm, rm in pairs:
                 cells.append(
                     Cell(
                         axis,
                         "vs-rival",
                         table,
-                        f"{dataset}/{n}/{'told-k' if told else 'no-k'}/{rm}",
+                        f"{label}/{rm}",
                         float(col.loc[bm, "median"]),
                         float(col.loc[rm, "median"]),
                         (
@@ -389,7 +437,59 @@ def _rivals(table):
                         f"{bm}-vs-{rm}",
                     )
                 )
+        for bm, rm in pairs:
+            mine, yours = timed.get((dataset, int(n), bm)), timed.get((dataset, int(n), rm))
+            if mine is None or yours is None:
+                continue
+            cells.append(
+                Cell(
+                    "speed",
+                    "vs-rival",
+                    table,
+                    f"{label}/{rm}",
+                    mine.warm,
+                    yours.warm,
+                    (mine.spread, yours.spread),
+                    False,
+                    f"{bm}-vs-{rm}",
+                    rel=LEVEL,
+                    cold=(mine.cold, yours.cold),
+                )
+            )
     return cells
+
+
+class Timed(NamedTuple):
+    """One arm's time on one slice of the timing campaign, in seconds."""
+
+    warm: float  # median second fit over the rounds: the value a verdict judges
+    spread: float  # max - min of the second fit over the rounds
+    cold: float  # median first fit, imports and compilation included: printed, never judged
+
+
+def _timings(stage):
+    """`{(dataset, n, arm): Timed}` from `bench/results_timings.csv`, one stage of it.
+
+    A row counts when the run recorded `timing_valid` (`bench-ready.sh` passed and the control
+    stayed within its drift), the arm finished, and a second fit was taken. Rows of other stages
+    stay out even for the same arm and slice: the `threads` stage, for one, runs betula on one
+    thread, and its rows answer a different question.
+    """
+    df = _read("results_timings")
+    if df is None or df.empty:
+        return {}
+    keep = (df["stage"] == stage) & (df["timing_valid"].astype(str).str.lower() == "true")
+    if "dnf" in df.columns:
+        keep &= df["dnf"].isna()
+    df = df[keep & df["warm_s"].notna()]
+    out = {}
+    for (dataset, n, arm), grp in df.groupby(["dataset", "n", "arm"], sort=True):
+        warm = grp["warm_s"].astype(float)
+        spread = float(warm.max() - warm.min())
+        out[(str(dataset), int(n), str(arm))] = Timed(
+            float(warm.median()), spread, float(grp["cold_s"].astype(float).median())
+        )
+    return out
 
 
 def collect():
@@ -421,9 +521,10 @@ def render(cells):
         for c in sorted(group, key=lambda c: (ORDER[c.verdict], c.name())):
             mark = {"win": "WIN ", "tie": "tie ", "loss": "LOSS"}[c.verdict]
             who = f"  [{c.contenders}]" if c.contenders else ""
+            cold = f"  cold {c.cold[0]:.4f} vs {c.cold[1]:.4f}" if c.cold else ""
             print(
                 f"  {mark} {c.name():<72} {c.ours:>11.4f} vs {c.theirs:>11.4f}"
-                f"  margin {c.margin:+.4f}  slack {c.slack:.4f}{who}"
+                f"  margin {c.margin:+.4f}  slack {c.slack:.4f}{who}{cold}"
             )
 
 
@@ -451,10 +552,13 @@ def claims(cells):
         for c in group:
             unit, fmt = UNITS[c.axis]
             where = c.label.removesuffix(f"/{rival}")
+            mine, yours = f"{fmt.format(c.ours)} {unit}", f"{fmt.format(c.theirs)} {unit}"
+            if c.cold:  # a timed cell names the fit it judges, with the first fit beside it
+                mine += f" warm, {fmt.format(c.cold[0])} {unit} cold"
+                yours += f" warm, {fmt.format(c.cold[1])} {unit} cold"
             lines.append(
                 f"  - {c.verdict}, {c.axis}, `{where}` ({c.table.removeprefix('results_')}): "
-                f"betula {fmt.format(c.ours)} {unit} (`{c.champion}`) against "
-                f"{fmt.format(c.theirs)} {unit}"
+                f"betula {mine} (`{c.champion}`) against {yours}"
             )
     return "\n".join(lines) + "\n"
 
@@ -513,7 +617,13 @@ def main():
     ap.add_argument(
         "--claims-check", nargs="+", metavar="FILE", help="fail if a file's claims block is stale"
     )
+    ap.add_argument(
+        "--data", type=Path, metavar="DIR", help="read the CSVs and the board from DIR (a fixture)"
+    )
     args = ap.parse_args()
+    if args.data:
+        global DATA, BOARD
+        DATA, BOARD = args.data, args.data / "scoreboard.json"
 
     cells = collect()
     if not cells:
